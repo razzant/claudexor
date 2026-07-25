@@ -6,6 +6,35 @@ Silent drops are the failure mode this file exists to prevent — the 2.1.0
 audit found ten F2.5 leftovers that were neither shipped nor consciously
 deferred; they are recorded here now.
 
+## Discovery/distribution review advisories (3.2 wave; X243-X253)
+
+- X243: add the experimental ACP Terminal Auth rationale to the WHITEPAPER if
+  the conceptual model expands beyond the current thin, capability-gated
+  setup projection.
+- X244: add the ACP initialize capability → exact CLI suffix → durable setup
+  job → non-success exit ownership chain to the architecture runtime map.
+- X245: update the integrations guide's Claude bridge paragraph: exclusion
+  requires created-this-run provenance and exact generated-byte equality, not
+  merely the ownership marker.
+- X246: correct SECURITY.md's pre-existing secret-store wording. Managed API
+  keys use the daemon-owned 0600 file store; only vendor-owned native state may
+  use a vendor Keychain.
+- X247: either forward `--json` through `acp serve auth login codex` or reject
+  it explicitly; ACP clients do not send the flag, so the current experimental
+  path remains functional.
+- X248: make `gen-version.mjs` and Prettier produce byte-identical portable
+  plugin JSON formatting to avoid harmless regeneration churn.
+- X249: add the manual, post-npm MCP Registry OIDC publish step to the sole
+  release checklist once the first registry release is proven live.
+- X251: after the first live MCP publish, confirm whether the registry API
+  preserves `$schema`; if it normalizes server records, compare a canonical
+  field projection instead of raw deep equality.
+- X252: remove the duplicated ACP usage string by projecting the registry entry
+  from `ACP_SERVE_USAGE` or adding a parity assertion.
+- X253: ACP Terminal Auth currently calls the default Codex login but describes
+  it as a named subscription profile. Use neutral copy such as "Sign in to
+  Codex for Claudexor" when the experimental surface next changes.
+
 ## v3.0.0 review wave 1 deferrals (adjudication; ledgered `backlog`)
 
 - D-b: `GET /threads` needs-decision derivation cost — the derivation reads one

@@ -179,6 +179,11 @@ Two power knobs shape review:
   Creating, modifying, deleting, or renaming a matching path completes the run
   but pauses apply for a human decision. `--allow-protected-path` applies only
   to engine-derived gate/test paths and cannot suppress these project rules.
+  Before a mutating turn starts, a live project thread with configured project
+  protected paths is promoted one-way to its persistent isolated worktree. The
+  run and patch therefore complete without touching the project tree; only the
+  existing typed thread Apply decision can deliver the accumulated change.
+  Direct one-shot `--in-place` agent runs refuse and name the isolation remedy.
 
 ## Modes
 

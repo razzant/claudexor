@@ -36,6 +36,7 @@ import {
   upsert,
   type ThreadMutation,
 } from "./thread-store-support.js";
+import { threadWorktreeMutation } from "./thread-worktree-state.js";
 
 interface ThreadStoreState {
   threads: Thread[];
@@ -307,19 +308,15 @@ export class ThreadStore {
   ): void {
     const thread = this.getThread(id);
     if (!thread) return;
-    const next = ThreadSchema.parse({
-      ...thread,
-      workspace: {
-        ...thread.workspace,
-        worktree_path: worktreePath,
-        base_sha: baseSha,
-        ...(deliveredThroughRunId !== undefined
-          ? { delivered_through_run_id: deliveredThroughRunId }
-          : {}),
-      },
-      updated_at: nowIso(),
-    });
-    this.commit({ threads: [next] });
+    this.commit(
+      threadWorktreeMutation(
+        thread,
+        this.state.sessions,
+        worktreePath,
+        baseSha,
+        deliveredThroughRunId,
+      ),
+    );
   }
 
   listThreads(): Thread[] {

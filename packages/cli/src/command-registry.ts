@@ -253,7 +253,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     summary: "Expose Claudexor as an ACP agent (stdio; Terminal Auth is experimental)",
     flags: [],
     mutability: "ops",
-    stability: "stable",
+    stability: "experimental",
   },
   {
     id: "plugin",

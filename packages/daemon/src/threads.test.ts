@@ -95,6 +95,30 @@ describe("ThreadStore", () => {
     expect(reloaded?.run_ids).toEqual(["run-1", "run-2"]);
   });
 
+  it("atomically promotes a live thread to isolated and stales sessions from the old cwd", () => {
+    const { root, journal, s } = store();
+    const thread = s.createThread({ repoRoot: "/tmp/proj" });
+    s.recordSession(thread.id, "claude", "native-claude", null, null);
+    s.recordSession(thread.id, "codex", "native-codex", null, "work");
+
+    s.setThreadWorktree(thread.id, "/tmp/thread-tree", "base-1");
+
+    const reloaded = reload(root, journal);
+    expect(reloaded.getThread(thread.id)?.workspace).toMatchObject({
+      mode: "isolated",
+      worktree_path: "/tmp/thread-tree",
+      base_sha: "base-1",
+    });
+    expect(reloaded.resumeMap(thread.id)).toEqual({});
+    expect(reloaded.resumeMap(thread.id, "work")).toEqual({});
+    expect(reloaded.sessionsForThread(thread.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: "stale", native_session_id: null, resume_kind: "none" }),
+        expect.objectContaining({ state: "stale", native_session_id: null, resume_kind: "none" }),
+      ]),
+    );
+  });
+
   it("deduplicates turn creation by request and preserves the key across restart", () => {
     const { root, journal, s } = store();
     const thread = s.createThread({ repoRoot: "/tmp/proj" });

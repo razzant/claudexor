@@ -2013,6 +2013,97 @@ describe("Orchestrator", () => {
     expect(review).toContain("protected-path change requires human approval");
   });
 
+  it("refuses live in-place protected-path runs before adapter spawn", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    mkdirSync(join(repo, "protected"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    writeFileSync(join(repo, "protected", "live.txt"), "before\n");
+    let spawned = false;
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("project-protected-live"),
+      async *run(spec) {
+        spawned = true;
+        writeFileSync(join(spec.cwd, "protected", "live.txt"), "after\n");
+        yield {
+          type: "completed",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+        };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "edit protected live file",
+        mode: "agent",
+        harnesses: [adapter.id],
+        inPlace: true,
+        n: 1,
+      }),
+    ).rejects.toThrow(/protected_paths require an isolated execution root/);
+    expect(spawned).toBe(false);
+    expect(readFileSync(join(repo, "protected", "live.txt"), "utf8")).toBe("before\n");
+  });
+
+  it("allows protected-path policy inside a distinct persistent execution root", async () => {
+    const repo = await initRepo();
+    const isolated = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    mkdirSync(join(isolated, "protected"), { recursive: true });
+    writeFileSync(join(isolated, "protected", "thread.txt"), "before\n");
+    await runCapture("git", ["-C", isolated, "add", "protected/thread.txt"]);
+    await runCapture("git", [
+      "-C",
+      isolated,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add protected fixture",
+    ]);
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("project-protected-isolated"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        writeFileSync(join(spec.cwd, "protected", "thread.txt"), "after\n");
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+    const result = await orch.run({
+      repoRoot: repo,
+      executionRoot: isolated,
+      prompt: "edit protected thread file",
+      mode: "agent",
+      harnesses: [adapter.id],
+      inPlace: true,
+      n: 1,
+    });
+
+    expect(legacyOutcome(result)).toBe("blocked");
+    expect(readFileSync(join(isolated, "protected", "thread.txt"), "utf8")).toBe("after\n");
+    expect(existsSync(join(repo, "protected", "thread.txt"))).toBe(false);
+  });
+
   it("does not gate a candidate that misses project protected-path globs", async () => {
     const repo = await initRepo();
     mkdirSync(join(repo, ".claudexor"), { recursive: true });

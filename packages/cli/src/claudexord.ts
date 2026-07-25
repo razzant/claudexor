@@ -35,7 +35,6 @@ import { assertPlanImplementReady } from "./plan-implement-readiness.js";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { buildDelegationBeltDescriptor } from "./delegation-belt-descriptor.js";
 import { loadConfig, sweepRetiredConfigKeysAtStartup } from "@claudexor/config";
-import { ensureThreadWorktree } from "@claudexor/workspace";
 import { engineBuildIdentity, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
 import { type QuotaSubject, type ResourceAttachmentRef } from "@claudexor/schema";
 import { scheduleStartupRetention } from "./retention-service.js";
@@ -49,6 +48,7 @@ import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
 import { refreshCodexQuota } from "./codex-quota-source.js";
 import { refreshClaudeStatuslineQuota } from "./claude-statusline.js";
 import { refreshClaudeOauthUsageQuota } from "./claude-oauth-usage.js";
+import { resolveThreadExecutionWorkspace } from "./thread-execution-workspace.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 /** The registered quota-subject UNIVERSE (release cut V11a): for each harness,
@@ -238,6 +238,7 @@ export async function main(): Promise<void> {
         const mode = p.mode;
         const noProjectAsk = mode === "ask" && p.scope.kind === "none";
         const repoRoot = p.scope.kind === "project" ? p.scope.root : NO_PROJECT_ROOT;
+        const runConfig = loadConfig(repoRoot);
         if (noProjectAsk) mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
         const orchestrator = new Orchestrator({
           registry: buildRegistry(),
@@ -268,18 +269,14 @@ export async function main(): Promise<void> {
             assertPlanImplementReady(planRef.runId, planRef.path);
           }
         }
-        let executionRoot: string | undefined;
-        let inPlace = p.execution.isolation === "live";
-        if (threadId && repoRoot !== NO_PROJECT_ROOT) {
-          const thread = threads.getThread(threadId);
-          if (thread?.workspace.mode === "isolated") {
-            const wt = await ensureThreadWorktree(repoRoot, threadId);
-            executionRoot = wt.path;
-            // Only creation owns the base; apply advances it independently.
-            if (wt.created) threads.setThreadWorktree(threadId, wt.path, wt.baseSha);
-            inPlace = true; // isolated turns run in-place WITHIN the worktree
-          }
-        }
+        const { executionRoot, inPlace } = await resolveThreadExecutionWorkspace({
+          threadId,
+          repoRoot,
+          mode,
+          requestedInPlace: p.execution.isolation === "live",
+          protectedPaths: runConfig.project.constraints.protected_paths,
+          threads,
+        });
         const onRunStart = (info: { runId: string; taskId: string; runDir: string }): void => {
           ctx.onRunStart?.(info);
           if (!threadId) return;
@@ -372,7 +369,7 @@ export async function main(): Promise<void> {
               bus.publish(event);
             },
             onInteraction: (ctx2) => interactions.register(ctx2, p),
-            interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
+            interactionTimeoutMs: runConfig.global.interaction_timeout_ms,
             threadId,
             executionRoot,
             resumeSessions: threadId ? threads.resumeMap(threadId, requestedProfileId) : undefined,

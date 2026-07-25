@@ -59,6 +59,7 @@ describe("command registry — the one owner of the CLI surface", () => {
     expect(outputSchema?.description).toContain("http://json-schema.org/draft-07/schema#");
     expect(outputSchema?.description).toContain("https://json-schema.org/draft/2020-12/schema");
     expect(j.repl_commands.length).toBe(REPL_COMMANDS.length);
+    expect(j.commands.find((command) => command.id === "acp")?.stability).toBe("experimental");
     // Descriptions with help-layout newlines are flattened for machines.
     for (const f of j.flags) if (f.description !== null) expect(f.description).not.toContain("\n");
     // Mutability vocabulary is closed.
