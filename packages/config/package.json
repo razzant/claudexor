@@ -23,7 +23,7 @@
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*",
     "yaml": "^2.6.1",
-    "zod": "^3.24.1"
+    "zod": "^4.4.3"
   },
   "repository": {
     "type": "git",
