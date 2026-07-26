@@ -28,7 +28,12 @@ import { join } from "node:path";
 import { connect } from "node:net";
 import { execFileSync } from "node:child_process";
 import { sha256 } from "@claudexor/util";
-import type { ControlSetupJob } from "@claudexor/schema";
+import {
+  requiredActionsFor,
+  SCHEMA_VERSION,
+  validateRunFactsInvariants,
+  type ControlSetupJob,
+} from "@claudexor/schema";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -42,7 +47,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 30_000);
 
 function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
   if (input instanceof Request) return globalThis.fetch(input, init);
@@ -250,7 +255,7 @@ describe("DaemonControlApiServer", () => {
     job,
   });
 
-  function fakeDaemon(): {
+  function fakeDaemon(options: { runFacts?: "blocked" | "clean" } = {}): {
     daemon: DaemonFacadeClient;
     record: DaemonRunRecord;
     cancelled: string[];
@@ -288,6 +293,8 @@ describe("DaemonControlApiServer", () => {
     );
     writeFileSync(
       join(runDir, "arbitration", "decision.yaml"),
+      // The optional blocked RunFacts receipt intentionally contradicts this
+      // clean legacy artifact and must remain authoritative.
       "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: approved\n  checks: passed\n  noChanges: false\n  reason: null\nverification_basis: both\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
     );
     writeFileSync(
@@ -327,6 +334,69 @@ describe("DaemonControlApiServer", () => {
         "",
       ].join("\n"),
     );
+    if (options.runFacts) {
+      const blocked = options.runFacts === "blocked";
+      const authoritativeOutcome = {
+        lifecycle: "succeeded" as const,
+        noChanges: false,
+        checks: blocked ? ("failed" as const) : ("passed" as const),
+        review: blocked ? ("blocked" as const) : ("approved" as const),
+        reason: null,
+      };
+      const authoritativeEligibility = blocked
+        ? {
+            eligible: false,
+            state: "needs_review",
+            reason: "Canonical terminal receipt requires review.",
+            requiredAction: "Record an operator decision.",
+          }
+        : { eligible: true, state: "ok", reason: null, requiredAction: null };
+      const runFacts = validateRunFactsInvariants({
+        schema_version: SCHEMA_VERSION,
+        run_id: "run-d1",
+        task_id: "task-d1",
+        mode: "agent",
+        outcome: authoritativeOutcome,
+        deliverable: {
+          present: true,
+          kind: "patch",
+          path: "final/patch.diff",
+          producer_attempt_id: "a01",
+        },
+        participants: {
+          planners: 0,
+          attempts: [
+            {
+              attempt_id: "a01",
+              harness_id: "claude",
+              role: "candidate",
+              deliverable_present: true,
+              status: "success",
+            },
+          ],
+        },
+        gates: {
+          configured: true,
+          required: 1,
+          total: 1,
+          executed: true,
+          state: blocked ? "failed" : "passed",
+          receipt_attempt_id: "a01",
+        },
+        review: {
+          state: blocked ? "blocked" : "approved",
+          blocker_ids: blocked ? ["f-block"] : [],
+          blockers: blocked ? 1 : 0,
+        },
+        apply: {
+          eligibility: authoritativeEligibility,
+          operator_decision_present: false,
+        },
+        required_actions: requiredActionsFor(authoritativeOutcome, false),
+        generated_at: "2026-07-15T00:00:00.000Z",
+      });
+      writeFileSync(join(runDir, "final", "run_facts.yaml"), stringifyYaml(runFacts));
+    }
     mkdirSync(join(runDir, "attempts", "a01"), { recursive: true });
     mkdirSync(join(runDir, "attempts", "a02"), { recursive: true });
     writeFileSync(
@@ -1076,7 +1146,7 @@ describe("DaemonControlApiServer", () => {
       expect(body.runs).toHaveLength(2);
       // Only the 2 paged terminal records are fingerprinted, and each terminal
       // fingerprint short-circuits to a SINGLE delivery_state probe: 2 total, not
-      // 6 records x 12 paths.
+      // 6 records x 13 paths.
       expect(runListFingerprintProbeCountForTests()).toBe(2);
     });
 
@@ -1084,9 +1154,9 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(pagedDaemon(running), async (base) => {
       resetRunListFingerprintProbeCountForTests();
       await fetchRunList(base);
-      // An active run keeps the full 12-path fingerprint (events + final/* land
+      // An active run keeps the full 13-path fingerprint (events + final/* land
       // while live), so it must NOT be short-circuited.
-      expect(runListFingerprintProbeCountForTests()).toBe(12);
+      expect(runListFingerprintProbeCountForTests()).toBe(13);
     });
   });
 
@@ -6004,8 +6074,9 @@ describe("DaemonControlApiServer", () => {
   // Shared git-project fixture for the delivery-truth apply tests (QA-021 / #26).
   async function withAppliableProject(
     fn: (base: string, project: string, record: DaemonRunRecord) => Promise<void>,
+    runFacts?: "blocked" | "clean",
   ): Promise<void> {
-    const { daemon, record } = fakeDaemon();
+    const { daemon, record } = fakeDaemon({ runFacts });
     const project = reapMk(join(tmpdir(), "claudexor-delivery-truth-"));
     try {
       execFileSync("git", ["init", "-q"], { cwd: project });
@@ -6123,22 +6194,23 @@ describe("DaemonControlApiServer", () => {
       expect(detail.applyEligibility.state).toBe("already_applied");
       expect(detail.applyEligibility.requiredAction).toBeNull();
       expect(detail.applyEligibility.reason).not.toMatch(/fresh final check|re-?run/i);
-    });
+    }, "clean");
   });
 
   it("an authorized accept_risk on a blocked run makes GET applyEligibility eligible (JIT verify at apply), not a dead end (QA-032)", async () => {
-    const { daemon, record } = fakeDaemon();
-    // A review-blocked run skips FinalVerifier by construction: final_verify is null.
+    const { daemon, record } = fakeDaemon({ runFacts: "blocked" });
+    // The legacy decision is clean, but lacks FinalVerifier. Only canonical
+    // RunFacts makes this a needs-decision run.
     writeFileSync(
       join(record.runDir as string, "arbitration", "decision.yaml"),
       [
         "winner: a01",
         "facts:",
         "  lifecycle: succeeded",
-        "  review: blocked",
+        "  review: approved",
         "  checks: passed",
         "  noChanges: false",
-        "  reason: review_blocked",
+        "  reason: null",
         "verification_basis: none",
         "final_verify: null",
         "",
@@ -6174,6 +6246,62 @@ describe("DaemonControlApiServer", () => {
       expect(after.applyEligibility.state).toBe("verify_pending");
       expect(after.applyEligibility.requiredAction).toBeNull();
     });
+  });
+
+  it("enforces contradictory canonical RunFacts through apply/check, decision, apply, and delivery overlay", async () => {
+    await withAppliableProject(async (base, project) => {
+      const check = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      expect(check.status).toBe(409);
+
+      const refused = await apiFetch(`${base}/runs/run-d1/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(refused.status).toBe(409);
+      expect(readFileSync(join(project, "x"), "utf8")).toBe("old\n");
+
+      const decision = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "Idempotency-Key": "run-facts-accept-risk",
+        },
+        body: JSON.stringify({ action: "accept_risk" }),
+      });
+      expect(decision.status).toBe(200);
+
+      const applied = await apiFetch(`${base}/runs/run-d1/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(applied.status).toBe(200);
+      expect(readFileSync(join(project, "x"), "utf8")).toBe("new\n");
+
+      const detail = (await (
+        await apiFetch(`${base}/runs/run-d1`, {
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as {
+        summary: { outcomeFacts: { checks: string; review: string } | null };
+        applyEligibility: { eligible: boolean; state: string };
+        requiredActions: unknown[];
+      };
+      expect(detail.summary.outcomeFacts).toMatchObject({
+        checks: "failed",
+        review: "blocked",
+      });
+      expect(detail.applyEligibility).toMatchObject({
+        eligible: false,
+        state: "already_applied",
+      });
+      expect(detail.requiredActions).toEqual([]);
+    }, "blocked");
   });
 
   it("a needs_input work_state on the decision facts lands in the apply gate via applyGateInputFor: NOT applyable (INV-116, B-1)", async () => {
@@ -6734,7 +6862,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("serves run detail and artifact index from the run directory", async () => {
-    const { daemon, record } = fakeDaemon();
+    const { daemon, record } = fakeDaemon({ runFacts: "blocked" });
     await withDaemonServer(daemon, async (base) => {
       const detail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
@@ -6750,6 +6878,11 @@ describe("DaemonControlApiServer", () => {
             used: boolean;
             reason: string;
           } | null;
+          outcomeFacts?: {
+            lifecycle: string;
+            checks: string;
+            review: string;
+          } | null;
           requestRequirements?: Array<{
             harness_id: string;
             effective: boolean;
@@ -6760,8 +6893,37 @@ describe("DaemonControlApiServer", () => {
         timeline: { type: string; harnessId?: string | null; title: string }[];
         budget: { spendUsd?: number; source: string; estimated: boolean };
         finalSummary?: string;
-        decision?: { winner?: string };
+        decision?: {
+          winner?: string;
+          facts?: { checks: string; review: string };
+        };
         workProduct?: { id?: string };
+        runFacts?: {
+          run_id: string;
+          outcome: {
+            lifecycle: string;
+            checks: string;
+            review: string;
+          };
+          deliverable: { path: string };
+          apply: {
+            eligibility: {
+              eligible: boolean;
+              state: string | null;
+              reason: string | null;
+              requiredAction: string | null;
+            } | null;
+          };
+          required_actions: Array<{ id: string; detail: string }>;
+        };
+        outcomeBanner: string | null;
+        applyEligibility: {
+          eligible: boolean;
+          state: string | null;
+          reason: string | null;
+          requiredAction: string | null;
+        } | null;
+        requiredActions: Array<{ id: string; detail: string }>;
         reviewFindings: { id: string; claim: string; reviewer: { requested_effort?: string } }[];
         artifacts: { path: string }[];
       };
@@ -6787,31 +6949,52 @@ describe("DaemonControlApiServer", () => {
       expect(body.budget.estimated).toBe(true);
       expect(body.finalSummary).toContain("Done");
       expect(body.decision?.winner).toBe("a01");
+      expect(body.decision?.facts).toMatchObject({
+        checks: "passed",
+        review: "approved",
+      });
       expect(body.workProduct?.id).toBe("wp-test");
+      expect(body.runFacts).toEqual(
+        parseYaml(readFileSync(join(record.runDir!, "final", "run_facts.yaml"), "utf8")),
+      );
+      expect(body.runFacts).toMatchObject({
+        run_id: "run-d1",
+        deliverable: { path: "final/patch.diff" },
+      });
+      // RunFacts is the sole terminal projection authority. The intentionally
+      // contradictory decision remains visible as evidence, but cannot replace
+      // any shared compatibility field.
+      expect(body.summary.outcomeFacts).toEqual(body.runFacts?.outcome);
+      expect(body.summary.outcomeFacts).toMatchObject({
+        lifecycle: "succeeded",
+        checks: "failed",
+        review: "blocked",
+      });
+      expect(body.outcomeBanner).toBe("Needs review — NOT APPLIED");
+      expect(body.applyEligibility).toEqual(body.runFacts?.apply.eligibility);
+      expect(body.applyEligibility).toEqual({
+        eligible: false,
+        state: "needs_review",
+        reason: "Canonical terminal receipt requires review.",
+        requiredAction: "Record an operator decision.",
+      });
+      expect(body.requiredActions).toEqual(body.runFacts?.required_actions);
+      expect(body.requiredActions.map((action) => action.id)).toEqual([
+        "resolve_review_block",
+        "fix_failed_checks",
+        "record_operator_decision",
+      ]);
+      const list = (await (
+        await apiFetch(`${base}/runs`, {
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as {
+        runs: Array<{ outcomeFacts: { checks: string; review: string } | null }>;
+      };
+      expect(list.runs[0]?.outcomeFacts).toEqual(body.runFacts?.outcome);
       expect(body.reviewFindings[0]?.claim).toBe("persisted finding");
       expect(body.reviewFindings[0]?.reviewer.requested_effort).toBe("max");
       expect(body.artifacts.some((a) => a.path === "final/summary.md")).toBe(true);
-      // Derived apply-gate verdict rides the detail (single producer): this
-      // fixture run has a patch, so the verdict is non-null and typed.
-      const eligibility = (
-        body as unknown as {
-          applyEligibility: {
-            eligible: boolean;
-            reason: string | null;
-            requiredAction: string | null;
-          } | null;
-        }
-      ).applyEligibility;
-      expect(eligibility).not.toBeNull();
-      expect(typeof eligibility?.eligible).toBe("boolean");
-      if (eligibility && !eligibility.eligible) {
-        expect(eligibility.reason).toBeTruthy();
-        expect(eligibility.requiredAction).toBeTruthy();
-      } else if (eligibility) {
-        // Eligible verdicts carry explicit nulls, never empty-string debris.
-        expect(eligibility.reason).toBeNull();
-        expect(eligibility.requiredAction).toBeNull();
-      }
 
       const artifacts = await apiFetch(`${base}/runs/run-d1/artifacts`, {
         headers: { authorization: `Bearer ${token}` },
@@ -6825,9 +7008,9 @@ describe("DaemonControlApiServer", () => {
       expect(summary.status).toBe(200);
       expect(await summary.text()).toContain("Summary");
 
-      // A run with NO patch artifact serves detail fine with a NULL verdict —
-      // the no-patch path is a null projection, never a crash (missing
-      // artifacts resolve to null in safeArtifactPath before any lstat).
+      // Legacy/in-flight fallback: without RunFacts, a run with NO patch
+      // artifact still serves a null derived verdict rather than crashing.
+      rmSync(join(record.runDir as string, "final", "run_facts.yaml"), { force: true });
       rmSync(join(record.runDir as string, "final", "patch.diff"), { force: true });
       const noPatchDetail = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
@@ -6863,6 +7046,130 @@ describe("DaemonControlApiServer", () => {
         remediation: null,
       });
     });
+  });
+
+  it("fails loudly on present-but-invalid RunFacts and never reopens legacy apply truth", async () => {
+    const { daemon, record } = fakeDaemon({ runFacts: "blocked" });
+    const path = join(record.runDir as string, "final", "run_facts.yaml");
+    const invalid = parseYaml(readFileSync(path, "utf8")) as Record<string, unknown>;
+    invalid["required_actions"] = [];
+    writeFileSync(path, stringifyYaml(invalid));
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(500);
+      expect((await detail.json()) as { code: string }).toMatchObject({
+        code: "run_facts_invalid",
+      });
+
+      const list = (await (
+        await apiFetch(`${base}/runs`, {
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).json()) as {
+        runs: Array<{ state: string; error?: string; outcomeFacts?: unknown }>;
+      };
+      expect(list.runs[0]).toMatchObject({
+        state: "failed",
+        error: expect.stringContaining("canonical RunFacts receipt is invalid"),
+      });
+      expect(list.runs[0]?.outcomeFacts).toBeNull();
+
+      const check = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      expect(check.status).toBe(500);
+      expect((await check.json()) as { code: string }).toMatchObject({
+        code: "run_facts_invalid",
+      });
+    });
+  });
+
+  it.each([
+    ["run_id", "run-other"],
+    ["task_id", "task-other"],
+  ] as const)(
+    "rejects a shape-valid RunFacts %s mismatch through detail and apply/check",
+    async (field, mismatch) => {
+      const { daemon, record } = fakeDaemon({ runFacts: "clean" });
+      const path = join(record.runDir as string, "final", "run_facts.yaml");
+      const facts = parseYaml(readFileSync(path, "utf8")) as Record<string, unknown>;
+      facts[field] = mismatch;
+      writeFileSync(path, stringifyYaml(facts));
+
+      await withDaemonServer(daemon, async (base) => {
+        const detail = await apiFetch(`${base}/runs/run-d1`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(detail.status).toBe(500);
+        expect(await detail.json()).toMatchObject({
+          code: "run_facts_invalid",
+          retryable: false,
+        });
+
+        const check = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({}),
+        });
+        expect(check.status).toBe(500);
+        expect(await check.json()).toMatchObject({
+          code: "run_facts_invalid",
+          retryable: false,
+        });
+      });
+    },
+  );
+
+  it("rejects a shape-valid RunFacts lifecycle that conflicts with the terminal daemon record", async () => {
+    const { daemon, record } = fakeDaemon({ runFacts: "clean" });
+    record.state = "failed";
+
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(500);
+      expect(await detail.json()).toMatchObject({
+        code: "run_facts_invalid",
+        retryable: false,
+      });
+
+      const check = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      expect(check.status).toBe(500);
+      expect(await check.json()).toMatchObject({
+        code: "run_facts_invalid",
+        retryable: false,
+      });
+    });
+  });
+
+  it("refuses actual apply before mutation when canonical RunFacts identity is mismatched", async () => {
+    await withAppliableProject(async (base, project, record) => {
+      const path = join(record.runDir as string, "final", "run_facts.yaml");
+      const facts = parseYaml(readFileSync(path, "utf8")) as Record<string, unknown>;
+      facts["run_id"] = "run-other";
+      writeFileSync(path, stringifyYaml(facts));
+
+      const apply = await apiFetch(`${base}/runs/run-d1/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(apply.status).toBe(500);
+      expect(await apply.json()).toMatchObject({
+        code: "run_facts_invalid",
+        retryable: false,
+      });
+      expect(readFileSync(join(project, "x"), "utf8")).toBe("old\n");
+    }, "clean");
   });
 
   it("budget snapshot projects the ledger's CASH value and estimation truth (W4.3)", async () => {

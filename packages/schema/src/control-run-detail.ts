@@ -6,6 +6,7 @@ import { RequiredAction } from "./status-projection.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
+import { RunFacts } from "./run-facts.js";
 import {
   ControlArtifactInfo,
   ControlBudgetSnapshot,
@@ -128,6 +129,11 @@ export const ControlRunDetail = z
       .describe(
         "Direct Claudexor Delegate child runs, projected from persisted delegatedFromRunId lineage for reload-safe flat rows.",
       ),
+    /** Immutable terminal-fact projection (GH #29), read verbatim from
+     * final/run_facts.yaml. Null while active and for legacy runs. */
+    runFacts: RunFacts.nullable()
+      .default(null)
+      .describe("Validated terminal RunFacts receipt; null while active or unavailable."),
     /**
      * Server-owned outcome banner (D18): the ONE honest headline for this run,
      * derived by the single projection owner (status-projection.outcomeBanner)

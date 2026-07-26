@@ -93,7 +93,11 @@ importers:
         specifier: workspace:*
         version: link:../util
 
-  packages/canary: {}
+  packages/canary:
+    dependencies:
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
 
   packages/claudexor:
     dependencies:
@@ -244,6 +248,9 @@ importers:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util
+      yaml:
+        specifier: ^2.8.2
+        version: 2.9.0
 
   packages/delivery:
     dependencies:

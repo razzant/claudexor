@@ -204,8 +204,6 @@ deferred; they are recorded here now.
   its own reviewed surface, not folded into the invocation fix.
 - QA-030: instruction transcript hash-binding (owner-deferred, D-22).
 - QA-032c: skip-review-on-knowable-policy-block optimization (D-22).
-- #29 remainder: full RunFacts projection layer + invariant validator (D-22;
-  the GitHub issue stays open).
 - #22 remainder: visual quality-tier editor in macOS Settings (D-22; the
   daemon-side typed refusal + macOS Save guard shipped in v3.1.0).
 - QA-039: real resumable uploads (D-22; v3.1.0 ships honest single-shot

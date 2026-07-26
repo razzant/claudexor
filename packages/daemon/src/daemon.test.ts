@@ -1,7 +1,21 @@
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
+import {
+  RunEvent,
+  SCHEMA_VERSION,
+  makeOutcomeFacts,
+  requiredActionsFor,
+  validateRunFactsInvariants,
+} from "@claudexor/schema";
 import { describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
 import { CommandStore } from "./command-store.js";
@@ -37,6 +51,80 @@ function commandAuthority(
   const journal = new DurableJournal({ rootDir: join(dir, "journal"), partition });
   const store = new CommandStore(journal);
   return { journal, store, slot: { current: () => store } };
+}
+
+function recoveredFailureFacts(runId: string, taskId: string) {
+  const outcome = makeOutcomeFacts("failed", { reason: "harness_failed" });
+  return validateRunFactsInvariants({
+    schema_version: SCHEMA_VERSION,
+    run_id: runId,
+    task_id: taskId,
+    mode: "agent",
+    outcome,
+    deliverable: {
+      present: false,
+      kind: null,
+      path: null,
+      producer_attempt_id: null,
+    },
+    participants: { planners: 0, attempts: [] },
+    gates: {
+      configured: false,
+      required: 0,
+      total: 0,
+      executed: false,
+      state: "not_configured",
+      receipt_attempt_id: null,
+    },
+    review: { state: "not_run", blocker_ids: [], blockers: 0 },
+    apply: { eligibility: null, operator_decision_present: false },
+    required_actions: requiredActionsFor(outcome, false),
+    generated_at: "2026-07-26T12:00:00.000Z",
+  });
+}
+
+function recoveredTerminalPayload(facts: ReturnType<typeof recoveredFailureFacts>) {
+  return {
+    lifecycle: facts.outcome.lifecycle,
+    facts: facts.outcome,
+    reason: facts.outcome.reason,
+    run_facts: facts,
+  };
+}
+
+function recoveryFixture(
+  name: string,
+  options: { seq?: number; type?: "run.completed" | "run.failed" | "run.blocked" } = {},
+) {
+  const dir = tempDir(name);
+  const runId = `run-${name}`;
+  const taskId = `task-${name}`;
+  const runDir = join(dir, runId);
+  mkdirSync(join(runDir, "final"), { recursive: true });
+  const first = commandAuthority(dir);
+  first.store.accept({
+    id: `job-${name}`,
+    params: { value: 1 },
+    idempotencyKey: name,
+    clientId: "test",
+  });
+  first.store.update(`job-${name}`, {
+    state: "running",
+    runId,
+    taskId,
+    runDir,
+  });
+  const facts = recoveredFailureFacts(runId, taskId);
+  const terminalEvent = RunEvent.parse({
+    seq: options.seq ?? 2,
+    ts: "2026-07-26T12:00:01.000Z",
+    run_id: runId,
+    task_id: taskId,
+    type: options.type ?? "run.failed",
+    payload: recoveredTerminalPayload(facts),
+  });
+  first.journal.append("run.event", terminalEvent);
+  return { dir, runDir, first, facts, terminalEvent };
 }
 
 async function terminal(client: DaemonClient, id: string): Promise<JobRecord> {
@@ -366,6 +454,584 @@ describe("DaemonServer", () => {
     }
   });
 
+  it("recovers a running command from its durable terminal event and restores artifacts", () => {
+    const dir = tempDir("terminal-recovery");
+    const runDir = join(dir, "run-durable");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-durable",
+      params: { value: 1 },
+      idempotencyKey: "durable",
+      clientId: "test",
+    });
+    first.store.update("job-durable", {
+      state: "running",
+      runId: "run-durable",
+      taskId: "task-durable",
+      runDir,
+      startedAt: "2026-07-26T11:59:00.000Z",
+    });
+    const facts = recoveredFailureFacts("run-durable", "task-durable");
+    const terminalEvent = RunEvent.parse({
+      seq: 2,
+      ts: "2026-07-26T12:00:01.000Z",
+      run_id: "run-durable",
+      task_id: "task-durable",
+      type: "run.failed",
+      payload: {
+        lifecycle: "failed",
+        facts: facts.outcome,
+        reason: "harness_failed",
+        run_facts: facts,
+      },
+    });
+    first.journal.append("run.event", terminalEvent);
+    writeFileSync(join(runDir, "final", "run_facts.yaml"), "run_id: [");
+    writeFileSync(join(runDir, "events.jsonl"), JSON.stringify(terminalEvent).slice(0, -24));
+    first.journal.close();
+
+    const recovered = commandAuthority(dir);
+    try {
+      expect(recovered.store.get("job-durable")).toMatchObject({
+        state: "failed",
+        result: { lifecycle: "failed", facts: facts.outcome },
+      });
+      expect(
+        validateRunFactsInvariants(
+          JSON.parse(readFileSync(join(runDir, "final", "run_facts.yaml"), "utf8")),
+        ),
+      ).toEqual(facts);
+      expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toBe(
+        `${JSON.stringify(terminalEvent)}\n`,
+      );
+    } finally {
+      recovered.journal.close();
+    }
+  });
+
+  it("repairs a terminal tail torn inside a multi-byte UTF-8 code point", () => {
+    const dir = tempDir("terminal-utf8-recovery");
+    const runDir = join(dir, "run-utf8");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-utf8",
+      params: { value: 1 },
+      idempotencyKey: "utf8",
+      clientId: "test",
+    });
+    first.store.update("job-utf8", {
+      state: "running",
+      runId: "run-utf8",
+      taskId: "task-utf8",
+      runDir,
+    });
+    const baseFacts = recoveredFailureFacts("run-utf8", "task-utf8");
+    const facts = validateRunFactsInvariants({
+      ...baseFacts,
+      participants: {
+        planners: 0,
+        attempts: [
+          {
+            attempt_id: "a01",
+            harness_id: "модель",
+            role: "candidate",
+            deliverable_present: false,
+            status: "failed",
+          },
+        ],
+      },
+    });
+    const terminalEvent = RunEvent.parse({
+      seq: 1,
+      ts: "2026-07-26T12:00:01.000Z",
+      run_id: facts.run_id,
+      task_id: facts.task_id,
+      type: "run.failed",
+      payload: recoveredTerminalPayload(facts),
+    });
+    first.journal.append("run.event", terminalEvent);
+    const terminalBytes = Buffer.from(JSON.stringify(terminalEvent), "utf8");
+    const multiByteOffset = terminalBytes.indexOf(Buffer.from("модель", "utf8"));
+    expect(multiByteOffset).toBeGreaterThan(0);
+    writeFileSync(join(runDir, "events.jsonl"), terminalBytes.subarray(0, multiByteOffset + 1));
+    first.journal.close();
+
+    const recovered = commandAuthority(dir);
+    try {
+      expect(recovered.store.get("job-utf8")).toMatchObject({ state: "failed" });
+      expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toBe(
+        `${JSON.stringify(terminalEvent)}\n`,
+      );
+    } finally {
+      recovered.journal.close();
+    }
+  });
+
+  it("rejects a durable terminal whose RunFacts identity mismatches the command", () => {
+    const dir = tempDir("terminal-mismatch");
+    const runDir = join(dir, "run-expected");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-mismatch",
+      params: { value: 1 },
+      idempotencyKey: "mismatch",
+      clientId: "test",
+    });
+    first.store.update("job-mismatch", {
+      state: "running",
+      runId: "run-expected",
+      taskId: "task-expected",
+      runDir,
+    });
+    const facts = recoveredFailureFacts("run-other", "task-expected");
+    first.journal.append(
+      "run.event",
+      RunEvent.parse({
+        seq: 1,
+        ts: "2026-07-26T12:00:01.000Z",
+        run_id: "run-expected",
+        task_id: "task-expected",
+        type: "run.failed",
+        payload: recoveredTerminalPayload(facts),
+      }),
+    );
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/identity, envelope, or outcome mismatch/);
+  });
+
+  it("rejects a durable terminal envelope whose type contradicts canonical RunFacts", () => {
+    const { dir, first } = recoveryFixture("terminal-envelope", {
+      seq: 1,
+      type: "run.completed",
+    });
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/identity, envelope, or outcome mismatch/);
+  });
+
+  it("rejects an already-terminal command result that disagrees with journal RunFacts", () => {
+    const dir = tempDir("terminal-result-mismatch");
+    const runDir = join(dir, "run-result-mismatch");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-result-mismatch",
+      params: { value: 1 },
+      idempotencyKey: "result-mismatch",
+      clientId: "test",
+    });
+    first.store.update("job-result-mismatch", {
+      state: "running",
+      runId: "run-result-mismatch",
+      taskId: "task-result-mismatch",
+      runDir,
+    });
+    const facts = recoveredFailureFacts("run-result-mismatch", "task-result-mismatch");
+    first.journal.append(
+      "run.event",
+      RunEvent.parse({
+        seq: 1,
+        ts: "2026-07-26T12:00:01.000Z",
+        run_id: facts.run_id,
+        task_id: facts.task_id,
+        type: "run.failed",
+        payload: recoveredTerminalPayload(facts),
+      }),
+    );
+    first.store.update("job-result-mismatch", {
+      state: "failed",
+      result: {
+        lifecycle: "failed",
+        facts: facts.outcome,
+        runId: facts.run_id,
+        taskId: "task-stale",
+        runDir,
+      },
+    });
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/command result conflicts/);
+  });
+
+  it("retries a provisional recovery state from durable journal authority on startup", () => {
+    const dir = tempDir("terminal-provisional-recovery");
+    const runDir = join(dir, "run-provisional");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-provisional",
+      params: { value: 1 },
+      idempotencyKey: "provisional",
+      clientId: "test",
+    });
+    first.store.update("job-provisional", {
+      state: "running",
+      runId: "run-provisional",
+      taskId: "task-provisional",
+      runDir,
+    });
+    const facts = recoveredFailureFacts("run-provisional", "task-provisional");
+    first.journal.append(
+      "run.event",
+      RunEvent.parse({
+        seq: 1,
+        ts: "2026-07-26T12:00:01.000Z",
+        run_id: facts.run_id,
+        task_id: facts.task_id,
+        type: "run.failed",
+        payload: recoveredTerminalPayload(facts),
+      }),
+    );
+    first.store.update("job-provisional", {
+      state: "interrupted",
+      error: "local finalization failed",
+      errorCode: "terminal_recovery_required",
+      errorStatus: 503,
+      errorRetryable: false,
+    });
+    first.journal.close();
+
+    const recovered = commandAuthority(dir);
+    try {
+      const record = recovered.store.get("job-provisional");
+      expect(record).toMatchObject({
+        state: "failed",
+        result: {
+          lifecycle: "failed",
+          runId: facts.run_id,
+          taskId: facts.task_id,
+        },
+      });
+      expect(record?.errorCode).toBeUndefined();
+    } finally {
+      recovered.journal.close();
+    }
+  });
+
+  it("immediately reconciles terminal_recovery_required instead of leaving a live job", async () => {
+    const dir = tempDir("terminal-immediate-recovery");
+    const runDir = join(dir, "run-immediate");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const authority = commandAuthority(dir);
+    const facts = recoveredFailureFacts("run-immediate", "task-immediate");
+    const server = new DaemonServer({
+      socketPath: join(dir, "daemon.sock"),
+      token: "token",
+      commands: authority.slot,
+      runner: async (_params, ctx) => {
+        ctx.onRunStart({
+          runId: facts.run_id,
+          taskId: facts.task_id,
+          runDir,
+        });
+        authority.journal.append(
+          "run.event",
+          RunEvent.parse({
+            seq: 1,
+            ts: "2026-07-26T12:00:01.000Z",
+            run_id: facts.run_id,
+            task_id: facts.task_id,
+            type: "run.failed",
+            payload: recoveredTerminalPayload(facts),
+          }),
+        );
+        throw Object.assign(new Error("local terminal append failed"), {
+          code: "terminal_recovery_required",
+          status: 503,
+          retryable: false,
+        });
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(join(dir, "daemon.sock"), "token");
+      const accepted = await client.enqueue(
+        { value: 1 },
+        { idempotencyKey: "immediate", clientId: "test" },
+      );
+      const record = await terminal(client, accepted.id);
+      expect(record).toMatchObject({
+        state: "failed",
+        result: { lifecycle: "failed", runId: facts.run_id, taskId: facts.task_id },
+      });
+      expect(record.errorCode).toBeUndefined();
+      expect(existsSync(join(runDir, "final", "run_facts.yaml"))).toBe(true);
+      expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toContain('"run.failed"');
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
+  it("keeps historical terminal commands readable and interrupts active legacy recovery", () => {
+    const dir = tempDir("legacy-terminal-upgrade");
+    const first = commandAuthority(dir);
+    for (const [id, runId] of [
+      ["job-terminal", "run-terminal"],
+      ["job-active", "run-active"],
+    ] as const) {
+      first.store.accept({
+        id,
+        params: { value: id },
+        idempotencyKey: id,
+        clientId: "test",
+      });
+      first.store.update(id, {
+        state: "running",
+        runId,
+        taskId: "task-legacy",
+        runDir: join(dir, runId),
+      });
+      const outcome = makeOutcomeFacts("failed", { reason: "harness_failed" });
+      first.journal.append(
+        "run.event",
+        RunEvent.parse({
+          seq: 1,
+          ts: "2026-07-26T12:00:01.000Z",
+          run_id: runId,
+          task_id: "task-legacy",
+          type: "run.failed",
+          payload: { facts: outcome, reason: "harness_failed" },
+        }),
+      );
+    }
+    first.store.update("job-terminal", {
+      state: "failed",
+      result: { lifecycle: "failed" },
+      finishedAt: "2026-07-26T12:00:02.000Z",
+    });
+    first.journal.close();
+
+    const recovered = commandAuthority(dir);
+    try {
+      expect(recovered.store.get("job-terminal")).toMatchObject({
+        state: "failed",
+        result: { lifecycle: "failed" },
+      });
+      expect(recovered.store.get("job-active")).toMatchObject({
+        state: "interrupted",
+        errorCode: "legacy_terminal_recovery_unavailable",
+        errorStatus: 503,
+        errorRetryable: false,
+      });
+    } finally {
+      recovered.journal.close();
+    }
+  });
+
+  it("rejects new durable RunFacts recovery without complete command identity", () => {
+    const dir = tempDir("terminal-missing-command-identity");
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-incomplete",
+      params: { value: 1 },
+      idempotencyKey: "incomplete",
+      clientId: "test",
+    });
+    first.store.update("job-incomplete", {
+      state: "running",
+      runId: "run-incomplete",
+    });
+    const facts = recoveredFailureFacts("run-incomplete", "task-incomplete");
+    first.journal.append(
+      "run.event",
+      RunEvent.parse({
+        seq: 1,
+        ts: "2026-07-26T12:00:01.000Z",
+        run_id: "run-incomplete",
+        task_id: "task-incomplete",
+        type: "run.failed",
+        payload: recoveredTerminalPayload(facts),
+      }),
+    );
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/missing the command run identity or directory/);
+  });
+
+  it("rejects arbitrary malformed EOF instead of truncating committed evidence", () => {
+    const dir = tempDir("terminal-garbage-eof");
+    const runDir = join(dir, "run-garbage");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-garbage",
+      params: { value: 1 },
+      idempotencyKey: "garbage",
+      clientId: "test",
+    });
+    first.store.update("job-garbage", {
+      state: "running",
+      runId: "run-garbage",
+      taskId: "task-garbage",
+      runDir,
+    });
+    const facts = recoveredFailureFacts("run-garbage", "task-garbage");
+    first.journal.append(
+      "run.event",
+      RunEvent.parse({
+        seq: 2,
+        ts: "2026-07-26T12:00:01.000Z",
+        run_id: "run-garbage",
+        task_id: "task-garbage",
+        type: "run.failed",
+        payload: recoveredTerminalPayload(facts),
+      }),
+    );
+    writeFileSync(join(runDir, "events.jsonl"), '{"unrelated":"garbage"');
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/malformed committed evidence/);
+  });
+
+  it("rejects full per-run evidence from another run", () => {
+    const { dir, runDir, first, terminalEvent } = recoveryFixture("terminal-local-identity");
+    writeFileSync(
+      join(runDir, "events.jsonl"),
+      `${JSON.stringify(
+        RunEvent.parse({
+          seq: 1,
+          ts: terminalEvent.ts,
+          run_id: "run-other",
+          task_id: terminalEvent.task_id,
+          type: "run.created",
+          payload: {},
+        }),
+      )}\n`,
+    );
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/event identity conflicts/);
+  });
+
+  it("rejects duplicate or out-of-bounds per-run event sequences", () => {
+    const duplicate = recoveryFixture("terminal-local-duplicate-seq", { seq: 3 });
+    const firstEvent = RunEvent.parse({
+      seq: 1,
+      ts: duplicate.terminalEvent.ts,
+      run_id: duplicate.terminalEvent.run_id,
+      task_id: duplicate.terminalEvent.task_id,
+      type: "run.created",
+      payload: {},
+    });
+    const secondEvent = RunEvent.parse({
+      ...firstEvent,
+      type: "task.contract.created",
+    });
+    writeFileSync(
+      join(duplicate.runDir, "events.jsonl"),
+      `${JSON.stringify(firstEvent)}\n${JSON.stringify(secondEvent)}\n`,
+    );
+    duplicate.first.journal.close();
+    expect(() => commandAuthority(duplicate.dir)).toThrow(/duplicate or non-monotonic/);
+
+    const outOfBounds = recoveryFixture("terminal-local-out-of-bounds", { seq: 2 });
+    writeFileSync(
+      join(outOfBounds.runDir, "events.jsonl"),
+      `${JSON.stringify(
+        RunEvent.parse({
+          seq: 3,
+          ts: outOfBounds.terminalEvent.ts,
+          run_id: outOfBounds.terminalEvent.run_id,
+          task_id: outOfBounds.terminalEvent.task_id,
+          type: "run.created",
+          payload: {},
+        }),
+      )}\n`,
+    );
+    outOfBounds.first.journal.close();
+    expect(() => commandAuthority(outOfBounds.dir)).toThrow(/sequence conflicts/);
+  });
+
+  it("rejects invalid UTF-8 in a committed full event line", () => {
+    const { dir, runDir, first, terminalEvent } = recoveryFixture("terminal-local-invalid-utf8");
+    const localEvent = RunEvent.parse({
+      seq: 1,
+      ts: terminalEvent.ts,
+      run_id: terminalEvent.run_id,
+      task_id: terminalEvent.task_id,
+      type: "run.created",
+      payload: { prompt: "é" },
+    });
+    const bytes = Buffer.from(`${JSON.stringify(localEvent)}\n`, "utf8");
+    const accentOffset = bytes.indexOf(Buffer.from("é", "utf8"));
+    expect(accentOffset).toBeGreaterThan(0);
+    bytes[accentOffset + 1] = 0x28;
+    writeFileSync(join(runDir, "events.jsonl"), bytes);
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/malformed committed evidence/);
+  });
+
+  it("accepts a strictly increasing control audit after the canonical terminal", () => {
+    const { dir, runDir, first, terminalEvent } = recoveryFixture("terminal-post-control");
+    const controlEvent = RunEvent.parse({
+      seq: 3,
+      ts: "2026-07-26T12:00:02.000Z",
+      run_id: terminalEvent.run_id,
+      task_id: terminalEvent.task_id,
+      type: "control.rejected",
+      payload: { reason: "run is terminal" },
+    });
+    writeFileSync(
+      join(runDir, "events.jsonl"),
+      `${JSON.stringify(terminalEvent)}\n${JSON.stringify(controlEvent)}\n`,
+    );
+    first.journal.close();
+
+    const recovered = commandAuthority(dir);
+    try {
+      expect(recovered.store.get("job-terminal-post-control")).toMatchObject({
+        state: "failed",
+      });
+      expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toBe(
+        `${JSON.stringify(terminalEvent)}\n${JSON.stringify(controlEvent)}\n`,
+      );
+    } finally {
+      recovered.journal.close();
+    }
+  });
+
+  it("rejects duplicate identical terminal events in the per-run log", () => {
+    const dir = tempDir("terminal-local-duplicate");
+    const runDir = join(dir, "run-duplicate");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const first = commandAuthority(dir);
+    first.store.accept({
+      id: "job-duplicate",
+      params: { value: 1 },
+      idempotencyKey: "duplicate",
+      clientId: "test",
+    });
+    first.store.update("job-duplicate", {
+      state: "running",
+      runId: "run-duplicate",
+      taskId: "task-duplicate",
+      runDir,
+    });
+    const facts = recoveredFailureFacts("run-duplicate", "task-duplicate");
+    const terminalEvent = RunEvent.parse({
+      seq: 2,
+      ts: "2026-07-26T12:00:01.000Z",
+      run_id: "run-duplicate",
+      task_id: "task-duplicate",
+      type: "run.failed",
+      payload: recoveredTerminalPayload(facts),
+    });
+    first.journal.append("run.event", terminalEvent);
+    writeFileSync(
+      join(runDir, "events.jsonl"),
+      `${JSON.stringify(terminalEvent)}\n${JSON.stringify(terminalEvent)}\n`,
+    );
+    first.journal.close();
+
+    expect(() => commandAuthority(dir)).toThrow(/duplicate|multiple terminal events/);
+  });
+
   it("bounds concurrency and cancellation while exposing run identity", async () => {
     const dir = tempDir("concurrency");
     const authority = commandAuthority(dir);
@@ -393,7 +1059,9 @@ describe("DaemonServer", () => {
           });
         });
         active -= 1;
-        return { lifecycle: "succeeded" };
+        // The runner owns terminal commit truth: an abort observed before it
+        // returns must already be folded into the result lifecycle.
+        return { lifecycle: ctx.signal.aborted ? "cancelled" : "succeeded" };
       },
     });
     await server.start();
@@ -699,15 +1367,14 @@ describe("InteractionRegistry", () => {
   });
 });
 
-describe("jobStateFromResult (cancel receipt truth, QA-027)", () => {
-  it("maps an aborted run to cancelled even when the result claims it succeeded", () => {
-    // A harness stream that closed without throwing yields a success-shaped
-    // result; a user/timeout cancel must still terminalize `cancelled`, never
-    // fabricate `succeeded` over the cancel.
-    expect(jobStateFromResult({ lifecycle: "succeeded" }, true)).toBe("cancelled");
-    expect(jobStateFromResult({ lifecycle: "succeeded", facts: { reason: null } }, true)).toBe(
-      "cancelled",
-    );
+describe("jobStateFromResult (terminal commit truth, QA-027)", () => {
+  it("preserves a recognized committed lifecycle across a later abort", () => {
+    expect(jobStateFromResult({ lifecycle: "succeeded" }, true)).toBe("succeeded");
+    expect(jobStateFromResult({ lifecycle: "cancelled" }, true)).toBe("cancelled");
+  });
+
+  it("uses abort as the fail-closed fallback for a malformed result", () => {
+    expect(jobStateFromResult({}, true)).toBe("cancelled");
   });
 
   it("preserves the honest lifecycle when not aborted", () => {

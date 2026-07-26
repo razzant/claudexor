@@ -170,9 +170,12 @@ gap-free `Last-Event-ID` subscriptions), `pendingInteractions`,
 `summary.waitingOnUser`, `summary.route` (requested vs stream-observed model;
 verified only on observed evidence), `primaryOutput`, `timeline`, `budget`,
 `summary.outputReadyState`, requested/effective access, external context policy,
-and `summary.webEvidence` projections for clients that need the main
-answer/report, streamed activity, known spend state, and tool/web status without
-scraping artifacts. Web/tool evidence is projected from the engine-owned
+`summary.webEvidence`, and terminal `runFacts` for clients that need the main
+answer/report, streamed activity, known spend state, tool/web status, and the
+immutable terminal receipt without scraping artifacts. `runFacts` is null for
+active and legacy runs; terminal clients consume it verbatim rather than
+reconstructing deliverable, participant, gate, review, or required-action facts.
+Web/tool evidence is projected from the engine-owned
 `final/telemetry.yaml`; runs that predate it report `available: false`. Unknown
 quota or spend remains unknown; do not render missing values as `$0`. Large
 artifacts are size-capped (HTTP 413 names the on-disk path) and timelines are

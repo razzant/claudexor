@@ -8,11 +8,15 @@
  * forever.
  */
 import { join } from "node:path";
-import { RunFailureCode, RunOutcomeFacts, type ModeKind } from "@claudexor/schema";
-import type { ArtifactStore } from "@claudexor/artifact-store";
-import type { BudgetLedger, BudgetTerminal } from "@claudexor/budget";
-import type { EventLog } from "@claudexor/event-log";
-import { redactSecrets } from "@claudexor/util";
+import {
+  makeOutcomeFacts,
+  needsOperatorAttention,
+  RunOutcomeFacts,
+  type RunOutcomeFacts as RunOutcomeFactsType,
+} from "@claudexor/schema";
+import type { BudgetTerminal } from "@claudexor/budget";
+import type { TerminalRunEventType } from "@claudexor/event-log";
+import { readTextSafe, redactSecrets } from "@claudexor/util";
 import { budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import {
   reconcileDecisionBudget,
@@ -21,56 +25,17 @@ import {
 } from "./decisionBudget.js";
 import { reconcileDecisionTerminal } from "./decisionTerminalReconciliation.js";
 import type { OrchestratorResult } from "./orchestrator.js";
+import { prepareRunFactsFailureReceipt, prepareRunFactsReceipt } from "./runFacts.js";
+import type { AnnouncedRunContext } from "./runTerminalContext.js";
+import { cancelledResult, failTerminally, writeFailure } from "./runTerminalResults.js";
 import {
   clearFailureArtifact,
   reconcileWorkProductTerminal,
   terminalOutcomeFacts,
 } from "./terminalOutcome.js";
 
-export interface AnnouncedRunContext {
-  log: EventLog;
-  store: ArtifactStore;
-  paths: ReturnType<ArtifactStore["runPaths"]>;
-  runId: string;
-  taskId: string;
-  mode: ModeKind;
-  /** Failure phase label when the net has to stamp the terminal. */
-  phase: string;
-  /** Settled ledger spend snapshot — failure/cancel terminals must account
-   * for money already spent exactly like success terminals do. */
-  spend?: () => number;
-  valuation?: () => number;
-  spendEstimated?: () => boolean;
-  valuationKnowledge?: () => "exact" | "estimated" | "unknown";
-  /** Re-evaluated after Delegate child drain. A child settlement can make the
-   * shared family overshoot or become unverifiable after strategy synthesis. */
-  budgetTerminal?: () => BudgetTerminal;
-  /** True only while this run owns the effective Delegate family authority.
-   * Ordinary runs may already have emitted a non-deferred terminal and must
-   * never be terminalized a second time by the post-drain recheck. */
-  recheckBudgetAfterBarrier?: () => boolean;
-}
-
-type AnnouncedRunIdentity = Pick<
-  AnnouncedRunContext,
-  "log" | "store" | "paths" | "runId" | "taskId" | "mode" | "phase"
->;
-
-export function announcedRunContext(
-  identity: AnnouncedRunIdentity,
-  ledger: BudgetLedger,
-  hasDelegateAuthority: () => boolean,
-): AnnouncedRunContext {
-  return {
-    ...identity,
-    spend: () => ledger.spend(),
-    valuation: () => ledger.valuation(),
-    spendEstimated: () => ledger.estimated(),
-    valuationKnowledge: () => ledger.valuationKnowledge(),
-    budgetTerminal: () => ledger.terminal(),
-    recheckBudgetAfterBarrier: hasDelegateAuthority,
-  };
-}
+export { announcedRunContext, type AnnouncedRunContext } from "./runTerminalContext.js";
+export { cancelledResult, failTerminally, writeFailure };
 
 function ownsDelegateDrain(context: AnnouncedRunContext): boolean {
   try {
@@ -124,193 +89,98 @@ function postDrainBudgetFailure(
   };
 }
 
-export function writeFailure(
-  store: ArtifactStore,
-  paths: ReturnType<ArtifactStore["runPaths"]>,
-  failure: {
-    phase: string;
-    category: string;
-    /** Machine-readable sub-code (typed budget-denial reason); null/omitted when
-     * the category alone is sufficient. Consumed by surfaces to pick remediation
-     * without parsing safeMessage (QA-050). */
-    code?: RunFailureCode | null;
-    safeMessage: string;
-    harnessId?: string | null;
-    attemptId?: string | null;
-    rawDetailRef?: string;
-    logRefs?: string[];
-    eventRefs?: string[];
-    runDir?: string;
-    nextActions?: string[];
-  },
-): void {
-  store.writeYaml(join(paths.finalDir, "failure.yaml"), {
-    phase: failure.phase,
-    category: failure.category,
-    code: failure.code ?? null,
-    harnessId: failure.harnessId ?? null,
-    attemptId: failure.attemptId ?? null,
-    safeMessage: redactSecrets(failure.safeMessage),
-    rawDetailRef: failure.rawDetailRef ?? null,
-    logRefs: failure.logRefs ?? [],
-    eventRefs: failure.eventRefs ?? [],
-    runDir: failure.runDir ?? paths.root,
-    nextActions: failure.nextActions ?? [],
-  });
+function terminalEventTypeFor(
+  _originalType: TerminalRunEventType,
+  outcome: RunOutcomeFactsType,
+): TerminalRunEventType {
+  if (outcome.lifecycle !== "succeeded") return "run.failed";
+  if (needsOperatorAttention(outcome, false)) return "run.blocked";
+  // The canonical axes own terminal type. Preserving a producer-authored
+  // run.blocked with clean axes creates an unexplainable block (no reason or
+  // required action), so it is normalized to completed.
+  return "run.completed";
 }
 
-/**
- * Terminal result for a cancelled run: emits run.failed with status
- * "cancelled" so every mode ends consistently. `writeTelemetry` carries the
- * PARTIAL attempt telemetry collected before the abort — a cancelled run
- * must still account for what it spent and observed; it used to be
- * written only by convergence.
- */
-export function cancelledResult(
-  log: EventLog,
-  runId: string,
-  taskId: string,
-  mode: ModeKind,
-  runDir: string,
-  candidates: { attemptId: string; harnessId: string; status: string }[],
-  writeTelemetry?: () => void,
-  spendUsd?: number | null,
-  /** The abort signal that ended the run: a STRING reason (e.g.
-   * `wall_clock_exceeded` from the maxSeconds deadline) is surfaced; a plain
-   * user cancel aborts with a DOMException reason and stays a bare cancel. */
-  cancelSignal?: AbortSignal,
-  /** Materializes the diagnostic summary the output.ready below announces. */
-  store?: ArtifactStore,
-  /** A prepared result may already carry independent checks/review/work facts
-   * when cancellation wins during the Delegate terminal barrier. */
-  priorFacts?: RunOutcomeFacts,
-): OrchestratorResult {
-  if (writeTelemetry) {
-    try {
-      writeTelemetry();
-    } catch {
-      /* partial telemetry is best-effort on the cancel path */
-    }
-  }
-  const cancelReason =
-    typeof cancelSignal?.reason === "string" && cancelSignal.reason
-      ? cancelSignal.reason
-      : undefined;
-  const summaryText =
-    cancelReason === "wall_clock_exceeded"
-      ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-      : "run cancelled";
-  // Materialize the diagnostic summary BEFORE announcing it — output.ready must
-  // point at a file that exists (partial-output honesty), and it must precede
-  // the terminal in every mode (INV-116).
-  let summaryWritten = false;
-  if (store) {
-    try {
-      store.writeText(
-        join(runDir, "final", "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Lifecycle: cancelled\n${cancelReason ? `- Reason: ${cancelReason}\n` : ""}\n${summaryText}\n`,
-      );
-      summaryWritten = true;
-    } catch {
-      /* best-effort: a write failure must not mask the cancel terminal */
-    }
-  }
-  // output.ready is EVIDENCE (release wave sol #3): announce the summary only
-  // when the file actually materialized — a failed write still gets its
-  // terminal below, just without a pointer to a nonexistent artifact.
-  if (summaryWritten) {
-    log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-  }
-  const cancelFacts = terminalOutcomeFacts(
-    priorFacts,
+function cancellationFacts(signal: AbortSignal, prior: RunOutcomeFactsType): RunOutcomeFactsType {
+  return terminalOutcomeFacts(
+    prior,
     "cancelled",
-    cancelReason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+    typeof signal.reason === "string" && signal.reason === "wall_clock_exceeded"
+      ? "wall_clock_exceeded"
+      : "user_cancelled",
   );
-  log.emit("run.failed", {
-    lifecycle: "cancelled",
-    facts: cancelFacts,
-    reason: cancelFacts.reason,
-    ...(cancelReason ? { cancel_reason: cancelReason } : {}),
-  });
-  return {
-    runId,
-    taskId,
-    mode,
-    lifecycle: "cancelled",
-    facts: cancelFacts,
-    winner: null,
-    runDir,
-    summary: summaryText,
-    candidates,
-    ...(spendUsd !== undefined ? { spendUsd } : {}),
-    ...(cancelReason ? { cancelReason } : {}),
-  };
 }
 
-/**
- * Shared post-announce failure terminal. Unexpected throws use its internal
- * defaults; known callers may supply narrow typed provenance. Every run ends
- * with failure.yaml + summary + a terminal run.failed event.
- */
-export function failTerminally(
-  log: EventLog,
-  store: ArtifactStore,
-  paths: ReturnType<ArtifactStore["runPaths"]>,
-  runId: string,
-  taskId: string,
-  mode: ModeKind,
-  phase: string,
-  err: unknown,
-  spendUsd?: number | null,
-  failureMeta: {
-    category?: "harness_error" | "internal";
-    harnessId?: string;
-    attemptId?: string;
-    rawDetailRef?: string;
-    nextActions?: string[];
-    priorFacts?: RunOutcomeFacts;
-  } = {},
+function terminalOutcomeFromPayload(payload: Record<string, unknown>): RunOutcomeFactsType {
+  const parsed = RunOutcomeFacts.safeParse(payload["facts"]);
+  if (parsed.success) return parsed.data;
+  // Older in-process terminal producers (including the Delegate drain
+  // contract) supplied only lifecycle. Keep that compatible while treating an
+  // explicitly malformed facts object as a contradiction that must fail
+  // closed through the terminal-facts path below.
+  if (!Object.prototype.hasOwnProperty.call(payload, "facts")) {
+    const lifecycle = payload["lifecycle"];
+    if (
+      lifecycle === "succeeded" ||
+      lifecycle === "failed" ||
+      lifecycle === "cancelled" ||
+      lifecycle === "interrupted"
+    ) {
+      return makeOutcomeFacts(lifecycle);
+    }
+  }
+  return RunOutcomeFacts.parse(payload["facts"]);
+}
+
+function settledSpend(a: AnnouncedRunContext): number | null {
+  try {
+    return a.spend ? a.spend() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isTerminalRecoveryRequired(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "terminal_recovery_required"
+  );
+}
+
+function committedOutcome(a: AnnouncedRunContext): RunOutcomeFactsType | null {
+  const terminal = [...a.log.readAll().events]
+    .reverse()
+    .find(
+      (event) =>
+        event.type === "run.completed" ||
+        event.type === "run.blocked" ||
+        event.type === "run.failed",
+    );
+  const parsed = RunOutcomeFacts.safeParse(terminal?.payload["facts"]);
+  return parsed.success ? parsed.data : null;
+}
+
+function committedResult(
+  a: AnnouncedRunContext,
+  outcome: RunOutcomeFactsType,
+  spendUsd: number | null,
 ): OrchestratorResult {
-  const message = redactSecrets(err instanceof Error ? err.message : String(err));
-  const parsedCode = RunFailureCode.safeParse(
-    err && typeof err === "object" ? (err as { code?: unknown }).code : undefined,
-  );
-  const failFacts = terminalOutcomeFacts(failureMeta.priorFacts, "failed", "harness_failed");
-  store.writeText(
-    join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: ${phase}\n\n${message}\n`,
-  );
-  writeFailure(store, paths, {
-    phase,
-    category: failureMeta.category ?? "internal",
-    code: parsedCode.success ? parsedCode.data : null,
-    harnessId: failureMeta.harnessId,
-    attemptId: failureMeta.attemptId,
-    safeMessage: message,
-    rawDetailRef: failureMeta.rawDetailRef,
-    runDir: paths.root,
-    nextActions: failureMeta.nextActions ?? ["Open diagnostics", "Retry the run"],
-  });
-  log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-  log.emit("run.failed", {
-    lifecycle: "failed",
-    facts: failFacts,
-    reason: failFacts.reason,
-    phase,
-    error: message,
-    failure_ref: "final/failure.yaml",
-  });
+  const summary =
+    readTextSafe(join(a.paths.finalDir, "summary.md"))?.trim().slice(0, 400) ??
+    `run terminal committed with lifecycle ${outcome.lifecycle}`;
   return {
-    runId,
-    taskId,
-    mode,
-    lifecycle: "failed",
-    facts: failFacts,
+    runId: a.runId,
+    taskId: a.taskId,
+    mode: a.mode,
+    lifecycle: outcome.lifecycle,
+    facts: outcome,
     winner: null,
-    runDir: paths.root,
-    summary: message,
+    runDir: a.paths.root,
+    summary,
     candidates: [],
-    ...(spendUsd !== undefined ? { spendUsd } : {}),
+    spendUsd,
   };
 }
 
@@ -337,6 +207,8 @@ export async function guardAnnouncedRun(
 ): Promise<OrchestratorResult> {
   let announced: AnnouncedRunContext | null = null;
   let preparedResult: OrchestratorResult | null = null;
+  let canonicalOutcome: RunOutcomeFactsType | null = null;
+  let terminalPreparationError: string | null = null;
   let barrierAttempted = false;
   let barrierFailed = false;
   const runBarrier = async (context: AnnouncedRunContext): Promise<void> => {
@@ -350,181 +222,336 @@ export async function guardAnnouncedRun(
     }
   };
   try {
-    const result = await body((a) => {
-      announced = a;
-    });
-    preparedResult = result;
-    const context = announced as AnnouncedRunContext | null;
-    if (context) {
-      await runBarrier(context);
-      const budget = settledBudgetSnapshot(context);
-      const delegateBarrierArmed = ownsDelegateDrain(context);
-      if (delegateBarrierArmed && signal?.aborted) {
-        context.log.clearDeferredTerminal();
-        const cancelFacts = terminalOutcomeFacts(
-          result.facts,
-          "cancelled",
-          signal.reason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
-        );
-        const cancelSummary =
-          signal.reason === "wall_clock_exceeded"
-            ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-            : "run cancelled";
-        let reconciledCancelFacts = cancelFacts;
-        try {
-          reconcileDecisionBudget(context, budget);
-          reconciledCancelFacts = reconcileDecisionTerminal(context, {
-            facts: cancelFacts,
-            why: cancelSummary,
-            preparedFacts: result.facts,
-          });
-          reconcileWorkProductTerminal(context, reconciledCancelFacts);
-          clearFailureArtifact(context);
-        } catch {
-          /* the cancellation terminal below remains authoritative */
-        }
-        const cancelled = cancelledResult(
-          context.log,
-          context.runId,
-          context.taskId,
-          context.mode,
-          context.paths.root,
-          result.candidates,
-          undefined,
-          budget.spendUsd,
-          signal,
-          context.store,
-          reconciledCancelFacts,
-        );
-        context.log.flushDeferredTerminal();
-        return {
-          ...result,
-          lifecycle: "cancelled",
-          facts: cancelled.facts,
-          summary: cancelled.summary,
-          spendUsd: cancelled.spendUsd,
-          ...(cancelled.cancelReason ? { cancelReason: cancelled.cancelReason } : {}),
-        };
-      }
-      const budgetTerminal = delegateBarrierArmed ? (context.budgetTerminal?.() ?? null) : null;
-      if (budgetTerminal && result.lifecycle === "succeeded") {
-        context.log.clearDeferredTerminal();
-        const failed = postDrainBudgetFailure(context, budgetTerminal, budget, result);
-        context.log.flushDeferredTerminal();
-        return failed;
-      }
-      if (delegateBarrierArmed) reconcileDecisionBudget(context, budget);
-      context.log.flushDeferredTerminal();
-      if (budget.spendUsd !== null) return { ...result, spendUsd: budget.spendUsd };
-    }
-    return result;
-  } catch (err) {
-    // TS cannot see the closure assignment; the cast is safe (set-once).
-    const a = announced as AnnouncedRunContext | null;
-    if (!a) throw err;
-    a.log.clearDeferredTerminal();
-    let terminalError = err;
+    let result: OrchestratorResult;
     try {
-      await runBarrier(a);
-    } catch (barrierError) {
-      terminalError = barrierError;
-    }
-    // Settled-spend accounting is part of the terminal contract on EVERY
-    // path (the orchestrate executor aggregates it); a broken spend snapshot
-    // must not mask the original failure, so it degrades to null loudly-typed.
-    const budget = settledBudgetSnapshot(a);
-    const spendUsd = budget.spendUsd;
-    const delegateBarrierArmed = ownsDelegateDrain(a);
-    if (signal?.aborted && terminalError === err) {
-      const priorFacts = preparedResult?.facts;
-      const cancelFacts = terminalOutcomeFacts(
-        priorFacts,
-        "cancelled",
-        signal.reason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
-      );
-      const cancelSummary =
-        signal.reason === "wall_clock_exceeded"
-          ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-          : "run cancelled";
-      let reconciledCancelFacts = cancelFacts;
-      try {
-        if (delegateBarrierArmed) reconcileDecisionBudget(a, budget);
-        reconciledCancelFacts = reconcileDecisionTerminal(a, {
-          facts: cancelFacts,
-          why: cancelSummary,
-          ...(preparedResult ? { preparedFacts: preparedResult.facts } : {}),
+      result = await body((a) => {
+        announced = a;
+        a.log.setBeforeTerminal((originalType, payload) => {
+          try {
+            // Cancellation wins only until the synchronous terminal commit
+            // starts. A later abort cannot rewrite an already-durable success.
+            const payloadOutcome = terminalOutcomeFromPayload(payload);
+            const terminalOutcome = signal?.aborted
+              ? cancellationFacts(signal, payloadOutcome)
+              : payloadOutcome;
+            const prepared = prepareRunFactsReceipt(a, terminalOutcome);
+            canonicalOutcome = prepared.facts.outcome;
+            return {
+              type: terminalEventTypeFor(originalType, prepared.facts.outcome),
+              payload: {
+                ...payload,
+                lifecycle: prepared.facts.outcome.lifecycle,
+                facts: prepared.facts.outcome,
+                reason: prepared.facts.outcome.reason,
+                run_facts: prepared.facts,
+              },
+              commit: prepared.commit,
+              rollback: () => {
+                prepared.rollback();
+                canonicalOutcome = null;
+              },
+            };
+          } catch (error) {
+            // A contradictory terminal projection must fail the run, not throw
+            // out of the hook and retry the same contradiction forever.
+            const detail = redactSecrets(error instanceof Error ? error.message : String(error));
+            terminalPreparationError = `terminal facts preparation failed: ${detail}`;
+            const failureOutcome = makeOutcomeFacts("failed", {
+              reason: "harness_failed",
+            });
+            let failureRefWritten = false;
+            try {
+              a.store.writeText(
+                join(a.paths.finalDir, "summary.md"),
+                `# Run ${a.runId} (${a.mode})\n\n- Lifecycle: failed\n- Phase: terminal_facts\n\n${terminalPreparationError}\n`,
+              );
+              writeFailure(a.store, a.paths, {
+                phase: "terminal_facts",
+                category: "internal",
+                safeMessage: terminalPreparationError,
+                runDir: a.paths.root,
+                nextActions: ["Open diagnostics", "Inspect final/run_facts.yaml", "Retry the run"],
+              });
+              failureRefWritten = true;
+            } catch {
+              /* terminal event remains the fail-closed authority */
+            }
+            try {
+              const prepared = prepareRunFactsFailureReceipt(a, failureOutcome);
+              canonicalOutcome = prepared.facts.outcome;
+              return {
+                type: "run.failed",
+                payload: {
+                  lifecycle: prepared.facts.outcome.lifecycle,
+                  facts: prepared.facts.outcome,
+                  reason: prepared.facts.outcome.reason,
+                  run_facts: prepared.facts,
+                  phase: "terminal_facts",
+                  error: terminalPreparationError,
+                  ...(failureRefWritten ? { failure_ref: "final/failure.yaml" } : {}),
+                },
+                commit: prepared.commit,
+                rollback: () => {
+                  prepared.rollback();
+                  canonicalOutcome = null;
+                },
+              };
+            } catch {
+              // If even the minimal receipt cannot be written, still commit an
+              // honest failed terminal. The daemon job state then fails closed.
+              canonicalOutcome = failureOutcome;
+              return {
+                type: "run.failed",
+                payload: {
+                  lifecycle: failureOutcome.lifecycle,
+                  facts: failureOutcome,
+                  reason: failureOutcome.reason,
+                  phase: "terminal_facts",
+                  error: terminalPreparationError,
+                  ...(failureRefWritten ? { failure_ref: "final/failure.yaml" } : {}),
+                },
+              };
+            }
+          }
         });
-        reconcileWorkProductTerminal(a, reconciledCancelFacts);
-        clearFailureArtifact(a);
-      } catch {
-        /* the cancellation terminal below remains authoritative */
-      }
-      const cancelled = cancelledResult(
-        a.log,
-        a.runId,
-        a.taskId,
-        a.mode,
-        a.paths.root,
-        preparedResult?.candidates ?? [],
-        undefined,
-        spendUsd,
-        // A wall-clock abort surfaced as a throw must keep its reason and
-        // materialize the diagnostic summary, exactly like the checkpoint paths.
-        signal,
-        a.store,
-        reconciledCancelFacts,
-      );
-      a.log.flushDeferredTerminal();
-      return preparedResult
-        ? {
-            ...preparedResult,
+      });
+      preparedResult = result;
+      const context = announced as AnnouncedRunContext | null;
+      if (context) {
+        await runBarrier(context);
+        const budget = settledBudgetSnapshot(context);
+        const delegateBarrierArmed = ownsDelegateDrain(context);
+        if (delegateBarrierArmed && signal?.aborted) {
+          context.log.clearDeferredTerminal();
+          const cancelFacts = terminalOutcomeFacts(
+            result.facts,
+            "cancelled",
+            signal.reason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+          );
+          const cancelSummary =
+            signal.reason === "wall_clock_exceeded"
+              ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
+              : "run cancelled";
+          let reconciledCancelFacts = cancelFacts;
+          try {
+            reconcileDecisionBudget(context, budget);
+            reconciledCancelFacts = reconcileDecisionTerminal(context, {
+              facts: cancelFacts,
+              why: cancelSummary,
+              preparedFacts: result.facts,
+            });
+            reconcileWorkProductTerminal(context, reconciledCancelFacts);
+            clearFailureArtifact(context);
+          } catch {
+            /* the cancellation terminal below remains authoritative */
+          }
+          const cancelled = cancelledResult(
+            context.log,
+            context.runId,
+            context.taskId,
+            context.mode,
+            context.paths.root,
+            result.candidates,
+            undefined,
+            budget.spendUsd,
+            signal,
+            context.store,
+            reconciledCancelFacts,
+          );
+          context.log.flushDeferredTerminal();
+          result = {
+            ...result,
             lifecycle: "cancelled",
             facts: cancelled.facts,
             summary: cancelled.summary,
             spendUsd: cancelled.spendUsd,
             ...(cancelled.cancelReason ? { cancelReason: cancelled.cancelReason } : {}),
+          };
+        } else {
+          const budgetTerminal = delegateBarrierArmed ? (context.budgetTerminal?.() ?? null) : null;
+          if (budgetTerminal && result.lifecycle === "succeeded") {
+            context.log.clearDeferredTerminal();
+            result = postDrainBudgetFailure(context, budgetTerminal, budget, result);
+            context.log.flushDeferredTerminal();
+          } else {
+            if (delegateBarrierArmed) reconcileDecisionBudget(context, budget);
+            context.log.flushDeferredTerminal();
+            if (budget.spendUsd !== null) result = { ...result, spendUsd: budget.spendUsd };
           }
-        : cancelled;
-    }
-    const priorFacts = preparedResult?.facts;
-    const pendingFacts = terminalOutcomeFacts(priorFacts, "failed", "harness_failed");
-    const pendingSummary = redactSecrets(
-      terminalError instanceof Error ? terminalError.message : String(terminalError),
-    );
-    let reconciledFailureFacts = pendingFacts;
-    try {
-      if (delegateBarrierArmed) reconcileDecisionBudget(a, budget);
-      reconciledFailureFacts = reconcileDecisionTerminal(a, {
-        facts: pendingFacts,
-        why: pendingSummary,
-        ...(preparedResult ? { preparedFacts: preparedResult.facts } : {}),
-      });
-      reconcileWorkProductTerminal(a, reconciledFailureFacts);
-    } catch {
-      /* the failure terminal below remains authoritative */
-    }
-    const failed = failTerminally(
-      a.log,
-      a.store,
-      a.paths,
-      a.runId,
-      a.taskId,
-      a.mode,
-      barrierFailed ? "delegation_drain" : a.phase,
-      terminalError,
-      spendUsd,
-      { priorFacts: reconciledFailureFacts },
-    );
-    a.log.flushDeferredTerminal();
-    return preparedResult
-      ? {
-          ...preparedResult,
-          lifecycle: "failed",
-          facts: failed.facts,
-          summary: failed.summary,
-          spendUsd: failed.spendUsd,
         }
-      : failed;
+      }
+    } catch (err) {
+      // TS cannot see the closure assignment; the cast is safe (set-once).
+      const a = announced as AnnouncedRunContext | null;
+      if (!a) throw err;
+      // The partition journal already owns this terminal. A safety-net emit
+      // would hit the poisoned writer, erase the typed recovery signal, and
+      // let the daemon persist a false generic failure over durable truth.
+      if (isTerminalRecoveryRequired(err)) throw err;
+      if (a.log.terminalCommitted()) {
+        const outcome = canonicalOutcome ?? committedOutcome(a);
+        if (!outcome) throw err;
+        const spendUsd = settledSpend(a);
+        result = preparedResult
+          ? {
+              ...preparedResult,
+              lifecycle: outcome.lifecycle,
+              facts: outcome,
+              ...(spendUsd !== null ? { spendUsd } : {}),
+            }
+          : committedResult(a, outcome, spendUsd);
+      } else {
+        a.log.clearDeferredTerminal();
+        let terminalError = err;
+        try {
+          await runBarrier(a);
+        } catch (barrierError) {
+          terminalError = barrierError;
+        }
+        // Settled-spend accounting is part of the terminal contract on EVERY
+        // path (the orchestrate executor aggregates it); a broken spend snapshot
+        // must not mask the original failure, so it degrades to null loudly-typed.
+        const budget = settledBudgetSnapshot(a);
+        const spendUsd = budget.spendUsd;
+        const delegateBarrierArmed = ownsDelegateDrain(a);
+        if (signal?.aborted && terminalError === err) {
+          const priorFacts = preparedResult?.facts;
+          const cancelFacts = terminalOutcomeFacts(
+            priorFacts,
+            "cancelled",
+            signal.reason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+          );
+          const cancelSummary =
+            signal.reason === "wall_clock_exceeded"
+              ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
+              : "run cancelled";
+          let reconciledCancelFacts = cancelFacts;
+          try {
+            if (delegateBarrierArmed) reconcileDecisionBudget(a, budget);
+            reconciledCancelFacts = reconcileDecisionTerminal(a, {
+              facts: cancelFacts,
+              why: cancelSummary,
+              ...(preparedResult ? { preparedFacts: preparedResult.facts } : {}),
+            });
+            reconcileWorkProductTerminal(a, reconciledCancelFacts);
+            clearFailureArtifact(a);
+          } catch {
+            /* the cancellation terminal below remains authoritative */
+          }
+          const cancelled = cancelledResult(
+            a.log,
+            a.runId,
+            a.taskId,
+            a.mode,
+            a.paths.root,
+            preparedResult?.candidates ?? [],
+            undefined,
+            spendUsd,
+            // A wall-clock abort surfaced as a throw must keep its reason and
+            // materialize the diagnostic summary, exactly like the checkpoint paths.
+            signal,
+            a.store,
+            reconciledCancelFacts,
+          );
+          a.log.flushDeferredTerminal();
+          result = preparedResult
+            ? {
+                ...preparedResult,
+                lifecycle: "cancelled",
+                facts: cancelled.facts,
+                summary: cancelled.summary,
+                spendUsd: cancelled.spendUsd,
+                ...(cancelled.cancelReason ? { cancelReason: cancelled.cancelReason } : {}),
+              }
+            : cancelled;
+        } else {
+          const priorFacts = preparedResult?.facts;
+          const pendingFacts = terminalOutcomeFacts(priorFacts, "failed", "harness_failed");
+          const pendingSummary = redactSecrets(
+            terminalError instanceof Error ? terminalError.message : String(terminalError),
+          );
+          let reconciledFailureFacts = pendingFacts;
+          try {
+            if (delegateBarrierArmed) reconcileDecisionBudget(a, budget);
+            reconciledFailureFacts = reconcileDecisionTerminal(a, {
+              facts: pendingFacts,
+              why: pendingSummary,
+              ...(preparedResult ? { preparedFacts: preparedResult.facts } : {}),
+            });
+            reconcileWorkProductTerminal(a, reconciledFailureFacts);
+          } catch {
+            /* the failure terminal below remains authoritative */
+          }
+          const failed = failTerminally(
+            a.log,
+            a.store,
+            a.paths,
+            a.runId,
+            a.taskId,
+            a.mode,
+            barrierFailed ? "delegation_drain" : a.phase,
+            terminalError,
+            spendUsd,
+            { priorFacts: reconciledFailureFacts },
+          );
+          a.log.flushDeferredTerminal();
+          result = preparedResult
+            ? {
+                ...preparedResult,
+                lifecycle: "failed",
+                facts: failed.facts,
+                summary: failed.summary,
+                spendUsd: failed.spendUsd,
+              }
+            : failed;
+        }
+      }
+    }
+    // Defensive fallback for a strategy that returned without a terminal emit:
+    // materialize/announce a summary when needed, then pass through the same
+    // pre-terminal receipt transaction as every normal strategy.
+    const a = announced as AnnouncedRunContext | null;
+    if (a && !a.log.terminalCommitted()) {
+      const events = a.log.readAll().events;
+      if (!events.some((event) => event.type === "output.ready")) {
+        const summaryPath = join(a.paths.finalDir, "summary.md");
+        let summaryPresent = readTextSafe(summaryPath) !== null;
+        if (!summaryPresent) {
+          try {
+            a.store.writeText(
+              summaryPath,
+              `# Run ${a.runId} (${a.mode})\n\n${redactSecrets(result.summary)}\n`,
+            );
+            summaryPresent = true;
+          } catch {
+            /* never point output.ready at a file that did not materialize */
+          }
+        }
+        if (summaryPresent) {
+          a.log.emit("output.ready", {
+            kind: "summary",
+            path: "final/summary.md",
+            state: "diagnostic",
+          });
+        }
+      }
+      a.log.emit(terminalEventTypeFor("run.completed", result.facts), {
+        lifecycle: result.facts.lifecycle,
+        facts: result.facts,
+        reason: result.facts.reason,
+      });
+    }
+    // TS cannot see assignments performed inside EventLog's hook closure.
+    const settledOutcome = canonicalOutcome as RunOutcomeFactsType | null;
+    if (settledOutcome) {
+      result = {
+        ...result,
+        lifecycle: settledOutcome.lifecycle,
+        facts: settledOutcome,
+        ...(terminalPreparationError ? { winner: null, summary: terminalPreparationError } : {}),
+      };
+    }
+    return result;
   } finally {
     // Release per-run engine state on EVERY terminal path (normal return, failure
     // net, cancel), but only for a run that actually announced a runId.

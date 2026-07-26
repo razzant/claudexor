@@ -87,6 +87,17 @@ import Testing
         #expect(a.requiredAction == "Resolve the review findings, then apply.")
     }
 
+    @Test func runDetailPreservesCanonicalRunFacts() throws {
+        let d = try detail(#","runFacts":{"schema_version":"3.1","run_id":"r1","mode":"plan","deliverable":{"present":true}}"#)
+        let facts = try #require(d.runFacts)
+        guard case .object(let object) = facts else {
+            Issue.record("runFacts must remain a structured object")
+            return
+        }
+        #expect(object["run_id"] == .string("r1"))
+        #expect(object["mode"] == .string("plan"))
+    }
+
     @Test func runDetailDecodesPlanReadinessAndQuestions() throws {
         let d = try detail(#","planReadiness":{"state":"needs_answers","questionCount":2},"planQuestions":[{"id":"q1","kind":"single","prompt":"Which store?","options":[{"id":"a","label":"SQLite"},{"id":"b","label":"Postgres"}]},{"id":"q2","kind":"text","prompt":"Any constraints?","allow_text":true}]"#)
         let readiness = try #require(d.planReadiness)
@@ -116,6 +127,7 @@ import Testing
         let d = try detail("")
         #expect(d.outcomeBanner == nil)
         #expect(d.applyEligibility == nil)
+        #expect(d.runFacts == nil)
         #expect(d.planReadiness == nil)
         #expect(d.planQuestions.isEmpty)
         #expect(d.council == nil)

@@ -21,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const CLI = join(repoRoot, "packages", "cli", "dist", "cli.js");
@@ -153,6 +154,10 @@ export function cli(
 
 export function readRunFile(runDir: string, rel: string): string {
   return readFileSync(join(runDir, rel), "utf8");
+}
+
+export function readRunYaml<T = unknown>(runDir: string, rel: string): T {
+  return parseYaml(readRunFile(runDir, rel)) as T;
 }
 
 export function runFileExists(runDir: string, rel: string): boolean {

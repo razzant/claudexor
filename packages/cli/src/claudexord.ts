@@ -364,6 +364,11 @@ export async function main(): Promise<void> {
         const delegationBelt = delegationBeltForRun(p.delegate === true, p.paidBudget);
         return orchestrator
           .run({
+            onEventPersist: (event) => {
+              // The owning journal partition is the durable terminal
+              // authority. EventLog runs this before committing RunFacts.
+              threads.recordRunEvent(p, event);
+            },
             onEvent: (event) => {
               if (event.type === "harness.event") {
                 const payload = event.payload as Record<string, unknown>;
@@ -371,8 +376,12 @@ export async function main(): Promise<void> {
                   typeof payload["harness_id"] === "string" ? payload["harness_id"] : "";
                 if (harnessId) quotaStoreSlot.current().ingest(harnessId, payload);
               }
-              threads.recordRunEvent(p, event);
-              bus.publish(event);
+              // Live listeners observe only after journal + RunFacts commit.
+              try {
+                bus.publish(event);
+              } catch {
+                /* durable replay remains authoritative */
+              }
             },
             onInteraction: (ctx2) => interactions.register(ctx2, p),
             interactionTimeoutMs: runConfig.global.interaction_timeout_ms,

@@ -28,14 +28,20 @@ export interface JobRecord {
 }
 
 export function jobStateFromResult(result: unknown, aborted: boolean): JobState {
-  if (aborted) return "cancelled";
+  // The engine's synchronous terminal commit is the cutoff. A recognizable
+  // lifecycle already reflects any abort present at that boundary, while a
+  // later abort must not rewrite the durable result.
   const lifecycle = resultString(result, "lifecycle");
-  return lifecycle === "succeeded" ||
+  if (
+    lifecycle === "succeeded" ||
     lifecycle === "failed" ||
     lifecycle === "cancelled" ||
     lifecycle === "interrupted"
-    ? lifecycle
-    : "failed";
+  ) {
+    return lifecycle;
+  }
+  // Preserve the daemon's fail-closed fallback for a malformed runner result.
+  return aborted ? "cancelled" : "failed";
 }
 
 export function resultReason(result: unknown): string | null {

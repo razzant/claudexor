@@ -27,7 +27,6 @@ import {
 } from "./run-detail-projections.js";
 export { projectOutcomeBanner, type ApplyEligibilityProjection } from "./run-detail-projections.js";
 export {
-  daemonOutcomeProblemFields,
   fetchRunOutcomeFacts,
   projectRunOutcomeFacts,
   mergeDaemonRunOutcome,
@@ -527,7 +526,6 @@ export async function fetchApplyEligibility(
  * it never re-derives a headline of its own, so model prose can never outrank
  * the arbitrated truth. Null while the run is not terminal or unavailable.
  */
-/** Pure projection of the server-owned outcome banner from a fetched detail. */
 export async function fetchOutcomeBanner(
   addr: ControlApiAddress,
   runId: string,

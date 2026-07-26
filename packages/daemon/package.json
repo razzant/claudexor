@@ -23,7 +23,8 @@
     "@claudexor/core": "workspace:*",
     "@claudexor/journal": "workspace:*",
     "@claudexor/schema": "workspace:*",
-    "@claudexor/util": "workspace:*"
+    "@claudexor/util": "workspace:*",
+    "yaml": "^2.8.2"
   },
   "repository": {
     "type": "git",

@@ -6,25 +6,23 @@ import {
   Id,
   IsoTimestamp,
   ModeKind,
+  AuthPreference,
   SchemaVersion,
 } from "./primitives.js";
 import { OutputSchemaDialect } from "./output-schema-dialect.js";
 import { DeepScanSynthesis } from "./deep-scan.js";
 import { ToolKind } from "./tool-ref.js";
 import { AuthMode, RouteRankingRationale } from "./budget.js";
-import { AuthPreference } from "./primitives.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
 import { WorkState } from "./work-report.js";
 import { RunDelegationInfo } from "./delegation.js";
+import { RunFacts } from "./run-facts.js";
 
 /**
  * Run telemetry artifact (`final/telemetry.yaml`).
- *
- * The orchestrator is the ONLY computer of web/tool evidence. Surfaces
- * (control-api, CLI, app) project this artifact; they must not re-derive
- * evidence from raw events. Legacy runs without the artifact render an honest
- * "telemetry unavailable" state instead of a recomputed guess.
+ * The orchestrator alone computes its web/tool evidence; surfaces project it.
+ * Legacy runs render "telemetry unavailable" instead of a recomputed guess.
  */
 
 export const WebEvidenceStatus = z
@@ -587,9 +585,10 @@ export const RunTelemetry = z
       ),
     deep_scan_synthesis: DeepScanSynthesis.nullable()
       .default(null)
-      .describe(
-        "Deep-scan reducer outcome (#27); null on non-deep-scan runs and legacy artifacts.",
-      ),
+      .describe("Deep-scan reducer outcome (#27); null on non-deep-scan/legacy runs."),
+    run_facts: RunFacts.nullable()
+      .default(null)
+      .describe("Exact validated terminal receipt; null before terminalization or on legacy runs."),
     generated_at: IsoTimestamp.describe("When the telemetry artifact was generated."),
   })
   .describe(

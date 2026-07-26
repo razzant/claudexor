@@ -127,7 +127,8 @@ at every wire boundary.
 ## 3. Package Map
 
 - `packages/schema`: Zod schemas, TypeScript types, generated JSON Schema,
-  control DTOs, mode ids, config shapes, `RunTelemetry`.
+  control DTOs, mode ids, config shapes, `RunTelemetry`, and the validated
+  terminal `RunFacts` receipt.
 - `packages/util`: shared helpers (ids, time, hashing, redaction, config dirs,
   safe file IO).
 - `packages/core`: adapter interface, shared CLI run loop, process helpers,
@@ -136,7 +137,8 @@ at every wire boundary.
 - `packages/orchestrator`: the canonical mode pipelines (ask, plan, agent) with
   strategy flags (race width, attempt caps, until-clean, deep-scan, create,
   delegate); owns run telemetry and policy gates (trust, risk, protected paths),
-  typed transient retry policy, and no-progress outcomes.
+  typed transient retry policy, no-progress outcomes, and the one terminal
+  `RunFacts` projection from canonical run artifacts.
 - `packages/gateway`: harness discovery and capability/intent gating (route
   selection itself lives in the budget router and orchestrator routing).
 - `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that
@@ -1095,7 +1097,21 @@ line-number ids) and is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
 fallback; `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
-has applied the terminal event provably has the output.
+has applied the terminal event provably has the output. The EventLog's
+once-only terminal-preparation hook also builds and validates the immutable
+`RunFacts` receipt in memory and embeds that exact object in the terminal
+journal event. Terminal commit order is: owning partition journal, atomic
+telemetry/`final/run_facts.yaml` projection, per-run `events.jsonl`, then
+best-effort live publication. An observer that has seen the terminal event can
+therefore fetch the exact validated receipt rather than racing terminalization.
+A failure before journal acceptance leaves no terminal authority and may use
+the safety-net retry. A local failure after journal acceptance preserves the
+typed `terminal_recovery_required` signal; the daemon immediately (or on
+restart) validates the journal payload, repairs a missing/torn receipt and
+per-run terminal tail, and terminalizes the command from that same `RunFacts`.
+Once a terminal commits, EventLog refuses every later terminal or engine emit
+for that run; post-terminal control audit events continue the monotonic file
+sequence.
 
 `GET /v2/global/events` and `GET /v2/projects/:id/events` replay the durable
 global or project journal partition and then tail it. Their `Last-Event-ID`
@@ -1732,12 +1748,18 @@ whole window is indistinguishable from a hang and is killed.
 Run detail includes terminal state and output-ready state. `summary.state` is the
 daemon terminal/lifecycle state. `summary.outputReadyState` is
 `pending | finalizing | ready | diagnostic` and is derived from primary output
-and failure artifacts. `summary.webEvidence` and tool-error rollups are
-projections of the engine-owned `final/telemetry.yaml` (the orchestrator is the
-single evidence owner); runs that predate that artifact report
-`available: false` instead of recomputed guesses. Timeline projections include
-tool name, target/domain/path, error summary, severity, harness, attempt, and
-raw event reference, and are capped with an explicit truncation marker.
+and failure artifacts. Terminal run detail also carries `runFacts`, read as the
+exact validated value from `final/run_facts.yaml`; it is null while the run is
+active and for legacy runs without the receipt. Terminal CLI JSON and
+JSON-stream output project that same run-detail value, while artifact-only
+`claudexor inspect --json` reads the canonical file directly. None of these
+surfaces reconstructs shared terminal facts. `summary.webEvidence` and
+tool-error rollups are projections of the engine-owned
+`final/telemetry.yaml` (the orchestrator is the single evidence owner); runs
+that predate that artifact report `available: false` instead of recomputed
+guesses. Timeline projections include tool name, target/domain/path, error
+summary, severity, harness, attempt, and raw event reference, and are capped
+with an explicit truncation marker.
 
 ## 8. Artifact Layout
 
@@ -1764,6 +1786,7 @@ reviews/*-reviewers/<reviewer>/parse-error.json?
 arbitration/decision.yaml
 arbitration/pairwise.yaml
 arbitration/synthesis.yaml
+final/run_facts.yaml
 final/telemetry.yaml
 final/patch.diff?
 final/work_product.yaml
@@ -1791,6 +1814,27 @@ run's `outcomeFacts`, so a needs_input/incomplete run is non-applyable and the
 outcome-aware CLI exit projection returns non-zero even on a succeeded
 lifecycle.
 Surfaces project it; they never recompute evidence from raw events or model prose.
+
+`final/run_facts.yaml` (`RunFacts` in the schema) is the canonical immutable
+terminal-fact receipt. It binds the terminal outcome, canonical deliverable,
+role-labelled participant roster and planner count, configured-gate execution,
+review blocker ids, apply eligibility and operator-decision presence, and the
+typed required actions. The schema-owned invariant validator rejects
+cross-axis contradictions before persistence: examples include a succeeded
+plan without a deliverable, merge/reviewer roles inflating the planner count,
+configured tests presented as both `not_configured` and passed, or required
+actions that disagree with the terminal outcome. The orchestrator sanitizes
+and validates this object once, embeds that exact value at
+`RunTelemetry.run_facts` as a compatibility copy, then writes the standalone
+file last as the canonical commit marker. `GET /v2/runs/:id` (`runFacts`),
+terminal CLI JSON/JSON-stream output, and artifact-only `inspect --json`
+expose the same parsed object without a second redaction or independent
+projection. A missing receipt retains legacy-run compatibility; a receipt that
+is present but fails parsing or invariant validation is a typed
+`run_facts_invalid` server error and never falls back to legacy outcome or apply
+authority. Readers also bind the receipt's run/task identity (and terminal
+lifecycle where available) to the requested daemon record; copying a valid
+receipt from another run cannot make it authoritative.
 
 Convergence can also finish as `stuck_no_progress`: the same candidate diff was
 produced repeatedly while a required deterministic gate still failed. That state

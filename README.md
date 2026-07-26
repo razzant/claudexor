@@ -482,6 +482,7 @@ attempts/a01/attempt.yaml
 attempts/a01/patch.diff
 reviews/a01.yaml
 arbitration/decision.yaml
+final/run_facts.yaml
 final/telemetry.yaml
 final/patch.diff
 final/work_product.yaml

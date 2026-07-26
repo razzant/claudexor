@@ -28,13 +28,14 @@ import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import type { AccessProfile, ControlReviewerPanelEntry, ProviderFamily } from "@claudexor/schema";
-import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
+import { ConformanceReport, HarnessManifest, RunFacts, makeOutcomeFacts } from "@claudexor/schema";
 import { hashJson, noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
 import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
+import { withPlanBrief } from "./planBrief.js";
 import { buildRevisePrompt } from "./revisePrompt.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -77,6 +78,12 @@ function legacyOutcome(r: OrchestratorResult): string {
   // Tests that must distinguish no_changes / not-verified assert `.facts`.
   if (f.review === "blocked" || f.checks === "failed") return "blocked";
   return "success";
+}
+
+function readRunFacts(repo: string, result: OrchestratorResult): RunFacts {
+  return RunFacts.parse(
+    new ArtifactStore(repo).readYaml(join(result.runDir, "final", "run_facts.yaml")),
+  );
 }
 
 async function initRepo(): Promise<string> {
@@ -164,6 +171,47 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
     },
   };
   return { adapter, providerFamily: family };
+}
+
+function firstCandidateNeedsHumanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
+  let calls = 0;
+  const reviewer = cleanReviewer(id, family);
+  return {
+    providerFamily: family,
+    adapter: {
+      ...reviewer.adapter,
+      async *run(spec) {
+        calls += 1;
+        const ts = new Date().toISOString();
+        const findings =
+          calls === 1
+            ? [
+                {
+                  severity: "NEEDS_HUMAN",
+                  category: "spec_gap",
+                  claim: "Only the first candidate needs an operator decision.",
+                  evidence: { files: [] },
+                  proposed_fix: "Choose the clean alternative.",
+                },
+              ]
+            : [];
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: `${id}-model`,
+          credential_route: "managed_api_key",
+        } as never;
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: `\`\`\`json\n${JSON.stringify(findings)}\n\`\`\``,
+        } as never;
+        yield { type: "completed", session_id: spec.session_id, ts } as never;
+      },
+    },
+  };
 }
 
 function cleanReviewerWithSideEffect(
@@ -933,6 +981,35 @@ describe("Orchestrator", () => {
 
     expectBudgetSplit(res.runDir, 0.5, 1.5);
   }, 30_000);
+  it("does not let a losing candidate's NEEDS_HUMAN finding block the clean winner", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([["impl", diffImplementer("impl")]]);
+    const orch = new Orchestrator({
+      registry,
+      reviewers: [
+        firstCandidateNeedsHumanReviewer("rev-openai", "openai"),
+        cleanReviewer("rev-anthropic", "anthropic"),
+      ],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "implement the change",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 2,
+    });
+
+    expect(res.winner).toBe("a02");
+    expect(res.facts).toMatchObject({ lifecycle: "succeeded", review: "approved" });
+    const losingReview = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(losingReview).toContain("NEEDS_HUMAN");
+    const runFacts = readRunFacts(repo, res);
+    expect(runFacts.review).toEqual({
+      state: "approved",
+      blocker_ids: [],
+      blockers: 0,
+    });
+  });
 
   it("D-16 r7: a context-exhausted candidate (partial diff, no completed report) terminalizes interrupted and is NEVER adopted", async () => {
     // The D-16 work-state veto hole: finalizeAttempt returns outcomeClass
@@ -1028,6 +1105,15 @@ describe("Orchestrator", () => {
     // The gate ran without any trust grant.
     const evidence = readFileSync(join(res.runDir, "review-evidence", "TESTS.txt"), "utf8");
     expect(evidence).not.toContain("no test commands configured");
+    const runFacts = readRunFacts(repo, res);
+    expect(runFacts.gates).toMatchObject({
+      configured: true,
+      required: 1,
+      total: 1,
+      executed: true,
+      state: "passed",
+    });
+    expect(runFacts.outcome.checks).toBe("passed");
   }, 20000);
 
   it("no-diff candidate emits review.skipped, never review.started or review_verified (QA-025)", async () => {
@@ -2023,6 +2109,13 @@ describe("Orchestrator", () => {
     expect(decision).toContain("checks: passed");
     expect(decision).toContain("review: blocked");
     expect(decision).toContain("reason: review_blocked");
+    const runFacts = readRunFacts(repo, res);
+    expect(runFacts.review.blockers).toBeGreaterThan(0);
+    expect(runFacts.apply.eligibility?.state).toBe("needs_review");
+    expect(runFacts.required_actions.map((action) => action.id)).toEqual([
+      "resolve_review_block",
+      "record_operator_decision",
+    ]);
   });
 
   it("allows explicitly approved existing protected gate path changes", async () => {
@@ -4614,6 +4707,7 @@ describe("Orchestrator", () => {
           taskId: "t2",
           mode: "agent",
           lifecycle: "completed",
+          facts: makeOutcomeFacts("succeeded"),
           winner: null,
           runDir: p2.root,
           summary: "ok",
@@ -5220,6 +5314,9 @@ describe("Orchestrator", () => {
     expect(telemetry).toContain("status: succeeded");
     expect(telemetry).toContain("reducer_attempt_id: synth");
     expect(telemetry).toMatch(/attempt_id: synth/);
+    const workProduct = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(workProduct).toContain("producer_attempt_id: synth");
+    expect(readRunFacts(repo, res).deliverable.producer_attempt_id).toBe("synth");
   });
 
   it("INV-116: a cancel that lands WHILE the deep-scan reducer runs is a cancelled terminal, never a laundered success", async () => {
@@ -6546,7 +6643,7 @@ describe("Orchestrator", () => {
       tests: [{ program: process.execPath, args: ["-e", gateScript], envAllowlist: [] }],
     });
 
-    expect(legacyOutcome(res)).toBe("blocked");
+    expect(legacyOutcome(res), res.summary).toBe("blocked");
     expect(readFileSync(concurrentPath, "utf8")).toBe("concurrent user edit\n");
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
     const receipt = readFileSync(join(res.runDir, "final", "delivery_receipt.yaml"), "utf8");
@@ -6557,6 +6654,23 @@ describe("Orchestrator", () => {
     // D8: a refused live delivery lands on the CHECKS axis (needs-decision).
     expect(decision).toContain("checks: failed");
     expect(decision).toContain("delivery_receipt: final/delivery_receipt.yaml");
+    const runFacts = readRunFacts(repo, res);
+    expect(runFacts.outcome).toMatchObject({
+      lifecycle: "succeeded",
+      checks: "failed",
+      reason: "checks_failed",
+    });
+    expect(runFacts.gates).toMatchObject({
+      executed: true,
+      state: "skipped",
+      receipt_attempt_id: "final-verify",
+    });
+    const terminals = readFileSync(join(res.runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string })
+      .filter((event) => ["run.completed", "run.blocked", "run.failed"].includes(event.type));
+    expect(terminals.map((event) => event.type)).toEqual(["run.blocked"]);
   });
 
   it("plan mode writes the pure plan body and engine-parsed questions.json", async () => {
@@ -6570,13 +6684,28 @@ describe("Orchestrator", () => {
       "- [text] Anything else ambiguous?",
     ]);
     const orch = new Orchestrator({ registry: new Map([["planner", planner]]), reviewers: [] });
+    let announcedRunDir = "";
+    let receiptVisibleAtTerminal = false;
     const res = await orch.run({
       repoRoot: repo,
       prompt: "make a racing game",
       mode: "plan",
       harnesses: ["planner"],
+      onRunStart: ({ runDir }) => {
+        announcedRunDir = runDir;
+      },
+      onEvent: (event) => {
+        if (
+          event.type === "run.completed" ||
+          event.type === "run.blocked" ||
+          event.type === "run.failed"
+        ) {
+          receiptVisibleAtTerminal = existsSync(join(announcedRunDir, "final", "run_facts.yaml"));
+        }
+      },
     });
     expect(legacyOutcome(res)).toBe("success");
+    expect(receiptVisibleAtTerminal).toBe(true);
     // PURE body: the wrapper (goal/status) lives in summary.md — implement
     // freezes and hashes plan.md, so it must be the plan and nothing else.
     const plan = readFileSync(join(res.runDir, "final", "plan.md"), "utf8");
@@ -6601,6 +6730,7 @@ describe("Orchestrator", () => {
     expect(summary).toContain("Goal: make a racing game");
     const telemetry = new ArtifactStore(repo).readYaml<{
       final_attempt_id: string | null;
+      run_facts?: unknown;
       attempts: Array<{
         attempt_id: string;
         outcome: { deliverable_present: boolean; status: string };
@@ -6610,6 +6740,14 @@ describe("Orchestrator", () => {
       final_attempt_id: "p01",
       attempts: [{ attempt_id: "p01", outcome: { deliverable_present: true, status: "success" } }],
     });
+    const runFacts = readRunFacts(repo, res);
+    expect(runFacts.deliverable).toMatchObject({
+      present: true,
+      kind: "plan",
+      path: "final/plan.md",
+      producer_attempt_id: "p01",
+    });
+    expect(JSON.stringify(telemetry?.run_facts)).toBe(JSON.stringify(runFacts));
   });
 
   it("an untagged plan is DISCLOSED as unverified, never silently ready", async () => {
@@ -7075,6 +7213,16 @@ describe("Orchestrator", () => {
       join(res.runDir, "final", "work_product.yaml"),
     );
     expect(workProduct?.meta.planners).toBe(2);
+    const runFacts = readRunFacts(repo, res);
+    expect(runFacts.participants.planners).toBe(2);
+    expect(
+      runFacts.participants.attempts.map(({ attempt_id, role }) => ({ attempt_id, role })),
+    ).toEqual([
+      { attempt_id: "p01", role: "planner" },
+      { attempt_id: "p02", role: "planner" },
+      { attempt_id: "p03", role: "merge" },
+    ]);
+    expect(telemetry).toMatchObject({ run_facts: runFacts });
   });
 
   it("council degrades honestly when a member fails but the merge still runs", async () => {
@@ -7377,6 +7525,14 @@ describe("Orchestrator", () => {
     const membership = readFileSync(join(res.runDir, "council", "membership.yaml"), "utf8");
     expect(membership).toContain("status: drafted");
     expect(membership).not.toContain("merge native status probe timed out");
+    const runFacts = readRunFacts(repo, res);
+    expect(runFacts.participants.planners).toBe(1);
+    expect(
+      runFacts.participants.attempts.map(({ attempt_id, role }) => ({ attempt_id, role })),
+    ).toEqual([
+      { attempt_id: "p01", role: "planner" },
+      { attempt_id: "p02", role: "merge" },
+    ]);
   });
 
   it("reviews the candidate worktree rather than the unchanged base repo", async () => {
@@ -9923,13 +10079,66 @@ describe("delegation belt injection (D32)", () => {
         runId: "run-child",
         delegatedFromRunId: "run-parent",
         delegationAdmissionId: "job-child",
-        onEvent: (event) => {
+        onEventPersist: (event) => {
           if (event.type === "run.created") throw new Error("event sink failed before announce");
         },
       }),
     ).rejects.toThrow(/event sink failed before announce/);
     authority.beginParentClose("run-parent");
     await expect(authority.waitForChildren("run-parent", 20)).resolves.toBeUndefined();
+  });
+
+  it("does not release an unrelated authority on a caller-supplied run-id collision", async () => {
+    const repo = await initRepo();
+    const authority = new DelegationBudgetAuthority();
+    authority.registerParent("run-collision", new BudgetLedger());
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", delegatingAdapter("deleg", true)]]),
+      reviewers: [],
+      delegationBudgetAuthority: authority,
+    });
+
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["deleg"],
+        attempts: 1,
+        runId: "run-collision",
+        onEventPersist: (event) => {
+          if (event.type === "run.created") throw new Error("event sink failed before announce");
+        },
+      }),
+    ).rejects.toThrow(/event sink failed before announce/);
+
+    expect(authority.hasParent("run-collision")).toBe(true);
+    authority.releaseRun("run-collision");
+  });
+
+  it("can retry the same run-id after delegated ledger preparation refuses pre-announce", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["deleg", delegatingAdapter("deleg", true)]]),
+      reviewers: [],
+      delegationBudgetAuthority: new DelegationBudgetAuthority(),
+    });
+    const input = {
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent" as const,
+      harnesses: ["deleg"],
+      attempts: 1,
+      runId: "run-unadmitted-child",
+      delegatedFromRunId: "run-missing-parent",
+      delegationAdmissionId: "job-missing",
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(orch.run(input)).rejects.toMatchObject({
+        code: "delegation_budget_parent_unavailable",
+      });
+    }
   });
 
   it("settles a delegated child adapter's cash into its local and parent family ledgers", async () => {
@@ -11276,18 +11485,8 @@ describe("frozen-plan brief delivery (withPlanBrief, INV-081)", () => {
     const store = new ArtifactStore(join(dir, "repo"), { claudexorDir: join(dir, "claudexor") });
     const paths = store.createRun("run-planbrief");
     const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
-    const orch = new Orchestrator({ registry: new Map() });
     const apply = (input: PlanBriefInput): PlanBriefInput =>
-      (
-        orch as unknown as {
-          withPlanBrief(
-            input: PlanBriefInput,
-            store: ArtifactStore,
-            paths: unknown,
-            log: unknown,
-          ): PlanBriefInput;
-        }
-      ).withPlanBrief(input, store, paths, {
+      withPlanBrief(input, store, paths, {
         emit: (type: string, payload: Record<string, unknown>) => events.push({ type, payload }),
       });
     return { dir, paths, events, apply };
@@ -11354,4 +11553,46 @@ describe("frozen-plan brief delivery (withPlanBrief, INV-081)", () => {
     expect(existsSync(join(paths.contextDir, "PLAN.md"))).toBe(false);
     expect(events).toEqual([]);
   });
+
+  it.each([
+    ["race", false],
+    ["convergence", true],
+  ] as const)(
+    "a quota snapshot preflight failure leaves no announced/orphaned %s plan run",
+    async (_strategy, untilClean) => {
+      const repo = await initRepo();
+      const planPath = join(repo, "approved-plan.md");
+      const planText = "# Approved plan\n\n1. implement safely\n";
+      writeFileSync(planPath, planText);
+      const runId = `run-quota-preflight-${untilClean ? "convergence" : "race"}`;
+      let announced: { runId: string } | null = null;
+      const orch = new Orchestrator({
+        registry: new Map(),
+        quotaSnapshots: () => {
+          throw new Error("quota snapshot boom");
+        },
+      });
+
+      await expect(
+        orch.run({
+          repoRoot: repo,
+          prompt: "implement the approved plan",
+          mode: "agent",
+          runId,
+          untilClean,
+          planRef: {
+            runId: "run-approved-plan",
+            path: planPath,
+            sha256: sha256(planText).replace(/^sha256:/, ""),
+          },
+          onRunStart: (info) => {
+            announced = info;
+          },
+        }),
+      ).rejects.toThrow("quota snapshot boom");
+
+      expect(announced).toBeNull();
+      expect(existsSync(new ArtifactStore(repo).runPaths(runId).root)).toBe(false);
+    },
+  );
 });

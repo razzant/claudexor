@@ -40,6 +40,7 @@ export function createRootLedger(args: {
       { code: "delegation_budget_parent_unavailable", status: 409 },
     );
   }
+  if (args.input.delegatedFromRunId) args.input.onDelegatedLedgerAttached?.();
   for (const snapshot of args.quotaSnapshots) ledger.observeQuotaSnapshot(snapshot);
   return ledger;
 }

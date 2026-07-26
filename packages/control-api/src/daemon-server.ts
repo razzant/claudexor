@@ -104,6 +104,11 @@ import {
 } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import {
+  effectiveTerminalFacts,
+  expectedRunFacts,
+  projectRunFactsForDetail,
+} from "./run-facts-projection.js";
+import {
   PlanQuestionsArtifact,
   CouncilProjection,
   derivePlanReadiness,
@@ -175,7 +180,6 @@ import {
   isTerminalLifecycle,
   needsDecision,
   needsOperatorAttention,
-  requiredActionsFor,
   outcomeBanner,
   outcomeFactsFromFailure,
   TestCommandInvocation,
@@ -2309,7 +2313,7 @@ function appendRunAuditEvent(
  * has performed (each probe is a synchronous filesystem stat-family lookup). The
  * single-parse test pattern (eventsParseCount) proves warm-list work is BOUNDED
  * — by page size (only sliced records are fingerprinted) and, for terminal runs,
- * by the one-probe short-circuit below (1 path instead of 12).
+ * by the one-probe short-circuit below (1 path instead of 13).
  */
 let fingerprintProbeCount = 0;
 export function runListFingerprintProbeCountForTests(): number {
@@ -2332,16 +2336,10 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     }
   };
   const identity = [rec.state, paramsFingerprint(rec), rec.finishedAt ?? "", rec.error ?? ""];
-  // QA-052 terminal short-circuit: a TERMINAL run's every projected artifact
-  // (events.jsonl, arbitration, telemetry, failure, the final/* outputs,
-  // work_product) is written before the daemon marks the run terminal and never
-  // changes afterward. The SOLE post-terminal mutation is the delivery/apply
-  // overlay (final/delivery_state.yaml), which the apply/revert route is the one
-  // writer of [B7]. So a warm re-list of a terminal run fingerprints ONE path
-  // instead of twelve — the cheap probe still detects an apply/revert, and every
-  // other axis is frozen. Active (queued/running) runs keep the full
-  // artifact-mtime fingerprint because their events.jsonl and final/* land while
-  // the run is still live.
+  // QA-052: every terminal projection artifact, including RunFacts, is frozen
+  // before terminal state. The sole later mutation is delivery_state.yaml [B7],
+  // so terminal re-listing probes one path instead of thirteen. Active runs
+  // retain the full fingerprint while events and final/* are still landing.
   if (TERMINAL_STATES.has(rec.state)) {
     return [...identity, mtime("final/delivery_state.yaml")].join("|");
   }
@@ -2350,6 +2348,7 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     mtime("events.jsonl"),
     mtime("arbitration/decision.yaml"),
     mtime("final/telemetry.yaml"),
+    mtime("final/run_facts.yaml"),
     mtime("final/failure.yaml"),
     mtime("final/summary.md"),
     // Primary outputs feed outputReadyState; a summary cached before the
@@ -2513,13 +2512,15 @@ function runOutcomeFacts(
   workState: WorkState | null = null,
 ): RunOutcomeFacts | null {
   if (!isTerminalLifecycle(rec.state)) return null;
+  const effective = (facts: RunOutcomeFacts) =>
+    effectiveTerminalFacts(rec.runDir, facts, decision, expectedRunFacts(rec)).outcomeFacts;
   // Arbitrated runs already carry work_state on decision.facts (INV-116).
-  if (decision) return decision.facts;
+  if (decision) return effective(decision.facts);
   const lifecycle = rec.state as RunOutcomeFacts["lifecycle"];
   const base = outcomeFactsFromFailure(lifecycle, failure?.category);
-  if (!workState || lifecycle !== "succeeded") return base;
+  if (!workState || lifecycle !== "succeeded") return effective(base);
   const vetoed = workState.state === "needs_input" || workState.state === "incomplete";
-  return {
+  return effective({
     ...base,
     work_state: workState,
     ...(vetoed
@@ -2529,7 +2530,7 @@ function runOutcomeFacts(
             (workState.state === "needs_input" ? "input_required" : "work_incomplete"),
         }
       : {}),
-  };
+  });
 }
 
 /** D-16: the winning attempt's work_state from a run's telemetry.yaml, used to
@@ -2733,17 +2734,25 @@ function detailFor(
     ? readRunEventsWithIntegrity(rec)
     : { events: [] as Record<string, unknown>[], integrity: undefined };
   const summary = summarizeRun(rec, events);
-  // Non-null exactly when the run has an applyable patch — the authoritative
-  // "something to apply" banner signal (a convergence patch may carry kind:patch
-  // with no meta.result_kind, so result.kind alone would miss it).
-  const applyEligibility = applyEligibilityFor(rec, operator);
+  const { runFacts, outcomeFacts, applyEligibility, requiredActions } = projectRunFactsForDetail(
+    rec.runDir,
+    summary.outcomeFacts ?? null,
+    operator !== null,
+    () => applyEligibilityFor(rec, operator),
+    expectedRunFacts(rec),
+  );
   const planProjection = planProjectionFor(rec, summary.mode);
   return ControlRunDetail.parse({
-    summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
+    summary: {
+      ...summary,
+      outcomeFacts,
+      waitingOnUser: pendingInteractions.length > 0,
+    },
     children,
+    runFacts,
     // Server-owned outcome headline (D18), from the single projection owner —
     // surfaces render it verbatim above model prose, never re-derive it.
-    outcomeBanner: outcomeBanner(summary.outcomeFacts ?? null, {
+    outcomeBanner: outcomeBanner(outcomeFacts, {
       applyState: summary.result.applyState,
       hasApplyableChange: applyEligibility !== null,
     }),
@@ -2770,11 +2779,8 @@ function detailFor(
     // Live plan checklist: the winner's (else last) plan.progress items.
     planProgress: latestPlanProgress(rec, decision?.winner ?? null, events, integrity),
     failure,
-    // Minimal typed required-actions (GH #29) for a succeeded-but-blocked run,
-    // from the single status-projection owner: review-blocked / checks-failed /
-    // needs-decision / work_state needs_input, keyed to the same validated
-    // operator decision the needs-decision + apply gates consult.
-    requiredActions: requiredActionsFor(summary.outcomeFacts ?? null, operator !== null),
+    // Canonical terminal actions plus legitimate post-terminal overlays.
+    requiredActions,
   });
 }
 
@@ -2984,9 +2990,15 @@ function applyGateInputFor(
   operatorDecision: ControlOperatorDecisionRecord | null,
 ): ApplyGateInput {
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+  const terminal = effectiveTerminalFacts(
+    rec.runDir,
+    decision?.facts ?? null,
+    decision,
+    expectedRunFacts(rec),
+  );
   return {
     state: rec.state,
-    decision,
+    decision: terminal.decision,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     patch,
     originalRepoRoot: runRepoRoot(rec),
@@ -2994,14 +3006,10 @@ function applyGateInputFor(
     operatorDecision: operatorDecision
       ? { action: operatorDecision.action, patch_sha256: operatorDecision.patchSha256 }
       : null,
-    // Effective mutable delivery/apply state from the SAME owner that projects
-    // summary.result.applyState (delivery_state overlay → work_product snapshot):
-    // an already-applied / reverted run gets a terminal eligibility disposition
-    // instead of a stale "rerun a fresh check" (QA-021).
+    // Mutable delivery overlay keeps eligibility aligned with summary (QA-021).
     applyState: controlRunResult(rec).applyState,
-    // D-16 work_state veto (INV-116): thread the model-attested work outcome so
-    // the gate refuses a needs_input/incomplete winner even with a clean review.
-    workState: decision?.facts?.work_state ?? null,
+    // D-16: canonical work_state vetoes apply even after a clean legacy review.
+    workState: terminal.outcomeFacts?.work_state ?? null,
   };
 }
 

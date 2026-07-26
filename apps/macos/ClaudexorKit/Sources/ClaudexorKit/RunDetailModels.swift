@@ -167,6 +167,9 @@ public struct RunDetail: Codable, Sendable, Equatable {
     /// Derived apply-gate verdict (single producer: the delivery gate); the
     /// Apply controls follow THIS exclusively. Null when the run has no patch.
     public let applyEligibility: ApplyEligibility?
+    /// Immutable, server-validated terminal receipt. Kept as structured JSON so
+    /// the app preserves the exact wire object instead of rebuilding its facts.
+    public let runFacts: JSONValue?
     /// Server-derived readiness of a plan run (D17); null for non-plan runs.
     public let planReadiness: PlanReadiness?
     /// Open questions of a plan run (projected from final/questions.json); empty otherwise.
@@ -176,7 +179,7 @@ public struct RunDetail: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case summary, children, lastSeq, artifacts, primaryOutput, timeline, budget, finalSummary, decision, workProduct, reviewFindings, pendingInteractions, failure, candidates, planProgress, operatorDecision
-        case outcomeBanner, applyEligibility, planReadiness, planQuestions, council
+        case outcomeBanner, applyEligibility, runFacts, planReadiness, planQuestions, council
     }
 
     private struct OperatorDecisionDto: Codable { let action: String? }
@@ -201,6 +204,7 @@ public struct RunDetail: Codable, Sendable, Equatable {
         operatorDecisionAction = (try c.decodeIfPresent(OperatorDecisionDto.self, forKey: .operatorDecision))?.action
         outcomeBanner = try c.decodeIfPresent(String.self, forKey: .outcomeBanner)
         applyEligibility = try c.decodeIfPresent(ApplyEligibility.self, forKey: .applyEligibility)
+        runFacts = try c.decodeIfPresent(JSONValue.self, forKey: .runFacts)
         planReadiness = try c.decodeIfPresent(PlanReadiness.self, forKey: .planReadiness)
         planQuestions = try c.decodeIfPresent([PlanQuestion].self, forKey: .planQuestions) ?? []
         council = try c.decodeIfPresent(CouncilInfo.self, forKey: .council)
@@ -226,6 +230,7 @@ public struct RunDetail: Codable, Sendable, Equatable {
         try c.encodeIfPresent(operatorDecisionAction.map { OperatorDecisionDto(action: $0) }, forKey: .operatorDecision)
         try c.encodeIfPresent(outcomeBanner, forKey: .outcomeBanner)
         try c.encodeIfPresent(applyEligibility, forKey: .applyEligibility)
+        try c.encodeIfPresent(runFacts, forKey: .runFacts)
         try c.encodeIfPresent(planReadiness, forKey: .planReadiness)
         try c.encode(planQuestions, forKey: .planQuestions)
         try c.encodeIfPresent(council, forKey: .council)

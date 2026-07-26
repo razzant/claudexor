@@ -1116,7 +1116,441 @@
               "type": "null"
             }
           ],
-          "description": "Deep-scan reducer outcome (#27); null on non-deep-scan runs and legacy artifacts.",
+          "description": "Deep-scan reducer outcome (#27); null on non-deep-scan/legacy runs.",
+          "default": null
+        },
+        "run_facts": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "schema_version": {
+                  "$ref": "#/definitions/RunTelemetry/properties/schema_version"
+                },
+                "run_id": {
+                  "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                },
+                "task_id": {
+                  "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                },
+                "mode": {
+                  "$ref": "#/definitions/RunTelemetry/properties/mode"
+                },
+                "outcome": {
+                  "type": "object",
+                  "properties": {
+                    "lifecycle": {
+                      "type": "string",
+                      "enum": [
+                        "succeeded",
+                        "failed",
+                        "cancelled",
+                        "interrupted"
+                      ],
+                      "description": "Terminal lifecycle of the run."
+                    },
+                    "noChanges": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "True when the run finished without changing any files (the ex no_op fact)."
+                    },
+                    "checks": {
+                      "type": "string",
+                      "enum": [
+                        "passed",
+                        "failed",
+                        "not_configured"
+                      ],
+                      "description": "Deterministic checks axis: configured project checks passed, failed, or none are configured (a named state, never a stand-in for review results).",
+                      "default": "not_configured"
+                    },
+                    "review": {
+                      "type": "string",
+                      "enum": [
+                        "approved",
+                        "blocked",
+                        "not_run"
+                      ],
+                      "description": "Review axis: approved (clean cross-family verified review), blocked (open accepted findings), or not_run.",
+                      "default": "not_run"
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "harness_failed",
+                            "no_changes",
+                            "review_blocked",
+                            "checks_failed",
+                            "budget_exhausted",
+                            "budget_overshoot",
+                            "cost_unverifiable",
+                            "not_converged",
+                            "stuck_no_progress",
+                            "wall_clock_exceeded",
+                            "user_cancelled",
+                            "crash_interrupted",
+                            "input_required",
+                            "work_incomplete",
+                            "context_capacity_exhausted",
+                            "work_report_contract"
+                          ],
+                          "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Typed reason qualifying a non-clean terminal; null on a clean success.",
+                      "default": null
+                    },
+                    "work_state": {
+                      "$ref": "#/definitions/RunTelemetry/properties/attempts/items/properties/outcome/properties/work_state",
+                      "description": "D-16 model-attested work outcome, orthogonal to lifecycle; a needs_input/incomplete state vetoes applyability and exit 0. Absent on runs with no work_report transport."
+                    }
+                  },
+                  "required": [
+                    "lifecycle"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Independent terminal outcome axes of a run (D8/D18)."
+                },
+                "deliverable": {
+                  "type": "object",
+                  "properties": {
+                    "present": {
+                      "type": "boolean",
+                      "description": "Whether the canonical primary deliverable exists."
+                    },
+                    "kind": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "answer",
+                            "report",
+                            "plan",
+                            "patch",
+                            "structured_output"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Kind of canonical primary deliverable; null when none exists."
+                    },
+                    "path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Run-relative path of the canonical primary deliverable; null when absent."
+                    },
+                    "producer_attempt_id": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Attempt that produced the deliverable, when known.",
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "present",
+                    "kind",
+                    "path"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Canonical primary-output presence and identity for a terminal run."
+                },
+                "participants": {
+                  "type": "object",
+                  "properties": {
+                    "planners": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of participants whose canonical role is planner."
+                    },
+                    "attempts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "attempt_id": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Attempt id when the participant owns an orchestrator attempt; null for reviewer-panel members."
+                          },
+                          "harness_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Harness that served this participant role."
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "planner",
+                              "merge",
+                              "candidate",
+                              "scout",
+                              "reducer",
+                              "reviewer"
+                            ],
+                            "description": "Canonical role of one participant in the terminal run graph."
+                          },
+                          "deliverable_present": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Whether this participant produced the deliverable its role requested."
+                          },
+                          "status": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "success",
+                                  "success_with_warnings",
+                                  "blocked",
+                                  "failed"
+                                ],
+                                "description": "Terminal outcome recorded for one run participant."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Participant outcome when recorded; null for artifact-only reviewer membership.",
+                            "default": null
+                          }
+                        },
+                        "required": [
+                          "attempt_id",
+                          "harness_id",
+                          "role"
+                        ],
+                        "additionalProperties": false,
+                        "description": "One role-labelled participant in the terminal run graph."
+                      },
+                      "default": [],
+                      "description": "Role-labelled participant roster."
+                    }
+                  },
+                  "required": [
+                    "planners"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Terminal participant graph plus its planner-lane count."
+                },
+                "gates": {
+                  "type": "object",
+                  "properties": {
+                    "configured": {
+                      "type": "boolean",
+                      "description": "Whether the frozen task configured deterministic gates."
+                    },
+                    "required": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of configured required gates."
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Total configured deterministic gates."
+                    },
+                    "executed": {
+                      "type": "boolean",
+                      "description": "Whether the terminal attempt executed the gate set."
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "not_configured",
+                        "passed",
+                        "failed",
+                        "skipped"
+                      ],
+                      "description": "Terminal state of the configured deterministic gate set."
+                    },
+                    "receipt_attempt_id": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Attempt whose gate receipt decides this projection; null when no gates executed.",
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "configured",
+                    "required",
+                    "total",
+                    "executed",
+                    "state"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Canonical gate configuration and terminal receipt projection."
+                },
+                "review": {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "$ref": "#/definitions/RunTelemetry/properties/run_facts/anyOf/0/properties/outcome/properties/review"
+                    },
+                    "blocker_ids": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                      },
+                      "default": [],
+                      "description": "Stable ids of accepted evidence-backed blocking findings."
+                    },
+                    "blockers": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Number of blocking findings."
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "blockers"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Canonical terminal review verdict and blocking-finding identity."
+                },
+                "apply": {
+                  "type": "object",
+                  "properties": {
+                    "eligibility": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "eligible": {
+                              "type": "boolean",
+                              "description": "True when the apply gate would accept this run's patch right now."
+                            },
+                            "state": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "The gate's apply-eligibility classification (e.g. needs_review | not_verified | no_changes | ok) when known."
+                            },
+                            "reason": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "The gate's refusal text when not eligible (null when eligible)."
+                            },
+                            "requiredAction": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "Honest guidance for what actually unblocks apply (typed operator decision, add gates, re-run, or nothing to apply)."
+                            }
+                          },
+                          "required": [
+                            "eligible",
+                            "state",
+                            "reason",
+                            "requiredAction"
+                          ],
+                          "additionalProperties": false,
+                          "description": "Derived apply-gate verdict for a run's WorkProduct (single producer in the delivery gate)."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Delivery-gate eligibility at terminalization; null when nothing is applyable.",
+                      "default": null
+                    },
+                    "operator_decision_present": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Whether a valid operator decision was present when the receipt was finalized."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Terminal apply eligibility and operator-decision state."
+                },
+                "required_actions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "enum": [
+                          "provide_required_input",
+                          "complete_incomplete_work",
+                          "resolve_review_block",
+                          "fix_failed_checks",
+                          "record_operator_decision"
+                        ],
+                        "description": "Stable machine id for a required operator action on a blocked terminal run."
+                      },
+                      "detail": {
+                        "type": "string",
+                        "description": "Human-readable guidance for this action (English-only, INV-141)."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "detail"
+                    ],
+                    "additionalProperties": false,
+                    "description": "One typed required operator action derived from a run's terminal outcome facts."
+                  },
+                  "default": [],
+                  "description": "Typed actions required to unblock this terminal outcome."
+                },
+                "generated_at": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "When this immutable terminal receipt was finalized."
+                }
+              },
+              "required": [
+                "schema_version",
+                "run_id",
+                "task_id",
+                "mode",
+                "outcome",
+                "deliverable",
+                "participants",
+                "gates",
+                "review",
+                "apply",
+                "generated_at"
+              ],
+              "additionalProperties": false,
+              "description": "Validated immutable terminal facts for one run."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact validated terminal receipt; null before terminalization or on legacy runs.",
           "default": null
         },
         "generated_at": {

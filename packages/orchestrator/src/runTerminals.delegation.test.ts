@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { BudgetLedger, routeCostEvidence } from "@claudexor/budget";
 import { EventLog } from "@claudexor/event-log";
-import { makeOutcomeFacts } from "@claudexor/schema";
+import { SCHEMA_VERSION, TaskContract, makeOutcomeFacts } from "@claudexor/schema";
 import { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
 import { failTerminally, guardAnnouncedRun } from "./runTerminals.js";
 
@@ -21,6 +21,42 @@ function fixture(runId: string) {
   const paths = store.createRun(runId);
   const log = new EventLog(paths.eventsPath, runId, "task-parent");
   return { store, paths, log };
+}
+
+function seedPassingGateEvidence({
+  store,
+  paths,
+  log,
+}: Pick<ReturnType<typeof fixture>, "store" | "paths" | "log">): void {
+  store.writeYaml(
+    join(paths.contextDir, "task.yaml"),
+    TaskContract.parse({
+      schema_version: SCHEMA_VERSION,
+      task_id: "task-parent",
+      created_at: "2026-07-26T12:00:00.000Z",
+      repo: { root: store.repoRoot, base_ref: "main" },
+      mode: { kind: "agent" },
+      user_intent: { raw: "exercise terminal reconciliation" },
+      tests: {
+        commands: [
+          {
+            id: "gate-1",
+            program: process.execPath,
+            args: ["-e", "process.exit(0)"],
+            envAllowlist: [],
+            required: true,
+            trust_required: false,
+            trust_grant: null,
+          },
+        ],
+      },
+    }),
+  );
+  log.emit("gate.completed", {
+    attempt_id: "a01",
+    gates: [{ id: "gate-1", status: "passed" }],
+    passed: true,
+  });
 }
 
 describe("Delegate terminal drain ordering", () => {
@@ -198,6 +234,7 @@ describe("Delegate terminal drain ordering", () => {
           budgetTerminal: () => root.terminal(),
           recheckBudgetAfterBarrier: () => true,
         });
+        seedPassingGateEvidence({ store, paths, log });
         store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
           winner: "a01",
           facts: preparedFacts,
@@ -301,6 +338,7 @@ describe("Delegate terminal drain ordering", () => {
       .map((line) => (JSON.parse(line) as { type: string }).type);
     expect(types).toEqual([
       "run.created",
+      "gate.completed",
       "output.ready",
       "budget.cash",
       "output.ready",
@@ -345,6 +383,7 @@ describe("Delegate terminal drain ordering", () => {
           valuationKnowledge: () => root.valuationKnowledge(),
           recheckBudgetAfterBarrier: () => true,
         });
+        seedPassingGateEvidence({ store, paths, log });
         store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
           winner: "a01",
           facts: makeOutcomeFacts("succeeded"),
@@ -410,7 +449,7 @@ describe("Delegate terminal drain ordering", () => {
       .trim()
       .split("\n")
       .map((line) => (JSON.parse(line) as { type: string }).type);
-    expect(types).toEqual(["run.created", "output.ready", "run.failed"]);
+    expect(types).toEqual(["run.created", "gate.completed", "output.ready", "run.failed"]);
     expect(readFileSync(join(paths.finalDir, "failure.yaml"), "utf8")).toContain(
       "code: delegation_child_drain_timeout",
     );
@@ -494,6 +533,7 @@ describe("Delegate terminal drain ordering", () => {
             valuationKnowledge: () => root.valuationKnowledge(),
             recheckBudgetAfterBarrier: () => true,
           });
+          seedPassingGateEvidence({ store, paths, log });
           store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
             winner: "a01",
             facts: preparedFacts,
@@ -620,6 +660,7 @@ describe("Delegate terminal drain ordering", () => {
         .map((line) => JSON.parse(line) as { type: string; payload?: Record<string, unknown> });
       expect(events.map((event) => event.type)).toEqual([
         "run.created",
+        "gate.completed",
         ...(preparedFailure ? ["output.ready"] : []),
         "output.ready",
         "run.failed",
@@ -736,6 +777,7 @@ describe("Delegate terminal drain ordering", () => {
         spend: () => 0.2,
         recheckBudgetAfterBarrier: () => false,
       });
+      seedPassingGateEvidence({ store, paths, log });
       throw new Error("ordinary harness failed");
     });
 
@@ -769,7 +811,7 @@ describe("Delegate terminal drain ordering", () => {
       .trim()
       .split("\n")
       .map((line) => (JSON.parse(line) as { type: string }).type);
-    expect(types).toEqual(["run.created", "output.ready", "run.failed"]);
+    expect(types).toEqual(["run.created", "gate.completed", "output.ready", "run.failed"]);
   });
 
   it("reconciles only terminal truth when an ordinary run is cancelled after a valid decision", async () => {
@@ -801,6 +843,7 @@ describe("Delegate terminal drain ordering", () => {
         spend: () => 0.2,
         recheckBudgetAfterBarrier: () => false,
       });
+      seedPassingGateEvidence({ store, paths, log });
       controller.abort();
       throw new Error("ordinary harness observed cancellation");
     });
@@ -834,7 +877,7 @@ describe("Delegate terminal drain ordering", () => {
       .trim()
       .split("\n")
       .map((line) => (JSON.parse(line) as { type: string }).type);
-    expect(types).toEqual(["run.created", "output.ready", "run.failed"]);
+    expect(types).toEqual(["run.created", "gate.completed", "output.ready", "run.failed"]);
   });
 
   it("does not re-terminalize an ordinary non-deferred budget failure", async () => {

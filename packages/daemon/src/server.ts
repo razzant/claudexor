@@ -31,6 +31,7 @@ import {
   resultSummary,
   type JobRecord,
 } from "./job-record.js";
+import { settleJobError } from "./job-settlement.js";
 import { socketAlive } from "./socket-probe.js";
 export { JOB_STATES, jobStateFromResult, socketAlive, type JobRecord };
 
@@ -559,32 +560,13 @@ export class DaemonServer {
       } else {
         rec = this.updateRecord(rec, { state, result, finishedAt: nowIso() });
       }
-    } catch (err) {
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as { code: unknown }).code
-          : undefined;
-      const status =
-        err && typeof err === "object" && "status" in err
-          ? (err as { status: unknown }).status
-          : undefined;
-      const typedStatus =
-        typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
-          ? status
-          : undefined;
-      // Carry a typed throw's non-retryability (plan_not_ready) to the
-      // refused-turn recorder; only an explicit boolean is a claim (round-2 #4).
-      const retryable =
-        err && typeof err === "object" && "retryable" in err
-          ? (err as { retryable: unknown }).retryable
-          : undefined;
-      rec = this.updateRecord(rec, {
-        state: controller.signal.aborted ? "cancelled" : "failed",
-        error: redactSecrets(err instanceof Error ? err.message : String(err)),
-        ...(typeof code === "string" && code ? { errorCode: code } : {}),
-        ...(typedStatus !== undefined ? { errorStatus: typedStatus } : {}),
-        ...(typeof retryable === "boolean" ? { errorRetryable: retryable } : {}),
-        finishedAt: nowIso(),
+    } catch (thrown) {
+      rec = settleJobError({
+        thrown,
+        record: rec,
+        aborted: controller.signal.aborted,
+        commands: this.opts.commands,
+        update: (record, patch) => this.updateRecord(record, patch),
       });
     } finally {
       this.controllers.delete(id);

@@ -54,3 +54,4 @@ export * from "./control-gc.js";
 export * from "./control-secret.js";
 export * from "./agent-capabilities.js";
 export * from "./apply-eligibility.js";
+export * from "./run-facts.js";

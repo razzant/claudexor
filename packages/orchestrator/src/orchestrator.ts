@@ -78,6 +78,7 @@ import {
   type ExtraMcpServer,
   FinalVerifyRecord,
   ModeKind as ModeKindSchema,
+  QuotaSnapshot as QuotaSnapshotSchema,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
   FrozenTaskContractArtifact as TaskContractSchema,
@@ -106,7 +107,9 @@ import { routingFailureClassification } from "./routing-failure.js";
 export { routingFailureClassification } from "./routing-failure.js";
 import { runBounded } from "./run-bounded.js";
 import { planPrompt } from "./plan-prompt.js";
+import { verifiedPlanBrief, withPlanBrief } from "./planBrief.js";
 import { resolveRunInputDefaults } from "./run-input-resolution.js";
+import { createRunEventLog, prepareRunAnnouncement } from "./runEventLog.js";
 import { createRootLedger } from "./root-ledger.js";
 import { arbitrationBudgetOptions, decisionBudgetSummary } from "./decisionBudget.js";
 import { buildRevisePrompt } from "./revisePrompt.js";
@@ -201,7 +204,7 @@ import {
   resolveContractGates,
 } from "./contract-gates.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
-import { EventLog } from "@claudexor/event-log";
+import type { EventLog } from "@claudexor/event-log";
 import {
   assertMandatoryContext,
   buildContextPack,
@@ -367,6 +370,9 @@ export interface RunInput {
   delegatedFromRunId?: string | null;
   /** Daemon job id whose atomic admission authorized this child. */
   delegationAdmissionId?: string | null;
+  /** @internal Marks that this invocation, rather than merely this caller-
+   * supplied run id, acquired a delegated child ledger. */
+  onDelegatedLedgerAttached?: () => void;
   /** Current top-level Delegate run id, bound after strategy allocation. */
   delegationParentRunId?: string | null;
   /** The daemon-built delegation belt MCP server descriptor (carries the
@@ -437,8 +443,10 @@ export interface RunInput {
   /** Records the resolved continuity disclosure onto the current turn (the
    * daemon writes it to the thread store). Called once per resolved lane. */
   onContinuityResolved?: (turnId: string, disclosure: ContinuityDisclosureResult) => void;
-  /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
+  /** Best-effort live sink for every RunEvent, called after durable persistence. */
   onEvent?: (event: RunEvent) => void;
+  /** Durable RunEvent sink owned by the daemon journal; failures fail the run. */
+  onEventPersist?: (event: RunEvent) => void;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
   onHarnessEvent?: (event: HarnessEvent) => void;
   /** Called once when the run id/dir are known, before any harness work begins. */
@@ -689,10 +697,14 @@ export class Orchestrator {
       throw new Error(`Delegate is an agent-only strategy (got mode=${mode})`);
     }
     const runId = resolved.runId ?? newId("run");
+    let delegatedLedgerAttached = false;
     resolved = {
       ...resolved,
       runId,
       taskId: resolved.taskId ?? newId("task"),
+      onDelegatedLedgerAttached: () => {
+        delegatedLedgerAttached = true;
+      },
     };
     if (resolved.delegate === true) {
       resolved = {
@@ -753,43 +765,55 @@ export class Orchestrator {
     // Whole-strategy terminal net: once a strategy ANNOUNCES its
     // run, any escaped throw still stamps failure.yaml + summary + run.failed
     // instead of orphaning events.jsonl.
-    return guardAnnouncedRun(
-      resolved.signal,
-      (announce) => {
-        switch (mode) {
-          case "ask":
-            // `--deep-scan` widens the answer into the bounded multi-scout
-            // research sweep with synthesis (the old `audit --swarm`/`explore`).
-            return resolved.deepScan
-              ? this.runDeepScan(resolved, announce)
-              : this.runAsk(resolved, announce);
-          case "agent":
-            // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
-            // and `--attempts` select the convergence loop; `--n` selects the race
-            // width; `--create` switches the candidate intent to create_from_scratch.
-            if (resolved.untilClean) return this.runConvergence(resolved, mode, null, announce);
-            if (resolved.attempts !== undefined && resolved.attempts !== null) {
-              return this.runConvergence(resolved, mode, resolved.attempts, announce);
-            }
-            return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announce);
-          case "plan":
-            return this.runPlan(resolved, announce);
-        }
-      },
-      async ({ runId }) => {
-        const authority = this.deps.delegationBudgetAuthority;
-        if (!authority?.hasParent(runId)) return;
-        authority.beginParentClose(runId);
-        await authority.waitForChildren(runId);
-      },
-      // Single per-run terminalization hook: release the routing-rationale map
-      // entry on EVERY terminal (incl. a run that died before its telemetry
-      // writer ran, which is the leak this closes).
-      (runId) => {
-        this.routingRationaleByRun.delete(runId);
+    const releaseRunState = (settledRunId: string) => {
+      this.routingRationaleByRun.delete(settledRunId);
+      this.deps.delegationBudgetAuthority?.releaseRun(settledRunId);
+    };
+    try {
+      return await guardAnnouncedRun(
+        resolved.signal,
+        (announce) => {
+          switch (mode) {
+            case "ask":
+              // `--deep-scan` widens the answer into the bounded multi-scout
+              // research sweep with synthesis (the old `audit --swarm`/`explore`).
+              return resolved.deepScan
+                ? this.runDeepScan(resolved, announce)
+                : this.runAsk(resolved, announce);
+            case "agent":
+              // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
+              // and `--attempts` select the convergence loop; `--n` selects the race
+              // width; `--create` switches the candidate intent to create_from_scratch.
+              if (resolved.untilClean) return this.runConvergence(resolved, mode, null, announce);
+              if (resolved.attempts !== undefined && resolved.attempts !== null) {
+                return this.runConvergence(resolved, mode, resolved.attempts, announce);
+              }
+              return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announce);
+            case "plan":
+              return this.runPlan(resolved, announce);
+          }
+        },
+        async ({ runId }) => {
+          const authority = this.deps.delegationBudgetAuthority;
+          if (!authority?.hasParent(runId)) return;
+          authority.beginParentClose(runId);
+          await authority.waitForChildren(runId);
+        },
+        // Single per-run terminalization hook: release the routing-rationale map
+        // entry on EVERY terminal (incl. a run that died before its telemetry
+        // writer ran, which is the leak this closes).
+        releaseRunState,
+      );
+    } catch (error) {
+      // A durable startup sink may refuse `run.created` before the strategy can
+      // announce its context. Release only a delegated child ledger acquired by
+      // THIS invocation; a caller-supplied run-id collision must never release
+      // another live parent/child authority or its routing state.
+      if (delegatedLedgerAttached) {
         this.deps.delegationBudgetAuthority?.releaseRun(runId);
-      },
-    );
+      }
+      throw error;
+    }
   }
 
   private async resolveReviewers(
@@ -2840,46 +2864,6 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Freeze-on-implement delivery (D17/D27): verify the frozen plan's hash and
-   * materialize it as context/PLAN.md in the run artifact tree — OUTSIDE every
-   * worktree, so it can never dirty a diff — then point the prompt at the
-   * absolute path. A mismatched or unreadable plan fails LOUDLY before any
-   * harness spawns (the tamper fence; retry replays planRef verbatim, so a
-   * retried implement can never silently run without its plan).
-   */
-  private withPlanBrief(
-    input: RunInput,
-    store: ArtifactStore,
-    paths: RunPaths,
-    log: EventLog,
-  ): RunInput {
-    if (!input.planRef) return input;
-    const text = readTextSafe(input.planRef.path);
-    if (!text || !text.trim()) {
-      throw new Error(
-        `implement plan: the frozen plan at ${input.planRef.path} is missing or unreadable`,
-      );
-    }
-    const digest = sha256(text).replace(/^sha256:/, "");
-    if (digest !== input.planRef.sha256) {
-      throw new Error(
-        `implement plan: plan hash mismatch (expected ${input.planRef.sha256}, got ${digest}) — the plan was modified after freeze; re-run Implement from the plan turn`,
-      );
-    }
-    const briefPath = join(paths.contextDir, "PLAN.md");
-    store.writeText(briefPath, text);
-    log.emit("plan.brief.materialized", {
-      plan_run_id: input.planRef.runId,
-      sha256: input.planRef.sha256,
-      path: "context/PLAN.md",
-    });
-    return {
-      ...input,
-      prompt: `${input.prompt}\n\nThe approved plan is at: ${briefPath} — read it before starting and re-read it as needed.`,
-    };
-  }
-
   private async runRace(
     input: RunInput,
     mode: ModeKind,
@@ -2887,24 +2871,19 @@ export class Orchestrator {
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
-    // Contract validation (trust gates, secret scans) runs BEFORE the run is
-    // announced: a refused run must fail the request loudly, not 200 a runId
-    // and leave an orphaned run dir without a terminal event.
+    // Validate the contract before announcing; refused runs stay loud and unannounced.
     const contract = this.buildContract(input, taskId, mode);
+    const planBrief = verifiedPlanBrief(input);
+    const quotaSnapshots = this.quotaSnapshotPreflight();
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
-    input = this.withPlanBrief(input, store, paths, log);
-    // The execution root is the tree the harness mutates: the project itself for
-    // in-place threads/ordinary runs, or the thread's persistent worktree for an
-    // isolated thread. Config/artifacts/contract stay anchored to repoRoot. Both
-    // the WorkspaceManager and the git boundary resolve against this SINGLE root.
-    const execRoot = this.execRootOf(input);
-    const wsm = new WorkspaceManager(execRoot);
-
-    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
-    log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-    const ledger = this.rootLedger(input, contract, log);
+    const log = createRunEventLog(paths.eventsPath, runId, taskId, input);
+    const ledger = prepareRunAnnouncement(log, () => {
+      const preparedLedger = this.rootLedger(input, contract, log, quotaSnapshots);
+      safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
+      log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
+      return preparedLedger;
+    });
     announce?.(
       announcedRunContext(
         { log, store, paths, runId, taskId, mode, phase: "race" },
@@ -2912,6 +2891,12 @@ export class Orchestrator {
         () => this.deps.delegationBudgetAuthority?.hasParent(runId) === true,
       ),
     );
+    input = withPlanBrief(input, store, paths, log, planBrief);
+    // The harness, WorkspaceManager, and git boundary share one execution root;
+    // config, artifacts, and contract remain anchored to repoRoot.
+    const execRoot = this.execRootOf(input);
+    const wsm = new WorkspaceManager(execRoot);
+
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
@@ -3965,9 +3950,13 @@ export class Orchestrator {
     // excluded from arbitration upstream and from the fallback here.
     const winnerRun =
       workingRuns.find((r) => r.attemptId === result.decision.winner) ?? workingRuns[0];
-    // A reviewer escalation to a human is a BLOCKED terminal, not a silent risk note.
-    const needsHuman = evidences.some((e) =>
-      e.findings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f)),
+    const winnerEvidence = winnerRun
+      ? evidences.find((e) => e.attemptId === winnerRun.attemptId)
+      : undefined;
+    // A reviewer escalation blocks only when it belongs to the selected
+    // deliverable. A losing candidate cannot veto a clean winner.
+    const needsHuman = (winnerEvidence?.findings ?? []).some(
+      (finding) => finding.severity === "NEEDS_HUMAN" && isBlocking(finding),
     );
     // Run-level review_verified is the WINNER's verification: an
     // empty-diff loser's unverified route must not drag the shipped result's
@@ -4042,7 +4031,6 @@ export class Orchestrator {
       store.writeText(join(paths.finalDir, "patch.diff"), winnerRun.diff);
       const wstats = diffStats(winnerRun.diff);
       const hasDiff = winnerRun.diff.trim().length > 0;
-      const winnerEvidence = evidences.find((e) => e.attemptId === winnerRun.attemptId);
       const blockers = winnerEvidence
         ? winnerEvidence.findings.filter((f) => isBlocking(f)).length
         : 0;
@@ -4627,12 +4615,26 @@ export class Orchestrator {
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
-    // Contract validation BEFORE the run is announced (see runRace).
     const contract = this.buildContract(input, taskId, mode);
+    const planBrief = verifiedPlanBrief(input);
+    const quotaSnapshots = this.quotaSnapshotPreflight();
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
-    input = this.withPlanBrief(input, store, paths, log);
+    const log = createRunEventLog(paths.eventsPath, runId, taskId, input);
+    const ledger = prepareRunAnnouncement(log, () => {
+      const preparedLedger = this.rootLedger(input, contract, log, quotaSnapshots);
+      safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
+      log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
+      return preparedLedger;
+    });
+    announce?.(
+      announcedRunContext(
+        { log, store, paths, runId, taskId, mode, phase: "convergence" },
+        ledger,
+        () => this.deps.delegationBudgetAuthority?.hasParent(runId) === true,
+      ),
+    );
+    input = withPlanBrief(input, store, paths, log, planBrief);
     // The execution root is the tree the harness mutates (thread worktree for an
     // isolated thread, else the project). The WorkspaceManager AND the git
     // boundary must resolve against the SAME root — the race path does so via the
@@ -4641,28 +4643,7 @@ export class Orchestrator {
     const execRoot = this.execRootOf(input);
     const wsm = new WorkspaceManager(execRoot);
     const readiness = new ReadinessLedger();
-    let ledger: BudgetLedger;
-    try {
-      ledger = this.rootLedger(input, contract, log);
-      store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
-      safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
-      log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-      announce?.(
-        announcedRunContext(
-          { log, store, paths, runId, taskId, mode, phase: "convergence" },
-          ledger,
-          () => this.deps.delegationBudgetAuthority?.hasParent(runId) === true,
-        ),
-      );
-    } catch (error) {
-      // A delegated child attaches its scoped financial view before the run is
-      // announced. If any fallible artifact/start callback in that narrow gap
-      // throws, the terminal net has no run context, so detach here explicitly.
-      if (input.delegatedFromRunId) {
-        this.deps.delegationBudgetAuthority?.releaseRun(runId);
-      }
-      throw error;
-    }
+    store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
 
     // Live (in-place) isolation deliberately tolerates non-git stateful
     // environments; only envelope isolation needs the git boundary.
@@ -5939,15 +5920,18 @@ export class Orchestrator {
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
-    // Plan runs get the same immutable contract truth as every other mode;
-    // contract validation runs BEFORE the run is announced (see runRace).
+    // Plan runs get the same pre-announcement immutable contract truth.
     const contract = this.buildContract(input, taskId, "plan");
+    const quotaSnapshots = this.quotaSnapshotPreflight();
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
-    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
-    log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
-    const ledger = this.rootLedger(input, contract, log);
+    const log = createRunEventLog(paths.eventsPath, runId, taskId, input);
+    const ledger = prepareRunAnnouncement(log, () => {
+      const preparedLedger = this.rootLedger(input, contract, log, quotaSnapshots);
+      safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
+      log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
+      return preparedLedger;
+    });
     announce?.(
       announcedRunContext(
         { log, store, paths, runId, taskId, mode: "plan", phase: "plan" },
@@ -5955,7 +5939,6 @@ export class Orchestrator {
         () => this.deps.delegationBudgetAuthority?.hasParent(runId) === true,
       ),
     );
-
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
@@ -6355,13 +6338,24 @@ export class Orchestrator {
     return inputBudget ?? this.deps.paidBudget ?? cfg.global.budget.paid_budget_per_run;
   }
 
-  private rootLedger(input: RunInput, contract: TaskContract, log: EventLog): BudgetLedger {
+  private quotaSnapshotPreflight(): QuotaSnapshot[] {
+    return [...(this.deps.quotaSnapshots?.() ?? [])].map((snapshot) =>
+      QuotaSnapshotSchema.parse(snapshot),
+    );
+  }
+
+  private rootLedger(
+    input: RunInput,
+    contract: TaskContract,
+    log: EventLog,
+    quotaSnapshots: readonly QuotaSnapshot[],
+  ): BudgetLedger {
     return createRootLedger({
       input,
       contract,
       log,
       authority: this.deps.delegationBudgetAuthority,
-      quotaSnapshots: this.deps.quotaSnapshots?.() ?? [],
+      quotaSnapshots,
     });
   }
 
@@ -6457,19 +6451,22 @@ export class Orchestrator {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
     const prompt = input.prompt || opts.defaultPrompt;
-    // Contract validation BEFORE the run is announced (see runRace). The
-    // recorded user intent is the CALLER's goal.
+    // Validate before announcing; record the caller's goal as user intent.
     const contract = this.buildContract(
       { ...input, prompt: opts.contractIntent ?? prompt },
       taskId,
       opts.mode,
     );
+    const quotaSnapshots = this.quotaSnapshotPreflight();
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
-    const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
-    safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
-    log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
-    const ledger = this.rootLedger(input, contract, log);
+    const log = createRunEventLog(paths.eventsPath, runId, taskId, input);
+    const ledger = prepareRunAnnouncement(log, () => {
+      const preparedLedger = this.rootLedger(input, contract, log, quotaSnapshots);
+      safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
+      log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
+      return preparedLedger;
+    });
     announce?.(
       announcedRunContext(
         { log, store, paths, runId, taskId, mode: opts.mode, phase: "report" },
@@ -6477,7 +6474,6 @@ export class Orchestrator {
         () => this.deps.delegationBudgetAuthority?.hasParent(runId) === true,
       ),
     );
-
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
@@ -7593,11 +7589,17 @@ export class Orchestrator {
       join(paths.finalDir, "summary.md"),
       `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${report}\n`,
     );
+    const reportProducerAttemptId =
+      opts.deepScan &&
+      deepScanSynthesis?.status === "succeeded" &&
+      deepScanSynthesis.reducer_attempt_id
+        ? deepScanSynthesis.reducer_attempt_id
+        : (succeeded[0]?.attemptId ?? "a01");
     store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: "report",
       source_task_id: taskId,
-      producer_attempt_id: succeeded[0]?.attemptId ?? "a01",
+      producer_attempt_id: reportProducerAttemptId,
       files: Object.fromEntries([[opts.artifactName, join(paths.finalDir, opts.artifactName)]]),
       meta: {
         harnesses: attempts.map((a) => a.harnessId),
@@ -7606,7 +7608,7 @@ export class Orchestrator {
         read_only: true,
       },
     });
-    log.emit("work_product.emitted", { kind: "report", winner: succeeded[0]?.attemptId ?? null });
+    log.emit("work_product.emitted", { kind: "report", winner: reportProducerAttemptId });
     const workVetoed =
       terminalFacts.work_state?.state === "needs_input" ||
       terminalFacts.work_state?.state === "incomplete";

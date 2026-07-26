@@ -64,7 +64,6 @@ import {
 } from "./local-attachment.js";
 import {
   connectDaemonIfRunning,
-  daemonOutcomeProblemFields,
   daemonOutcomeSummary,
   ensureDaemon,
   enqueueAndAwait,
@@ -81,8 +80,9 @@ import {
   inspectDelegationLines,
   projectDelegation,
   terminalDelegationLines,
-  terminalDetailFields,
 } from "./delegation-output.js";
+import { readRunFactsArtifact } from "./run-facts-projection.js";
+import { projectTerminalRunOutput } from "./terminal-run-output.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
 import { resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";
@@ -672,16 +672,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const started = await enqueueAndAwait(client, addr, body, { waitForTerminal: false });
       if (!started.runId) {
         // Even the early-failure path stays valid NDJSON (compact, one line).
-        printJsonLine({
-          frame: "run.terminal",
-          runId: "",
-          runDir: started.runDir,
-          status: started.status,
-          jobId: started.jobId,
-          mode: p.mode,
-          ...(started.error ? { error: started.error } : {}),
-          ...daemonOutcomeProblemFields(started),
-        });
+        printJsonLine(projectTerminalRunOutput(started, p.mode, null, { frame: "run.terminal" }));
         return exitCodeForState(started.status);
       }
       printJsonLine({
@@ -699,18 +690,12 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const status = out.status;
       const reason = daemonOutcomeSummary({ ...started, status, error: out.error });
       const detail = await fetchRunDetail(addr, out.runId);
-      printJsonLine({
-        frame: "run.terminal",
-        runId: out.runId,
-        runDir: out.runDir,
-        status: out.status,
-        jobId: out.jobId,
-        mode: p.mode,
-        ...(out.error ? { error: out.error } : {}),
-        ...daemonOutcomeProblemFields(out),
-        ...(reason ? { summary: reason } : {}),
-        ...terminalDetailFields(detail),
-      });
+      printJsonLine(
+        projectTerminalRunOutput(out, p.mode, detail, {
+          frame: "run.terminal",
+          summary: reason,
+        }),
+      );
       return exitCodeForState(status, projectRunOutcomeFacts(detail));
     }
     if (json) {
@@ -723,17 +708,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // re-implying eligibility from status. ONE GET /runs/:id feeds all three
       // terminal projections (INV-120/122).
       const detail = await fetchRunDetail(addr, out.runId);
-      printJson({
-        runId: out.runId,
-        runDir: out.runDir,
-        status: out.status,
-        jobId: out.jobId,
-        mode: p.mode,
-        ...(out.error ? { error: out.error } : {}),
-        ...daemonOutcomeProblemFields(out),
-        ...(reason ? { summary: reason } : {}),
-        ...terminalDetailFields(detail),
-      });
+      printJson(projectTerminalRunOutput(out, p.mode, detail, { summary: reason }));
       return exitCodeForState(out.status, projectRunOutcomeFacts(detail));
     }
     // Text mode: enqueue, then live-stream the run through the shared follow
@@ -1124,6 +1099,11 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
         store.readYaml(join(paths.finalDir, "telemetry.yaml")),
       );
       const telemetry = parsedTelemetry.success ? parsedTelemetry.data : null;
+      // GH #29: inspect reads the same immutable receipt as GET and terminal JSON.
+      const runFacts = readRunFactsArtifact(store, paths.finalDir, {
+        runId,
+        ...(contract.success ? { taskId: contract.data.task_id } : {}),
+      });
       const toolErrors = telemetry
         ? telemetry.attempts.flatMap((a) =>
             a.tool_errors
@@ -1166,6 +1146,7 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
           outputReadyState,
           contract: contract.success ? contract.data : null,
           telemetry,
+          runFacts,
           toolErrors,
           toolWarnings,
           primaryOutput: primary,
