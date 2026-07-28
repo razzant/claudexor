@@ -54,6 +54,7 @@
     "tsx": "^4.19.2",
     "turbo": "^2.10.6",
     "typescript": "^7.0.2",
+    "typescript-api": "npm:typescript@5.9.3",
     "vitest": "^4.1.10"
   }
 }
