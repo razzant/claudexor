@@ -36,10 +36,34 @@ interface CouncilRosterEvidence {
 function parseArtifact<T>(
   store: ArtifactStore,
   path: string,
-  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  schema: {
+    safeParse(
+      value: unknown,
+    ):
+      | { success: true; data: T }
+      | { success: false; error: { issues: Array<{ path: PropertyKey[]; message: string }> } };
+  },
 ): T | null {
-  const parsed = schema.safeParse(store.readYaml(path));
-  return parsed.success ? parsed.data : null;
+  // Three-state read (fail loudly): a missing canonical artifact is a
+  // legitimate absence, but a present-yet-invalid one is corrupted terminal
+  // evidence. Returning null for it would silently rewrite contract truth
+  // (e.g. a corrupted task.yaml projecting as "gates not configured" in the
+  // immutable receipt), so it throws instead and lands in the fail-closed
+  // terminal-facts path.
+  const raw = store.readYaml(path);
+  if (raw === null) {
+    if (readTextSafe(path) === null) return null;
+    throw new Error(`canonical run artifact is not readable YAML: ${path}`);
+  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`canonical run artifact is invalid: ${path} (${issues})`);
+  }
+  return parsed.data;
 }
 
 function participantRole(args: {

@@ -707,7 +707,11 @@ describe("Delegate terminal drain ordering", () => {
     expect(types).toEqual(["run.created", "output.ready", "run.completed"]);
   });
 
-  it("never reads or re-terminalizes an ordinary success because its decision is malformed", async () => {
+  it("fails closed on a malformed decision without rewriting it or draining delegates", async () => {
+    // decision.yaml is canonical terminal evidence: present-but-unreadable
+    // bytes fail the terminal loudly (three-state parseArtifact) instead of
+    // being silently ignored. The delegation pins stay intact: the malformed
+    // file is never rewritten and no delegate drain is attempted.
     const { store, paths, log } = fixture("run-ordinary-malformed-decision");
     const decisionPath = join(paths.arbitrationDir, "decision.yaml");
     const originalDecision = "winner: [malformed\n";
@@ -740,13 +744,18 @@ describe("Delegate terminal drain ordering", () => {
       };
     });
 
-    expect(result.lifecycle).toBe("succeeded");
+    expect(result.lifecycle).toBe("failed");
     expect(readFileSync(decisionPath, "utf8")).toBe(originalDecision);
     const types = readFileSync(paths.eventsPath, "utf8")
       .trim()
       .split("\n")
       .map((line) => (JSON.parse(line) as { type: string }).type);
-    expect(types).toEqual(["run.created", "run.completed"]);
+    expect(types).toEqual(["run.created", "run.failed"]);
+    const terminal = JSON.parse(readFileSync(paths.eventsPath, "utf8").trim().split("\n").at(-1)!) as {
+      payload: Record<string, unknown>;
+    };
+    expect(terminal.payload["phase"]).toBe("terminal_facts");
+    expect(String(terminal.payload["error"])).toMatch(/not readable YAML/);
   });
 
   it("reconciles only terminal truth when an ordinary run fails after a valid decision", async () => {

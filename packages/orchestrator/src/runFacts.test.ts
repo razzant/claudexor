@@ -830,6 +830,33 @@ describe("RunFacts canonical artifact projection (GH #29)", () => {
     }
   });
 
+  it("fails loudly on a corrupted task.yaml instead of projecting silent not_configured", () => {
+    const { store, paths, ctx } = runFixture([gate("gate-1")]);
+    // Schema-invalid contract: parses as YAML but violates TaskContract.
+    store.writeYaml(join(paths.contextDir, "task.yaml"), { tests: "corrupted" });
+    expect(() => buildRunFacts(ctx, makeOutcomeFacts("succeeded"))).toThrow(
+      /canonical run artifact is invalid: .*task\.yaml/,
+    );
+    // Unreadable YAML bytes are equally loud: present is never a silent null.
+    store.writeText(join(paths.contextDir, "task.yaml"), "{ not: [valid\n");
+    expect(() => buildRunFacts(ctx, makeOutcomeFacts("succeeded"))).toThrow(
+      /not readable YAML: .*task\.yaml/,
+    );
+  });
+
+  it("fails loudly when a review artifact carries a malformed finding", () => {
+    const { store, paths, ctx } = runFixture([]);
+    // review.blockers is contract: a malformed finding could hide an accepted
+    // blocker, so it must never be silently skipped.
+    store.writeYaml(join(paths.reviewsDir, "r01.yaml"), {
+      attempt_id: "a01",
+      findings: [{ id: "f1" }],
+    });
+    expect(() => buildRunFacts(ctx, makeOutcomeFacts("succeeded"))).toThrow(
+      /invalid finding: r01\.yaml/,
+    );
+  });
+
   it("keeps budget-denied council members in the planner roster without counting merge or review", () => {
     const { store, paths, log, ctx } = runFixture([], "plan");
     store.writeText(join(paths.finalDir, "plan.md"), "# Unified plan\n");
