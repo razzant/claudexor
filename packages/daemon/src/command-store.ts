@@ -3,7 +3,6 @@ import {
   closeSync,
   constants,
   fsyncSync,
-  lstatSync,
   openSync,
   readFileSync,
   renameSync,
@@ -16,7 +15,6 @@ import type { DurableJournal } from "@claudexor/journal";
 import {
   RunEvent as RunEventSchema,
   RunTelemetry,
-  needsOperatorAttention,
   validateRunFactsInvariants,
   type RunEvent,
   type RunFacts,
@@ -24,6 +22,7 @@ import {
 import { hashJson } from "@claudexor/util";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { JOB_STATES, type JobRecord } from "./server.js";
+import { lstatOrNull, recoveredTerminalFacts, terminalCommandResult } from "./terminal-authority.js";
 
 interface AcceptedCommand {
   record: JobRecord;
@@ -406,63 +405,6 @@ export class CommandStore {
     for (const [digest, entry] of this.idByKeyDigest) {
       if (removed.has(entry.id)) this.idByKeyDigest.delete(digest);
     }
-  }
-}
-
-/**
- * Pure (no filesystem) validation binding a durable terminal event's RunFacts
- * payload to the command's run identity and the terminal envelope. Both the
- * already-reconciled fast path and full artifact recovery MUST share this
- * check so a skipped repair never skips authority validation.
- */
-function recoveredTerminalFacts(
-  record: JobRecord,
-  terminal: RunEvent,
-): { facts: RunFacts; terminalSeq: number } {
-  if (!record.runId || !record.taskId || !record.runDir) {
-    throw new Error("durable terminal recovery is missing the command run identity or directory");
-  }
-  const facts = validateRunFactsInvariants(terminal.payload["run_facts"]);
-  if (typeof terminal.seq !== "number" || !Number.isSafeInteger(terminal.seq) || terminal.seq <= 0) {
-    throw new Error("durable terminal event has no valid sequence");
-  }
-  const expectedTerminalType =
-    facts.outcome.lifecycle !== "succeeded"
-      ? "run.failed"
-      : needsOperatorAttention(facts.outcome, false)
-        ? "run.blocked"
-        : "run.completed";
-  if (
-    facts.run_id !== terminal.run_id ||
-    facts.task_id !== terminal.task_id ||
-    facts.run_id !== record.runId ||
-    facts.task_id !== record.taskId ||
-    hashJson(facts.outcome) !== hashJson(terminal.payload["facts"]) ||
-    terminal.type !== expectedTerminalType ||
-    terminal.payload["lifecycle"] !== facts.outcome.lifecycle ||
-    terminal.payload["reason"] !== facts.outcome.reason
-  ) {
-    throw new Error("durable terminal RunFacts identity, envelope, or outcome mismatch");
-  }
-  return { facts, terminalSeq: terminal.seq };
-}
-
-function terminalCommandResult(record: JobRecord, facts: RunFacts) {
-  return {
-    lifecycle: facts.outcome.lifecycle,
-    facts: facts.outcome,
-    runId: facts.run_id,
-    taskId: facts.task_id,
-    runDir: record.runDir!,
-  };
-}
-
-function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
-  try {
-    return lstatSync(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
   }
 }
 
