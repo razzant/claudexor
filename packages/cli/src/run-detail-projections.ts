@@ -52,3 +52,24 @@ export function projectOutcomeBanner(detail: Record<string, unknown> | null): st
   const banner = detail?.["outcomeBanner"];
   return typeof banner === "string" && banner.length > 0 ? banner : null;
 }
+
+/** Typed description of a raised post-terminal run-detail problem for surfaces
+ * that must DEGRADE instead of failing the caller (MCP results, ACP turn
+ * results, --json outcome projections): the finished run's result survives with
+ * its runId, and this field discloses WHY its detail projections are absent.
+ * The CLI's own terminal path keeps the raise (renderCliFailure, non-zero
+ * exit) — there the run result IS the process outcome. */
+export interface RunDetailProblem {
+  code: string | null;
+  message: string;
+  retryable: boolean | null;
+}
+
+export function describeRunDetailProblem(error: unknown): RunDetailProblem {
+  const record = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+  return {
+    code: typeof record["code"] === "string" && record["code"] ? (record["code"] as string) : null,
+    message: error instanceof Error ? error.message : String(error),
+    retryable: typeof record["retryable"] === "boolean" ? (record["retryable"] as boolean) : null,
+  };
+}

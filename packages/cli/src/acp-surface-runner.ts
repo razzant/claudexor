@@ -1,16 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
-import {
-  daemonOutcomeSummary,
-  describeRunDetailProblem,
-  ensureDaemon,
-  fetchRunDetail,
-  type RunDetailProblem,
-} from "./daemon-run.js";
+import { daemonOutcomeSummary, ensureDaemon, fetchRunDetail } from "./daemon-run.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import { primaryOutputForCli } from "./primary-output.js";
-import { projectApplyEligibility } from "./run-detail-projections.js";
+import {
+  describeRunDetailProblem,
+  projectApplyEligibility,
+  type RunDetailProblem,
+} from "./run-detail-projections.js";
 
 // Daemon job state IS the run lifecycle (D8): terminal set = the ONE
 // projection-owned TERMINAL_LIFECYCLES, never a local re-derivation.

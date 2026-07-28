@@ -193,8 +193,6 @@ export class AcpServer {
                 runId: result.runId ?? null,
                 status,
                 applyEligibility: result.applyEligibility ?? null,
-                // Typed disclosure that the post-terminal detail read degraded
-                // (the turn finished; eligibility above is absent for this reason).
                 detailProblem: result.detailProblem ?? null,
               },
             },

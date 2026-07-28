@@ -277,6 +277,44 @@
           "description": "Derived plan readiness for plan tools (D17); null for non-plan tools.",
           "default": null
         },
+        "detailProblem": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Stable machine code of the detail problem, if any."
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Human-readable description of the detail problem."
+                },
+                "retryable": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "Whether retrying the detail read may help."
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "retryable"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Typed post-terminal detail-read problem (the run result survives; its detail projections are absent for this reason); null when the detail read succeeded."
+        },
         "council": {
           "anyOf": [
             {

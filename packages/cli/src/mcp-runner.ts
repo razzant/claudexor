@@ -2,11 +2,11 @@ import { ModeKind } from "@claudexor/schema";
 import {
   connectDaemonIfRunning,
   daemonOutcomeSummary,
-  describeRunDetailProblem,
   ensureDaemon,
   enqueueAndAwait,
   fetchRunDetail,
 } from "./daemon-run.js";
+import { describeRunDetailProblem } from "./run-detail-projections.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import { projectImmediateRunDetail, projectRecoveryRunDetail } from "./mcp-run-projections.js";

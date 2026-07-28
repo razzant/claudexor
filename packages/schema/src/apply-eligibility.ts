@@ -80,6 +80,20 @@ export const McpRunToolResult = z
     planReadiness: PlanReadiness.nullable()
       .default(null)
       .describe("Derived plan readiness for plan tools (D17); null for non-plan tools."),
+    /** Typed disclosure that the post-terminal detail read DEGRADED: the run
+     * finished and its result survived, but the detail projections above are
+     * absent for this machine-readable reason (e.g. run_facts_invalid). */
+    detailProblem: z
+      .object({
+        code: z.string().nullable().describe("Stable machine code of the detail problem, if any."),
+        message: z.string().describe("Human-readable description of the detail problem."),
+        retryable: z.boolean().nullable().describe("Whether retrying the detail read may help."),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "Typed post-terminal detail-read problem (the run result survives; its detail projections are absent for this reason); null when the detail read succeeded.",
+      ),
     /** Council membership + merge disclosure (QA-023b) so an MCP host can
      * machine-verify a `--council` plan was really N/N and who merged, without
      * reading local artifacts; null for solo/non-plan tools and deferred handles. */
