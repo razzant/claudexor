@@ -2,6 +2,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   isTerminalLifecycle,
+  RunFactsInvalidError,
   validateRunFactsReceipt,
   requiredActionsFor,
   type ApplyEligibility,
@@ -153,26 +154,16 @@ function readRunFacts(runDir: string | undefined, expected: ExpectedRunFacts): R
   }
 }
 
-/** Transport mapping of the shared refusal: HTTP status + typed unblock action. */
-function invalidRunFacts(): Error & {
-  status: number;
-  code: string;
-  retryable: boolean;
-  requiredActions: string[];
-  evidenceRefs: string[];
-} {
-  return Object.assign(
-    new Error(
-      "canonical RunFacts receipt is invalid; inspect final/run_facts.yaml before retrying",
-    ),
-    {
-      status: 500,
-      code: "run_facts_invalid",
-      retryable: false,
-      requiredActions: ["inspect_run_artifacts"],
-      evidenceRefs: ["final/run_facts.yaml"],
-    },
-  );
+/** Transport mapping of the shared refusal: the HTTP status and typed unblock
+ * action are control-api's own; message/code/retryable/evidenceRefs come from
+ * the ONE shared class in @claudexor/schema — never duplicated here. */
+class RunFactsInvalidHttpError extends RunFactsInvalidError {
+  readonly status = 500;
+  readonly requiredActions = ["inspect_run_artifacts"];
+}
+
+function invalidRunFacts(): RunFactsInvalidHttpError {
+  return new RunFactsInvalidHttpError();
 }
 
 function artifactExists(runDir: string | undefined, relativePath: string): boolean {

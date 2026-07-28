@@ -7059,8 +7059,16 @@ describe("DaemonControlApiServer", () => {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(detail.status).toBe(500);
-      expect((await detail.json()) as { code: string }).toMatchObject({
+      // The full typed shape: message/code/retryable/evidenceRefs come from
+      // the ONE shared refusal class; status + requiredActions are this
+      // surface's transport mapping.
+      expect(await detail.json()).toMatchObject({
         code: "run_facts_invalid",
+        retryable: false,
+        message:
+          "canonical RunFacts receipt is invalid; inspect final/run_facts.yaml before retrying",
+        requiredActions: ["inspect_run_artifacts"],
+        evidenceRefs: ["final/run_facts.yaml"],
       });
 
       const list = (await (

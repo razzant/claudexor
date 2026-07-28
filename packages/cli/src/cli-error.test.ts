@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RunFactsInvalidError } from "@claudexor/schema";
 import {
   CliError,
   boundContext,
@@ -151,6 +152,23 @@ describe("CLI projector (D-7 / GH #28): one envelope, one exit-code table", () =
     expect(code).toBe(2);
     expect(env["code"]).toBe("inline_secret_rejected");
     expect(JSON.stringify(env)).not.toContain(token);
+  });
+
+  it("LOCAL TYPED REFUSAL: RunFactsInvalidError keeps its evidenceRefs in details", () => {
+    // The shared pure refusal (@claudexor/schema) thrown by the CLI's LOCAL
+    // receipt read must present exactly like the control-problem path does:
+    // stable code/retryable plus details.evidenceRefs — never dropped.
+    let code = -1;
+    const env = captureJson(() => {
+      code = renderCliFailure(true, new RunFactsInvalidError());
+    });
+    expect(code).toBe(1);
+    expect(env).toMatchObject({
+      ok: false,
+      code: "run_facts_invalid",
+      retryable: false,
+      details: { evidenceRefs: ["final/run_facts.yaml"] },
+    });
   });
 
   it("UNEXPECTED THROW: a bare Error defaults to operational (exit 1)", () => {

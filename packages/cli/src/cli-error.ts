@@ -226,12 +226,25 @@ export function normalizeThrowable(
       anyErr["fieldErrors"] as Record<string, string[]> | undefined,
     );
     const requiredActions = nonEmptyArray(anyErr["requiredActions"] as string[] | undefined);
+    // A typed refusal's evidence pointers (e.g. RunFactsInvalidError's
+    // final/run_facts.yaml) survive the LOCAL throw path exactly like the
+    // control-problem path maps them (details.evidenceRefs).
+    const evidenceRefs = nonEmptyArray(
+      Array.isArray(anyErr["evidenceRefs"])
+        ? (anyErr["evidenceRefs"] as unknown[]).filter(
+            (value): value is string => typeof value === "string",
+          )
+        : undefined,
+    );
     // A Node system error's syscall/errno are stable machine detail.
     const details =
-      typeof anyErr["syscall"] === "string" || typeof anyErr["errno"] === "number"
+      typeof anyErr["syscall"] === "string" ||
+      typeof anyErr["errno"] === "number" ||
+      evidenceRefs !== undefined
         ? {
             ...(typeof anyErr["syscall"] === "string" ? { syscall: anyErr["syscall"] } : {}),
             ...(typeof anyErr["errno"] === "number" ? { errno: anyErr["errno"] } : {}),
+            ...(evidenceRefs ? { evidenceRefs } : {}),
           }
         : undefined;
     return {
