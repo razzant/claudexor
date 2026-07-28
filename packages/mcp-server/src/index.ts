@@ -303,6 +303,10 @@ function structuredRunResult(result: unknown): Record<string, unknown> {
     outcomeBanner: typeof r["outcomeBanner"] === "string" ? r["outcomeBanner"] : null,
     planReadiness:
       r["planReadiness"] && typeof r["planReadiness"] === "object" ? r["planReadiness"] : null,
+    // Typed disclosure that the post-terminal detail read degraded (the run
+    // finished; its detail projections above are absent for this reason).
+    detailProblem:
+      r["detailProblem"] && typeof r["detailProblem"] === "object" ? r["detailProblem"] : null,
     council: r["council"] && typeof r["council"] === "object" ? r["council"] : null,
     parentRunId: typeof r["parentRunId"] === "string" ? r["parentRunId"] : null,
     delegatedFromRunId:

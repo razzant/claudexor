@@ -3,13 +3,14 @@ import { noProjectRepoRoot } from "@claudexor/util";
 import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
 import {
   daemonOutcomeSummary,
+  describeRunDetailProblem,
   ensureDaemon,
-  fetchApplyEligibility,
-  fetchPlanQuestions,
-  fetchPlanReadiness,
+  fetchRunDetail,
+  type RunDetailProblem,
 } from "./daemon-run.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import { primaryOutputForCli } from "./primary-output.js";
+import { projectApplyEligibility } from "./run-detail-projections.js";
 
 // Daemon job state IS the run lifecycle (D8): terminal set = the ONE
 // projection-owned TERMINAL_LIFECYCLES, never a local re-derivation.
@@ -31,6 +32,41 @@ export function selectReplayTurns<T>(rawTurns: readonly T[]): {
   return {
     replayTurns: rawTurns.slice(-ACP_MAX_REPLAY_TURNS),
     omittedTurnCount: Math.max(0, rawTurns.length - ACP_MAX_REPLAY_TURNS),
+  };
+}
+
+/** One post-terminal GET /runs/:id for the ACP turn result (INV-120), DEGRADING
+ *  on failure: a finished turn must never become a JSON-RPC error that loses
+ *  the runId. Missing/legacy detail projects null fields; a raised typed
+ *  problem (e.g. 500 run_facts_invalid) rides the result as `detailProblem`
+ *  so the client still receives the terminal answer plus the typed reason its
+ *  detail projections are absent. Exported for test. */
+export async function projectTerminalTurnDetail(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<{
+  applyEligibility: unknown;
+  planReadiness: unknown;
+  planQuestions: unknown[];
+  detailProblem?: RunDetailProblem;
+}> {
+  const empty = { applyEligibility: null, planReadiness: null, planQuestions: [] };
+  if (!runId) return empty;
+  let detail: Record<string, unknown> | null = null;
+  try {
+    detail = await fetchRunDetail(addr, runId);
+  } catch (error) {
+    return { ...empty, detailProblem: describeRunDetailProblem(error) };
+  }
+  return {
+    applyEligibility: projectApplyEligibility(detail),
+    planReadiness:
+      detail?.["planReadiness"] && typeof detail["planReadiness"] === "object"
+        ? detail["planReadiness"]
+        : null,
+    planQuestions: Array.isArray(detail?.["planQuestions"])
+      ? (detail["planQuestions"] as unknown[])
+      : [],
   };
 }
 
@@ -256,15 +292,14 @@ export async function acpSessionQuery(
       // derived readiness + the ENGINE-parsed open questions so the ACP surface
       // renders them as TURN TEXT (the user answers in an ordinary follow-up
       // plan turn — the same server path, no typed-form faking the protocol
-      // lacks). Empty/null for non-plan turns and ready plans.
+      // lacks). Empty/null for non-plan turns and ready plans. ONE degrading
+      // detail read feeds all three projections (projectTerminalTurnDetail).
       return {
         runId,
         runDir,
         status: record.state,
         summary,
-        applyEligibility: runId ? await fetchApplyEligibility(addr, runId) : null,
-        planReadiness: runId ? await fetchPlanReadiness(addr, runId) : null,
-        planQuestions: runId ? await fetchPlanQuestions(addr, runId) : [],
+        ...(await projectTerminalTurnDetail(addr, runId)),
       };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));

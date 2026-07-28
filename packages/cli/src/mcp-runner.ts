@@ -2,6 +2,7 @@ import { ModeKind } from "@claudexor/schema";
 import {
   connectDaemonIfRunning,
   daemonOutcomeSummary,
+  describeRunDetailProblem,
   ensureDaemon,
   enqueueAndAwait,
   fetchRunDetail,
@@ -155,36 +156,62 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       ...(options.delegationParentRunId ? { internalDaemonEnqueue: true } : {}),
       ...(onPollTick ? { onPollTick } : {}),
     });
-    // The MCP result: the run's primary output as the summary (the daemon
-    // outcome reason for non-success terminals), plus the artifact handle.
-    const primary = out.runDir ? primaryOutputForCli(out.runDir, mode) : null;
-    const reason = daemonOutcomeSummary(out);
-    const summary =
-      primary && primary.kind !== "patch"
-        ? primary.text.trim()
-        : (reason ??
-          (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`));
-    // The derived apply verdict rides the result (single producer: the run
-    // detail endpoint). Soft-fail: a detail hiccup never eats the run result.
-    // A deferred MCP call intentionally returns while the run is still live.
-    // Apply eligibility is a terminal projection, so querying it here would
-    // delay the durable handle on a result that cannot be actionable yet.
-    const detail = p?.deferred === true ? null : await fetchRunDetail(addr, out.runId);
-    // The sub-run's real settled spend rides the result so the delegation belt
-    // can reconcile its budget reservation against the actual drawn amount
-    // (single producer: the run-detail budget projection). Deferred calls return
-    // before terminal, so spend is not yet settled — null.
-    // Council membership + merge disclosure (QA-023b) rides the result so an MCP
-    // host that asked for `--council` can machine-verify it was really N/N and
-    // who merged. Terminal projection — null on a deferred (still-live) handle.
-    return {
-      runId: out.runId,
-      runDir: out.runDir,
-      status: out.status,
-      outcomeFacts: (out as { outcomeFacts?: unknown }).outcomeFacts ?? null,
-      summary,
-      ...projectImmediateRunDetail(detail),
-    };
+    try {
+      // The MCP result: the run's primary output as the summary (the daemon
+      // outcome reason for non-success terminals), plus the artifact handle.
+      const primary = out.runDir ? primaryOutputForCli(out.runDir, mode) : null;
+      const reason = daemonOutcomeSummary(out);
+      const summary =
+        primary && primary.kind !== "patch"
+          ? primary.text.trim()
+          : (reason ??
+            (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`));
+      // The derived apply verdict rides the result (single producer: the run
+      // detail endpoint). The post-terminal detail read DEGRADES: a missing/
+      // legacy detail projects null fields, and a raised typed problem —
+      // especially 500 run_facts_invalid, the server's verdict that the run's
+      // receipt cannot be trusted — rides the result as `detailProblem` with
+      // the runId preserved instead of erasing the finished run's outcome.
+      // A deferred MCP call intentionally returns while the run is still live.
+      // Apply eligibility is a terminal projection, so querying it here would
+      // delay the durable handle on a result that cannot be actionable yet.
+      let detail: Record<string, unknown> | null = null;
+      let detailProblem: ReturnType<typeof describeRunDetailProblem> | null = null;
+      if (p?.deferred !== true) {
+        try {
+          detail = await fetchRunDetail(addr, out.runId);
+        } catch (error) {
+          detailProblem = describeRunDetailProblem(error);
+        }
+      }
+      // The sub-run's real settled spend rides the result so the delegation belt
+      // can reconcile its budget reservation against the actual drawn amount
+      // (single producer: the run-detail budget projection). Deferred calls return
+      // before terminal, so spend is not yet settled — null (the belt then keeps
+      // its reservation committed fail-closed rather than seeing spend 0).
+      // Council membership + merge disclosure (QA-023b) rides the result so an MCP
+      // host that asked for `--council` can machine-verify it was really N/N and
+      // who merged. Terminal projection — null on a deferred (still-live) handle.
+      return {
+        runId: out.runId,
+        runDir: out.runDir,
+        status: out.status,
+        outcomeFacts: (out as { outcomeFacts?: unknown }).outcomeFacts ?? null,
+        summary,
+        ...projectImmediateRunDetail(detail),
+        ...(detailProblem ? { detailProblem } : {}),
+      };
+    } catch (error) {
+      // The run's terminal is already durable at this point: mark the throw so
+      // the delegation belt keeps the child's slot consumed and reconciles its
+      // spend fail-closed instead of treating the child as never-started.
+      if (error && typeof error === "object") {
+        Object.assign(error, {
+          delegationChildTerminal: { runId: out.runId, status: out.status },
+        });
+      }
+      throw error;
+    }
   };
 }
 

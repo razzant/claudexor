@@ -235,6 +235,82 @@ describe("mcp daemon body mapping", () => {
     }
   });
 
+  it("degrades a raised post-terminal detail problem into detailProblem instead of eating the result", async () => {
+    // The run FINISHED: a typed 500 (e.g. run_facts_invalid) on the follow-up
+    // GET /runs/:id must ride the result as detailProblem with the runId
+    // preserved — never erase the terminal outcome by rethrowing.
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+    });
+    const enqueueSpy = vi.spyOn(daemonRun, "enqueueAndAwait").mockResolvedValue({
+      runId: "run-done",
+      runDir: "",
+      status: "succeeded",
+      jobId: "job-done",
+    });
+    const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail").mockRejectedValue(
+      Object.assign(new Error("canonical RunFacts receipt is invalid"), {
+        code: "run_facts_invalid",
+        retryable: false,
+      }),
+    );
+    try {
+      const result = (await mcpSurfaceRunner()({ mode: "agent", prompt: "go" })) as Record<
+        string,
+        unknown
+      >;
+      expect(result).toMatchObject({
+        runId: "run-done",
+        status: "succeeded",
+        detailProblem: {
+          code: "run_facts_invalid",
+          message: "canonical RunFacts receipt is invalid",
+          retryable: false,
+        },
+      });
+      expect(result["applyEligibility"]).toBeNull();
+      expect(result["spendUsd"]).toBeNull();
+    } finally {
+      ensureSpy.mockRestore();
+      enqueueSpy.mockRestore();
+      detailSpy.mockRestore();
+    }
+  });
+
+  it("marks an unexpected post-terminal throw with the child terminal evidence for the belt", async () => {
+    // Field contract with the delegation belt (childTerminalEvidence): a throw
+    // AFTER the terminal is durable discloses the child really ran, so the
+    // belt keeps its slot consumed and reconciles spend fail-closed.
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+    });
+    const enqueueSpy = vi.spyOn(daemonRun, "enqueueAndAwait").mockResolvedValue({
+      runId: "run-done",
+      runDir: "",
+      status: "succeeded",
+      jobId: "job-done",
+    });
+    const summarySpy = vi.spyOn(daemonRun, "daemonOutcomeSummary").mockImplementation(() => {
+      throw new Error("post-terminal projection bug");
+    });
+    try {
+      await expect(mcpSurfaceRunner()({ mode: "agent", prompt: "go" })).rejects.toMatchObject({
+        message: "post-terminal projection bug",
+        delegationChildTerminal: { runId: "run-done", status: "succeeded" },
+      });
+    } finally {
+      ensureSpy.mockRestore();
+      enqueueSpy.mockRestore();
+      summarySpy.mockRestore();
+    }
+  });
+
   it("honors the externalContextPolicy alias when web is absent (schema advertises both)", async () => {
     // The alias is validated equal to web when both are present; alone it IS
     // the web policy — silently dropping it would run the daemon default.

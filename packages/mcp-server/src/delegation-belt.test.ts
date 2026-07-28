@@ -231,6 +231,55 @@ describe("delegation belt tool surface (D32)", () => {
     expect(ledger.started).toBe(1);
   });
 
+  it("keeps the slot and commits the reservation when the runner throws AFTER a terminal", async () => {
+    // The child reached a durable terminal, then a post-terminal projection
+    // (e.g. a typed 500 on the detail read) made the runner throw with the
+    // delegationChildTerminal evidence attached. The child really ran: its
+    // count slot stays consumed and, with the settled spend unknowable, the
+    // full reservation stays committed fail-closed — no over-cap slot, no
+    // invisible spend.
+    const ledger = newBeltLedger();
+    const tools = beltClaudexorTools(
+      async () => {
+        throw Object.assign(new Error("run detail failed (HTTP 500)"), {
+          delegationChildTerminal: { runId: "sub-1", status: "succeeded" },
+        });
+      },
+      { ...unlimited, maxSubRuns: 1, parentBudget: { kind: "finite", maxUsd: 1 } },
+      ledger,
+    );
+    const run = tools.find((tool) => tool.name === "claudexor_run")!;
+    await expect(run.handler({ prompt: "x" }, {})).rejects.toThrow(/HTTP 500/);
+    expect(ledger.started).toBe(1);
+    expect(ledger.committedUsd).toBeCloseTo(1, 5);
+    // Slot cap and headroom both reflect the consumed child: the next draw is refused.
+    await expect(run.handler({ prompt: "y" }, {})).rejects.toMatchObject({
+      code: "delegation_policy_denied",
+    });
+  });
+
+  it("commits the reservation fail-closed when a terminal result carries no settled spend", async () => {
+    // The post-terminal detail read degraded (detailProblem on the result), so
+    // spendUsd is null: the belt must not read that as "spent $0" and widen the
+    // next draw's headroom — the full reservation stays committed.
+    const ledger = newBeltLedger();
+    const tools = beltClaudexorTools(
+      async () => ({
+        runId: "sub-degraded",
+        status: "succeeded",
+        summary: "done",
+        spendUsd: null,
+        detailProblem: { code: "run_facts_invalid", message: "receipt invalid", retryable: false },
+      }),
+      { ...unlimited, parentBudget: { kind: "finite", maxUsd: 1 } },
+      ledger,
+    );
+    const run = tools.find((tool) => tool.name === "claudexor_run")!;
+    await expect(run.handler({ prompt: "x" }, {})).resolves.toBeDefined();
+    expect(ledger.started).toBe(1);
+    expect(ledger.committedUsd).toBeCloseTo(1, 5);
+  });
+
   it.each(["failed", "cancelled", "interrupted"] as const)(
     "reports a %s child as a typed belt failure after reconciling its spend",
     async (status) => {

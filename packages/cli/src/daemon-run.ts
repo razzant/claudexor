@@ -410,12 +410,6 @@ export function exitCodeForState(state: string, facts?: RunOutcomeFacts | null):
   return processExitCodeForRunStatus(state);
 }
 
-/**
- * The run's derived apply-gate verdict from GET /runs/:id (single producer:
- * the delivery gate via the control API). Soft-fails to null — a detail
- * hiccup must never eat a finished run's result. Shared by the CLI post-run
- * hints and the MCP structured results so both surfaces tell the same truth.
- */
 /** Server-derived plan readiness projection (mode=plan runs). */
 export async function fetchPlanReadiness(
   addr: ControlApiAddress,
@@ -532,6 +526,27 @@ export async function fetchApplyEligibility(
   runId: string,
 ): Promise<ApplyEligibilityProjection | null> {
   return projectApplyEligibility(await fetchRunDetail(addr, runId));
+}
+
+/** Typed description of a raised post-terminal run-detail problem for surfaces
+ * that must DEGRADE instead of failing the caller (MCP results, ACP turn
+ * results, --json outcome projections): the finished run's result survives with
+ * its runId, and this field discloses WHY its detail projections are absent.
+ * The CLI's own terminal path keeps the raise (renderCliFailure, non-zero
+ * exit) — there the run result IS the process outcome. */
+export interface RunDetailProblem {
+  code: string | null;
+  message: string;
+  retryable: boolean | null;
+}
+
+export function describeRunDetailProblem(error: unknown): RunDetailProblem {
+  const record = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+  return {
+    code: typeof record["code"] === "string" && record["code"] ? (record["code"] as string) : null,
+    message: error instanceof Error ? error.message : String(error),
+    retryable: typeof record["retryable"] === "boolean" ? (record["retryable"] as boolean) : null,
+  };
 }
 
 /**

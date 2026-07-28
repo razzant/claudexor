@@ -1,5 +1,90 @@
-import { describe, expect, it } from "vitest";
-import { ACP_MAX_REPLAY_TURNS, selectReplayTurns, typedFetchReason } from "./acp-surface-runner.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  ACP_MAX_REPLAY_TURNS,
+  projectTerminalTurnDetail,
+  selectReplayTurns,
+  typedFetchReason,
+} from "./acp-surface-runner.js";
+
+const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
+
+// The post-terminal detail read DEGRADES: a finished ACP turn must never become
+// a JSON-RPC error that loses the runId — the terminal answer survives and the
+// typed problem rides the result as detailProblem.
+describe("projectTerminalTurnDetail (post-terminal degrade)", () => {
+  it("carries a typed detailProblem instead of raising when the detail read fails", async () => {
+    const daemonRun = await import("./daemon-run.js");
+    const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail").mockRejectedValue(
+      Object.assign(new Error("canonical RunFacts receipt is invalid"), {
+        code: "run_facts_invalid",
+        retryable: false,
+      }),
+    );
+    try {
+      await expect(projectTerminalTurnDetail(addr, "run-1")).resolves.toEqual({
+        applyEligibility: null,
+        planReadiness: null,
+        planQuestions: [],
+        detailProblem: {
+          code: "run_facts_invalid",
+          message: "canonical RunFacts receipt is invalid",
+          retryable: false,
+        },
+      });
+    } finally {
+      detailSpy.mockRestore();
+    }
+  });
+
+  it("projects eligibility, readiness, and questions from ONE detail read", async () => {
+    const daemonRun = await import("./daemon-run.js");
+    const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail").mockResolvedValue({
+      applyEligibility: {
+        eligible: false,
+        state: "needs_review",
+        reason: null,
+        requiredAction: null,
+      },
+      planReadiness: { state: "needs_answers", questionCount: 1 },
+      planQuestions: [{ id: "q1" }],
+    });
+    try {
+      await expect(projectTerminalTurnDetail(addr, "run-1")).resolves.toEqual({
+        applyEligibility: {
+          eligible: false,
+          state: "needs_review",
+          reason: null,
+          requiredAction: null,
+        },
+        planReadiness: { state: "needs_answers", questionCount: 1 },
+        planQuestions: [{ id: "q1" }],
+      });
+      expect(detailSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      detailSpy.mockRestore();
+    }
+  });
+
+  it("projects null fields for a missing/legacy detail and skips the read without a runId", async () => {
+    const daemonRun = await import("./daemon-run.js");
+    const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail").mockResolvedValue(null);
+    try {
+      await expect(projectTerminalTurnDetail(addr, "run-1")).resolves.toEqual({
+        applyEligibility: null,
+        planReadiness: null,
+        planQuestions: [],
+      });
+      await expect(projectTerminalTurnDetail(addr, "")).resolves.toEqual({
+        applyEligibility: null,
+        planReadiness: null,
+        planQuestions: [],
+      });
+      expect(detailSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      detailSpy.mockRestore();
+    }
+  });
+});
 
 // W5: the ACP session/load replay is bounded, and a failed per-turn detail
 // fetch discloses a typed reason instead of vanishing.

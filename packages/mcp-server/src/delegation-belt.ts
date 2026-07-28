@@ -187,6 +187,25 @@ function beltRunFailure(code: BeltRunFailureCode, message: string): Error {
   return Object.assign(new Error(redactSecrets(message)), { code });
 }
 
+/** Typed evidence a throwing runner attaches when its delegated child ALREADY
+ * reached a durable terminal (field contract with the CLI's shared MCP/ACP
+ * runner): the throw happened AFTER the terminal, so the child really ran —
+ * its slot was consumed and its spend is real even though the settled amount
+ * may be unknowable. Anything else on a thrown error means "the child never
+ * started". */
+export function childTerminalEvidence(
+  error: unknown,
+): { runId: string | null; status: string | null } | null {
+  if (!error || typeof error !== "object") return null;
+  const value = (error as { delegationChildTerminal?: unknown }).delegationChildTerminal;
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  return {
+    runId: typeof record["runId"] === "string" && record["runId"] ? record["runId"] : null,
+    status: typeof record["status"] === "string" ? record["status"] : null,
+  };
+}
+
 function failedChildTerminal(result: unknown): Error | null {
   if (!result || typeof result !== "object") return null;
   const record = result as Record<string, unknown>;
@@ -293,23 +312,35 @@ export function beltClaudexorTools(
           ctx.signal ? { signal: ctx.signal } : {},
         );
       } catch (error) {
-        // A runner that throws never started a usable delegated child, so it
-        // must not permanently consume this belt session's count slot.
-        ledger.started = Math.max(0, ledger.started - 1);
+        if (childTerminalEvidence(error)) {
+          // The child reached a durable TERMINAL before the runner threw (a
+          // post-terminal projection failed): the slot was really consumed and
+          // the child really spent. With the settled amount unknowable, the
+          // full reservation stays committed fail-closed (added here, released
+          // once in finally) — a typed detail hiccup must never hand the
+          // parent an over-cap slot or invisible spend.
+          ledger.committedUsd += reservedUsd;
+        } else {
+          // A runner that throws BEFORE its child starts never consumed a
+          // usable delegated child, so it must not permanently consume this
+          // belt session's count slot.
+          ledger.started = Math.max(0, ledger.started - 1);
+        }
         throw error;
       } finally {
-        // Release the reservation; a throwing sub-run frees its headroom.
+        // Release the reservation; a never-started sub-run frees its headroom.
         ledger.committedUsd -= reservedUsd;
       }
       // Reconcile: commit the sub-run's real settled spend against the headroom
-      // so the next draw sees the actual amount drawn.
-      const spent =
-        result &&
-        typeof result === "object" &&
-        typeof (result as { spendUsd?: unknown }).spendUsd === "number"
-          ? (result as { spendUsd: number }).spendUsd
-          : 0;
-      ledger.committedUsd += Math.max(0, spent);
+      // so the next draw sees the actual amount drawn. A terminal result whose
+      // settled spend is unknowable (the post-terminal detail read degraded, so
+      // spendUsd is null) commits the FULL reservation fail-closed — unknown
+      // spend must never widen the next draw's headroom.
+      const spendUsd =
+        result && typeof result === "object"
+          ? (result as { spendUsd?: unknown }).spendUsd
+          : undefined;
+      ledger.committedUsd += typeof spendUsd === "number" ? Math.max(0, spendUsd) : reservedUsd;
       const terminalFailure = failedChildTerminal(result);
       if (terminalFailure) throw terminalFailure;
       return formatBeltResult(result);
