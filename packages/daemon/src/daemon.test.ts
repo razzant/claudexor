@@ -12,12 +12,14 @@ import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
 import {
   RunEvent,
+  RunTelemetry,
   SCHEMA_VERSION,
   makeOutcomeFacts,
   requiredActionsFor,
   validateRunFactsInvariants,
 } from "@claudexor/schema";
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { DaemonClient } from "./client.js";
 import { CommandStore, commandProjection } from "./command-store.js";
 import { InteractionRegistry, InteractionStore } from "./interactions.js";
@@ -712,6 +714,139 @@ describe("DaemonServer", () => {
     } finally {
       recovered.journal.close();
     }
+  });
+
+  it("keeps a provisional terminal's partition ready over corrupt telemetry", () => {
+    // Telemetry is best-effort evidence written non-atomically: a torn or
+    // schema-invalid copy must never take the partition into recovery — the
+    // journal is the authority, and the corrupt bytes stay as evidence.
+    for (const [variant, bytes] of [
+      ["torn", "attempts:\n  - ["],
+      ["schema-invalid", "hello: world\n"],
+    ] as const) {
+      const name = `telemetry-${variant}`;
+      const { dir, runDir, first, facts } = recoveryFixture(name);
+      first.store.update(`job-${name}`, {
+        state: "interrupted",
+        error: "local finalization failed",
+        errorCode: "terminal_recovery_required",
+        errorStatus: 503,
+        errorRetryable: false,
+      });
+      first.journal.close();
+      writeFileSync(join(runDir, "final", "telemetry.yaml"), bytes);
+
+      const recovered = commandAuthority(dir);
+      try {
+        expect(recovered.store.get(`job-${name}`)).toMatchObject({
+          state: "failed",
+          result: { lifecycle: "failed", runId: facts.run_id, taskId: facts.task_id },
+        });
+      } finally {
+        recovered.journal.close();
+      }
+      expect(readFileSync(join(runDir, "final", "telemetry.yaml"), "utf8")).toBe(bytes);
+    }
+  });
+
+  it("embeds journal facts into readable telemetry and fences a conflicting embedded receipt", () => {
+    const baseTelemetry = (facts: ReturnType<typeof recoveredFailureFacts>) => ({
+      schema_version: SCHEMA_VERSION,
+      run_id: facts.run_id,
+      task_id: facts.task_id,
+      mode: "agent",
+      requested_access: "workspace_write",
+      effective_access: "workspace_write",
+      external_context_policy: "off",
+      effective_web_mode: "off",
+      final_attempt_id: "a01",
+      web: {},
+      attempts: [
+        {
+          attempt_id: "a01",
+          harness_id: "fake-success",
+          web: {},
+          outcome: { deliverable_present: false, gates_passed: null, status: "success" },
+        },
+      ],
+      generated_at: "2026-07-26T12:00:00.000Z",
+    });
+    const provisional = {
+      state: "interrupted",
+      error: "local finalization failed",
+      errorCode: "terminal_recovery_required",
+      errorStatus: 503,
+      errorRetryable: false,
+    } as const;
+
+    const embed = recoveryFixture("telemetry-embed");
+    embed.first.store.update("job-telemetry-embed", provisional);
+    embed.first.journal.close();
+    const telemetryPath = join(embed.runDir, "final", "telemetry.yaml");
+    writeFileSync(
+      telemetryPath,
+      `${JSON.stringify(RunTelemetry.parse(baseTelemetry(embed.facts)))}\n`,
+    );
+    const recovered = commandAuthority(embed.dir);
+    try {
+      expect(recovered.store.get("job-telemetry-embed")).toMatchObject({ state: "failed" });
+    } finally {
+      recovered.journal.close();
+    }
+    expect(RunTelemetry.parse(parseYaml(readFileSync(telemetryPath, "utf8"))).run_facts).toEqual(
+      embed.facts,
+    );
+
+    const conflict = recoveryFixture("telemetry-conflict");
+    conflict.first.store.update("job-telemetry-conflict", provisional);
+    conflict.first.journal.close();
+    writeFileSync(
+      join(conflict.runDir, "final", "telemetry.yaml"),
+      `${JSON.stringify(
+        RunTelemetry.parse({
+          ...baseTelemetry(conflict.facts),
+          run_facts: { ...conflict.facts, generated_at: "2026-07-27T09:09:09.000Z" },
+        }),
+      )}\n`,
+    );
+    expect(() => commandAuthority(conflict.dir)).toThrow(
+      /telemetry does not match journal authority/,
+    );
+  });
+
+  it("fails loud when a schema-valid receipt disagrees with journal authority", () => {
+    const { dir, runDir, first, facts } = recoveryFixture("receipt-differs");
+    first.store.update("job-receipt-differs", {
+      state: "interrupted",
+      error: "local finalization failed",
+      errorCode: "terminal_recovery_required",
+      errorStatus: 503,
+      errorRetryable: false,
+    });
+    first.journal.close();
+    writeFileSync(
+      join(runDir, "final", "run_facts.yaml"),
+      `${JSON.stringify({ ...facts, generated_at: "2026-07-27T09:09:09.000Z" }, null, 2)}\n`,
+    );
+
+    expect(() => commandAuthority(dir)).toThrow(/receipt does not match journal authority/);
+  });
+
+  it("fails loud on a schema-invalid receipt instead of silently rebuilding it", () => {
+    const { dir, runDir, first } = recoveryFixture("receipt-invalid");
+    first.store.update("job-receipt-invalid", {
+      state: "interrupted",
+      error: "local finalization failed",
+      errorCode: "terminal_recovery_required",
+      errorStatus: 503,
+      errorRetryable: false,
+    });
+    first.journal.close();
+    writeFileSync(join(runDir, "final", "run_facts.yaml"), "hello: world\n");
+
+    expect(() => commandAuthority(dir)).toThrow(/violates the canonical schema/);
+    // The invalid bytes survive as corruption evidence; no silent rebuild.
+    expect(readFileSync(join(runDir, "final", "run_facts.yaml"), "utf8")).toBe("hello: world\n");
   });
 
   it("keeps the partition ready when retention reclaimed an already-terminal run directory", () => {

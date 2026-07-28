@@ -296,17 +296,30 @@ export class CommandStore {
         throw new Error("durable terminal RunFacts receipt is not a regular file");
       }
       const receiptText = readFileSync(receiptPath, "utf8");
-      let existing: RunFacts | null = null;
+      let receiptValue: unknown;
+      let receiptTorn = false;
       try {
-        existing = validateRunFactsInvariants(parseYaml(receiptText));
+        receiptValue = parseYaml(receiptText);
       } catch {
         // Older direct writers could crash mid-file. The complete journal
-        // payload is the durable authority, so a syntactically torn receipt is
-        // safely reconstructible; a valid-but-different receipt is not.
+        // payload is the durable authority, so a syntactically TORN receipt is
+        // safely reconstructible. ONLY the YAML tear is rebuilt: a receipt that
+        // parses but violates the canonical schema, or one that validates but
+        // differs from the journal, is corruption evidence and fails loud below
+        // instead of being silently destroyed.
+        receiptTorn = true;
         replaceFileDurably(receiptPath, `${JSON.stringify(facts, null, 2)}\n`);
       }
-      if (existing && hashJson(existing) !== hashJson(facts)) {
-        throw new Error("durable terminal RunFacts receipt does not match journal authority");
+      if (!receiptTorn) {
+        let existing: RunFacts;
+        try {
+          existing = validateRunFactsInvariants(receiptValue);
+        } catch {
+          throw new Error("durable terminal RunFacts receipt violates the canonical schema");
+        }
+        if (hashJson(existing) !== hashJson(facts)) {
+          throw new Error("durable terminal RunFacts receipt does not match journal authority");
+        }
       }
     }
     const telemetryPath = join(finalDir, "telemetry.yaml");
@@ -315,12 +328,24 @@ export class CommandStore {
       if (telemetryStat.isSymbolicLink() || !telemetryStat.isFile()) {
         throw new Error("durable terminal telemetry is not a regular file");
       }
-      const telemetry = RunTelemetry.parse(parseYaml(readFileSync(telemetryPath, "utf8")));
-      if (telemetry.run_facts) {
+      // Telemetry is best-effort descriptive evidence written non-atomically
+      // (no fsync), and the terminal commit path itself tolerates a corrupt
+      // copy (safeParse -> the embedded receipt is simply skipped). The JOURNAL
+      // is the authority, so an unreadable or schema-invalid telemetry file
+      // must never take the whole partition into recovery: it stays in place as
+      // corruption evidence, and only a READABLE copy participates in the
+      // receipt-consistency fence below.
+      let telemetry: RunTelemetry | null = null;
+      try {
+        telemetry = RunTelemetry.parse(parseYaml(readFileSync(telemetryPath, "utf8")));
+      } catch {
+        telemetry = null;
+      }
+      if (telemetry?.run_facts) {
         if (hashJson(telemetry.run_facts) !== hashJson(facts)) {
           throw new Error("durable terminal telemetry does not match journal authority");
         }
-      } else {
+      } else if (telemetry) {
         replaceFileDurably(
           telemetryPath,
           stringifyYaml(RunTelemetry.parse({ ...telemetry, run_facts: facts })),
