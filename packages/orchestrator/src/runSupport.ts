@@ -30,6 +30,26 @@ import type { BudgetObservation } from "@claudexor/schema";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { blockedDecisionOverride } from "@claudexor/delivery";
 
+/** D9: the reviewer NEEDS_HUMAN gate is WINNER-ONLY and FAIL-CLOSED. Only an
+ * escalation belonging to the selected deliverable blocks — a losing
+ * candidate cannot veto a clean winner, and the losers' findings remain
+ * disclosed, non-blocking run evidence. But a winner with NO review evidence
+ * record at all is unreviewed authority, not a clean one: it blocks exactly
+ * like an escalated winner instead of silently proceeding (the old
+ * `winnerEvidence?.findings ?? []` collapse was fail-open). No winner (no
+ * working candidates) has no deliverable to gate. */
+export function winnerNeedsHuman(
+  winnerAttemptId: string | null,
+  evidences: ReadonlyArray<Pick<CandidateEvidence, "attemptId" | "findings">>,
+): boolean {
+  if (winnerAttemptId === null) return false;
+  const winner = evidences.find((evidence) => evidence.attemptId === winnerAttemptId);
+  if (!winner) return true;
+  return winner.findings.some(
+    (finding) => finding.severity === "NEEDS_HUMAN" && isBlocking(finding),
+  );
+}
+
 /** Typed terminal evidence for a fresh-verified race whose live delivery was
  * refused (D8): the process succeeded but the deterministic delivery gate
  * refused — checks=failed, a needs-decision block that fires run.blocked. */

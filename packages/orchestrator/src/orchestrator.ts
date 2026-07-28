@@ -142,6 +142,7 @@ import {
   emitPrimaryDivergence,
   emitPoolDegraded,
   deliveryRefusalFailure,
+  winnerNeedsHuman,
   writeRaceDeliveryDecision,
 } from "./runSupport.js";
 import {
@@ -3953,11 +3954,9 @@ export class Orchestrator {
     const winnerEvidence = winnerRun
       ? evidences.find((e) => e.attemptId === winnerRun.attemptId)
       : undefined;
-    // A reviewer escalation blocks only when it belongs to the selected
-    // deliverable. A losing candidate cannot veto a clean winner.
-    const needsHuman = (winnerEvidence?.findings ?? []).some(
-      (finding) => finding.severity === "NEEDS_HUMAN" && isBlocking(finding),
-    );
+    // D9 winner-only NEEDS_HUMAN gate, fail-closed on a winner with no review
+    // evidence record (see winnerNeedsHuman).
+    const needsHuman = winnerNeedsHuman(winnerRun?.attemptId ?? null, evidences);
     // Run-level review_verified is the WINNER's verification: an
     // empty-diff loser's unverified route must not drag the shipped result's
     // flag false. No winner -> fall back to the all-candidates view.

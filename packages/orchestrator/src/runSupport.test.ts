@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { HarnessEvent } from "@claudexor/schema";
+import { ReviewFinding, type HarnessEvent } from "@claudexor/schema";
 import {
   harnessEventPayload,
   promptWithEngineConstraints,
   promptWithGateArgvDisclosure,
   redactHarnessEvent,
   safeErrorMessage,
+  winnerNeedsHuman,
 } from "./runSupport.js";
 
 describe("safeErrorMessage (a thrown value never reports as no error)", () => {
@@ -200,5 +201,55 @@ describe("harnessEventPayload hoists adapter ignored_settings (INV-105 from insi
       payload: { note: "nothing ignored" },
     };
     expect("ignored_settings" in harnessEventPayload("codex", "a01", plain)).toBe(false);
+  });
+});
+
+describe("winnerNeedsHuman (D9: winner-only NEEDS_HUMAN, fail-closed)", () => {
+  const escalation = (id: string) =>
+    ReviewFinding.parse({
+      id,
+      severity: "NEEDS_HUMAN",
+      category: "security",
+      claim: "high-risk change needs a human decision",
+      reviewer: { harness_id: "claude" },
+      status: "accepted",
+    });
+
+  it("blocks on the winner's own accepted NEEDS_HUMAN escalation", () => {
+    expect(
+      winnerNeedsHuman("a01", [{ attemptId: "a01", findings: [escalation("f1")] }]),
+    ).toBe(true);
+  });
+
+  it("does not let a losing candidate's escalation veto a clean winner", () => {
+    expect(
+      winnerNeedsHuman("a01", [
+        { attemptId: "a01", findings: [] },
+        { attemptId: "a02", findings: [escalation("f2")] },
+      ]),
+    ).toBe(false);
+  });
+
+  it("ignores a proposed (non-accepted) escalation on the winner", () => {
+    const proposed = ReviewFinding.parse({
+      id: "f3",
+      severity: "NEEDS_HUMAN",
+      category: "security",
+      claim: "maybe risky",
+      reviewer: { harness_id: "claude" },
+      status: "proposed",
+    });
+    expect(winnerNeedsHuman("a01", [{ attemptId: "a01", findings: [proposed] }])).toBe(false);
+  });
+
+  it("fails closed when the winner has no review evidence record at all", () => {
+    expect(winnerNeedsHuman("a01", [{ attemptId: "a02", findings: [] }])).toBe(true);
+    expect(winnerNeedsHuman("a01", [])).toBe(true);
+  });
+
+  it("has nothing to gate when there is no winner", () => {
+    expect(winnerNeedsHuman(null, [{ attemptId: "a01", findings: [escalation("f4")] }])).toBe(
+      false,
+    );
   });
 });

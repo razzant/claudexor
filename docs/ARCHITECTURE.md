@@ -403,10 +403,15 @@ the truth source honestly (`source: api|manifest|none`, with the manifest's
 `verifiedAgainst` CLI-version freshness note), and the model-hints-freshness
 gate warns when the installed vendor CLI drifts from the verified version.
 Candidate diffs additionally pass a typed policy gate: protected-path changes
-and critical-risk diffs escalate as `NEEDS_HUMAN` findings that block the run;
-explicit per-run `protected_path_approvals` can narrow only the auto-protected
-gate/test path portion of that policy. Plans and repo config cannot carry
-approvals; operator approval is always supplied on the current run.
+and critical-risk diffs escalate as `NEEDS_HUMAN` findings. An accepted
+escalation blocks the run only when it belongs to the WINNING candidate
+(winner-only): a losing candidate's findings stay disclosed as run evidence
+without vetoing a clean winner, and a winner with no review evidence record at
+all fails closed into the same needs-decision block instead of proceeding as
+clean. Explicit per-run `protected_path_approvals` can narrow only the
+auto-protected gate/test path portion of that policy. Plans and repo config
+cannot carry approvals; operator approval is always supplied on the current
+run.
 
 Large synthesis inputs are file-backed: findings + full candidate diffs land
 temporarily as `.claudexor-synthesis-input.md` inside the synthesis envelope,
@@ -1113,6 +1118,28 @@ Once a terminal commits, EventLog refuses every later terminal or engine emit
 for that run; post-terminal control audit events continue the monotonic file
 sequence.
 
+The terminal event TYPE is derived from the validated outcome facts, never
+taken from the emitter's original choice. Every non-succeeded lifecycle
+(failed, cancelled, interrupted) commits as `run.failed`; a succeeded outcome
+that needs an operator decision (review blocked, checks failed, or an
+unfinished work_state) commits as `run.blocked`; and a succeeded outcome with
+clean axes normalizes to `run.completed` even when the engine emitted
+`run.blocked` — preserving a producer-authored block with no machine-readable
+cause would demand a decision no axis can justify. The wire type is therefore
+a projection of the receipt; consumers read the axes in the payload and never
+pattern-match the producer's intent.
+
+Cancellation wins only until the synchronous terminal commit starts. An abort
+observed before the terminal barrier replaces the prepared outcome with
+cancellation facts while retaining the independent checks/review/no-change/
+work-state evidence already established for the run. Once a terminal has
+committed to the owning journal, Cancel is a NO-OP: the committed terminal
+wins, a later abort cannot rewrite the durable result, EventLog refuses every
+later terminal emit, and the daemon keeps reporting the committed outcome.
+The `aborted -> cancelled` mapping survives only as the daemon's fail-closed
+fallback classification for a malformed runner result with no recognized
+lifecycle.
+
 `GET /v2/global/events` and `GET /v2/projects/:id/events` replay the durable
 global or project journal partition and then tail it. Their `Last-Event-ID`
 values are opaque, partition-scoped cursors: a cursor from another partition or
@@ -1357,10 +1384,14 @@ input forwarding into a running harness is not a supported control surface; the
 former `/runs/:id/input` endpoint and `RunInput` DTO were removed as dead code
 rather than left as an always-`unsupported` stub.
 
-A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path
-change, critical-risk diff) is a terminal `blocked` state whose findings surface
-inline on the blocking turn and in the run-filtered workspace's Outcome facts (there is no
-separate Review Queue screen). Since v0.9 the human decision is a TYPED server action:
+A run blocked by the winning candidate's `NEEDS_HUMAN` findings (reviewer
+escalation, protected-path change, critical-risk diff) is a terminal `blocked`
+state whose findings surface inline on the blocking turn and in the
+run-filtered workspace's Outcome facts (there is no separate Review Queue
+screen). The gate is winner-only and fail-closed: losing candidates' findings
+are disclosed run evidence that never blocks the selected deliverable, while a
+winner missing its review evidence record blocks exactly like an escalated
+one. Since v0.9 the human decision is a TYPED server action:
 `POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
 auditable, patch-hash-bound record in the owning journal. The single-owner
 Control API apply gate reads that authority; the mirrored
