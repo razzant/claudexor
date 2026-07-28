@@ -663,6 +663,10 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(p.reviewerEfforts ? { reviewerEfforts: p.reviewerEfforts } : {}),
   };
 
+  // The last run id this command bound, threaded into the failure envelope as
+  // a per-command extra: a run that DID start (or finish) must keep its handle
+  // even when a post-terminal read raises (e.g. 500 run_facts_invalid).
+  let terminalRunId = "";
   try {
     if (jsonStream) {
       // NDJSON machine surface (W13): an EARLY runId frame first, every run
@@ -675,6 +679,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         printJsonLine(projectTerminalRunOutput(started, p.mode, null, { frame: "run.terminal" }));
         return exitCodeForState(started.status);
       }
+      terminalRunId = started.runId;
       printJsonLine({
         frame: "run.started",
         runId: started.runId,
@@ -701,6 +706,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     if (json) {
       // Pure machine surface: await the terminal outcome and print one JSON object.
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
+      terminalRunId = out.runId;
       // Preserve bench keys while adding mode and honest non-success detail.
       const reason = daemonOutcomeSummary(out);
       // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
@@ -719,6 +725,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       print(`run did not start: ${started.status}${started.error ? ` — ${started.error}` : ""}`);
       return exitCodeForState(started.status);
     }
+    terminalRunId = started.runId;
     await followRun(started.runId, false);
     const final = started.jobId ? await client.status(started.jobId) : null;
     const status = final?.state ?? started.status;
@@ -760,6 +767,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
           runId: started.runId,
           interactive: !json && !jsonStream, // TTY plan turns answer inline
         });
+        terminalRunId = effectiveRunId;
       }
       // Offer apply only after a positive gate; otherwise print inspect/unblock guidance.
       const eligibility = await fetchApplyEligibility(addr, effectiveRunId);
@@ -779,9 +787,11 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   } catch (err) {
     // D-7 projector: a typed control problem (code/retryable/context) survives
     // intact; --json-stream stays valid NDJSON via the compact-line stream option.
+    // A run that already started keeps its handle in the envelope (extras).
     return renderCliFailure(json || jsonStream, err, {
       messagePrefix: "claudexor:",
       stream: jsonStream,
+      ...(terminalRunId ? { extras: { runId: terminalRunId } } : {}),
     });
   }
 }

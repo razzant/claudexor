@@ -6,7 +6,7 @@ vi.mock("./live.js", async (importOriginal) => ({
   controlApiFetch: mocks.controlApiFetch,
 }));
 
-import { fetchOutcomeBanner, fetchRunDetail } from "./daemon-run.js";
+import { fetchOutcomeBanner, fetchRunDetail, fetchRunOutcomeFacts } from "./daemon-run.js";
 import type { ControlApiAddress } from "./live.js";
 
 const addr = { host: "127.0.0.1", port: 1, token: "t" } as unknown as ControlApiAddress;
@@ -83,5 +83,55 @@ describe("fetchRunDetail three-state semantics (missing / unavailable / invalid)
       json: async () => ({ runFacts: null, outcomeBanner: "Done" }),
     });
     expect(await fetchRunDetail(addr, "run-1")).toEqual({ runFacts: null, outcomeBanner: "Done" });
+  });
+});
+
+// The outcome-facts projection rides the SAME three-state semantics: the old
+// binary collapse read a typed 500 (the server refusing to vouch for the
+// terminal) as "no facts" and exited as if the run were clean.
+describe("fetchRunOutcomeFacts (three-state, D-16 exit projection)", () => {
+  it("projects the outcome facts from the run detail summary", async () => {
+    mocks.controlApiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        summary: {
+          outcomeFacts: {
+            lifecycle: "succeeded",
+            noChanges: false,
+            checks: "not_configured",
+            review: "not_run",
+            reason: null,
+            work_state: { state: "needs_input", source: "validated" },
+          },
+        },
+      }),
+    });
+    expect(await fetchRunOutcomeFacts(addr, "run-1")).toMatchObject({
+      lifecycle: "succeeded",
+      work_state: { state: "needs_input" },
+    });
+  });
+
+  it("soft-fails to null on a missing detail and on transport unavailability", async () => {
+    mocks.controlApiFetch.mockResolvedValue({ ok: false, status: 404, json: async () => ({}) });
+    expect(await fetchRunOutcomeFacts(addr, "run-1")).toBeNull();
+    mocks.controlApiFetch.mockRejectedValue(new Error("socket lost"));
+    expect(await fetchRunOutcomeFacts(addr, "run-1")).toBeNull();
+  });
+
+  it("raises a typed 500 run_facts_invalid instead of collapsing it to null", async () => {
+    mocks.controlApiFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        code: "run_facts_invalid",
+        message: "canonical RunFacts receipt is invalid",
+        retryable: false,
+      }),
+    });
+    await expect(fetchRunOutcomeFacts(addr, "run-1")).rejects.toMatchObject({
+      code: "run_facts_invalid",
+      retryable: false,
+    });
   });
 });

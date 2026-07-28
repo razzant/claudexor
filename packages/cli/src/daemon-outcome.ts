@@ -1,5 +1,4 @@
 import { OUTPUT_SCHEMA_DIALECTS, RunOutcomeFacts } from "@claudexor/schema";
-import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import type { DaemonRunOutcome } from "./daemon-run.js";
 
 /** Pure projection of the D8 outcome facts (incl. the D-16 work_state) from an
@@ -15,25 +14,6 @@ export function projectRunOutcomeFacts(
       : undefined;
   const parsed = RunOutcomeFacts.safeParse(summary?.outcomeFacts);
   return parsed.success ? parsed.data : null;
-}
-
-/** Fetch the run's terminal outcome facts from the run detail; null when
- * unavailable. Used to make the direct-run CLI exit outcome-aware for a
- * work_state veto (callers that need only this one projection). */
-export async function fetchRunOutcomeFacts(
-  addr: ControlApiAddress,
-  runId: string,
-): Promise<RunOutcomeFacts | null> {
-  if (!runId) return null;
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return null;
-    return projectRunOutcomeFacts((await res.json()) as Record<string, unknown>);
-  } catch {
-    return null;
-  }
 }
 
 /** Additive typed fields for a terminal daemon refusal. The daemon remains

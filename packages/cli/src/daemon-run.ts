@@ -27,11 +27,8 @@ import {
   type ApplyEligibilityProjection,
 } from "./run-detail-projections.js";
 export { projectOutcomeBanner, type ApplyEligibilityProjection } from "./run-detail-projections.js";
-export {
-  fetchRunOutcomeFacts,
-  projectRunOutcomeFacts,
-  mergeDaemonRunOutcome,
-} from "./daemon-outcome.js";
+import { projectRunOutcomeFacts } from "./daemon-outcome.js";
+export { projectRunOutcomeFacts, mergeDaemonRunOutcome } from "./daemon-outcome.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -526,6 +523,22 @@ export async function fetchApplyEligibility(
   runId: string,
 ): Promise<ApplyEligibilityProjection | null> {
   return projectApplyEligibility(await fetchRunDetail(addr, runId));
+}
+
+/**
+ * The run's terminal outcome facts through fetchRunDetail's THREE-state
+ * semantics (INV-120/122): missing/legacy detail and transport loss project
+ * null (the lifecycle-only exit stands), while a typed problem response — the
+ * server's verdict that the terminal cannot be trusted (500 run_facts_invalid)
+ * — raises into the CLI failure path instead of silently exiting as if the
+ * facts never existed. Makes the direct-run CLI exit outcome-aware for a
+ * work_state veto (callers that need only this one projection).
+ */
+export async function fetchRunOutcomeFacts(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<RunOutcomeFacts | null> {
+  return projectRunOutcomeFacts(await fetchRunDetail(addr, runId));
 }
 
 /** Typed description of a raised post-terminal run-detail problem for surfaces
