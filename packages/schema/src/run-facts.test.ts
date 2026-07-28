@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SCHEMA_VERSION } from "./primitives.js";
-import { RunFacts, RunFactsInvariantError, validateRunFactsInvariants } from "./run-facts.js";
+import {
+  RunFacts,
+  RunFactsInvalidError,
+  RunFactsInvariantError,
+  validateRunFactsInvariants,
+  validateRunFactsReceipt,
+} from "./run-facts.js";
 import { makeOutcomeFacts, requiredActionsFor } from "./status-projection.js";
 
 const timestamp = "2026-07-26T12:00:00.000Z";
@@ -922,5 +928,47 @@ describe("RunFacts invariant validator (GH #29)", () => {
         },
       }),
     ).toThrow(/require review.state=blocked/);
+  });
+});
+
+describe("validateRunFactsReceipt (the shared pure read-back owner, S2)", () => {
+  it("returns the receipt when shape, invariants, and identity all hold", () => {
+    const base = validPlan();
+    expect(
+      validateRunFactsReceipt(base, {
+        runId: "run-test",
+        taskId: "task-test",
+        lifecycle: "succeeded",
+      }),
+    ).toEqual(base);
+  });
+
+  it("refuses a wrong-shape value with the typed run_facts_invalid refusal", () => {
+    expect(() => validateRunFactsReceipt({ run_id: "partial" })).toThrow(RunFactsInvalidError);
+    expect(() => validateRunFactsReceipt({ run_id: "partial" })).toThrow(
+      /canonical RunFacts receipt is invalid/,
+    );
+    try {
+      validateRunFactsReceipt({ run_id: "partial" });
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "run_facts_invalid",
+        retryable: false,
+        evidenceRefs: ["final/run_facts.yaml"],
+      });
+    }
+  });
+
+  it("refuses an identity contradicting the caller's authority, including lifecycle", () => {
+    const base = validPlan();
+    expect(() => validateRunFactsReceipt(base, { runId: "run-other" })).toThrow(
+      RunFactsInvalidError,
+    );
+    expect(() => validateRunFactsReceipt(base, { taskId: "task-other" })).toThrow(
+      RunFactsInvalidError,
+    );
+    expect(() => validateRunFactsReceipt(base, { lifecycle: "failed" })).toThrow(
+      RunFactsInvalidError,
+    );
   });
 });

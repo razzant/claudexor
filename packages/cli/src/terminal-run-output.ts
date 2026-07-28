@@ -1,4 +1,4 @@
-import type { ModeKind } from "@claudexor/schema";
+import { isTerminalLifecycle, type ModeKind, type RunOutcomeFacts } from "@claudexor/schema";
 import { daemonOutcomeProblemFields } from "./daemon-outcome.js";
 import type { DaemonRunOutcome } from "./daemon-run.js";
 import { terminalDetailFields } from "./delegation-output.js";
@@ -27,6 +27,14 @@ export function projectTerminalRunOutput(
     ...daemonOutcomeProblemFields(out),
     ...(options.summary ? { summary: options.summary } : {}),
     ...terminalDetailFields(detail),
-    ...projectTerminalDetailFields(detail, out.runId ? { runId: out.runId } : {}),
+    // Unified identity binding (S2): like the control-api projection, the CLI
+    // asserts the receipt's lifecycle against the settled daemon job state —
+    // the daemon job state IS the run lifecycle (D8) once terminal.
+    ...projectTerminalDetailFields(detail, {
+      ...(out.runId ? { runId: out.runId } : {}),
+      ...(isTerminalLifecycle(out.status)
+        ? { lifecycle: out.status as RunOutcomeFacts["lifecycle"] }
+        : {}),
+    }),
   };
 }

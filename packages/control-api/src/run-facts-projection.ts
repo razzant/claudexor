@@ -2,10 +2,11 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   isTerminalLifecycle,
-  validateRunFactsInvariants,
+  validateRunFactsReceipt,
   requiredActionsFor,
   type ApplyEligibility,
   type DecisionRecord,
+  type ExpectedRunFactsIdentity,
   type RequiredAction,
   type RunFacts,
   type RunOutcomeFacts,
@@ -26,11 +27,9 @@ export interface EffectiveTerminalFacts {
   decision: DecisionRecord | null;
 }
 
-export interface ExpectedRunFacts {
-  runId?: string;
-  taskId?: string;
-  lifecycle?: RunOutcomeFacts["lifecycle"];
-}
+/** The shared pure identity contract lives in @claudexor/schema (S2: one
+ * validation owner); this alias keeps the control-api surface name stable. */
+export type ExpectedRunFacts = ExpectedRunFactsIdentity;
 
 /** Bind a canonical receipt to its daemon record without asserting a racy active lifecycle. */
 export function expectedRunFacts(record: {
@@ -145,20 +144,16 @@ function readRunFacts(runDir: string | undefined, expected: ExpectedRunFacts): R
     throw invalidRunFacts();
   }
   try {
-    const facts = validateRunFactsInvariants(parseYaml(readFileSync(path, "utf8")));
-    if (
-      (expected.runId !== undefined && facts.run_id !== expected.runId) ||
-      (expected.taskId !== undefined && facts.task_id !== expected.taskId) ||
-      (expected.lifecycle !== undefined && facts.outcome.lifecycle !== expected.lifecycle)
-    ) {
-      throw invalidRunFacts();
-    }
-    return facts;
+    // Shape + cross-axis invariants + identity binding live in the ONE shared
+    // pure owner (@claudexor/schema); only YAML/file reading and the HTTP
+    // problem mapping below are control-api's own.
+    return validateRunFactsReceipt(parseYaml(readFileSync(path, "utf8")), expected);
   } catch {
     throw invalidRunFacts();
   }
 }
 
+/** Transport mapping of the shared refusal: HTTP status + typed unblock action. */
 function invalidRunFacts(): Error & {
   status: number;
   code: string;

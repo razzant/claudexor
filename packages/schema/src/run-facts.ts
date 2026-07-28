@@ -144,6 +144,58 @@ export const RunFacts = z
   .describe("Validated immutable terminal facts for one run.");
 export type RunFacts = z.infer<typeof RunFacts>;
 
+/** Identity a canonical receipt must match before any surface may serve it:
+ * the daemon/CLI-known run and task ids plus, when the caller holds a settled
+ * terminal state, the exact lifecycle. Undefined fields are simply not
+ * asserted (e.g. a legacy caller that knows only the run id). */
+export interface ExpectedRunFactsIdentity {
+  runId?: string;
+  taskId?: string;
+  lifecycle?: RunOutcomeFacts["lifecycle"];
+}
+
+/** Typed refusal for a PRESENT-but-untrustworthy canonical receipt: wrong
+ * shape, violated cross-axis invariants, or an identity that contradicts the
+ * caller's authority. The pure core carries the stable machine fields
+ * (code/retryable/evidenceRefs); each surface adds its own transport mapping
+ * (control-api: HTTP 500 + requiredActions; CLI: renderCliFailure exit). */
+export class RunFactsInvalidError extends Error {
+  readonly code = "run_facts_invalid";
+  readonly retryable = false;
+  readonly evidenceRefs = ["final/run_facts.yaml"];
+
+  constructor() {
+    super("canonical RunFacts receipt is invalid; inspect final/run_facts.yaml before retrying");
+    this.name = "RunFactsInvalidError";
+  }
+}
+
+/**
+ * THE shared pure validation owner for reading a canonical receipt back on any
+ * surface: wire shape, cross-axis invariants, and identity binding in one
+ * place. Filesystem access, root resolution, and transport/error mapping stay
+ * with the callers — this function never touches disk.
+ */
+export function validateRunFactsReceipt(
+  value: unknown,
+  expected: ExpectedRunFactsIdentity = {},
+): RunFacts {
+  let facts: RunFacts;
+  try {
+    facts = validateRunFactsInvariants(value);
+  } catch {
+    throw new RunFactsInvalidError();
+  }
+  if (
+    (expected.runId !== undefined && facts.run_id !== expected.runId) ||
+    (expected.taskId !== undefined && facts.task_id !== expected.taskId) ||
+    (expected.lifecycle !== undefined && facts.outcome.lifecycle !== expected.lifecycle)
+  ) {
+    throw new RunFactsInvalidError();
+  }
+  return facts;
+}
+
 /** Typed invariant refusal raised before a contradictory RunFacts receipt can
  * be persisted. `violations` is stable diagnostic evidence for tests/logs; it
  * is not a surface vocabulary. */

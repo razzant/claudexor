@@ -1,13 +1,18 @@
 import { lstatSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { validateRunFactsInvariants, type RunFacts as RunFactsType } from "@claudexor/schema";
+import {
+  RunFactsInvalidError,
+  validateRunFactsReceipt,
+  type ExpectedRunFactsIdentity,
+  type RunFacts as RunFactsType,
+} from "@claudexor/schema";
 
 type RunDetail = Record<string, unknown> | null;
 
-export type ExpectedRunFactsIdentity = {
-  runId?: string;
-  taskId?: string;
-};
+// The pure shape/identity validation and its typed refusal live in ONE shared
+// owner (@claudexor/schema, S2); this module keeps only the CLI's own
+// filesystem guards and detail plumbing.
+export type { ExpectedRunFactsIdentity } from "@claudexor/schema";
 
 export type ApplyEligibilityProjection = {
   eligible: boolean;
@@ -24,13 +29,7 @@ export function projectRunFacts(
   if (!detail) return null;
   const value = detail["runFacts"];
   if (value === null || value === undefined) return null;
-  try {
-    const facts = validateRunFactsInvariants(value);
-    assertRunFactsIdentity(facts, expectedIdentityFromDetail(detail, expected));
-    return facts;
-  } catch {
-    throw invalidRunFacts();
-  }
+  return validateRunFactsReceipt(value, expectedIdentityFromDetail(detail, expected));
 }
 
 /** Pure projection of the delivery-gate verdict from an already-fetched detail. */
@@ -82,19 +81,21 @@ export function readRunFactsArtifact(
   const path = join(finalDir, "run_facts.yaml");
   const finalDirStat = lstatOrNull(finalDir);
   if (finalDirStat === null) return null;
-  if (!finalDirStat.isDirectory() || finalDirStat.isSymbolicLink()) throw invalidRunFacts();
+  if (!finalDirStat.isDirectory() || finalDirStat.isSymbolicLink()) {
+    throw new RunFactsInvalidError();
+  }
 
   const artifactStat = lstatOrNull(path);
   if (artifactStat === null) return null;
-  if (!artifactStat.isFile() || artifactStat.isSymbolicLink()) throw invalidRunFacts();
+  if (!artifactStat.isFile() || artifactStat.isSymbolicLink()) throw new RunFactsInvalidError();
 
+  let raw: unknown;
   try {
-    const facts = validateRunFactsInvariants(reader.readYaml(path));
-    assertRunFactsIdentity(facts, expected);
-    return facts;
+    raw = reader.readYaml(path);
   } catch {
-    throw invalidRunFacts();
+    throw new RunFactsInvalidError();
   }
+  return validateRunFactsReceipt(raw, expected);
 }
 
 function expectedIdentityFromDetail(
@@ -114,21 +115,13 @@ function expectedIdentityFromDetail(
       summaryTaskId !== undefined &&
       expected.taskId !== summaryTaskId)
   ) {
-    throw invalidRunFacts();
+    throw new RunFactsInvalidError();
   }
   return {
     runId: expected.runId ?? summaryRunId,
     taskId: expected.taskId ?? summaryTaskId,
+    ...(expected.lifecycle !== undefined ? { lifecycle: expected.lifecycle } : {}),
   };
-}
-
-function assertRunFactsIdentity(facts: RunFactsType, expected: ExpectedRunFactsIdentity): void {
-  if (
-    (expected.runId !== undefined && facts.run_id !== expected.runId) ||
-    (expected.taskId !== undefined && facts.task_id !== expected.taskId)
-  ) {
-    throw invalidRunFacts();
-  }
 }
 
 function lstatOrNull(path: string): Stats | null {
@@ -143,23 +136,6 @@ function lstatOrNull(path: string): Stats | null {
     ) {
       return null;
     }
-    throw invalidRunFacts();
+    throw new RunFactsInvalidError();
   }
-}
-
-function invalidRunFacts(): Error & {
-  code: string;
-  retryable: boolean;
-  evidenceRefs: string[];
-} {
-  return Object.assign(
-    new Error(
-      "canonical RunFacts receipt is invalid; inspect final/run_facts.yaml before retrying",
-    ),
-    {
-      code: "run_facts_invalid",
-      retryable: false,
-      evidenceRefs: ["final/run_facts.yaml"],
-    },
-  );
 }

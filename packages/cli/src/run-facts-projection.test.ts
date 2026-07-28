@@ -138,6 +138,22 @@ describe("RunFacts CLI projections (GH #29)", () => {
     });
   });
 
+  it("binds the receipt lifecycle to the settled daemon job state (unified with control-api)", () => {
+    const out = { runId: "run-facts", runDir: "/runs/run-facts", status: "failed", jobId: "j" };
+    const detail = {
+      summary: { runId: "run-facts", taskId: "task-facts" },
+      runFacts: terminalReceipt,
+    };
+    // A succeeded receipt served for a failed daemon terminal is a lie.
+    expect(() => projectTerminalRunOutput(out, "plan", detail)).toThrow(
+      /canonical RunFacts receipt is invalid/,
+    );
+    // The matching lifecycle serves the exact receipt.
+    expect(projectTerminalRunOutput({ ...out, status: "succeeded" }, "plan", detail)).toMatchObject(
+      { runFacts: terminalReceipt },
+    );
+  });
+
   it("keeps an early JSON failure typed while reporting a missing legacy receipt", () => {
     expect(
       projectTerminalRunOutput(
