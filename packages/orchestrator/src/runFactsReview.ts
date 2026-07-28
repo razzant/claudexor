@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import { isBlocking, ReviewFinding } from "@claudexor/schema";
+import { readTextSafe } from "@claudexor/util";
 import type { AnnouncedRunContext } from "./runTerminals.js";
 
 export interface ReviewArtifacts {
@@ -17,8 +18,20 @@ export function readReviewArtifacts(
   if (!existsSync(ctx.paths.reviewsDir)) return { blockerIds: [], reviewerHarnessIds: [] };
   for (const name of readdirSync(ctx.paths.reviewsDir).sort()) {
     if (![".yaml", ".yml", ".json"].includes(extname(name))) continue;
-    const value = ctx.store.readYaml<Record<string, unknown>>(join(ctx.paths.reviewsDir, name));
-    if (!value || Array.isArray(value)) continue;
+    const path = join(ctx.paths.reviewsDir, name);
+    // Three-state read (parseArtifact symmetry): a file that vanished between
+    // readdir and read is a legitimate absence, but a present-yet-unreadable
+    // or non-record review artifact could hide an accepted blocker, so it
+    // fails loudly (landing in the fail-closed terminal-facts path) exactly
+    // like a malformed finding inside a readable file below.
+    const value = ctx.store.readYaml<Record<string, unknown>>(path);
+    if (value === null) {
+      if (readTextSafe(path) === null) continue;
+      throw new Error(`review artifact is not readable YAML: ${name}`);
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`review artifact is not a record: ${name}`);
+    }
     const artifactAttemptId =
       typeof value["attempt_id"] === "string" && value["attempt_id"].length > 0
         ? value["attempt_id"]

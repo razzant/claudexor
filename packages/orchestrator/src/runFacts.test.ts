@@ -966,6 +966,23 @@ describe("RunFacts canonical artifact projection (GH #29)", () => {
     );
   });
 
+  it("fails loudly on an unreadable or non-record review artifact instead of skipping it", () => {
+    // Three-state symmetry with parseArtifact: an ENTIRELY unreadable review
+    // file could hide an accepted blocker exactly like a malformed finding
+    // inside a readable one, so it is equally loud — never a silent skip.
+    const torn = runFixture([]);
+    torn.store.writeText(join(torn.paths.reviewsDir, "r-torn.yaml"), "findings:\n  - [");
+    expect(() => buildRunFacts(torn.ctx, makeOutcomeFacts("succeeded"))).toThrow(
+      /review artifact is not readable YAML: r-torn\.yaml/,
+    );
+
+    const scalar = runFixture([]);
+    scalar.store.writeText(join(scalar.paths.reviewsDir, "r-scalar.yaml"), '"just a string"\n');
+    expect(() => buildRunFacts(scalar.ctx, makeOutcomeFacts("succeeded"))).toThrow(
+      /review artifact is not a record: r-scalar\.yaml/,
+    );
+  });
+
   it("keeps budget-denied council members in the planner roster without counting merge or review", () => {
     const { store, paths, log, ctx } = runFixture([], "plan");
     store.writeText(join(paths.finalDir, "plan.md"), "# Unified plan\n");
