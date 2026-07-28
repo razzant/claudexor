@@ -6974,7 +6974,10 @@ export class Orchestrator {
       const roUnwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", readonlyWorkMode, {
         sideToolReport: telemetry.sideToolWorkReport ?? undefined,
       });
-      const report = redactSecrets(roUnwrapped.deliverable);
+      // Trim symmetrically with the plan path: a whitespace-only answer is not
+      // a delivered report (the final-artifact wrapper heading would otherwise
+      // make it read as present content by construction).
+      const report = redactSecrets(roUnwrapped.deliverable).trim();
       const unrecovered = unrecoveredToolErrors(telemetry);
       const webBlocked = webUnsatisfied(telemetry);
       const reportPresent = report.length > 0;

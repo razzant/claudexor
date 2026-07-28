@@ -2770,6 +2770,62 @@ describe("Orchestrator", () => {
     );
   });
 
+  it("treats a whitespace-only ask answer exactly like an empty one (no phantom deliverable)", async () => {
+    // Symmetry with the plan path's trim: on a constrained route the D-16
+    // envelope's `output` slot arrives VERBATIM, and the artifact wrapper
+    // heading makes final/answer.md non-empty by construction — an untrimmed
+    // whitespace answer used to claim deliverable_present=true for
+    // effectively no output.
+    const repo = await initRepo();
+    const base = askAdapter("asker", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield {
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: JSON.stringify({
+          work_report: { state: "completed", required_inputs: [] },
+          output: "   \n\t ",
+        }),
+      };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const asker: HarnessAdapter = {
+      ...base,
+      async discover() {
+        return HarnessManifest.parse({
+          id: "asker",
+          display_name: "asker",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: {
+            plan: true,
+            review: true,
+            read_files: true,
+            web_policy: "tools",
+            work_report_transport: "constrained",
+            json_schema_output: true,
+            structured_output_channel: "final_message",
+          },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["asker", asker]]),
+      reviewers: [],
+    }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
+
+    // The effectively empty answer is normalized to the same honest marker an
+    // empty answer gets — raw whitespace is never shipped as content.
+    expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain("(no output)");
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      attempts?: Array<{ outcome?: { deliverable_present?: boolean } }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry?.attempts?.[0]?.outcome?.deliverable_present).toBe(false);
+  });
+
   it("QA-050: a zero-budget Ask refusal is a typed budget failure (phase=budget, code=finite_zero, route preserved) with budget remediation, never auth/setup", async () => {
     const repo = await initRepo();
     const asker = askAdapter("asker", function* (sessionId) {
