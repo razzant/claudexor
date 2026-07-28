@@ -216,9 +216,9 @@ describe("winnerNeedsHuman (D9: winner-only NEEDS_HUMAN, fail-closed)", () => {
     });
 
   it("blocks on the winner's own accepted NEEDS_HUMAN escalation", () => {
-    expect(
-      winnerNeedsHuman("a01", [{ attemptId: "a01", findings: [escalation("f1")] }]),
-    ).toBe(true);
+    expect(winnerNeedsHuman("a01", [{ attemptId: "a01", findings: [escalation("f1")] }])).toBe(
+      true,
+    );
   });
 
   it("does not let a losing candidate's escalation veto a clean winner", () => {

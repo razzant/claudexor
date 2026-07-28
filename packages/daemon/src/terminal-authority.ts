@@ -22,7 +22,11 @@ export function recoveredTerminalFacts(
     throw new Error("durable terminal recovery is missing the command run identity or directory");
   }
   const facts = validateRunFactsInvariants(terminal.payload["run_facts"]);
-  if (typeof terminal.seq !== "number" || !Number.isSafeInteger(terminal.seq) || terminal.seq <= 0) {
+  if (
+    typeof terminal.seq !== "number" ||
+    !Number.isSafeInteger(terminal.seq) ||
+    terminal.seq <= 0
+  ) {
     throw new Error("durable terminal event has no valid sequence");
   }
   const expectedTerminalType =

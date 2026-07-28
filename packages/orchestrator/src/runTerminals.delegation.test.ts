@@ -751,7 +751,9 @@ describe("Delegate terminal drain ordering", () => {
       .split("\n")
       .map((line) => (JSON.parse(line) as { type: string }).type);
     expect(types).toEqual(["run.created", "run.failed"]);
-    const terminal = JSON.parse(readFileSync(paths.eventsPath, "utf8").trim().split("\n").at(-1)!) as {
+    const terminal = JSON.parse(
+      readFileSync(paths.eventsPath, "utf8").trim().split("\n").at(-1)!,
+    ) as {
       payload: Record<string, unknown>;
     };
     expect(terminal.payload["phase"]).toBe("terminal_facts");

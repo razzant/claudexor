@@ -37,11 +37,10 @@ export function canonicalDeliverable(args: {
       // satisfied a structured-output contract. Apply eligibility is bound to
       // this exact patch; choosing output.json here would manufacture an
       // invariant failure for a valid dual-output run.
-      candidates.push(
-        { kind: "patch", path: "final/patch.diff" },
-        structuredOutput,
-        { kind: "answer", path: "final/answer.md" },
-      );
+      candidates.push({ kind: "patch", path: "final/patch.diff" }, structuredOutput, {
+        kind: "answer",
+        path: "final/answer.md",
+      });
     } else if (resultKind === "report") {
       candidates.push(
         structuredOutput,

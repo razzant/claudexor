@@ -22,7 +22,11 @@ import {
 import { hashJson } from "@claudexor/util";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { JOB_STATES, type JobRecord } from "./server.js";
-import { lstatOrNull, recoveredTerminalFacts, terminalCommandResult } from "./terminal-authority.js";
+import {
+  lstatOrNull,
+  recoveredTerminalFacts,
+  terminalCommandResult,
+} from "./terminal-authority.js";
 
 interface AcceptedCommand {
   record: JobRecord;
