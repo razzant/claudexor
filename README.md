@@ -1,5 +1,7 @@
 # Claudexor
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.razzant%2Fclaudexor.svg)](https://mcptoplist.com/server/io.github.razzant%2Fclaudexor)
+
 [![npm version](https://img.shields.io/npm/v/claudexor)](https://www.npmjs.com/package/claudexor)
 [![npm downloads](https://img.shields.io/npm/d18m/claudexor?label=npm%20downloads)](https://www.npmjs.com/package/claudexor)
 [![app downloads](https://img.shields.io/github/downloads/razzant/claudexor/total?label=app%20downloads)](https://github.com/razzant/claudexor/releases)
