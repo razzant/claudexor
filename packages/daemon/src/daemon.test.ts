@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,8 +19,9 @@ import {
 } from "@claudexor/schema";
 import { describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
-import { CommandStore } from "./command-store.js";
+import { CommandStore, commandProjection } from "./command-store.js";
 import { InteractionRegistry, InteractionStore } from "./interactions.js";
+import { JournalManager } from "./journal-manager.js";
 import { DaemonServer, jobStateFromResult, type JobRecord } from "./server.js";
 import { acquireDaemonWriterLease } from "./writer-lease.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -712,8 +714,152 @@ describe("DaemonServer", () => {
     }
   });
 
+  it("keeps the partition ready when retention reclaimed an already-terminal run directory", () => {
+    const { dir, runDir, first, facts } = recoveryFixture("terminal-reclaimed");
+    first.store.update("job-terminal-reclaimed", {
+      state: "failed",
+      result: {
+        lifecycle: "failed",
+        facts: facts.outcome,
+        runId: facts.run_id,
+        taskId: facts.task_id,
+        runDir,
+      },
+      finishedAt: "2026-07-26T12:00:02.000Z",
+    });
+    first.journal.close();
+    rmSync(runDir, { recursive: true, force: true });
+
+    const manager = new JournalManager(dir);
+    const slot = manager.registerProjection(commandProjection());
+    try {
+      expect(manager.start().status).toBe("ready");
+      expect(slot.current().get("job-terminal-reclaimed")).toMatchObject({
+        state: "failed",
+        result: { lifecycle: "failed", runId: facts.run_id, taskId: facts.task_id },
+      });
+      // The journal is the authority: no filesystem repair resurrects the dir.
+      expect(existsSync(runDir)).toBe(false);
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("keeps the partition ready over a tombstone-only run directory", () => {
+    const { dir, runDir, first, facts } = recoveryFixture("terminal-tombstone");
+    first.store.update("job-terminal-tombstone", {
+      state: "failed",
+      result: {
+        lifecycle: "failed",
+        facts: facts.outcome,
+        runId: facts.run_id,
+        taskId: facts.task_id,
+        runDir,
+      },
+      finishedAt: "2026-07-26T12:00:02.000Z",
+    });
+    first.journal.close();
+    rmSync(runDir, { recursive: true, force: true });
+    // Disk retention recreates the run root holding only its reclaim marker
+    // (mirrored literally here: daemon has no control-api dependency).
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "tombstone.yaml"), "reclaimed: true\n");
+
+    const manager = new JournalManager(dir);
+    const slot = manager.registerProjection(commandProjection());
+    try {
+      expect(manager.start().status).toBe("ready");
+      expect(slot.current().get("job-terminal-tombstone")).toMatchObject({ state: "failed" });
+      expect(existsSync(join(runDir, "final"))).toBe(false);
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("recovers a provisional terminal from journal authority after its run directory was reclaimed", () => {
+    const { dir, runDir, first, facts } = recoveryFixture("terminal-provisional-reclaimed");
+    first.store.update("job-terminal-provisional-reclaimed", {
+      state: "interrupted",
+      error: "local finalization failed",
+      errorCode: "terminal_recovery_required",
+      errorStatus: 503,
+      errorRetryable: false,
+    });
+    first.journal.close();
+    rmSync(runDir, { recursive: true, force: true });
+
+    const recovered = commandAuthority(dir);
+    try {
+      const record = recovered.store.get("job-terminal-provisional-reclaimed");
+      expect(record).toMatchObject({
+        state: "failed",
+        result: { lifecycle: "failed", runId: facts.run_id, taskId: facts.task_id },
+      });
+      expect(record?.errorCode).toBeUndefined();
+      expect(existsSync(runDir)).toBe(false);
+    } finally {
+      recovered.journal.close();
+    }
+  });
+
+  it("recovers a provisional terminal over a tombstone-only run directory without repair", () => {
+    const { dir, runDir, first, facts } = recoveryFixture("terminal-provisional-tombstone");
+    first.store.update("job-terminal-provisional-tombstone", {
+      state: "interrupted",
+      error: "local finalization failed",
+      errorCode: "terminal_recovery_required",
+      errorStatus: 503,
+      errorRetryable: false,
+    });
+    first.journal.close();
+    rmSync(runDir, { recursive: true, force: true });
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "tombstone.yaml"), "reclaimed: true\n");
+
+    const recovered = commandAuthority(dir);
+    try {
+      expect(recovered.store.get("job-terminal-provisional-tombstone")).toMatchObject({
+        state: "failed",
+        result: { lifecycle: "failed", runId: facts.run_id, taskId: facts.task_id },
+      });
+      expect(existsSync(join(runDir, "final"))).toBe(false);
+    } finally {
+      recovered.journal.close();
+    }
+  });
+
+  it("does not re-read per-run evidence for an already-reconciled terminal command", () => {
+    const { dir, runDir, first, facts } = recoveryFixture("terminal-no-reread");
+    first.store.update("job-terminal-no-reread", {
+      state: "failed",
+      result: {
+        lifecycle: "failed",
+        facts: facts.outcome,
+        runId: facts.run_id,
+        taskId: facts.task_id,
+        runDir,
+      },
+      finishedAt: "2026-07-26T12:00:02.000Z",
+    });
+    first.journal.close();
+    // Poison sentinel: any events.jsonl read/normalization on restart would
+    // throw on these bytes; any receipt repair would create run_facts.yaml.
+    writeFileSync(join(runDir, "events.jsonl"), "not json\n");
+
+    const recovered = commandAuthority(dir);
+    try {
+      expect(recovered.store.get("job-terminal-no-reread")).toMatchObject({ state: "failed" });
+    } finally {
+      recovered.journal.close();
+    }
+    expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toBe("not json\n");
+    expect(existsSync(join(runDir, "final", "run_facts.yaml"))).toBe(false);
+  });
+
   it("immediately reconciles terminal_recovery_required instead of leaving a live job", async () => {
-    const dir = tempDir("terminal-immediate-recovery");
+    // Short fixture name: this test binds a unix socket under the temp dir and
+    // macOS caps sun_path at 104 bytes.
+    const dir = tempDir("term-immediate");
     const runDir = join(dir, "run-immediate");
     mkdirSync(join(runDir, "final"), { recursive: true });
     const authority = commandAuthority(dir);

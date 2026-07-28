@@ -212,28 +212,29 @@ export class CommandStore {
       });
     }
 
-    const facts = this.recoverTerminalArtifacts(record, terminal);
-    const lifecycle = facts.outcome.lifecycle;
-    const recoveredResult = {
-      lifecycle,
-      facts: facts.outcome,
-      runId: facts.run_id,
-      taskId: facts.task_id,
-      runDir: record.runDir!,
-    };
-    const provisionalRecovery =
-      record.state !== "queued" &&
-      record.state !== "running" &&
-      record.errorCode === "terminal_recovery_required";
-    if (record.state !== "queued" && record.state !== "running" && !provisionalRecovery) {
-      if (record.state !== lifecycle || !terminalResultMatches(record.result, recoveredResult)) {
+    const active = record.state === "queued" || record.state === "running";
+    const provisionalRecovery = !active && record.errorCode === "terminal_recovery_required";
+    if (!active && !provisionalRecovery) {
+      // Already reconciled: the durable payload is still re-validated in
+      // memory, but artifact recovery is skipped entirely. Restart must not
+      // re-read per-run evidence for every historical terminal command (O(N)
+      // disk work per start) and must not require a run directory that disk
+      // retention may have legitimately reclaimed after the terminal
+      // committed — either would poison the whole partition.
+      const { facts } = recoveredTerminalFacts(record, terminal);
+      if (
+        record.state !== facts.outcome.lifecycle ||
+        !terminalResultMatches(record.result, terminalCommandResult(record, facts))
+      ) {
         throw new Error("terminal command result conflicts with durable terminal authority");
       }
       return record;
     }
+    const facts = this.recoverTerminalArtifacts(record, terminal);
+    const lifecycle = facts.outcome.lifecycle;
     return this.update(record.id, {
       state: lifecycle,
-      result: recoveredResult,
+      result: terminalCommandResult(record, facts),
       error:
         lifecycle === "failed" || lifecycle === "interrupted"
           ? `recovered durable ${lifecycle} terminal after daemon restart`
@@ -265,45 +266,21 @@ export class CommandStore {
   }
 
   private recoverTerminalArtifacts(record: JobRecord, terminal: RunEvent): RunFacts {
-    if (!record.runId || !record.taskId || !record.runDir) {
-      throw new Error("durable terminal recovery is missing the command run identity or directory");
+    const { facts, terminalSeq } = recoveredTerminalFacts(record, terminal);
+    // ENOENT on the run root or its final/ directory means disk retention
+    // already reclaimed this run's on-disk evidence (rmSync may leave only a
+    // recreated root holding a tombstone marker). The partition journal is the
+    // durable authority, so the recovered facts are returned WITHOUT
+    // filesystem repair instead of poisoning the partition on restart.
+    const rootStat = lstatOrNull(record.runDir!);
+    if (!rootStat) return facts;
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw new Error("durable terminal run directory is not a canonical directory");
     }
-    const facts = validateRunFactsInvariants(terminal.payload["run_facts"]);
-    if (
-      typeof terminal.seq !== "number" ||
-      !Number.isSafeInteger(terminal.seq) ||
-      terminal.seq <= 0
-    ) {
-      throw new Error("durable terminal event has no valid sequence");
-    }
-    const terminalSeq = terminal.seq;
-    const expectedTerminalType =
-      facts.outcome.lifecycle !== "succeeded"
-        ? "run.failed"
-        : needsOperatorAttention(facts.outcome, false)
-          ? "run.blocked"
-          : "run.completed";
-    if (
-      facts.run_id !== terminal.run_id ||
-      facts.task_id !== terminal.task_id ||
-      facts.run_id !== record.runId ||
-      facts.task_id !== record.taskId ||
-      hashJson(facts.outcome) !== hashJson(terminal.payload["facts"]) ||
-      terminal.type !== expectedTerminalType ||
-      terminal.payload["lifecycle"] !== facts.outcome.lifecycle ||
-      terminal.payload["reason"] !== facts.outcome.reason
-    ) {
-      throw new Error("durable terminal RunFacts identity, envelope, or outcome mismatch");
-    }
-    const rootStat = lstatSync(record.runDir);
-    const finalDir = join(record.runDir, "final");
-    const finalStat = lstatSync(finalDir);
-    if (
-      rootStat.isSymbolicLink() ||
-      !rootStat.isDirectory() ||
-      finalStat.isSymbolicLink() ||
-      !finalStat.isDirectory()
-    ) {
+    const finalDir = join(record.runDir!, "final");
+    const finalStat = lstatOrNull(finalDir);
+    if (!finalStat) return facts;
+    if (finalStat.isSymbolicLink() || !finalStat.isDirectory()) {
       throw new Error("durable terminal run directory is not a canonical directory");
     }
     const receiptPath = join(finalDir, "run_facts.yaml");
@@ -347,7 +324,7 @@ export class CommandStore {
         );
       }
     }
-    const eventsPath = join(record.runDir, "events.jsonl");
+    const eventsPath = join(record.runDir!, "events.jsonl");
     const eventsStat = lstatOrNull(eventsPath);
     let eventsBytes = Buffer.alloc(0);
     if (eventsStat) {
@@ -430,6 +407,54 @@ export class CommandStore {
       if (removed.has(entry.id)) this.idByKeyDigest.delete(digest);
     }
   }
+}
+
+/**
+ * Pure (no filesystem) validation binding a durable terminal event's RunFacts
+ * payload to the command's run identity and the terminal envelope. Both the
+ * already-reconciled fast path and full artifact recovery MUST share this
+ * check so a skipped repair never skips authority validation.
+ */
+function recoveredTerminalFacts(
+  record: JobRecord,
+  terminal: RunEvent,
+): { facts: RunFacts; terminalSeq: number } {
+  if (!record.runId || !record.taskId || !record.runDir) {
+    throw new Error("durable terminal recovery is missing the command run identity or directory");
+  }
+  const facts = validateRunFactsInvariants(terminal.payload["run_facts"]);
+  if (typeof terminal.seq !== "number" || !Number.isSafeInteger(terminal.seq) || terminal.seq <= 0) {
+    throw new Error("durable terminal event has no valid sequence");
+  }
+  const expectedTerminalType =
+    facts.outcome.lifecycle !== "succeeded"
+      ? "run.failed"
+      : needsOperatorAttention(facts.outcome, false)
+        ? "run.blocked"
+        : "run.completed";
+  if (
+    facts.run_id !== terminal.run_id ||
+    facts.task_id !== terminal.task_id ||
+    facts.run_id !== record.runId ||
+    facts.task_id !== record.taskId ||
+    hashJson(facts.outcome) !== hashJson(terminal.payload["facts"]) ||
+    terminal.type !== expectedTerminalType ||
+    terminal.payload["lifecycle"] !== facts.outcome.lifecycle ||
+    terminal.payload["reason"] !== facts.outcome.reason
+  ) {
+    throw new Error("durable terminal RunFacts identity, envelope, or outcome mismatch");
+  }
+  return { facts, terminalSeq: terminal.seq };
+}
+
+function terminalCommandResult(record: JobRecord, facts: RunFacts) {
+  return {
+    lifecycle: facts.outcome.lifecycle,
+    facts: facts.outcome,
+    runId: facts.run_id,
+    taskId: facts.task_id,
+    runDir: record.runDir!,
+  };
 }
 
 function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
