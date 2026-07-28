@@ -83,11 +83,19 @@ describe("RunFacts CLI projections (GH #29)", () => {
     expect(JSON.stringify(projected)).toBe(JSON.stringify(terminalReceipt));
   });
 
-  it("always includes runFacts on terminal JSON, including legacy null", () => {
+  it("keeps terminal runFacts three-state: missing/unavailable are null, invalid throws", () => {
+    // Unavailable detail (transport hiccup or 404/legacy run): null.
     expect(projectTerminalDetailFields(null)).toEqual({ runFacts: null });
+    // Detail present but the receipt is genuinely missing (legacy run): null,
+    // the key itself always present on terminal JSON.
+    expect(projectTerminalDetailFields({ runFacts: null })).toEqual({ runFacts: null });
     expect(projectTerminalDetailFields({ runFacts: terminalReceipt })).toEqual({
       runFacts: terminalReceipt,
     });
+    // Present-but-invalid never collapses into the legacy null.
+    expect(() => projectTerminalDetailFields({ runFacts: { run_id: "partial" } })).toThrow(
+      /canonical RunFacts receipt is invalid/,
+    );
   });
 
   it("keeps the JSON and NDJSON terminal envelope additive and canonical", () => {

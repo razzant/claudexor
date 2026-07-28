@@ -244,7 +244,7 @@ describe("mcp daemon body mapping", () => {
     const bodies: Record<string, unknown>[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ ok: false }) as never),
+      vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }) as never),
     );
     const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
       client: {} as never,

@@ -12,6 +12,7 @@ import {
 } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
 import { hashJson } from "@claudexor/util";
+import { controlProblemError } from "./cli-error.js";
 import {
   controlApiAddress,
   controlApiFetch,
@@ -492,21 +493,34 @@ export async function fetchCouncil(
 
 /**
  * ONE GET /runs/:id for the terminal path (INV-120/122): fetch the run detail
- * once and feed every pure projection below, instead of one round-trip per
- * projection. Soft-fails to null (a detail hiccup must never eat a finished
- * run's result). The per-projection `fetch*` wrappers stay for callers that
- * need exactly one projection.
+ * once and feed every pure projection below. Three-state semantics:
+ * a MISSING detail (404 / legacy run) and a transport-UNAVAILABLE detail both
+ * soft-fail to null (a hiccup must never eat a finished run's result), while a
+ * typed problem response — especially 500 run_facts_invalid, the server's
+ * verdict that the run's canonical receipt cannot be trusted — raises through
+ * the typed CLI failure path (controlProblemError -> renderCliFailure,
+ * non-zero exit) instead of masquerading as a legacy run. The per-projection
+ * `fetch*` wrappers stay for callers that need exactly one projection.
  */
 export async function fetchRunDetail(
   addr: ControlApiAddress,
   runId: string,
 ): Promise<Record<string, unknown> | null> {
   if (!runId) return null;
+  let res: Awaited<ReturnType<typeof controlApiFetch>>;
   try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
+    res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
       headers: { authorization: `Bearer ${addr.token}` },
     });
-    if (!res.ok) return null;
+  } catch {
+    return null;
+  }
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => ({}));
+    throw controlProblemError(res.status, body, `run detail failed (HTTP ${res.status})`);
+  }
+  try {
     return (await res.json()) as Record<string, unknown>;
   } catch {
     return null;
