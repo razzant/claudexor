@@ -171,6 +171,19 @@ or "Incomplete", and a non-zero shell exit — without pretending the process
 failed. A blocked read-only run that produced no answer can no longer read as
 "done"; the deliverable is re-checked, so an empty run exits non-zero.
 
+Every terminal run seals these axes into one immutable RunFacts receipt. The
+orchestrator builds it once from canonical artifacts, validates its
+cross-axis invariants, embeds the exact object in the terminal journal event,
+and persists it as `final/run_facts.yaml`; CLI, control API, and machine
+surfaces serve that exact validated object through one shared validation
+owner. A receipt that is present but invalid is a typed, loud failure on
+every surface — never a silent "no facts" — and a corrupted canonical
+artifact fails the terminal instead of projecting as "not configured".
+Deterministic checks mean all of them: configured contract gates, the final
+fresh-tree verify, and the protected live apply — a refused delivery rides
+the checks axis even when the task configured no gates — and a zero-byte
+deliverable is never a deliverable.
+
 No regex governance: risk, permissions, winners, web evidence, and
 tests-passed come from typed contracts and events, never from string-matching
 model output. Unknown cost is unknown — subscription valuation, metered cash,

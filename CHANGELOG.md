@@ -3,6 +3,29 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **Unreleased** — Canonical RunFacts receipt (GH #29). Every terminal run
+  now seals its outcome into one immutable, invariant-validated `RunFacts`
+  object built once from canonical artifacts, embedded in the terminal
+  journal event, persisted as `final/run_facts.yaml`, and served verbatim by
+  the control API detail, terminal CLI JSON/NDJSON, and `claudexor inspect`
+  through one shared validation owner with unified run/task/lifecycle
+  identity binding. Fail-loud everywhere: a present-but-invalid receipt is a
+  typed `run_facts_invalid` failure on every surface (the CLI exits non-zero
+  instead of reading it as a legacy run), a corrupted canonical artifact or
+  malformed review finding fails the terminal instead of projecting as "not
+  configured", and daemon restart reconciliation no longer re-reads per-run
+  evidence for already-reconciled terminals or poisons a partition whose run
+  directory disk retention legitimately reclaimed. The checks axis now
+  reflects ALL deterministic checks: a refused live delivery or failed fresh
+  verify blocks a zero-gate run exactly like a gated one (run.blocked,
+  non-eligible) instead of normalizing to a clean completion. The reviewer
+  NEEDS_HUMAN gate is winner-only and fail-closed: a losing candidate's
+  findings stay disclosed evidence without vetoing a clean winner, and a
+  winner missing its review evidence blocks. A zero-byte deliverable of any
+  kind is no longer counted as present. The terminal event type is derived
+  from validated outcome facts, and Cancel after the terminal journal commit
+  is a documented no-op.
+
 - **v3.1.2** (2026-07-26) — Delegate recovery patch. Packaged macOS and npm
   installs now expose the six-tool delegation belt through the exact daemon
   self-entry instead of failing because a neighboring `cli.js` is absent.
