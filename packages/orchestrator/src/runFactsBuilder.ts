@@ -393,7 +393,13 @@ function gateProjection(
         state: "not_configured",
         receipt_attempt_id: null,
       },
-      checks: "not_configured",
+      // FinalVerifier and the protected live apply are deterministic checks
+      // that run even when the contract configures no gates. A fail-closed
+      // terminal CHECKS axis wins over the unconfigured default — otherwise a
+      // refused delivery would normalize to run.completed and become
+      // apply-eligible. gates.* stays honestly not_configured: it describes
+      // configured contract gates only.
+      checks: terminalOutcome.checks === "failed" ? "failed" : "not_configured",
     };
   }
   const receipt = terminalGateReceipt(ctx, telemetry, decision, producerAttemptId);

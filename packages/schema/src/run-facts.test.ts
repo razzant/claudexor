@@ -325,6 +325,60 @@ describe("RunFacts invariant validator (GH #29)", () => {
     ).toThrow(/outcome.checks=passed/);
   });
 
+  it("accepts a zero-gate succeeded terminal whose deterministic checks failed closed", () => {
+    // FinalVerifier and the protected live apply are deterministic checks that
+    // run even when the contract configures no gates: a fresh-verify failure or
+    // a refused live delivery rides the CHECKS axis (checks=failed,
+    // reason=checks_failed) while gates.* stays honestly not_configured.
+    const base = validAgentPatch();
+    const outcome = makeOutcomeFacts("succeeded", {
+      checks: "failed",
+      review: "approved",
+      reason: "checks_failed",
+    });
+    const receipt = validateRunFactsInvariants({
+      ...base,
+      outcome,
+      review: { state: "approved", blocker_ids: [], blockers: 0 },
+      required_actions: requiredActionsFor(outcome, false),
+    });
+    expect(receipt.gates).toMatchObject({ configured: false, total: 0, state: "not_configured" });
+    expect(receipt.outcome).toMatchObject({ checks: "failed", reason: "checks_failed" });
+  });
+
+  it("retains a fail-closed checks axis when cancellation wins over a zero-gate terminal", () => {
+    // A cancel that wins the terminal race keeps independent axis evidence
+    // from the already-prepared outcome (terminalOutcomeFacts): checks=failed
+    // with an unconfigured gate set must stay representable under a
+    // cancellation reason.
+    const base = validAgentPatch();
+    const outcome = makeOutcomeFacts("cancelled", {
+      checks: "failed",
+      review: "approved",
+      reason: "user_cancelled",
+    });
+    const receipt = validateRunFactsInvariants({
+      ...base,
+      outcome,
+      review: { state: "approved", blocker_ids: [], blockers: 0 },
+      required_actions: requiredActionsFor(outcome, false),
+    });
+    expect(receipt.outcome).toMatchObject({ checks: "failed", reason: "user_cancelled" });
+  });
+
+  it("rejects a green checks axis that no configured gate produced", () => {
+    const base = validAgentPatch();
+    const outcome = makeOutcomeFacts("succeeded", { checks: "passed", review: "approved" });
+    expect(() =>
+      validateRunFactsInvariants({
+        ...base,
+        outcome,
+        review: { state: "approved", blocker_ids: [], blockers: 0 },
+        required_actions: requiredActionsFor(outcome, false),
+      }),
+    ).toThrow(/unconfigured gates cannot claim outcome.checks=passed/);
+  });
+
   it("rejects a failure-only reason on a succeeded lifecycle", () => {
     const base = validAgentPatch();
     expect(() =>

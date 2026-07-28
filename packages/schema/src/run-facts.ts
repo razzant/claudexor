@@ -226,8 +226,14 @@ export function validateRunFactsInvariants(value: unknown): RunFacts {
     if (gates.executed || gates.state !== "not_configured" || gates.receipt_attempt_id !== null) {
       violations.push("an unconfigured gate set cannot be executed or carry a receipt");
     }
-    if (outcome.checks !== "not_configured") {
-      violations.push("unconfigured gates require outcome.checks=not_configured");
+    // outcome.checks aggregates ALL deterministic checks — configured contract
+    // gates, FinalVerifier, and the protected live apply — while gates.*
+    // describes only the CONFIGURED contract gates. With zero configured gates
+    // the checks axis may therefore still fail closed (final verify failed,
+    // live delivery refused); what it can never do is claim a green result
+    // that no configured gate produced.
+    if (outcome.checks === "passed") {
+      violations.push("unconfigured gates cannot claim outcome.checks=passed");
     }
   } else {
     if (gates.total === 0) violations.push("a configured gate set must contain at least one gate");

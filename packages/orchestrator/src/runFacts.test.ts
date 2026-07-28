@@ -689,6 +689,147 @@ describe("RunFacts canonical artifact projection (GH #29)", () => {
     });
   });
 
+  // FinalVerifier and the protected live apply are deterministic checks that
+  // run even when the contract configures no gates: the fail-closed terminal
+  // CHECKS axis must survive the zero-gate projection (gates.* stays honestly
+  // not_configured) instead of being greenwashed into a completed, eligible run.
+  function zeroGateBlockedFixture(finalVerify: {
+    attempted: boolean;
+    applied_cleanly: boolean | null;
+    gates_passed: boolean | null;
+  }) {
+    const fixture = runFixture([]);
+    const outcome = makeOutcomeFacts("succeeded", {
+      checks: "failed",
+      review: "approved",
+      reason: "checks_failed",
+    });
+    fixture.store.writeText(
+      join(fixture.paths.finalDir, "patch.diff"),
+      "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+    );
+    fixture.store.writeYaml(
+      join(fixture.paths.finalDir, "telemetry.yaml"),
+      RunTelemetry.parse({
+        schema_version: SCHEMA_VERSION,
+        run_id: "run-facts",
+        task_id: "task-facts",
+        mode: "agent",
+        requested_access: "workspace_write",
+        effective_access: "workspace_write",
+        external_context_policy: "off",
+        effective_web_mode: "off",
+        final_attempt_id: "a01",
+        web: {},
+        attempts: [
+          {
+            attempt_id: "a01",
+            harness_id: "fake-success",
+            web: {},
+            outcome: { deliverable_present: true, gates_passed: null, status: "success" },
+          },
+        ],
+        generated_at: timestamp,
+      }),
+    );
+    fixture.store.writeYaml(
+      join(fixture.paths.arbitrationDir, "decision.yaml"),
+      DecisionRecord.parse({
+        winner: "a01",
+        facts: outcome,
+        final_verify: { ...finalVerify, gates: [] },
+      }),
+    );
+    return { ...fixture, outcome };
+  }
+
+  async function zeroGateBlockedTerminal(fixture: ReturnType<typeof zeroGateBlockedFixture>) {
+    const { paths, log, ctx, outcome } = fixture;
+    const result = await guardAnnouncedRun(undefined, async (announce) => {
+      announce(ctx);
+      log.emit("run.blocked", {
+        lifecycle: outcome.lifecycle,
+        facts: outcome,
+        reason: outcome.reason,
+      });
+      return {
+        runId: ctx.runId,
+        taskId: ctx.taskId,
+        mode: ctx.mode,
+        lifecycle: outcome.lifecycle,
+        facts: outcome,
+        winner: "a01",
+        runDir: paths.root,
+        summary: "zero-gate needs-decision terminal",
+        candidates: [],
+      };
+    });
+    const receipt = fixture.store.readYaml<{
+      outcome: unknown;
+      gates: unknown;
+      apply: { eligibility: { eligible: boolean; state: string } | null };
+      required_actions: Array<{ id: string }>;
+    }>(join(paths.finalDir, "run_facts.yaml"));
+    return { result, receipt, terminal: log.readAll().events.at(-1) };
+  }
+
+  it("keeps a zero-gate delivery refusal a blocked, non-eligible needs-decision terminal", async () => {
+    // Race adoption refused the live apply AFTER a passed fresh verify
+    // (deliveryRefusalDecisionFields): verify green, delivery refused.
+    const fixture = zeroGateBlockedFixture({
+      attempted: true,
+      applied_cleanly: true,
+      gates_passed: true,
+    });
+    const { result, receipt, terminal } = await zeroGateBlockedTerminal(fixture);
+
+    expect(result.facts).toMatchObject({
+      lifecycle: "succeeded",
+      checks: "failed",
+      reason: "checks_failed",
+    });
+    expect(terminal).toMatchObject({
+      type: "run.blocked",
+      payload: { lifecycle: "succeeded", facts: result.facts, reason: "checks_failed" },
+    });
+    expect(receipt?.outcome).toEqual(result.facts);
+    expect(receipt?.gates).toEqual({
+      configured: false,
+      required: 0,
+      total: 0,
+      executed: false,
+      state: "not_configured",
+      receipt_attempt_id: null,
+    });
+    expect(receipt?.required_actions.map((action) => action.id)).toEqual([
+      "fix_failed_checks",
+      "record_operator_decision",
+    ]);
+    expect(receipt?.apply.eligibility).toMatchObject({ eligible: false, state: "needs_review" });
+  });
+
+  it("keeps a zero-gate final-verify failure a blocked, non-eligible needs-decision terminal", async () => {
+    for (const appliedCleanly of [false, null]) {
+      const fixture = zeroGateBlockedFixture({
+        attempted: true,
+        applied_cleanly: appliedCleanly,
+        gates_passed: null,
+      });
+      const { result, receipt, terminal } = await zeroGateBlockedTerminal(fixture);
+
+      expect(result.facts).toMatchObject({
+        lifecycle: "succeeded",
+        checks: "failed",
+        reason: "checks_failed",
+      });
+      expect(terminal).toMatchObject({ type: "run.blocked" });
+      expect(receipt?.outcome).toEqual(result.facts);
+      expect(receipt?.gates).toMatchObject({ configured: false, state: "not_configured" });
+      expect(receipt?.required_actions.length).toBeGreaterThan(0);
+      expect(receipt?.apply.eligibility).toMatchObject({ eligible: false, state: "needs_review" });
+    }
+  });
+
   it("keeps budget-denied council members in the planner roster without counting merge or review", () => {
     const { store, paths, log, ctx } = runFixture([], "plan");
     store.writeText(join(paths.finalDir, "plan.md"), "# Unified plan\n");
