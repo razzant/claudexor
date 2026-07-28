@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { lstatSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import { deriveApplyEligibility } from "@claudexor/delivery";
@@ -31,6 +31,14 @@ interface CouncilRosterEvidence {
   mergeAttemptId: string | null;
   mergeHarnessId: string | null;
   mergeFailed: boolean;
+}
+
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
 }
 
 function parseArtifact<T>(
@@ -278,7 +286,6 @@ function canonicalDeliverable(args: {
   const candidates: Array<{
     kind: NonNullable<RunFacts["deliverable"]["kind"]>;
     path: string;
-    requireContent?: boolean;
   }> = [];
   const structuredOutput = { kind: "structured_output" as const, path: "final/output.json" };
   if (args.mode === "plan") {
@@ -292,7 +299,7 @@ function canonicalDeliverable(args: {
       // this exact patch; choosing output.json here would manufacture an
       // invariant failure for a valid dual-output run.
       candidates.push(
-        { kind: "patch", path: "final/patch.diff", requireContent: true },
+        { kind: "patch", path: "final/patch.diff" },
         structuredOutput,
         { kind: "answer", path: "final/answer.md" },
       );
@@ -307,14 +314,19 @@ function canonicalDeliverable(args: {
         structuredOutput,
         { kind: "answer", path: "final/answer.md" },
         { kind: "report", path: "final/report.md" },
-        { kind: "patch", path: "final/patch.diff", requireContent: true },
+        { kind: "patch", path: "final/patch.diff" },
       );
     }
   }
   const selected = candidates.find((candidate) => {
     const absolute = join(args.ctx.paths.root, candidate.path);
-    if (!existsSync(absolute) || !statSync(absolute).isFile()) return false;
-    return !candidate.requireContent || (readTextSafe(absolute)?.trim().length ?? 0) > 0;
+    // Symmetric with this projection's other fences: lstat (a symlinked
+    // stand-in is not a canonical deliverable) and real content for EVERY
+    // kind — a zero-byte final/plan.md counted as `present:true` was the core
+    // of issue #29's false green.
+    const stat = lstatOrNull(absolute);
+    if (!stat || stat.isSymbolicLink() || !stat.isFile()) return false;
+    return (readTextSafe(absolute)?.trim().length ?? 0) > 0;
   });
   if (!selected) {
     return {

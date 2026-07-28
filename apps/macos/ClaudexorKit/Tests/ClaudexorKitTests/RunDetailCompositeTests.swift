@@ -87,15 +87,12 @@ import Testing
         #expect(a.requiredAction == "Resolve the review findings, then apply.")
     }
 
-    @Test func runDetailPreservesCanonicalRunFacts() throws {
+    @Test func runDetailToleratesUndecodedServerRunFacts() throws {
+        // D11: the wire detail carries the immutable runFacts receipt, but the
+        // app deliberately does not decode it until a typed Swift model ships
+        // with a real UI consumer. Its presence must never break decoding.
         let d = try detail(#","runFacts":{"schema_version":"3.1","run_id":"r1","mode":"plan","deliverable":{"present":true}}"#)
-        let facts = try #require(d.runFacts)
-        guard case .object(let object) = facts else {
-            Issue.record("runFacts must remain a structured object")
-            return
-        }
-        #expect(object["run_id"] == .string("r1"))
-        #expect(object["mode"] == .string("plan"))
+        #expect(d.summary.runId == "r1")
     }
 
     @Test func runDetailDecodesPlanReadinessAndQuestions() throws {
@@ -127,7 +124,6 @@ import Testing
         let d = try detail("")
         #expect(d.outcomeBanner == nil)
         #expect(d.applyEligibility == nil)
-        #expect(d.runFacts == nil)
         #expect(d.planReadiness == nil)
         #expect(d.planQuestions.isEmpty)
         #expect(d.council == nil)

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -828,6 +828,37 @@ describe("RunFacts canonical artifact projection (GH #29)", () => {
       expect(receipt?.required_actions.length).toBeGreaterThan(0);
       expect(receipt?.apply.eligibility).toMatchObject({ eligible: false, state: "needs_review" });
     }
+  });
+
+  it("refuses a zero-byte deliverable of any kind (the issue #29 false green)", () => {
+    // A succeeded plan whose plan.md is empty has NO canonical deliverable —
+    // present:false trips the succeeded-plan invariant loudly instead of
+    // shipping an empty receipt as green.
+    const plan = runFixture([], "plan");
+    plan.store.writeText(join(plan.paths.finalDir, "plan.md"), "   \n");
+    expect(() =>
+      buildRunFacts(plan.ctx, makeOutcomeFacts("succeeded", { review: "approved" })),
+    ).toThrow(/succeeded plan must have a canonical deliverable/);
+
+    // Same rule for non-plan kinds: an empty answer.md is not a deliverable.
+    const agent = runFixture([]);
+    agent.store.writeText(join(agent.paths.finalDir, "answer.md"), "");
+    const facts = buildRunFacts(agent.ctx, makeOutcomeFacts("succeeded"));
+    expect(facts.deliverable).toEqual({
+      present: false,
+      kind: null,
+      path: null,
+      producer_attempt_id: null,
+    });
+  });
+
+  it("refuses a symlinked deliverable (lstat symmetry with the receipt fences)", () => {
+    const agent = runFixture([]);
+    const external = join(agent.root, "external-answer.md");
+    writeFileSync(external, "# real content\n");
+    symlinkSync(external, join(agent.paths.finalDir, "answer.md"));
+    const facts = buildRunFacts(agent.ctx, makeOutcomeFacts("succeeded"));
+    expect(facts.deliverable.present).toBe(false);
   });
 
   it("fails loudly on a corrupted task.yaml instead of projecting silent not_configured", () => {
