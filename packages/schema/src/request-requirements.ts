@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** Why one selected lane did or did not receive a requested capability. */
 export const RequestRequirementReason = z.enum([

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { Id, ProviderFamily } from "./primitives.js";
 
 export const RouteProofStatus = z

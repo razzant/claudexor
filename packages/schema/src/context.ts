@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { ContentHash } from "./primitives.js";
 
 /** How a tracked path was accounted for in the Scope Atlas. No path is ever silently dropped. */

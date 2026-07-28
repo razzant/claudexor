@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { AccessProfile, ModeKind, ProviderFamily } from "./primitives.js";
 import { AdapterStatus, EffortHint, ReadonlyMechanism } from "./harness.js";
 import { WorkspaceMode } from "./thread.js";

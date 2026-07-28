@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { DeliveryReceipt } from "./delivery.js";
 
 /** Apply an isolated thread's accumulated worktree diff to the project. */

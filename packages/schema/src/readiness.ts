@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { AdapterStatus, ConformanceCheck, HarnessManifest } from "./harness.js";
 import { AuthSourceReadiness } from "./auth.js";
 import { DelegationCapability } from "./delegation.js";

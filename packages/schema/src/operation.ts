@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 // v3.0.0 broke run/thread/status/mode contracts wholesale, so the negotiated
 // major moved to 3. The URL prefix stays the frozen literal `/v2/` — a path

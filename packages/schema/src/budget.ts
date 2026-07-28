@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { BillingKnowledge, CostKnowledge } from "./auth.js";
 import { Id, Intent } from "./primitives.js";
 import { EffortHint, SignalQuality } from "./harness.js";

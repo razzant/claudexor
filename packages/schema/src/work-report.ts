@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /**
  * D-16: the model-authored WorkReport — the typed self-assessment an attempt

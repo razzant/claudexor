@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { CouncilProjection, PlanQuestion, PlanReadiness } from "./plan.js";
 import { ApplyEligibility } from "./apply-eligibility.js";
 import { MAX_DELEGATED_CHILDREN } from "./delegation.js";

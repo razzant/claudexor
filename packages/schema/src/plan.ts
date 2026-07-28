@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /**
  * Typed plan-question artifacts (v3 plan lifecycle, D17/D31): the planner's

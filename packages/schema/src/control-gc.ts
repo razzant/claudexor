@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /**
  * Disk-retention (GC) control operation (W3.6). The daemon owns the

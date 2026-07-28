@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { ContentHash, Id, IsoTimestamp } from "./primitives.js";
 
 export const AttachmentKind = z

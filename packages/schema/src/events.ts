@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { FallbackReason, Id } from "./primitives.js";
 import { AuthMode } from "./budget.js";
 

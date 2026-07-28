@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** JSON Schema dialects the structured-output validator can compile. */
 export const OutputSchemaDialect = z

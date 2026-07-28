@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { ContentHash } from "./primitives.js";
 import { OmissionEntry, ScopeAtlasEntry } from "./context.js";
 

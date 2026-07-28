@@ -2,7 +2,7 @@
  * User-level trust control DTOs (INV-122): the NARROW surface over the
  * per-repo trust files. Split from control.ts (INV-124 ratchet).
  */
-import { z } from "zod";
+import { z } from "zod/v3";
 import { AccessProfile, ContentHash } from "./primitives.js";
 import { TestCommandInvocation } from "./task.js";
 

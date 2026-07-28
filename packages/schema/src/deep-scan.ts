@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /**
  * Deep-scan reducer outcome (#27 / D-6). A multi-scout `ask --deep-scan` runs

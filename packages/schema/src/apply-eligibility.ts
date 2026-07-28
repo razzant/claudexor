@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { RunOutcomeFacts } from "./decision.js";
 import { PlanReadiness, CouncilProjection } from "./plan.js";
 import { ControlBudgetSnapshot } from "./control.js";

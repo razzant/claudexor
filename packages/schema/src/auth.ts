@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { Id } from "./primitives.js";
 
 const AuthTimestamp = z.string().datetime({ offset: true });

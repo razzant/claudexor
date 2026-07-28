@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 const Sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const Timestamp = z.string().datetime({ offset: true });

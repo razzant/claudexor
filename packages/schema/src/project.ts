@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { Id, IsoTimestamp, SchemaVersion } from "./primitives.js";
 
 /** Durable v2 registration for a local project root. */

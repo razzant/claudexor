@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { AuthCapabilityLifecycle } from "./auth.js";
 import { Id } from "./primitives.js";
 

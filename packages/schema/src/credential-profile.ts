@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { namespacedSecretRefBase } from "@claudexor/util";
 import { Id, IsoTimestamp } from "./primitives.js";
 import { AuthAvailability, AuthVerification } from "./auth.js";

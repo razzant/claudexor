@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** Current schema version for top-level artifacts. Bump on breaking ABI changes. */
 export const SCHEMA_VERSION = 2 as const;

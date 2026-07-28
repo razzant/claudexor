@@ -1,6 +1,6 @@
 import { readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import type { ResolvedConfig } from "@claudexor/schema";
 import {

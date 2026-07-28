@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /** Machine-readable RFC-9457-style control-plane error details. */
 export const ControlProblem = z

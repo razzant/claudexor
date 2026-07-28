@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 
 /**
  * Reasoning-effort vocabulary: the open wire type and the ONE owner of every

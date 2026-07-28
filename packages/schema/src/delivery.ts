@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v3";
 import { FinalVerifyRecord } from "./decision.js";
 
 /** Immutable evidence for one DeliveryService attempt, shared by every apply surface. */
