@@ -605,7 +605,7 @@ describe("RunFacts invariant validator (GH #29)", () => {
     ).toThrow(/reason=no_changes requires outcome.noChanges=true/);
   });
 
-  it("binds reason=input_required iff work_state.state=needs_input", () => {
+  it("binds reason=input_required to an attesting needs_input work_state", () => {
     const base = validPlan();
     const needsInputOutcome = makeOutcomeFacts("succeeded", {
       noChanges: true,
@@ -632,7 +632,7 @@ describe("RunFacts invariant validator (GH #29)", () => {
         }),
         required_actions: [],
       }),
-    ).toThrow(/reason=input_required iff outcome.work_state.state=needs_input/);
+    ).toThrow(/reason=input_required requires outcome.work_state.state=needs_input/);
 
     const missingReasonOutcome = makeOutcomeFacts("succeeded", {
       noChanges: true,
@@ -644,10 +644,12 @@ describe("RunFacts invariant validator (GH #29)", () => {
         outcome: missingReasonOutcome,
         required_actions: requiredActionsFor(missingReasonOutcome, false),
       }),
-    ).toThrow(/reason=input_required iff outcome.work_state.state=needs_input/);
+    ).toThrow(
+      /work_state.state=needs_input requires reason input_required, review_blocked, or checks_failed/,
+    );
   });
 
-  it("binds reason=work_incomplete iff work_state.state=incomplete", () => {
+  it("binds reason=work_incomplete to an attesting incomplete work_state", () => {
     const base = validPlan();
     const incompleteOutcome = makeOutcomeFacts("succeeded", {
       noChanges: true,
@@ -673,7 +675,7 @@ describe("RunFacts invariant validator (GH #29)", () => {
         }),
         required_actions: [],
       }),
-    ).toThrow(/reason=work_incomplete iff outcome.work_state.state=incomplete/);
+    ).toThrow(/reason=work_incomplete requires outcome.work_state.state=incomplete/);
 
     const missingReasonOutcome = makeOutcomeFacts("succeeded", {
       noChanges: true,
@@ -685,7 +687,66 @@ describe("RunFacts invariant validator (GH #29)", () => {
         outcome: missingReasonOutcome,
         required_actions: requiredActionsFor(missingReasonOutcome, false),
       }),
-    ).toThrow(/reason=work_incomplete iff outcome.work_state.state=incomplete/);
+    ).toThrow(
+      /work_state.state=incomplete requires reason work_incomplete, review_blocked, or checks_failed/,
+    );
+  });
+
+  it("permits review_blocked and checks_failed to outrank a work_state veto (D-16 precedence)", () => {
+    const base = validPlan();
+    // A blocked winner that also attested needs_input: arbitration elevates the
+    // reason to review_blocked while the work_state stays disclosed.
+    const blockedNeedsInput = makeOutcomeFacts("succeeded", {
+      review: "blocked",
+      reason: "review_blocked",
+      work_state: {
+        state: "needs_input",
+        source: "validated",
+      },
+    });
+    const blockedReceipt = {
+      ...base,
+      outcome: blockedNeedsInput,
+      review: { state: "blocked", blocker_ids: ["f-1"], blockers: 1 },
+      required_actions: requiredActionsFor(blockedNeedsInput, false),
+    };
+    expect(validateRunFactsInvariants(blockedReceipt).outcome.reason).toBe("review_blocked");
+
+    // An incomplete winner whose delivery was refused / final verify failed:
+    // the orchestrator elevates checks=failed + reason=checks_failed.
+    const refusedIncomplete = makeOutcomeFacts("succeeded", {
+      checks: "failed",
+      reason: "checks_failed",
+      work_state: {
+        state: "incomplete",
+        source: "validated",
+      },
+    });
+    const refusedReceipt = {
+      ...base,
+      outcome: refusedIncomplete,
+      required_actions: requiredActionsFor(refusedIncomplete, false),
+    };
+    expect(validateRunFactsInvariants(refusedReceipt).outcome.reason).toBe("checks_failed");
+
+    // A veto can still never dissolve into a clean no_changes reason.
+    const dissolvedOutcome = makeOutcomeFacts("succeeded", {
+      noChanges: true,
+      reason: "no_changes",
+      work_state: {
+        state: "needs_input",
+        source: "validated",
+      },
+    });
+    expect(() =>
+      validateRunFactsInvariants({
+        ...base,
+        outcome: dissolvedOutcome,
+        required_actions: requiredActionsFor(dissolvedOutcome, false),
+      }),
+    ).toThrow(
+      /work_state.state=needs_input requires reason input_required, review_blocked, or checks_failed/,
+    );
   });
 
   it("preserves independent work-state evidence when cancellation owns the terminal reason", () => {

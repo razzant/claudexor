@@ -830,6 +830,84 @@ describe("RunFacts canonical artifact projection (GH #29)", () => {
     }
   });
 
+  it("terminalizes a blocked winner carrying needs_input as a blocked receipt, not an engine failure", async () => {
+    // Arbitration precedence: review_blocked OUTRANKS the work_state veto, so
+    // the winner's facts legitimately pair reason=review_blocked with a
+    // disclosed needs_input work_state. The receipt invariant must accept the
+    // combination (it used to demand reason=input_required iff needs_input and
+    // rewrote this terminal into run.failed/terminal_facts).
+    const fixture = runFixture([]);
+    const outcome = makeOutcomeFacts("succeeded", {
+      review: "blocked",
+      reason: "review_blocked",
+      work_state: { state: "needs_input", source: "validated" },
+    });
+    fixture.store.writeYaml(
+      join(fixture.paths.arbitrationDir, "decision.yaml"),
+      DecisionRecord.parse({ winner: "a01", facts: outcome }),
+    );
+    fixture.store.writeYaml(join(fixture.paths.reviewsDir, "a01.yaml"), {
+      attempt_id: "a01",
+      findings: [
+        ReviewFinding.parse({
+          id: "blocker-1",
+          severity: "BLOCK",
+          category: "correctness",
+          claim: "The winner needs more context before this can land.",
+          evidence: { files: [{ path: "README.md", lines: null }] },
+          reviewer: { harness_id: "reviewer-x" },
+          status: "accepted",
+        }),
+      ],
+    });
+
+    const result = await guardAnnouncedRun(undefined, async (announce) => {
+      announce(fixture.ctx);
+      fixture.log.emit("run.blocked", {
+        lifecycle: outcome.lifecycle,
+        facts: outcome,
+        reason: outcome.reason,
+      });
+      return {
+        runId: fixture.ctx.runId,
+        taskId: fixture.ctx.taskId,
+        mode: fixture.ctx.mode,
+        lifecycle: outcome.lifecycle,
+        facts: outcome,
+        winner: "a01",
+        runDir: fixture.paths.root,
+        summary: "blocked winner that also needs input",
+        candidates: [],
+      };
+    });
+
+    expect(result.facts).toMatchObject({
+      lifecycle: "succeeded",
+      review: "blocked",
+      reason: "review_blocked",
+      work_state: { state: "needs_input" },
+    });
+    expect(fixture.log.readAll().events.at(-1)).toMatchObject({
+      type: "run.blocked",
+      payload: { lifecycle: "succeeded", facts: result.facts, reason: "review_blocked" },
+    });
+    const receipt = fixture.store.readYaml<{
+      outcome: unknown;
+      review: unknown;
+      required_actions: Array<{ id: string }>;
+    }>(join(fixture.paths.finalDir, "run_facts.yaml"));
+    expect(receipt?.outcome).toEqual(result.facts);
+    expect(receipt?.review).toEqual({
+      state: "blocked",
+      blocker_ids: ["blocker-1"],
+      blockers: 1,
+    });
+    // The work_state veto is non-overridable, so it owns the required action.
+    expect(receipt?.required_actions.map((action) => action.id)).toEqual([
+      "provide_required_input",
+    ]);
+  });
+
   it("refuses a zero-byte deliverable of any kind (the issue #29 false green)", () => {
     // A succeeded plan whose plan.md is empty has NO canonical deliverable —
     // present:false trips the succeeded-plan invariant loudly instead of

@@ -340,16 +340,33 @@ export function validateRunFactsInvariants(value: unknown): RunFacts {
   if (outcome.reason === "no_changes" && !outcome.noChanges) {
     violations.push("reason=no_changes requires outcome.noChanges=true");
   }
+  // Reason follows the documented arbitration precedence (D-16): review_blocked
+  // and checks_failed OUTRANK a work_state veto, so a vetoed winner may honestly
+  // carry either harder reason (blocked review + needs_input; delivery refusal /
+  // final-verify failure over an incomplete winner). What a veto can never do is
+  // dissolve into a clean reason (null / no_changes), and the veto reasons still
+  // require the attesting work_state they claim.
   const needsInput = outcome.work_state?.state === "needs_input";
-  if (outcome.lifecycle === "succeeded" && (outcome.reason === "input_required") !== needsInput) {
-    violations.push("reason=input_required iff outcome.work_state.state=needs_input");
-  }
   const workIncomplete = outcome.work_state?.state === "incomplete";
-  if (
-    outcome.lifecycle === "succeeded" &&
-    (outcome.reason === "work_incomplete") !== workIncomplete
-  ) {
-    violations.push("reason=work_incomplete iff outcome.work_state.state=incomplete");
+  if (outcome.lifecycle === "succeeded") {
+    if (outcome.reason === "input_required" && !needsInput) {
+      violations.push("reason=input_required requires outcome.work_state.state=needs_input");
+    }
+    if (outcome.reason === "work_incomplete" && !workIncomplete) {
+      violations.push("reason=work_incomplete requires outcome.work_state.state=incomplete");
+    }
+    const outranksWorkVeto =
+      outcome.reason === "review_blocked" || outcome.reason === "checks_failed";
+    if (needsInput && outcome.reason !== "input_required" && !outranksWorkVeto) {
+      violations.push(
+        "work_state.state=needs_input requires reason input_required, review_blocked, or checks_failed",
+      );
+    }
+    if (workIncomplete && outcome.reason !== "work_incomplete" && !outranksWorkVeto) {
+      violations.push(
+        "work_state.state=incomplete requires reason work_incomplete, review_blocked, or checks_failed",
+      );
+    }
   }
   const lifecycleReasons: Record<
     RunFacts["outcome"]["lifecycle"],
