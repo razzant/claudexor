@@ -2336,10 +2336,17 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     }
   };
   const identity = [rec.state, paramsFingerprint(rec), rec.finishedAt ?? "", rec.error ?? ""];
-  // QA-052: every terminal projection artifact, including RunFacts, is frozen
-  // before terminal state. The sole later mutation is delivery_state.yaml [B7],
-  // so terminal re-listing probes one path instead of thirteen. Active runs
-  // retain the full fingerprint while events and final/* are still landing.
+  // QA-052 terminal short-circuit: a TERMINAL run's every projected artifact
+  // (events.jsonl, arbitration, telemetry, failure, the final/* outputs,
+  // work_product, and the canonical RunFacts receipt) is written before the
+  // daemon marks the run terminal and never changes afterward. The SOLE
+  // post-terminal mutation is the delivery/apply overlay
+  // (final/delivery_state.yaml), which the apply/revert route is the one
+  // writer of [B7]. So a warm re-list of a terminal run fingerprints ONE path
+  // instead of thirteen — the cheap probe still detects an apply/revert, and
+  // every other axis is frozen. Active (queued/running) runs keep the full
+  // artifact-mtime fingerprint because their events.jsonl and final/* land
+  // while the run is still live.
   if (TERMINAL_STATES.has(rec.state)) {
     return [...identity, mtime("final/delivery_state.yaml")].join("|");
   }
@@ -2734,6 +2741,10 @@ function detailFor(
     ? readRunEventsWithIntegrity(rec)
     : { events: [] as Record<string, unknown>[], integrity: undefined };
   const summary = summarizeRun(rec, events);
+  // applyEligibility is non-null exactly when the run has an applyable patch —
+  // the authoritative "something to apply" banner signal (a convergence patch
+  // may carry kind:patch with no meta.result_kind, so result.kind alone would
+  // miss it).
   const { runFacts, outcomeFacts, applyEligibility, requiredActions } = projectRunFactsForDetail(
     rec.runDir,
     summary.outcomeFacts ?? null,
@@ -2779,7 +2790,11 @@ function detailFor(
     // Live plan checklist: the winner's (else last) plan.progress items.
     planProgress: latestPlanProgress(rec, decision?.winner ?? null, events, integrity),
     failure,
-    // Canonical terminal actions plus legitimate post-terminal overlays.
+    // Minimal typed required-actions (GH #29) for a succeeded-but-blocked run,
+    // from the single status-projection owner: review-blocked / checks-failed /
+    // needs-decision / work_state needs_input, keyed to the same validated
+    // operator decision the needs-decision + apply gates consult — the
+    // canonical terminal actions plus legitimate post-terminal overlays.
     requiredActions,
   });
 }
@@ -3006,9 +3021,14 @@ function applyGateInputFor(
     operatorDecision: operatorDecision
       ? { action: operatorDecision.action, patch_sha256: operatorDecision.patchSha256 }
       : null,
-    // Mutable delivery overlay keeps eligibility aligned with summary (QA-021).
+    // Effective mutable delivery/apply state from the SAME owner that projects
+    // summary.result.applyState (delivery_state overlay → work_product snapshot):
+    // an already-applied / reverted run gets a terminal eligibility disposition
+    // instead of a stale "rerun a fresh check" (QA-021).
     applyState: controlRunResult(rec).applyState,
-    // D-16: canonical work_state vetoes apply even after a clean legacy review.
+    // D-16 work_state veto (INV-116): thread the model-attested work outcome
+    // (the canonical terminal facts) so the gate refuses a needs_input/
+    // incomplete winner even with a clean legacy review.
     workState: terminal.outcomeFacts?.work_state ?? null,
   };
 }

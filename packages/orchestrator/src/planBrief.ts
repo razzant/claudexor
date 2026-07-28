@@ -13,8 +13,9 @@ interface PlanBriefEventSink {
 
 /**
  * Freeze-on-implement delivery (D17/D27): verify the frozen plan's hash before
- * any run artifact/event exists. A missing or changed plan is a loud preflight
- * refusal, so retries can never silently proceed without their frozen plan.
+ * any run artifact/event exists. A mismatched or unreadable plan fails LOUDLY
+ * before any harness spawns (the tamper fence; retry replays planRef verbatim,
+ * so a retried implement can never silently run without its plan).
  */
 export function verifiedPlanBrief(input: PlanBriefInput): string | null {
   if (!input.planRef) return null;
@@ -34,8 +35,9 @@ export function verifiedPlanBrief(input: PlanBriefInput): string | null {
 }
 
 /**
- * Materialize the already-verified plan outside every worktree, then point the
- * task prompt at that immutable run-context copy.
+ * Materialize the already-verified plan as context/PLAN.md in the run artifact
+ * tree — OUTSIDE every worktree, so it can never dirty a diff — then point the
+ * task prompt at that immutable absolute-path copy.
  */
 export function withPlanBrief<T extends PlanBriefInput>(
   input: T,

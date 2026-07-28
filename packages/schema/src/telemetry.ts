@@ -21,8 +21,11 @@ import { RunFacts } from "./run-facts.js";
 
 /**
  * Run telemetry artifact (`final/telemetry.yaml`).
- * The orchestrator alone computes its web/tool evidence; surfaces project it.
- * Legacy runs render "telemetry unavailable" instead of a recomputed guess.
+ *
+ * The orchestrator is the ONLY computer of web/tool evidence. Surfaces
+ * (control-api, CLI, app) project this artifact; they must not re-derive
+ * evidence from raw events. Legacy runs without the artifact render an honest
+ * "telemetry unavailable" state instead of a recomputed guess.
  */
 
 export const WebEvidenceStatus = z

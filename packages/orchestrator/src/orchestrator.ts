@@ -2872,7 +2872,9 @@ export class Orchestrator {
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
-    // Validate the contract before announcing; refused runs stay loud and unannounced.
+    // Contract validation (trust gates, secret scans) runs BEFORE the run is
+    // announced: a refused run must fail the request loudly, not 200 a runId
+    // and leave an orphaned run dir without a terminal event.
     const contract = this.buildContract(input, taskId, mode);
     const planBrief = verifiedPlanBrief(input);
     const quotaSnapshots = this.quotaSnapshotPreflight();
@@ -2893,8 +2895,11 @@ export class Orchestrator {
       ),
     );
     input = withPlanBrief(input, store, paths, log, planBrief);
-    // The harness, WorkspaceManager, and git boundary share one execution root;
-    // config, artifacts, and contract remain anchored to repoRoot.
+    // The execution root is the tree the harness mutates: the project itself
+    // for in-place threads/ordinary runs, or the thread's persistent worktree
+    // for an isolated thread. Config/artifacts/contract stay anchored to
+    // repoRoot. Both the WorkspaceManager and the git boundary resolve against
+    // this SINGLE root.
     const execRoot = this.execRootOf(input);
     const wsm = new WorkspaceManager(execRoot);
 
@@ -4614,6 +4619,7 @@ export class Orchestrator {
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
+    // Contract validation BEFORE the run is announced (see runRace).
     const contract = this.buildContract(input, taskId, mode);
     const planBrief = verifiedPlanBrief(input);
     const quotaSnapshots = this.quotaSnapshotPreflight();
@@ -5919,7 +5925,8 @@ export class Orchestrator {
   ): Promise<OrchestratorResult> {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
-    // Plan runs get the same pre-announcement immutable contract truth.
+    // Plan runs get the same immutable contract truth as every other mode;
+    // contract validation runs BEFORE the run is announced (see runRace).
     const contract = this.buildContract(input, taskId, "plan");
     const quotaSnapshots = this.quotaSnapshotPreflight();
     const store = this.artifactStore(input);
@@ -6450,7 +6457,8 @@ export class Orchestrator {
     const taskId = input.taskId ?? newId("task");
     const runId = input.runId ?? newId("run");
     const prompt = input.prompt || opts.defaultPrompt;
-    // Validate before announcing; record the caller's goal as user intent.
+    // Contract validation BEFORE the run is announced (see runRace). The
+    // recorded user intent is the CALLER's goal.
     const contract = this.buildContract(
       { ...input, prompt: opts.contractIntent ?? prompt },
       taskId,

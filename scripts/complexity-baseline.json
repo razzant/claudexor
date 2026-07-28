@@ -14,7 +14,7 @@
   "packages/cli/src/plugins.ts": 1931,
   "packages/cli/src/setup-jobs.ts": 1496,
   "packages/cli/src/setup-login-runner.ts": 639,
-  "packages/control-api/src/daemon-server.ts": 3137,
+  "packages/control-api/src/daemon-server.ts": 3148,
   "packages/control-api/src/operation-catalog.ts": 627,
   "packages/daemon/src/journal-manager.ts": 650,
   "packages/daemon/src/project-partitions.ts": 636,
@@ -26,11 +26,11 @@
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 702,
   "packages/orchestrator/src/attemptTelemetry.ts": 834,
-  "packages/orchestrator/src/orchestrator.ts": 7671,
+  "packages/orchestrator/src/orchestrator.ts": 7681,
   "packages/orchestrator/src/planRun.ts": 613,
   "packages/review/src/reviewEngine.ts": 1396,
   "packages/schema/src/control.ts": 1738,
   "packages/schema/src/harness.ts": 1094,
   "packages/schema/src/setup.ts": 692,
-  "packages/schema/src/telemetry.ts": 600
+  "packages/schema/src/telemetry.ts": 601
 }
