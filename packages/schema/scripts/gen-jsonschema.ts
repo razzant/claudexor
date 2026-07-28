@@ -270,25 +270,18 @@ const schemas = {
 /**
  * zod-to-json-schema silently renders an EMPTY definition (no error) when the
  * input is not a zod/v3 schema instance (e.g. a schema built from bare zod@4).
- * Guard: if the zod source is an object with a non-empty shape, the rendered
- * definition must expose properties — otherwise fail loudly with the name.
+ * Guard: every registered schema must render SOMETHING. A bare `{}` definition
+ * is the exact signature of that silent failure, and no schema in this registry
+ * legitimately renders empty — unions and effects included.
  */
-function assertRenderedNotSilentlyEmpty(name: string, schema: unknown, json: Record<string, unknown>): void {
-  const source = schema as { _def?: { typeName?: string; type?: string }; shape?: Record<string, unknown> };
-  // zod/v3 objects carry _def.typeName === "ZodObject"; bare zod@4 objects carry
-  // _def.type === "object". Both expose a .shape record.
-  const isObjectSource = source._def?.typeName === "ZodObject" || source._def?.type === "object";
-  if (!isObjectSource) return;
-  if (Object.keys(source.shape ?? {}).length === 0) return;
+function assertRenderedNotSilentlyEmpty(name: string, json: Record<string, unknown>): void {
   const definitions = json.definitions as Record<string, unknown> | undefined;
   const rendered = (definitions?.[name] ?? json) as Record<string, unknown>;
-  const properties = rendered.properties as Record<string, unknown> | undefined;
-  if (!properties || Object.keys(properties).length === 0) {
-    throw new Error(
-      `gen-jsonschema: schema "${name}" rendered empty/property-less even though its zod source ` +
-        `is a non-empty object — zod-to-json-schema was likely handed a non-zod/v3 schema instance.`,
-    );
-  }
+  if (Object.keys(rendered).length > 0) return;
+  throw new Error(
+    `gen-jsonschema: schema "${name}" rendered an empty definition — ` +
+      `zod-to-json-schema was likely handed a non-zod/v3 schema instance.`,
+  );
 }
 
 for (const [name, schema] of Object.entries(schemas)) {
@@ -297,7 +290,7 @@ for (const [name, schema] of Object.entries(schemas)) {
   // produced an invalid draft-4/7 hybrid (boolean exclusiveMinimum).
   // CI compiles every generated file with ajv (validate-generated-schemas.mjs).
   const json = zodToJsonSchema(schema, { name, target: "jsonSchema7" }) as Record<string, unknown>;
-  assertRenderedNotSilentlyEmpty(name, schema, json);
+  assertRenderedNotSilentlyEmpty(name, json);
   json.$schema = "http://json-schema.org/draft-07/schema#";
   writeFileSync(join(outDir, `${name}.schema.json`), JSON.stringify(json, null, 2) + "\n");
 }
