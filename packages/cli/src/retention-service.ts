@@ -11,7 +11,7 @@ import type { ControlGcReceipt, ControlGcRequest } from "@claudexor/schema";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { runRetentionPass, type RetentionProject } from "@claudexor/control-api";
 import { loadConfig } from "@claudexor/config";
-import { claudexorOwnedRoot, noProjectRepoRoot } from "@claudexor/util";
+import { claudexorOwnedRoot, noProjectRepoRoot, userConfigDir } from "@claudexor/util";
 import { sweepOrphanLanes } from "@claudexor/workspace";
 import { logLine } from "./daemon-lifecycle.js";
 
@@ -119,8 +119,14 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
         // Advisory data-root disclosure: the ONE owned-root derivation
         // (claudexorOwnedRoot covers both the default ~/.claudexor tree and
         // an explicit CLAUDEXOR_CONFIG_DIR override) is injected here so the
-        // pass itself never reaches for globals.
+        // pass itself never reaches for globals. The mode rides along:
+        // claudexorOwnedRoot() collapses onto userConfigDir() exactly when a
+        // CLAUDEXOR_CONFIG_DIR override is active (in the default mode the
+        // owned root is ~/.claudexor while the config dir is its v3 subtree),
+        // and the override root owns secrets.json/plugins/quota/workspaces at
+        // its top level where the default root does not.
         dataRoot: claudexorOwnedRoot(),
+        dataRootMode: claudexorOwnedRoot() === userConfigDir() ? "override" : "default",
       },
     );
   };

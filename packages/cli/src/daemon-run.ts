@@ -19,6 +19,7 @@ import {
   handshakeControlApi,
   processExitCodeForRunStatus,
   type ControlApiAddress,
+  type EngineIdentity,
 } from "./live.js";
 import { TERMINAL_LIFECYCLES, type RunOutcomeFacts, outcomeExitCode } from "@claudexor/schema";
 import {
@@ -43,14 +44,20 @@ async function daemonReachable(client: DaemonClientType): Promise<boolean> {
   }
 }
 
-/** Is the daemon's control-api up and answering /healthz right now? */
-async function controlApiReachable(): Promise<ControlApiAddress | null> {
+/** Is the daemon's control-api up and answering /healthz right now? Returns
+ * the address WITH the handshake's validated engine identity — callers that
+ * need capability negotiation (gc's data_root_report) reuse this one
+ * handshake instead of performing a second. */
+async function controlApiReachable(): Promise<{
+  addr: ControlApiAddress;
+  engine: EngineIdentity;
+} | null> {
   try {
     const addr = controlApiAddress();
     const res = await controlApiFetch(addr, "/healthz", { signal: AbortSignal.timeout(1500) });
     if (!res.ok) return null;
-    await handshakeControlApi(addr);
-    return addr;
+    const engine = await handshakeControlApi(addr);
+    return { addr, engine };
   } catch {
     return null;
   }
@@ -66,7 +73,7 @@ async function controlApiReachable(): Promise<ControlApiAddress | null> {
  */
 export async function ensureDaemon(
   timeoutMs = 30_000,
-): Promise<{ client: DaemonClientType; addr: ControlApiAddress }> {
+): Promise<{ client: DaemonClientType; addr: ControlApiAddress; engine: EngineIdentity }> {
   const token = ensureToken();
   const socketPath = defaultSocketPath();
   let client = new DaemonClient(socketPath, token);
@@ -110,20 +117,20 @@ export async function ensureDaemon(
 
   // The control API (HTTP/SSE viewport over the daemon) is what streams events
   // and resolves the run for apply/decision. Wait for its pointer to be written.
-  let addr = await controlApiReachable();
-  if (!addr) {
+  let reached = await controlApiReachable();
+  if (!reached) {
     const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline && !addr) {
+    while (Date.now() < deadline && !reached) {
       await sleep(150);
-      addr = await controlApiReachable();
+      reached = await controlApiReachable();
     }
   }
-  if (!addr) {
+  if (!reached) {
     throw new Error(
       `daemon is up but its control API is not reachable (no ${daemonDir()}/control-api.json); it may be disabled by CLAUDEXOR_NO_CONTROL_API=1`,
     );
   }
-  return { client, addr };
+  return { client, addr: reached.addr, engine: reached.engine };
 }
 
 /**
@@ -142,9 +149,9 @@ export async function connectDaemonIfRunning(): Promise<{
   if (!token) return null;
   const client = new DaemonClient(defaultSocketPath(), token);
   if (!(await daemonReachable(client))) return null;
-  const addr = await controlApiReachable();
-  if (!addr) return null;
-  return { client, addr };
+  const reached = await controlApiReachable();
+  if (!reached) return null;
+  return { client, addr: reached.addr };
 }
 
 /**

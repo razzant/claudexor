@@ -22,6 +22,12 @@ export const ControlGcRequest = z
       .boolean()
       .default(false)
       .describe("Report what WOULD be deleted without touching disk."),
+    data_root_report: z
+      .boolean()
+      .optional()
+      .describe(
+        "Opt in to the advisory data-root scan: when true, the receipt carries data_root_unrecognized. Capability negotiation for engine-version skew — a client omits this unless the serving daemon is the SAME engine version, so an older daemon never sees the unknown request key and an older client never receives the unknown receipt key.",
+      ),
   })
   .strict()
   .describe("Run one retention pass over engine-owned runtime artifacts.");
@@ -93,7 +99,7 @@ export const ControlGcReceipt = z
       .array(z.string())
       .optional()
       .describe(
-        "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). The full sorted list. ABSENT (not empty) when the scan failed or the serving daemon predates the feature; a scan failure is disclosed in errors instead.",
+        "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). The full sorted list. Present ONLY when the request opted in via data_root_report; ABSENT (not empty) when the request did not opt in, the scan failed, or the serving daemon predates the feature; a scan failure is disclosed in errors instead.",
       ),
   })
   .strict()

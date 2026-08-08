@@ -361,36 +361,32 @@ describe("runRetentionPass", () => {
     expect(receipt.errors.join("\n")).toContain("truncated at 1");
   });
 
-  it("reports NON-engine top-level data-root entries by name, never engine-owned ones", async () => {
+  it("reports NON-engine top-level data-root entries by name, never engine-owned ones (default mode)", async () => {
     const { project, root } = sandbox();
     const dataRoot = join(root, "data-root");
-    // Engine-owned (current + legacy + explicit-config-dir-root) and dotfile
-    // entries must NOT be listed.
-    for (const owned of [
-      "v3",
-      "node",
-      "profiles",
-      "runtime",
-      "daemon",
-      "plugins",
-      "quota",
-      "workspaces",
-    ]) {
+    // Engine-owned (current + legacy) and dotfile entries must NOT be listed.
+    // "remote" is engine-managed (harness-installer's pinned vendor prefix).
+    for (const owned of ["v3", "node", "profiles", "runtime", "daemon", "remote"]) {
       mkdirSync(join(dataRoot, owned), { recursive: true });
     }
     writeFileSync(join(dataRoot, "config.yaml"), "retention: {}\n");
-    writeFileSync(join(dataRoot, "secrets.json"), "{}\n");
     writeFileSync(join(dataRoot, ".DS_Store"), "");
     // Foreign operator debris (dirs and files alike) IS listed, sorted.
     // "isolated" is operator scratch, not engine-owned — it is foreign too.
+    // In the DEFAULT root mode the engine keeps secrets.json, plugins, quota
+    // and workspaces under the v3 subtree, so top-level copies are foreign.
     mkdirSync(join(dataRoot, "isolated"), { recursive: true });
     mkdirSync(join(dataRoot, "reviews"), { recursive: true });
     mkdirSync(join(dataRoot, "my-scratch"), { recursive: true });
     writeFileSync(join(dataRoot, "notes.txt"), "n");
+    mkdirSync(join(dataRoot, "plugins"), { recursive: true });
+    mkdirSync(join(dataRoot, "quota"), { recursive: true });
+    mkdirSync(join(dataRoot, "workspaces"), { recursive: true });
+    writeFileSync(join(dataRoot, "secrets.json"), "{}\n");
 
     const receipt = await runRetentionPass(
       POLICY,
-      { dry_run: true },
+      { dry_run: true, data_root_report: true },
       {
         ...deps(project),
         dataRoot,
@@ -400,8 +396,37 @@ describe("runRetentionPass", () => {
       "isolated",
       "my-scratch",
       "notes.txt",
+      "plugins",
+      "quota",
       "reviews",
+      "secrets.json",
+      "workspaces",
     ]);
+    expect(receipt.errors).toEqual([]);
+  });
+
+  it("override mode ALSO owns secrets.json/plugins/quota/workspaces at the top level", async () => {
+    const { project, root } = sandbox();
+    const dataRoot = join(root, "data-root");
+    // Under an explicit CLAUDEXOR_CONFIG_DIR root the engine writes these
+    // directly at the top level — they are owned, not foreign.
+    for (const owned of ["v3", "plugins", "quota", "workspaces"]) {
+      mkdirSync(join(dataRoot, owned), { recursive: true });
+    }
+    writeFileSync(join(dataRoot, "config.yaml"), "retention: {}\n");
+    writeFileSync(join(dataRoot, "secrets.json"), "{}\n");
+    mkdirSync(join(dataRoot, "my-scratch"), { recursive: true });
+
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true, data_root_report: true },
+      {
+        ...deps(project),
+        dataRoot,
+        dataRootMode: "override",
+      },
+    );
+    expect(receipt.data_root_unrecognized).toEqual(["my-scratch"]);
     expect(receipt.errors).toEqual([]);
   });
 
@@ -417,14 +442,13 @@ describe("runRetentionPass", () => {
     mkdirSync(target, { recursive: true });
     const { symlinkSync } = await import("node:fs");
     symlinkSync(target, join(dataRoot, "runtime"));
-    // A healthy owned directory and owned files stay unreported.
+    // A healthy owned directory and owned file stay unreported.
     mkdirSync(join(dataRoot, "node"), { recursive: true });
     writeFileSync(join(dataRoot, "config.yaml"), "retention: {}\n");
-    writeFileSync(join(dataRoot, "secrets.json"), "{}\n");
 
     const receipt = await runRetentionPass(
       POLICY,
-      { dry_run: true },
+      { dry_run: true, data_root_report: true },
       {
         ...deps(project),
         dataRoot,
@@ -437,18 +461,40 @@ describe("runRetentionPass", () => {
     expect(receipt.errors).toEqual([]);
   });
 
+  it("the kind check is SYMMETRIC: a directory under an owned FILE name is flagged", async () => {
+    const { project, root } = sandbox();
+    const dataRoot = join(root, "data-root");
+    // config.yaml must be a regular file in every mode; secrets.json must be
+    // a regular file in override mode (where the name is owned at all).
+    mkdirSync(join(dataRoot, "config.yaml"), { recursive: true });
+    mkdirSync(join(dataRoot, "secrets.json"), { recursive: true });
+
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true, data_root_report: true },
+      {
+        ...deps(project),
+        dataRoot,
+        dataRootMode: "override",
+      },
+    );
+    expect(receipt.data_root_unrecognized).toEqual([
+      "config.yaml (unexpected-kind)",
+      "secrets.json (unexpected-kind)",
+    ]);
+    expect(receipt.errors).toEqual([]);
+  });
+
   it("the report is the FULL sorted list, never truncated to a bound", async () => {
     const { project, root } = sandbox();
     const dataRoot = join(root, "data-root");
     mkdirSync(dataRoot, { recursive: true });
-    const names = Array.from({ length: 80 }, (_, i) =>
-      `foreign-${String(i).padStart(3, "0")}`,
-    );
+    const names = Array.from({ length: 80 }, (_, i) => `foreign-${String(i).padStart(3, "0")}`);
     for (const name of names) mkdirSync(join(dataRoot, name), { recursive: true });
 
     const receipt = await runRetentionPass(
       POLICY,
-      { dry_run: true },
+      { dry_run: true, data_root_report: true },
       {
         ...deps(project),
         dataRoot,
@@ -463,7 +509,7 @@ describe("runRetentionPass", () => {
     mkdirSync(join(dataRoot, "v3"), { recursive: true });
     const receipt = await runRetentionPass(
       POLICY,
-      { dry_run: true },
+      { dry_run: true, data_root_report: true },
       {
         ...deps(project),
         dataRoot,
@@ -472,11 +518,31 @@ describe("runRetentionPass", () => {
     expect(receipt.data_root_unrecognized).toEqual([]);
   });
 
+  it("a request WITHOUT data_root_report gets no scan and an absent field (skew-safe shape)", async () => {
+    const { project, root } = sandbox();
+    const dataRoot = join(root, "data-root");
+    mkdirSync(join(dataRoot, "definitely-foreign"), { recursive: true });
+    // The dataRoot is injected (a current daemon), but the client did not opt
+    // in — exactly what an old CLI sends. The receipt must be byte-compatible
+    // with the pre-feature shape: no field, not an empty list.
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true },
+      {
+        ...deps(project),
+        dataRoot,
+      },
+    );
+    expect(receipt.data_root_unrecognized).toBeUndefined();
+    expect("data_root_unrecognized" in receipt).toBe(false);
+    expect(receipt.errors).toEqual([]);
+  });
+
   it("a failed data-root scan leaves the field ABSENT and discloses the error", async () => {
     const { project, root } = sandbox();
     const receipt = await runRetentionPass(
       POLICY,
-      { dry_run: true },
+      { dry_run: true, data_root_report: true },
       {
         ...deps(project),
         dataRoot: join(root, "does-not-exist"),
@@ -488,9 +554,13 @@ describe("runRetentionPass", () => {
     expect(receipt.dry_run).toBe(true);
   });
 
-  it("no injected data root means no scan and an absent field", async () => {
+  it("no injected data root means no scan and an absent field even when requested", async () => {
     const { project } = sandbox();
-    const receipt = await runRetentionPass(POLICY, { dry_run: true }, deps(project));
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true, data_root_report: true },
+      deps(project),
+    );
     expect(receipt.data_root_unrecognized).toBeUndefined();
     expect(receipt.errors).toEqual([]);
   });

@@ -157,7 +157,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). The full sorted list. ABSENT (not empty) when the scan failed or the serving daemon predates the feature; a scan failure is disclosed in errors instead."
+          "description": "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). The full sorted list. Present ONLY when the request opted in via data_root_report; ABSENT (not empty) when the request did not opt in, the scan failed, or the serving daemon predates the feature; a scan failure is disclosed in errors instead."
         }
       },
       "required": [

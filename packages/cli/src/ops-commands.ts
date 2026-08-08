@@ -17,7 +17,7 @@ import {
   rotateToken,
 } from "@claudexor/daemon";
 import { atRiskNodeAdvisory, harnessRuntimeEnv } from "@claudexor/core";
-import { claudexorOwnedRoot } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, claudexorOwnedRoot } from "@claudexor/util";
 import {
   ControlGcReceipt,
   ControlHarnessListResponse,
@@ -478,11 +478,18 @@ export function isKnownAuthLoginHarness(harness: string): boolean {
 /** Thin client of the daemon-owned retention service (W3.6). */
 export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const dryRun = flagBool(args, "dry-run") === true;
-  const { addr } = await ensureDaemon();
+  const { addr, engine } = await ensureDaemon();
+  // Capability negotiation over the handshake's validated engine identity:
+  // request the advisory data-root report ONLY from a lockstep daemon (same
+  // engine version as this CLI). Any skew — older daemon, newer daemon, or a
+  // malformed identity — omits the flag, so both sides exchange the exact
+  // pre-feature request/receipt shapes and a strict old schema never rejects
+  // the receipt of a mutating verb the daemon already executed.
+  const lockstep = engine.engineVersion === CLAUDEXOR_VERSION;
   const response = await controlApiFetch(addr, "/maintenance/gc", {
     method: "POST",
     headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ dry_run: dryRun }),
+    body: JSON.stringify({ dry_run: dryRun, ...(lockstep ? { data_root_report: true } : {}) }),
   });
   if (!response.ok) throw new Error(`gc failed (${response.status}): ${await response.text()}`);
   const receipt = ControlGcReceipt.parse(await response.json());

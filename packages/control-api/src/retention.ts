@@ -55,24 +55,31 @@ export interface RetentionDeps {
    * entries (advisory disclosure only — the pass never deletes anything
    * there). Injected from composition, never derived from globals here, so
    * the pass stays a pure function of its deps. Absent = no scan and the
-   * receipt field stays absent.
+   * receipt field stays absent. The scan also runs ONLY when the request
+   * opted in via data_root_report (capability negotiation for version skew).
    */
   dataRoot?: string;
+  /**
+   * Which layout the injected dataRoot follows — "default" (~/.claudexor,
+   * where the engine keeps its state under the v3 generation subtree) or
+   * "override" (an explicit CLAUDEXOR_CONFIG_DIR root, which IS the complete
+   * relocatable tree, so the engine additionally writes secrets.json,
+   * plugins, quota, and workspaces directly at its top level). Injected from
+   * composition beside dataRoot; absent defaults to "default".
+   */
+  dataRootMode?: "default" | "override";
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOMBSTONE = "tombstone.yaml";
 /**
  * Exact top-level names the engine (or its documented operator surface) owns
- * inside the Claudexor data root — the union across root modes (the default
- * `~/.claudexor` tree and an explicit CLAUDEXOR_CONFIG_DIR override, where the
- * engine also writes `secrets.json`, `plugins`, `quota`, and `workspaces`
- * directly at the root). Everything else at the top level is a foreign entry
- * the engine will never touch: the receipt names it so the operator can see
- * their own debris. Dotfiles are treated as config/service files and never
- * reported.
+ * inside the DEFAULT `~/.claudexor` data root. Everything else at the top
+ * level is a foreign entry the engine will never touch: the receipt names it
+ * so the operator can see their own debris. Dotfiles are treated as
+ * config/service files and never reported.
  */
-const ENGINE_OWNED_DATA_ROOT_ENTRIES = new Set([
+const DEFAULT_ROOT_OWNED_ENTRIES = new Set([
   // current engine + documented operator dirs
   "v3",
   "node",
@@ -83,9 +90,7 @@ const ENGINE_OWNED_DATA_ROOT_ENTRIES = new Set([
   "keys",
   "release-authority",
   "planning",
-  "plugins",
-  "quota",
-  "workspaces",
+  "remote",
   // legacy engine generations kept as the archive (owner decision, v3.0.0)
   "daemon",
   "projects",
@@ -95,34 +100,49 @@ const ENGINE_OWNED_DATA_ROOT_ENTRIES = new Set([
   "telemetry",
   // config files
   "config.yaml",
+]);
+/**
+ * Owned names under an explicit CLAUDEXOR_CONFIG_DIR override root, where the
+ * override IS the complete relocatable tree: the engine also writes
+ * `secrets.json`, `plugins`, `quota`, and `workspaces` directly at the top
+ * level (in the default mode those live under the v3 generation subtree, so
+ * a top-level copy there is foreign debris and IS reported).
+ */
+const OVERRIDE_ROOT_OWNED_ENTRIES = new Set([
+  ...DEFAULT_ROOT_OWNED_ENTRIES,
   "secrets.json",
+  "plugins",
+  "quota",
+  "workspaces",
 ]);
 /** Owned names the engine expects as plain FILES; every other owned name is a directory. */
 const ENGINE_OWNED_FILE_ENTRIES = new Set(["config.yaml", "secrets.json"]);
 
 /**
  * Names of top-level data-root entries the engine does not own (the full
- * sorted list — advisory disclosure, never a deletion surface). An entry
- * whose NAME the engine owns but whose on-disk kind is wrong — a symbolic
- * link of any owned name (dirents are read WITHOUT following links), or a
- * non-directory where the engine expects a directory — is reported as
- * `<name> (unexpected-kind)`. Throws on an unreadable root — the caller
- * degrades that to an errors[] entry and an ABSENT field, never a misleading
- * empty list and never a failed pass.
+ * sorted list — advisory disclosure, never a deletion surface), classified
+ * against the owned set for the injected root mode. An entry whose NAME the
+ * engine owns but whose on-disk kind is wrong — a symbolic link of any owned
+ * name (dirents are read WITHOUT following links), a non-directory where the
+ * engine expects a directory, or a non-file where it expects a plain file —
+ * is reported as `<name> (unexpected-kind)`. Throws on an unreadable root —
+ * the caller degrades that to an errors[] entry and an ABSENT field, never a
+ * misleading empty list and never a failed pass.
  */
-function scanDataRootUnrecognized(dataRoot: string): string[] {
+function scanDataRootUnrecognized(dataRoot: string, mode: "default" | "override"): string[] {
+  const owned = mode === "override" ? OVERRIDE_ROOT_OWNED_ENTRIES : DEFAULT_ROOT_OWNED_ENTRIES;
   const report: string[] = [];
   for (const entry of readdirSync(dataRoot, { withFileTypes: true })) {
     const name = entry.name;
     if (name.startsWith(".")) continue;
-    if (!ENGINE_OWNED_DATA_ROOT_ENTRIES.has(name)) {
+    if (!owned.has(name)) {
       report.push(name);
       continue;
     }
-    const expectsDirectory = !ENGINE_OWNED_FILE_ENTRIES.has(name);
-    if (entry.isSymbolicLink() || (expectsDirectory && !entry.isDirectory())) {
-      report.push(`${name} (unexpected-kind)`);
-    }
+    const kindOk =
+      !entry.isSymbolicLink() &&
+      (ENGINE_OWNED_FILE_ENTRIES.has(name) ? entry.isFile() : entry.isDirectory());
+    if (!kindOk) report.push(`${name} (unexpected-kind)`);
   }
   return report.sort();
 }
@@ -321,10 +341,17 @@ export async function runRetentionPass(
 
   // Advisory data-root disclosure (never a deletion surface): a failed scan
   // leaves the field ABSENT — an empty list must always mean "scanned, clean".
+  // Emitted ONLY when the request opted in via data_root_report: a request
+  // from a client that never sent the flag (any pre-feature CLI) gets a
+  // receipt byte-compatible with pre-feature engines, so an old strict
+  // receipt schema never rejects the reply to a mutating verb it already ran.
   let dataRootUnrecognized: string[] | undefined;
-  if (deps.dataRoot) {
+  if (request.data_root_report === true && deps.dataRoot) {
     try {
-      dataRootUnrecognized = scanDataRootUnrecognized(deps.dataRoot);
+      dataRootUnrecognized = scanDataRootUnrecognized(
+        deps.dataRoot,
+        deps.dataRootMode ?? "default",
+      );
     } catch (error) {
       errors.push(
         `data root scan (${deps.dataRoot}): ${error instanceof Error ? error.message : String(error)}`,
