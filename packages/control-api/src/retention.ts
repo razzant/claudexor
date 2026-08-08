@@ -50,10 +50,64 @@ export interface RetentionDeps {
   now?: () => number;
   /** Bounded batches: one pass deletes at most this many trees (disclosed). */
   maxDeletionsPerPass?: number;
+  /**
+   * Absolute Claudexor-owned data root to scan for NOT-engine-owned top-level
+   * entries (advisory disclosure only — the pass never deletes anything
+   * there). Injected from composition, never derived from globals here, so
+   * the pass stays a pure function of its deps. Absent = no scan and the
+   * receipt field stays absent.
+   */
+  dataRoot?: string;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOMBSTONE = "tombstone.yaml";
+/**
+ * Exact top-level names the engine (or its documented operator surface) owns
+ * inside the Claudexor data root — the union across root modes (the default
+ * `~/.claudexor` tree and an explicit CLAUDEXOR_CONFIG_DIR override, where
+ * generation dirs and their content share one root). Everything else at the
+ * top level is a foreign entry the engine will never touch: the receipt names
+ * it so the operator can see their own debris. Dotfiles are treated as
+ * config/service files and never reported.
+ */
+const ENGINE_OWNED_DATA_ROOT_ENTRIES = new Set([
+  // current engine + documented operator dirs
+  "v3",
+  "node",
+  "profiles",
+  "runtime",
+  "cache",
+  "dogfood",
+  "keys",
+  "release-authority",
+  "planning",
+  // legacy engine generations kept as the archive (owner decision, v3.0.0)
+  "daemon",
+  "projects",
+  "native",
+  "runs",
+  "trust",
+  "telemetry",
+  "isolated",
+  // config files
+  "config.yaml",
+]);
+/** Advisory listing stays bounded — a receipt is a report, not a du(1) dump. */
+const DATA_ROOT_REPORT_LIMIT = 64;
+
+/**
+ * Names of top-level data-root entries the engine does not own (sorted,
+ * bounded). Advisory only; throws on an unreadable root — the caller degrades
+ * that to an errors[] entry and an ABSENT field, never a misleading empty
+ * list and never a failed pass.
+ */
+function scanDataRootUnrecognized(dataRoot: string): string[] {
+  return readdirSync(dataRoot)
+    .filter((name) => !name.startsWith(".") && !ENGINE_OWNED_DATA_ROOT_ENTRIES.has(name))
+    .sort()
+    .slice(0, DATA_ROOT_REPORT_LIMIT);
+}
 /** Daemon-record states with an operator or scheduler still attached. */
 /**
  * Run states whose tree is COMPLETE and may age out — an explicit allowlist,
@@ -247,6 +301,19 @@ export async function runRetentionPass(
     );
   }
 
+  // Advisory data-root disclosure (never a deletion surface): a failed scan
+  // leaves the field ABSENT — an empty list must always mean "scanned, clean".
+  let dataRootUnrecognized: string[] | undefined;
+  if (deps.dataRoot) {
+    try {
+      dataRootUnrecognized = scanDataRootUnrecognized(deps.dataRoot);
+    } catch (error) {
+      errors.push(
+        `data root scan (${deps.dataRoot}): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   return ControlGcReceipt.parse({
     schema_version: 1,
     dry_run: dryRun,
@@ -263,6 +330,7 @@ export async function runRetentionPass(
     deleted_reviews: deletedReviews,
     freed_bytes: freedBytes,
     errors,
+    ...(dataRootUnrecognized === undefined ? {} : { data_root_unrecognized: dataRootUnrecognized }),
   });
 }
 

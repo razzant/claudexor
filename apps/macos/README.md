@@ -65,6 +65,10 @@ NOTARY_PROFILE="claudexor-notary" MAKE_DMG=1 \
 apps/macos/scripts/build-app.sh
 ```
 
+The assembled `Claudexor.app` bundle lands in `apps/macos/dist/bundle.noindex/`
+(the `.noindex` suffix keeps Spotlight from indexing dev builds as launchable
+apps), while the DMG/ZIP artifacts and their checksums stay directly in
+`apps/macos/dist/`.
 Local builds without signing env produce `Claudexor-<version>-unsigned.zip`
 and `Claudexor-<version>-unsigned.dmg`, with sibling `.sha256` checksum
 files — Gatekeeper blocks those on other Macs (local smoke only). The

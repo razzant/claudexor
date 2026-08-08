@@ -229,7 +229,7 @@ jobs:
           PREPARED_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           set -euo pipefail
-          app="apps/macos/dist/Claudexor.app"
+          app="apps/macos/dist/bundle.noindex/Claudexor.app"
           dmg="apps/macos/dist/Claudexor-$VERSION.dmg"
           zip="apps/macos/dist/Claudexor-$VERSION.zip"
           for file in "$dmg" "$dmg.sha256" "$zip" "$zip.sha256"; do
@@ -403,7 +403,7 @@ jobs:
             # Candidate builds straight from the signed+verified app bundle, so the
             # update unit is byte-identical to the closure the gates smoke-tested.
             node scripts/build-runtime-closure.mjs \
-              --app-bundle apps/macos/dist/Claudexor.app \
+              --app-bundle apps/macos/dist/bundle.noindex/Claudexor.app \
               --version "$VERSION" \
               --out "$closure"
           fi
@@ -430,7 +430,7 @@ jobs:
             cp candidate-assets/remote-runtime-manifest.json "$remote/"
           else
             node_version="$(cat .node-version)"
-            resources="apps/macos/dist/Claudexor.app/Contents/Resources"
+            resources="apps/macos/dist/bundle.noindex/Claudexor.app/Contents/Resources"
             for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
               archive="$RUNNER_TEMP/node-v$node_version-$target.tar.gz"
               curl --fail --location --proto '=https' --tlsv1.2 \
@@ -497,7 +497,7 @@ jobs:
             cp "apps/macos/dist/Claudexor-$VERSION.zip" "$assets/"
             GITHUB_SHA="$PREPARED_SHA" pnpm licenses list --prod --json | \
               GITHUB_SHA="$PREPARED_SHA" node scripts/generate-release-sbom.mjs \
-              --app-bundle apps/macos/dist/Claudexor.app \
+              --app-bundle apps/macos/dist/bundle.noindex/Claudexor.app \
               > "$assets/Claudexor-$VERSION.spdx.json"
           fi
           cp "$RUNNER_TEMP/runtime-closure/claudexor-runtime-$VERSION.tar.gz" "$assets/"

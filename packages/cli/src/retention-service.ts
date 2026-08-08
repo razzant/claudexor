@@ -11,7 +11,7 @@ import type { ControlGcReceipt, ControlGcRequest } from "@claudexor/schema";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { runRetentionPass, type RetentionProject } from "@claudexor/control-api";
 import { loadConfig } from "@claudexor/config";
-import { noProjectRepoRoot } from "@claudexor/util";
+import { claudexorOwnedRoot, noProjectRepoRoot } from "@claudexor/util";
 import { sweepOrphanLanes } from "@claudexor/workspace";
 import { logLine } from "./daemon-lifecycle.js";
 
@@ -112,7 +112,16 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
         keepLastRunsPerProject: retention.keep_last_runs_per_project,
       },
       request,
-      { projects: () => gcProjects, records: () => records, referencedRunIds },
+      {
+        projects: () => gcProjects,
+        records: () => records,
+        referencedRunIds,
+        // Advisory data-root disclosure: the ONE owned-root derivation
+        // (claudexorOwnedRoot covers both the default ~/.claudexor tree and
+        // an explicit CLAUDEXOR_CONFIG_DIR override) is injected here so the
+        // pass itself never reaches for globals.
+        dataRoot: claudexorOwnedRoot(),
+      },
     );
   };
   return (request) => {

@@ -11,7 +11,7 @@
  * hosts without POSIX symlink semantics.
  *
  *   node scripts/build-runtime-closure.mjs \
- *     --app-bundle apps/macos/dist/Claudexor.app \
+ *     --app-bundle apps/macos/dist/bundle.noindex/Claudexor.app \
  *     --version 3.0.0 \
  *     --out "$RUNNER_TEMP/runtime-closure"
  *

@@ -293,13 +293,18 @@ deferred; they are recorded here now.
 
 ## v3.1.0 dogfood finding (2026-07-23)
 
-- Update-provider cache is keyed only by bundle id, so a source-built dev/side
-  build inherits the installed packaged app's cached update-chip decision
-  ("Update available → vX") through the shared `com.claudexor.ClaudexorApp`
-  UserDefaults domain. Harmless for real users (one packaged build per
-  machine) but misleads dev builds. Fix: namespace the update-provider cache
-  by build kind (dev vs packaged) or by resolved engine identity. Non-gating;
-  logged so it is not a silent drop.
+- A source-built dev/side build showed the installed packaged app's
+  update-chip decision ("Update available → vX"). The mechanism originally
+  logged here (an update-provider cache keyed by bundle id through shared
+  UserDefaults) does not exist: the chip decision is in-memory only
+  (`RuntimeUpdateProvider`), and the bare swift-build binary has no bundle id.
+  The real mechanism is convergent recomputation — both builds resolve the
+  running-engine fallback from the SHARED `~/.claudexor/runtime/current.json`
+  pointer, so a dev build recomputes the same "Update available" verdict.
+  RESOLVED (2026-08-08, dev-hygiene fix): a dev app (version "dev") suppresses
+  the automatic chip, display-only, and shows "Dev build — update check not
+  applicable"; the manual Check for Updates and packaged behavior are
+  unchanged.
 
 ## v3.1.0 Ф3/Ф4 review-wave advisories (acceleration directive — deferred)
 

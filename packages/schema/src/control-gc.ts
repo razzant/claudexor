@@ -89,6 +89,12 @@ export const ControlGcReceipt = z
       .array(z.string())
       .default([])
       .describe("Non-fatal per-tree failures; the pass continues past them."),
+    data_root_unrecognized: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). Sorted and bounded. ABSENT (not empty) when the scan failed or the serving daemon predates the feature; a scan failure is disclosed in errors instead.",
+      ),
   })
   .strict()
   .describe("Typed receipt of one retention pass.");

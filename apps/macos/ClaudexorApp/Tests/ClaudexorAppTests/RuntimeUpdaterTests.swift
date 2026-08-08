@@ -138,6 +138,72 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
         #expect(model.updateAvailability?.version == "3.4.0")
     }
 
+    // MARK: - Dev-build chip suppression (Р16/F9, display-only)
+
+    /// A source-built dev app (app version "dev") must not PRESENT an automatic
+    /// update chip: both the dev binary and the installed packaged app recompute
+    /// the running-engine fallback from the shared runtime pointer, so the auto
+    /// check would advertise the installed app's decision. The dev app skips the
+    /// automatic check entirely (no fetch), shows the honest dev status, and
+    /// stores no availability.
+    @MainActor
+    @Test func devAppAutoCheckPresentsNoChipAndDoesNotFetch() async throws {
+        let transport = StubTransport()
+        let model = AppModel(requestNotificationAuthorization: false)
+        model.appVersionOverrideForUpdates = "dev"
+        model.engineIdentity = EngineBuildIdentity(version: "3.1.0", sha: "deadbee", entry: "/x")
+        model.runtimeUpdater = RuntimeUpdater(transport: transport, authority: try testAuthority())
+
+        await model.checkForRuntimeUpdate(force: false)
+
+        #expect(model.updateAvailability == nil)
+        #expect(model.runtimeUpdateStatus == "Dev build — update check not applicable")
+        // The automatic check never ran: no release fetch was attempted.
+        #expect(transport.receivedETags.isEmpty)
+    }
+
+    /// A PACKAGED app version keeps the existing automatic behavior byte-for-byte:
+    /// the auto check runs and the available chip is presented.
+    @MainActor
+    @Test func packagedAppAutoCheckStillPresentsTheAvailableChip() async throws {
+        let transport = StubTransport()
+        let manifestURL = "https://example/runtime-manifest.json"
+        let releaseJSON = #"{"assets":[{"name":"runtime-manifest.json","browser_download_url":"\#(manifestURL)"}]}"#
+        transport.assetData[manifestURL] = try signedManifestData()  // signed vector, 3.4.0
+        transport.queuedFetches = [ReleaseFetchResult(status: 200, etag: "\"e\"", data: Data(releaseJSON.utf8))]
+
+        let model = AppModel(requestNotificationAuthorization: false)
+        model.appVersionOverrideForUpdates = "3.3.0"  // packaged, satisfies minAppVersion 2.1.0
+        model.engineIdentity = EngineBuildIdentity(version: "3.1.0", sha: "deadbee", entry: "/x")
+        model.runtimeUpdater = RuntimeUpdater(transport: transport, authority: try testAuthority())
+
+        await model.checkForRuntimeUpdate(force: false)
+
+        #expect(model.updateAvailability?.version == "3.4.0")
+        #expect(model.runtimeUpdateStatus == "Update available: v3.4.0")
+    }
+
+    /// The MANUAL Check for Updates (force) still works in a dev build and shows
+    /// its real result — suppression is automatic-path-only.
+    @MainActor
+    @Test func devAppManualForceCheckStillRunsAndShowsItsResult() async throws {
+        let transport = StubTransport()
+        let manifestURL = "https://example/runtime-manifest.json"
+        let releaseJSON = #"{"assets":[{"name":"runtime-manifest.json","browser_download_url":"\#(manifestURL)"}]}"#
+        transport.assetData[manifestURL] = try signedManifestData()
+        transport.queuedFetches = [ReleaseFetchResult(status: 200, etag: "\"e\"", data: Data(releaseJSON.utf8))]
+
+        let model = AppModel(requestNotificationAuthorization: false)
+        model.appVersionOverrideForUpdates = "dev"
+        model.engineIdentity = EngineBuildIdentity(version: "3.1.0", sha: "deadbee", entry: "/x")
+        model.runtimeUpdater = RuntimeUpdater(transport: transport, authority: try testAuthority())
+
+        await model.checkForRuntimeUpdate(force: true)
+
+        #expect(model.updateAvailability?.version == "3.4.0")
+        #expect(model.runtimeUpdateStatus == "Update available: v3.4.0")
+    }
+
     /// Fix 3 (post-install truth): after a verified install, recording the
     /// installed version must recompute the cached decision to `.upToDate` AND
     /// clear the stored ETag — otherwise the next check reuses the stale

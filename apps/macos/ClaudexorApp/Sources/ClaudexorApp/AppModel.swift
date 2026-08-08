@@ -216,6 +216,11 @@ final class AppModel {
     @ObservationIgnored var runtimeUpdater: RuntimeUpdater?
     @ObservationIgnored var makeRuntimeTransport: @Sendable () -> RuntimeReleaseTransport = { GitHubRuntimeReleaseTransport() }
     @ObservationIgnored var didAutoCheckRuntime = false
+    /// Test seam for the APP version the update flow reasons about (the dev-build
+    /// chip suppression keys on it). Production always reads the bundle version;
+    /// tests inject a packaged/dev value so they never depend on the test
+    /// runner's bundle identity.
+    @ObservationIgnored var appVersionOverrideForUpdates: String?
     /// Optimistic auto-balance toggle value while the settings save round-trips
     /// (owner dogfood: the switch must flip INSTANTLY, not after the daemon
     /// replies). Cleared when the save settles; a failed save snaps back.

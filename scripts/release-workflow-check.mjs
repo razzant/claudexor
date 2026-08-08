@@ -84,12 +84,12 @@ for (const [label, pattern] of [
   ["Darwin npm tarball is smoke-tested", /verify-npm-darwin-package\.mjs --tarball/],
   [
     "SBOM inventories the packaged app",
-    /generate-release-sbom\.mjs\s+\\\s*\n\s*--app-bundle apps\/macos\/dist\/Claudexor\.app/,
+    /generate-release-sbom\.mjs\s+\\\s*\n\s*--app-bundle apps\/macos\/dist\/bundle\.noindex\/Claudexor\.app/,
   ],
   ["engine runtime update closure is built (M7)", /build-runtime-closure\.mjs/],
   [
     "runtime closure is built from the signed app bundle",
-    /build-runtime-closure\.mjs\s+\\\s*\n\s*--app-bundle apps\/macos\/dist\/Claudexor\.app/,
+    /build-runtime-closure\.mjs\s+\\\s*\n\s*--app-bundle apps\/macos\/dist\/bundle\.noindex\/Claudexor\.app/,
   ],
   [
     "runtime manifest digest is self-verified before upload",
@@ -743,7 +743,7 @@ function exactCandidateAppPromotionErrors(job) {
   );
   requirePattern(
     "candidate SBOM must bind both license input and document namespace to the prepared SHA",
-    /else[\s\S]*?GITHUB_SHA="\$PREPARED_SHA" pnpm licenses list --prod --json \|[\s\S]*?GITHUB_SHA="\$PREPARED_SHA" node scripts\/generate-release-sbom\.mjs[\s\S]*?--app-bundle apps\/macos\/dist\/Claudexor\.app/,
+    /else[\s\S]*?GITHUB_SHA="\$PREPARED_SHA" pnpm licenses list --prod --json \|[\s\S]*?GITHUB_SHA="\$PREPARED_SHA" node scripts\/generate-release-sbom\.mjs[\s\S]*?--app-bundle apps\/macos\/dist\/bundle\.noindex\/Claudexor\.app/,
     assembleStep,
   );
   // Every write into "$assets/" is pinned: the released asset set is exactly

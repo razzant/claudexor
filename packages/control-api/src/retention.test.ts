@@ -361,6 +361,70 @@ describe("runRetentionPass", () => {
     expect(receipt.errors.join("\n")).toContain("truncated at 1");
   });
 
+  it("reports NON-engine top-level data-root entries by name, never engine-owned ones", async () => {
+    const { project, root } = sandbox();
+    const dataRoot = join(root, "data-root");
+    // Engine-owned (current + legacy) and dotfile entries must NOT be listed.
+    for (const owned of ["v3", "node", "profiles", "runtime", "daemon", "isolated"]) {
+      mkdirSync(join(dataRoot, owned), { recursive: true });
+    }
+    writeFileSync(join(dataRoot, "config.yaml"), "retention: {}\n");
+    writeFileSync(join(dataRoot, ".DS_Store"), "");
+    // Foreign operator debris (dirs and files alike) IS listed, sorted.
+    mkdirSync(join(dataRoot, "reviews"), { recursive: true });
+    mkdirSync(join(dataRoot, "my-scratch"), { recursive: true });
+    writeFileSync(join(dataRoot, "notes.txt"), "n");
+
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true },
+      {
+        ...deps(project),
+        dataRoot,
+      },
+    );
+    expect(receipt.data_root_unrecognized).toEqual(["my-scratch", "notes.txt", "reviews"]);
+    expect(receipt.errors).toEqual([]);
+  });
+
+  it("a clean data root reports an EMPTY list (scanned, nothing foreign)", async () => {
+    const { project, root } = sandbox();
+    const dataRoot = join(root, "data-root");
+    mkdirSync(join(dataRoot, "v3"), { recursive: true });
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true },
+      {
+        ...deps(project),
+        dataRoot,
+      },
+    );
+    expect(receipt.data_root_unrecognized).toEqual([]);
+  });
+
+  it("a failed data-root scan leaves the field ABSENT and discloses the error", async () => {
+    const { project, root } = sandbox();
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true },
+      {
+        ...deps(project),
+        dataRoot: join(root, "does-not-exist"),
+      },
+    );
+    expect(receipt.data_root_unrecognized).toBeUndefined();
+    expect(receipt.errors.join("\n")).toContain("data root scan");
+    // The advisory scan must never fail the pass itself.
+    expect(receipt.dry_run).toBe(true);
+  });
+
+  it("no injected data root means no scan and an absent field", async () => {
+    const { project } = sandbox();
+    const receipt = await runRetentionPass(POLICY, { dry_run: true }, deps(project));
+    expect(receipt.data_root_unrecognized).toBeUndefined();
+    expect(receipt.errors).toEqual([]);
+  });
+
   it("readRunTombstone round-trips what the pass wrote", async () => {
     const { project } = sandbox();
     seedRun(project.runsDir, "run-x");

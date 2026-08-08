@@ -156,7 +156,7 @@ export async function buildReleaseReviewRuntimeArtifacts(repoRoot, artifactRoot,
   const verifierPath = join(outputRoot, RELEASE_REVIEW_VERIFIER_ARTIFACT_PATH);
   const cliSource = join(
     root,
-    "apps/macos/dist/Claudexor.app/Contents/Resources/claudexor.bundle.cjs",
+    "apps/macos/dist/bundle.noindex/Claudexor.app/Contents/Resources/claudexor.bundle.cjs",
   );
   const cliPath = join(outputRoot, RELEASE_REVIEW_CLI_ARTIFACT_PATH);
   for (const path of [verifierPath, cliPath]) {

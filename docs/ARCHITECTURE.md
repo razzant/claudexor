@@ -1356,7 +1356,10 @@ the configured age (`retention.*` in the global config: runs 30d, reviews
 referenced by any non-purged thread's lineage, undelivered/applyable
 patches, and trees with no terminal evidence are protected fail-closed. A
 reclaimed run leaves a tombstone projection behind, so its artifacts answer
-with a typed 410 `run_expired_by_retention` — never a mysterious 404.
+with a typed 410 `run_expired_by_retention` — never a mysterious 404. The
+receipt also carries an advisory `data_root_unrecognized` listing — names of
+top-level data-root entries the engine does not own and never touches
+(absent, with an `errors[]` entry, when that scan fails).
 While running it snapshots its live harness child process groups to
 `daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
 crash (pid liveness + command-name recycling guard) and sweeps workspace

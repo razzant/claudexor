@@ -33,7 +33,11 @@ MACOS_DIR="$(cd "$HERE/.." && pwd)"
 APP_PKG="$MACOS_DIR/ClaudexorApp"
 PACKAGING="$MACOS_DIR/packaging"
 DIST="$MACOS_DIR/dist"
-APP="$DIST/Claudexor.app"
+# The assembled .app (and the transient dmg-stage) live under a .noindex
+# subdirectory so Spotlight never indexes dev-built bundles as launchable
+# apps. Final artifacts (DMG/ZIP/sha256/SBOM) stay directly in $DIST.
+BUNDLES="$DIST/bundle.noindex"
+APP="$BUNDLES/Claudexor.app"
 
 # Version SSOT is the generated CLAUDEXOR_VERSION constant (scripts/gen-version.mjs
 # from the root package.json). Read it so the bundle / DMG version can't silently
@@ -76,6 +80,7 @@ BIN="$APP_PKG/.build/release/ClaudexorApp"
 [ -x "$BIN" ] || { echo "ERROR: release binary not found at $BIN" >&2; exit 1; }
 
 echo "==> Assembling $APP"
+mkdir -p "$BUNDLES"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ClaudexorApp"
@@ -505,7 +510,7 @@ if [ "${MAKE_DMG:-0}" = "1" ]; then
     DMG_SUFFIX="-signed-unnotarized"
   fi
   DMG="$DIST/Claudexor-$VERSION$DMG_SUFFIX.dmg"
-  STAGE="$DIST/dmg-stage"
+  STAGE="$BUNDLES/dmg-stage"
   rm -rf "$STAGE" "$DMG"; mkdir -p "$STAGE"
   cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"

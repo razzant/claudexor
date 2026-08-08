@@ -12,6 +12,15 @@ extension AppModel {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
     }
 
+    /// The honest status a dev build shows where the update chip would appear.
+    static let devBuildUpdateStatus = "Dev build — update check not applicable"
+
+    /// The APP version the update flow reasons about (test seam; production
+    /// reads the bundle).
+    var updateFlowAppVersion: String {
+        appVersionOverrideForUpdates ?? Self.appVersionString()
+    }
+
     var engineVersionDisplay: String { engineIdentity?.version ?? "unknown" }
 
     var engineShaDisplay: String {
@@ -29,6 +38,18 @@ extension AppModel {
             guard !didAutoCheckRuntime else { return }
         }
         didAutoCheckRuntime = true
+        let app = updateFlowAppVersion
+        // Display-only dev suppression (Р16/F9): a source-built dev app and the
+        // installed packaged app both recompute the running-engine fallback from
+        // the SHARED ~/.claudexor/runtime/current.json, so an AUTOMATIC check in
+        // a dev build would present the installed app's update decision. The dev
+        // app therefore never runs the automatic check and presents no chip —
+        // only the honest dev status line. Manual Check for Updates (force) and
+        // packaged behavior are unchanged.
+        if !force, app == "dev" {
+            runtimeUpdateStatus = Self.devBuildUpdateStatus
+            return
+        }
         if runtimeUpdateChecking { return }
         runtimeUpdateChecking = true
         defer { runtimeUpdateChecking = false }
@@ -37,7 +58,6 @@ extension AppModel {
             ?? RuntimeUpdater(transport: makeRuntimeTransport())
         runtimeUpdater = updater
         let running = resolvedRunningEngineVersion()
-        let app = Self.appVersionString()
         do {
             let outcome = try await updater.check(
                 runningEngineVersion: running, appVersion: app)
@@ -70,9 +90,11 @@ extension AppModel {
                 "App update required — install the latest app "
                 + "(needs v\(minAppVersion) or newer), then re-check."
         case let .unknown(reason):
+            // Keyed on the APP being a dev build (it always is when the
+            // resolved running version degrades to appVersionString()'s "dev").
             runtimeUpdateStatus =
-                resolvedRunningEngineVersion() == "dev"
-                ? "Dev build — update check not applicable"
+                updateFlowAppVersion == "dev"
+                ? Self.devBuildUpdateStatus
                 : "Update status unknown: \(reason)"
         }
     }

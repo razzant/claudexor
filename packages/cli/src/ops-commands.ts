@@ -17,6 +17,7 @@ import {
   rotateToken,
 } from "@claudexor/daemon";
 import { atRiskNodeAdvisory, harnessRuntimeEnv } from "@claudexor/core";
+import { claudexorOwnedRoot } from "@claudexor/util";
 import {
   ControlGcReceipt,
   ControlHarnessListResponse,
@@ -496,6 +497,16 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
       `(examined ${receipt.examined_runs}; kept active=${receipt.kept.active} recent=${receipt.kept.recent} young=${receipt.kept.young} ` +
       `referenced=${receipt.kept.referenced} actionable=${receipt.kept.actionable} unknown=${receipt.kept.unknown_state})`,
   );
+  // Advisory disclosure of foreign top-level data-root entries (never
+  // deleted; absent on old daemons or a failed scan — errors carry the why).
+  const foreign = receipt.data_root_unrecognized;
+  if (foreign && foreign.length > 0) {
+    const shown = foreign.slice(0, 10).join(", ");
+    const ellipsis = foreign.length > 10 ? `, … (${foreign.length} listed)` : "";
+    print(
+      `note: ${foreign.length} non-engine entr${foreign.length === 1 ? "y" : "ies"} in ${claudexorOwnedRoot()}: ${shown}${ellipsis}`,
+    );
+  }
   for (const error of receipt.errors) print(`warning: ${error}`);
   return 0;
 }
