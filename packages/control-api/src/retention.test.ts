@@ -364,13 +364,26 @@ describe("runRetentionPass", () => {
   it("reports NON-engine top-level data-root entries by name, never engine-owned ones", async () => {
     const { project, root } = sandbox();
     const dataRoot = join(root, "data-root");
-    // Engine-owned (current + legacy) and dotfile entries must NOT be listed.
-    for (const owned of ["v3", "node", "profiles", "runtime", "daemon", "isolated"]) {
+    // Engine-owned (current + legacy + explicit-config-dir-root) and dotfile
+    // entries must NOT be listed.
+    for (const owned of [
+      "v3",
+      "node",
+      "profiles",
+      "runtime",
+      "daemon",
+      "plugins",
+      "quota",
+      "workspaces",
+    ]) {
       mkdirSync(join(dataRoot, owned), { recursive: true });
     }
     writeFileSync(join(dataRoot, "config.yaml"), "retention: {}\n");
+    writeFileSync(join(dataRoot, "secrets.json"), "{}\n");
     writeFileSync(join(dataRoot, ".DS_Store"), "");
     // Foreign operator debris (dirs and files alike) IS listed, sorted.
+    // "isolated" is operator scratch, not engine-owned — it is foreign too.
+    mkdirSync(join(dataRoot, "isolated"), { recursive: true });
     mkdirSync(join(dataRoot, "reviews"), { recursive: true });
     mkdirSync(join(dataRoot, "my-scratch"), { recursive: true });
     writeFileSync(join(dataRoot, "notes.txt"), "n");
@@ -383,8 +396,65 @@ describe("runRetentionPass", () => {
         dataRoot,
       },
     );
-    expect(receipt.data_root_unrecognized).toEqual(["my-scratch", "notes.txt", "reviews"]);
+    expect(receipt.data_root_unrecognized).toEqual([
+      "isolated",
+      "my-scratch",
+      "notes.txt",
+      "reviews",
+    ]);
     expect(receipt.errors).toEqual([]);
+  });
+
+  it("reports an owned NAME with the wrong on-disk kind as `<name> (unexpected-kind)`", async () => {
+    const { project, root } = sandbox();
+    const dataRoot = join(root, "data-root");
+    mkdirSync(dataRoot, { recursive: true });
+    // A plain FILE where the engine expects the `v3` directory.
+    writeFileSync(join(dataRoot, "v3"), "not a directory");
+    // A SYMLINK under an owned name (even one pointing at a real directory) —
+    // the scan reads dirents WITHOUT following links and flags it.
+    const target = join(root, "elsewhere");
+    mkdirSync(target, { recursive: true });
+    const { symlinkSync } = await import("node:fs");
+    symlinkSync(target, join(dataRoot, "runtime"));
+    // A healthy owned directory and owned files stay unreported.
+    mkdirSync(join(dataRoot, "node"), { recursive: true });
+    writeFileSync(join(dataRoot, "config.yaml"), "retention: {}\n");
+    writeFileSync(join(dataRoot, "secrets.json"), "{}\n");
+
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true },
+      {
+        ...deps(project),
+        dataRoot,
+      },
+    );
+    expect(receipt.data_root_unrecognized).toEqual([
+      "runtime (unexpected-kind)",
+      "v3 (unexpected-kind)",
+    ]);
+    expect(receipt.errors).toEqual([]);
+  });
+
+  it("the report is the FULL sorted list, never truncated to a bound", async () => {
+    const { project, root } = sandbox();
+    const dataRoot = join(root, "data-root");
+    mkdirSync(dataRoot, { recursive: true });
+    const names = Array.from({ length: 80 }, (_, i) =>
+      `foreign-${String(i).padStart(3, "0")}`,
+    );
+    for (const name of names) mkdirSync(join(dataRoot, name), { recursive: true });
+
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: true },
+      {
+        ...deps(project),
+        dataRoot,
+      },
+    );
+    expect(receipt.data_root_unrecognized).toEqual(names);
   });
 
   it("a clean data root reports an EMPTY list (scanned, nothing foreign)", async () => {

@@ -90,10 +90,8 @@ extension AppModel {
                 "App update required — install the latest app "
                 + "(needs v\(minAppVersion) or newer), then re-check."
         case let .unknown(reason):
-            // Keyed on the APP being a dev build (it always is when the
-            // resolved running version degrades to appVersionString()'s "dev").
             runtimeUpdateStatus =
-                updateFlowAppVersion == "dev"
+                resolvedRunningEngineVersion() == "dev"
                 ? Self.devBuildUpdateStatus
                 : "Update status unknown: \(reason)"
         }

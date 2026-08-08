@@ -65,11 +65,12 @@ const TOMBSTONE = "tombstone.yaml";
 /**
  * Exact top-level names the engine (or its documented operator surface) owns
  * inside the Claudexor data root — the union across root modes (the default
- * `~/.claudexor` tree and an explicit CLAUDEXOR_CONFIG_DIR override, where
- * generation dirs and their content share one root). Everything else at the
- * top level is a foreign entry the engine will never touch: the receipt names
- * it so the operator can see their own debris. Dotfiles are treated as
- * config/service files and never reported.
+ * `~/.claudexor` tree and an explicit CLAUDEXOR_CONFIG_DIR override, where the
+ * engine also writes `secrets.json`, `plugins`, `quota`, and `workspaces`
+ * directly at the root). Everything else at the top level is a foreign entry
+ * the engine will never touch: the receipt names it so the operator can see
+ * their own debris. Dotfiles are treated as config/service files and never
+ * reported.
  */
 const ENGINE_OWNED_DATA_ROOT_ENTRIES = new Set([
   // current engine + documented operator dirs
@@ -82,6 +83,9 @@ const ENGINE_OWNED_DATA_ROOT_ENTRIES = new Set([
   "keys",
   "release-authority",
   "planning",
+  "plugins",
+  "quota",
+  "workspaces",
   // legacy engine generations kept as the archive (owner decision, v3.0.0)
   "daemon",
   "projects",
@@ -89,24 +93,38 @@ const ENGINE_OWNED_DATA_ROOT_ENTRIES = new Set([
   "runs",
   "trust",
   "telemetry",
-  "isolated",
   // config files
   "config.yaml",
+  "secrets.json",
 ]);
-/** Advisory listing stays bounded — a receipt is a report, not a du(1) dump. */
-const DATA_ROOT_REPORT_LIMIT = 64;
+/** Owned names the engine expects as plain FILES; every other owned name is a directory. */
+const ENGINE_OWNED_FILE_ENTRIES = new Set(["config.yaml", "secrets.json"]);
 
 /**
- * Names of top-level data-root entries the engine does not own (sorted,
- * bounded). Advisory only; throws on an unreadable root — the caller degrades
- * that to an errors[] entry and an ABSENT field, never a misleading empty
- * list and never a failed pass.
+ * Names of top-level data-root entries the engine does not own (the full
+ * sorted list — advisory disclosure, never a deletion surface). An entry
+ * whose NAME the engine owns but whose on-disk kind is wrong — a symbolic
+ * link of any owned name (dirents are read WITHOUT following links), or a
+ * non-directory where the engine expects a directory — is reported as
+ * `<name> (unexpected-kind)`. Throws on an unreadable root — the caller
+ * degrades that to an errors[] entry and an ABSENT field, never a misleading
+ * empty list and never a failed pass.
  */
 function scanDataRootUnrecognized(dataRoot: string): string[] {
-  return readdirSync(dataRoot)
-    .filter((name) => !name.startsWith(".") && !ENGINE_OWNED_DATA_ROOT_ENTRIES.has(name))
-    .sort()
-    .slice(0, DATA_ROOT_REPORT_LIMIT);
+  const report: string[] = [];
+  for (const entry of readdirSync(dataRoot, { withFileTypes: true })) {
+    const name = entry.name;
+    if (name.startsWith(".")) continue;
+    if (!ENGINE_OWNED_DATA_ROOT_ENTRIES.has(name)) {
+      report.push(name);
+      continue;
+    }
+    const expectsDirectory = !ENGINE_OWNED_FILE_ENTRIES.has(name);
+    if (entry.isSymbolicLink() || (expectsDirectory && !entry.isDirectory())) {
+      report.push(`${name} (unexpected-kind)`);
+    }
+  }
+  return report.sort();
 }
 /** Daemon-record states with an operator or scheduler still attached. */
 /**

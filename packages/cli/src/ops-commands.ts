@@ -502,7 +502,7 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
   const foreign = receipt.data_root_unrecognized;
   if (foreign && foreign.length > 0) {
     const shown = foreign.slice(0, 10).join(", ");
-    const ellipsis = foreign.length > 10 ? `, … (${foreign.length} listed)` : "";
+    const ellipsis = foreign.length > 10 ? `, … showing 10 of ${foreign.length}` : "";
     print(
       `note: ${foreign.length} non-engine entr${foreign.length === 1 ? "y" : "ies"} in ${claudexorOwnedRoot()}: ${shown}${ellipsis}`,
     );

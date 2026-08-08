@@ -93,7 +93,7 @@ export const ControlGcReceipt = z
       .array(z.string())
       .optional()
       .describe(
-        "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). Sorted and bounded. ABSENT (not empty) when the scan failed or the serving daemon predates the feature; a scan failure is disclosed in errors instead.",
+        "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). The full sorted list. ABSENT (not empty) when the scan failed or the serving daemon predates the feature; a scan failure is disclosed in errors instead.",
       ),
   })
   .strict()
