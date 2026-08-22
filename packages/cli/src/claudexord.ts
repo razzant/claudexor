@@ -42,7 +42,7 @@ import {
   recoveryBlockedPartitions,
 } from "./daemon-startup.js";
 import { assertPlanImplementReady } from "./plan-implement-readiness.js";
-import { buildRunOrchestrator, credentialUnusableLedger } from "./run-orchestrator.js";
+import { buildRunOrchestrator } from "./run-orchestrator.js";
 import { delegationBeltForRun } from "./delegation-belt-descriptor.js";
 import { loadConfig } from "@claudexor/config";
 import { engineBuildIdentity, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
@@ -52,7 +52,7 @@ import { controlServices } from "./control-services.js";
 import { AuthReadinessService } from "@claudexor/gateway";
 import { buildGateway } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { invalidateStatusProjections } from "./status-projection-cache.js";
+import { bustGlobalCredentialStatusCaches } from "./credential-status-invalidation.js";
 import { SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
@@ -448,15 +448,8 @@ export async function main(): Promise<void> {
         rootDir: daemonDir(),
         store,
         onCredentialStateMayHaveChanged: (harness) => {
+          bustGlobalCredentialStatusCaches(() => quotaStoreSlot.current());
           authReadiness.invalidate(harness);
-          // The poll-surface projections embed harness/profile status; a
-          // login/logout makes them stale NOW, not a TTL from now.
-          invalidateStatusProjections();
-          // Drop the quota absence backoff too (wave-1): a fresh login must
-          // not wait out up to 15 minutes of logged-out pacing. The unusable-
-          // credential ledger clears with it (A7 generation-change contract).
-          quotaStoreSlot.current().noteCredentialChange();
-          credentialUnusableLedger.noteCredentialChange();
         },
       }),
     );

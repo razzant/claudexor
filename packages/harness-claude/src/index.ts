@@ -19,7 +19,6 @@ import {
   browserMcpCommand,
   HarnessUnavailableError,
   interactionChannelFromSpec,
-  labelStreams,
   needsScopedHomeKeychainBridge,
   normalizeEffort,
   providerScrubEnv,
@@ -46,6 +45,19 @@ export { claudeAccountIdentity, defaultNativeClaudeConfigDir } from "./native-ho
 import { createClaudeParser } from "./parse.js";
 import { probeClaudeCredentialProfile, resolveClaudeProfileRoute } from "./profile.js";
 export { canonicalProfileConfigDir } from "./profile.js";
+import {
+  claudeAuthSourceReadiness,
+  probeClaudeAuthStatus,
+  redactClaudeDoctorDetail,
+  staleClaudeAuthStatusEvent,
+  type ClaudeAuthStatusProbe,
+} from "./auth-status.js";
+export {
+  clearClaudeAuthStatusCache,
+  claudeAuthSourceReadiness,
+  redactClaudeDoctorDetail,
+} from "./auth-status.js";
+export type { ClaudeAuthStatusProbe } from "./auth-status.js";
 import { smokeIsolatedApiKey, smokeIsolatedOAuthToken } from "./smoke.js";
 import {
   BIN,
@@ -162,27 +174,11 @@ async function detectVersion(abortSignal?: AbortSignal): Promise<string | null> 
   }
 }
 
-/**
- * Native-session probe with a distinct PROBE-FAILURE state (same contract as
- * the codex adapter's probeLogin). `claude auth status` prints a typed JSON
- * verdict `{loggedIn, authMethod, ...}` on stdout; the exit code alone is NOT
- * the auth verdict. When the JSON is present we trust its `loggedIn` field;
- * a probe that produces no parseable verdict is a probe error, never a silent
- * "not logged in".
- */
-export interface ClaudeAuthStatusProbe {
-  loggedIn: boolean;
-  authed: boolean;
-  authMethod: string | null;
-  probeError: string | null;
-}
-
+/** Options for probing the default or explicitly selected native Claude store. */
 export interface ClaudeAuthStatusProbeOptions {
   env?: Record<string, string | null | undefined>;
-  /** Explicit CLAUDE_CONFIG_DIR for the probe (INV-135, release wave round-17
-   * BLOCK): without it the probe re-normalizes onto the DEFAULT native dir —
-   * a credential-profile probe must inspect ITS OWN store, never the
-   * default's. Callers without a profile omit it and keep the default. */
+  /** Explicit CLAUDE_CONFIG_DIR for the probe (INV-135): a credential-profile
+   * probe must inspect its own store, never the default's. */
   configDir?: string;
   abortSignal?: AbortSignal;
   runCapture?: typeof runCapture;
@@ -210,39 +206,25 @@ export async function probeAuthStatus(
   options: ClaudeAuthStatusProbeOptions = {},
 ): Promise<ClaudeAuthStatusProbe> {
   try {
-    const env = claudeNativeEnv(options.env, options.configDir);
-    const r = await (options.runCapture ?? runCapture)(bin, ["auth", "status"], {
+    const configDir = options.configDir ?? defaultNativeClaudeConfigDir(options.env);
+    const env = claudeNativeEnv(options.env, configDir);
+    return await probeClaudeAuthStatus(bin, {
       env,
-      timeoutMs: 10_000,
+      configDir,
       abortSignal: options.abortSignal,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
+      runCapture: options.runCapture,
     });
-    try {
-      const verdict = JSON.parse(r.stdout.trim()) as { loggedIn?: unknown; authMethod?: unknown };
-      if (typeof verdict.loggedIn === "boolean" && typeof verdict.authMethod === "string") {
-        return {
-          loggedIn: verdict.loggedIn,
-          authed: verdict.loggedIn && verdict.authMethod === "claude.ai",
-          authMethod: verdict.authMethod,
-          probeError: null,
-        };
-      }
-    } catch {
-      /* no typed JSON verdict: fall through to probe-error disclosure */
-    }
-    const detail =
-      labelStreams(r.stderr, r.stdout, { transform: redactSecrets }) ??
-      `claude auth status exited with ${r.code ?? r.signal ?? "unknown result"}`;
-    return { loggedIn: false, authed: false, authMethod: null, probeError: detail };
   } catch (err) {
+    // Config/home normalization is part of the probe boundary too.  A bad
+    // locator or keychain bridge must remain a typed probe failure, rather
+    // than escaping and making callers mistake a transient status problem for
+    // a harness crash or a logged-out account.
+    const detail = err instanceof Error ? err.message : String(err);
     return {
       loggedIn: false,
       authed: false,
       authMethod: null,
-      probeError: [...redactSecrets(err instanceof Error ? err.message : String(err))]
-        .slice(0, 300)
-        .join(""),
+      probeError: redactClaudeDoctorDetail(detail),
     };
   }
 }
@@ -261,58 +243,6 @@ export function anthropicApiKey(): string | null {
  * (single owner), so this reads env-only under CLAUDEXOR_DISABLE_STORED_SECRETS. */
 function claudeOAuthToken(): string | null {
   return resolveSecret("claude_oauth") || process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
-}
-
-export function claudeAuthSourceReadiness(input: {
-  native: ClaudeAuthStatusProbe;
-  oauthAvailable: boolean;
-  oauthVerification: "passed" | "failed" | "not_run";
-  oauthDetail: string;
-  apiKeyAvailable: boolean;
-  apiKeyVerification: "passed" | "failed" | "not_run";
-  apiKeyDetail: string;
-}): AuthSourceReadiness[] {
-  const nativeReady = input.native.authed && input.native.probeError === null;
-  const nativeAvailability = input.native.probeError
-    ? "unknown"
-    : input.native.loggedIn
-      ? "available"
-      : "unavailable";
-  const nativeVerification = nativeReady
-    ? "passed"
-    : input.native.probeError || !input.native.loggedIn
-      ? "not_run"
-      : "failed";
-  return [
-    {
-      source: "native_session",
-      availability: nativeAvailability,
-      verification: nativeVerification,
-      detail: nativeReady
-        ? "vendor status confirmed authMethod=claude.ai in the exact run environment"
-        : input.native.probeError
-          ? `auth-status probe failed: ${redactClaudeDoctorDetail(input.native.probeError)}`
-          : input.native.loggedIn
-            ? `Claude is logged in via ${input.native.authMethod ?? "unknown"}, not claude.ai`
-            : "official native Claude session is not logged in",
-    },
-    {
-      source: "oauth_token_env",
-      availability: input.oauthAvailable ? "available" : "unavailable",
-      verification: input.oauthVerification,
-      detail: input.oauthDetail,
-    },
-    {
-      source: "api_key_env",
-      availability: input.apiKeyAvailable ? "available" : "unavailable",
-      verification: input.apiKeyVerification,
-      detail: input.apiKeyDetail,
-    },
-  ];
-}
-
-export function redactClaudeDoctorDetail(text: string): string {
-  return redactSecrets(text).slice(0, 500);
 }
 
 /** The runtime surface the profile module needs (test-stubbable). */
@@ -367,7 +297,10 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       // rather than declaring one version's list for every version.
       const efforts = await runtime.probeEffortLevels();
       const native = await runtime.probeAuthStatus(BIN, { env: claudeNativeEnv() });
-      const authed = native.authed;
+      // A stale result is only bounded last-known-good evidence for an
+      // already selected profile.  Discovery must not advertise it as a
+      // currently authenticated default route.
+      const authed = native.authed && native.stale !== true;
       const oauthTokenAvailable = runtime.claudeOAuthToken() !== null;
       const authModes = [
         ...(authed || oauthTokenAvailable ? ["local_session"] : []),
@@ -459,7 +392,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
             abortSignal: _spec.abortSignal,
           })
         : { loggedIn: false, authed: false, authMethod: null, probeError: null };
-      const nativeCliReady = login.authed;
+      const nativeCliReady = login.authed && login.stale !== true;
       // Native-session and stored setup-token proofs are separate sources.
       const oauthToken = probeOAuth ? runtime.claudeOAuthToken() : null;
       const oauthTokenAvailable = oauthToken !== null;
@@ -505,7 +438,9 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
         apiKeyAvailable: apiKey,
       });
       const probeUnknown =
-        preference !== "api_key" && login.probeError !== null && !oauthTokenAvailable;
+        preference !== "api_key" &&
+        (login.probeError !== null || login.stale === true) &&
+        !oauthTokenAvailable;
       // INV-067: name the real cause + designed remedy (see doctor-remedy.ts).
       const nativeLoginRemedy = claudeNativeLoginRemedy(nativeEnv);
       const allIntents = [
@@ -546,11 +481,15 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
         ? []
         : preference === "subscription"
           ? [
-              login.probeError && !oauthTokenAvailable
-                ? `Claude native-session probe failed: ${redactClaudeDoctorDetail(login.probeError)}`
-                : oauthTokenAvailable
-                  ? `Claude setup-token verification failed: ${oauthSmoke.detail}`
-                  : `Claude subscription route is not ready: ${nativeLoginRemedy}`,
+              login.stale && !oauthTokenAvailable
+                ? `Claude native-session auth-status probe is stale; using last-known-good session${
+                    login.staleAgeMs === undefined ? "" : ` (${login.staleAgeMs}ms old)`
+                  }`
+                : login.probeError && !oauthTokenAvailable
+                  ? `Claude native-session probe failed: ${redactClaudeDoctorDetail(login.probeError)}`
+                  : oauthTokenAvailable
+                    ? `Claude setup-token verification failed: ${oauthSmoke.detail}`
+                    : `Claude subscription route is not ready: ${nativeLoginRemedy}`,
             ]
           : preference === "api_key"
             ? [
@@ -558,9 +497,19 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
                   ? `isolated Claude API-key smoke failed: ${apiSmoke.detail}`
                   : "Claude API-key route is not configured",
               ]
-            : apiKey
-              ? [`isolated Claude API-key smoke failed: ${apiSmoke.detail}`]
-              : [`not authenticated: ${nativeLoginRemedy}`];
+            : login.stale
+              ? [
+                  `Claude native-session auth-status probe is stale; using last-known-good session${
+                    login.staleAgeMs === undefined ? "" : ` (${login.staleAgeMs}ms old)`
+                  }`,
+                ]
+              : apiKey
+                ? [`isolated Claude API-key smoke failed: ${apiSmoke.detail}`]
+                : login.probeError
+                  ? [
+                      `Claude native-session probe failed: ${redactClaudeDoctorDetail(login.probeError)}`,
+                    ]
+                  : [`not authenticated: ${nativeLoginRemedy}`];
       return ConformanceReportSchema.parse({
         harness_id: "claude",
         status: ok
@@ -588,11 +537,15 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
                   status: nativeCliReady ? "pass" : "fail",
                   detail: nativeCliReady
                     ? "vendor status confirmed authMethod=claude.ai in the exact run environment"
-                    : login.probeError
-                      ? `auth-status probe failed (NOT an auth verdict): ${redactClaudeDoctorDetail(login.probeError)}`
-                      : login.loggedIn
-                        ? `logged in via ${login.authMethod ?? "unknown"}, not claude.ai`
-                        : "not logged in (run `claudexor auth login claude`)",
+                    : login.stale
+                      ? `auth-status probe is stale; using last-known-good native session${
+                          login.staleAgeMs === undefined ? "" : ` (${login.staleAgeMs}ms old)`
+                        }`
+                      : login.probeError
+                        ? `auth-status probe failed (NOT an auth verdict): ${redactClaudeDoctorDetail(login.probeError)}`
+                        : login.loggedIn
+                          ? `logged in via ${login.authMethod ?? "unknown"}, not claude.ai`
+                          : "not logged in (run `claudexor auth login claude`)",
                 },
               ]
             : []),
@@ -845,6 +798,7 @@ async function* runClaude(
   let oauthToken: string | null = null;
   let subscriptionSource: "native_session" | "oauth_token_env" | null = null;
   let route: "subscription" | "api_key" | null;
+  let staleAuthStatus: { ageMs?: number } | null = null;
 
   if (profile) {
     const resolved = await resolveClaudeProfileRoute(profile, spec.env, runtime, abortSignal);
@@ -855,6 +809,7 @@ async function* runClaude(
     }
     ({ nativeEnv, key, oauthToken, subscriptionSource } = resolved);
     route = resolved.route;
+    if (resolved.authStatusStale) staleAuthStatus = { ageMs: resolved.authStatusStaleAgeMs };
   } else {
     const native: ClaudeAuthStatusProbe =
       authPreference === "api_key"
@@ -868,7 +823,10 @@ async function* runClaude(
     // back to API-key auth. Preserve the exact selected subscription source so a
     // native session can never be silently replaced by an OAuth-token env route.
     const trySub = (): boolean => {
-      if (native.authed) {
+      // The process-local LKG grace belongs to explicit profile routes.  The
+      // unprofiled/default ladder must not let a stale native verdict mask the
+      // OAuth/API fallback or claim that the default session is live.
+      if (native.authed && native.stale !== true) {
         subscriptionSource = "native_session";
         return true;
       }
@@ -883,6 +841,13 @@ async function* runClaude(
       key ??= runtime.anthropicApiKey();
       return key !== null;
     });
+
+    if (native.stale) {
+      staleAuthStatus = { ageMs: native.staleAgeMs };
+    }
+
+    if (staleAuthStatus !== null)
+      yield staleClaudeAuthStatusEvent(spec.session_id, staleAuthStatus.ageMs);
 
     // Auto selecting its API-key fallback is a paid-route switch and must remain
     // typed/visible; explicit routes never fall back.
@@ -916,6 +881,10 @@ async function* runClaude(
       yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
       return;
     }
+  }
+
+  if (profile && staleAuthStatus !== null) {
+    yield staleClaudeAuthStatusEvent(spec.session_id, staleAuthStatus.ageMs);
   }
 
   const useSubscription = route === "subscription";

@@ -79,6 +79,31 @@ describe("Claude setup-token readiness", () => {
       verification: "passed",
     });
   });
+
+  it("projects a stale last-known-good native probe as unknown, not passed", () => {
+    const sources = claudeAuthSourceReadiness({
+      native: {
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 321,
+      },
+      oauthAvailable: false,
+      oauthVerification: "not_run",
+      oauthDetail: "none",
+      apiKeyAvailable: false,
+      apiKeyVerification: "not_run",
+      apiKeyDetail: "none",
+    });
+    expect(sources[0]).toMatchObject({
+      source: "native_session",
+      availability: "unknown",
+      verification: "not_run",
+      detail: "auth-status probe is stale; using last-known-good native session (321ms old)",
+    });
+  });
 });
 
 function spec(over: Partial<HarnessRunSpec> = {}): HarnessRunSpec {
@@ -203,6 +228,26 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     }
   });
 
+  it("returns a typed probe error when native-store normalization rejects the locator", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
+    try {
+      const result = await probeAuthStatus("/fake/claude", {
+        env: { CLAUDEXOR_CLAUDE_NATIVE_DIR: join(dir, "outside-owned-root") },
+        runCapture: async () => {
+          throw new Error("runCapture must not be reached after locator rejection");
+        },
+      });
+      expect(result).toEqual({
+        loggedIn: false,
+        authed: false,
+        authMethod: null,
+        probeError: expect.stringContaining("must stay inside"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("no typed JSON + exit 0 is a probe error, never native readiness", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
@@ -240,7 +285,8 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     expect(env.HOME).toBe("/scoped/home");
     expect(env.CLAUDE_CONFIG_DIR).toBe(defaultNativeClaudeConfigDir());
     expect(env.ANTHROPIC_API_KEY).toBeNull();
-    expect(captured?.abortSignal).toBe(controller.signal);
+    expect(captured?.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(captured?.abortSignal).not.toBe(controller.signal);
     expect(captured?.cancelSignal).toBe("SIGTERM");
     expect(captured?.cancelKillDelayMs).toBe(0);
   });
@@ -366,6 +412,46 @@ describe("Claude scoped-HOME doctor honesty (INV-067)", () => {
     expect(reason).not.toContain("claude auth login --claudeai");
     expect(reason).not.toContain("setup-token");
   });
+
+  it("does not turn a stale native probe into a login remedy", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 55,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+    });
+    const report = await adapter.doctor({ cwd: "/repo", authPreference: "auto", fresh: true });
+    expect(report.status).toBe("degraded");
+    expect(report.reasons.join(" ")).toContain("auth-status probe is stale");
+    expect(report.reasons.join(" ")).not.toContain("Native setup");
+  });
+
+  it("does not turn an unknown native probe into a login remedy", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: false,
+        authed: false,
+        authMethod: null,
+        probeError: "auth status timed out",
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+    });
+    const report = await adapter.doctor({ cwd: "/repo", authPreference: "auto", fresh: true });
+    expect(report.status).toBe("degraded");
+    expect(report.reasons.join(" ")).toContain("native-session probe failed");
+    expect(report.reasons.join(" ")).not.toContain("Native setup");
+  });
 });
 
 describe("Claude transport-aware source selection", () => {
@@ -449,6 +535,26 @@ describe("Claude transport-aware source selection", () => {
           supported_containment: expect.arrayContaining(["scoped_home_keychain_bridge"]),
         },
       },
+    });
+  });
+
+  it("does not advertise a stale native verdict as the default discovery route", async () => {
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => "oauth-token",
+    });
+    await expect(adapter.discover()).resolves.toMatchObject({
+      capability_profile: { auth: { preferred_source: "oauth_token_env" } },
+      auth_modes: ["local_session"],
     });
   });
 
@@ -679,6 +785,43 @@ describe("Claude transport-aware source selection", () => {
     expect(cliOptions?.env?.CLAUDE_CONFIG_DIR).toBe("/scoped/config");
     expect(cliOptions?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
     expect(cliOptions?.env?.ANTHROPIC_API_KEY).toBeNull();
+  });
+
+  it("does not treat a stale unprofiled native verdict as a live subscription", async () => {
+    let cliOptions: CliRunLoopOptions | undefined;
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 42,
+      }),
+      anthropicApiKey: () => "api-key",
+      claudeOAuthToken: () => "oauth-token",
+      runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        cliOptions = options;
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
+      },
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(spec({ auth_preference: "auto" }))) events.push(event);
+
+    expect(cliOptions?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token");
+    expect(cliOptions?.env?.ANTHROPIC_API_KEY).toBeNull();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "message",
+        payload: { auth_status_stale: true, auth_status_stale_age_ms: 42 },
+      }),
+    );
   });
 
   it("reports a typed wrong native auth method as available but failed", () => {

@@ -127,6 +127,19 @@ export const CredentialProfileStatus = z
       .describe(
         "How the verification verdict was reached: local_store = the binding's required local state or managed secret is present (says nothing about a token being live); vendor = the vendor answered under the exact binding environment and effective platform credential policy.",
       ),
+    /** A bounded last-known-good transport observation. */
+    stale: z
+      .boolean()
+      .optional()
+      .describe(
+        "True only for a bounded stale last-known-good observation; stale is never a fresh passed verification.",
+      ),
+    stale_age_ms: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Age in milliseconds of the bounded stale observation, when stale is true."),
     detail: z.string().optional().describe("Redacted human-readable probe evidence."),
     last_verified_at: IsoTimestamp.nullable()
       .default(null)

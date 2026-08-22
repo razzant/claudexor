@@ -4491,6 +4491,141 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("keeps an explicitly selected config-dir profile through bounded stale readiness", async () => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-stale-profile-preflight-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: work",
+        "    harness_id: asker",
+        "    display_name: Work",
+        "    credential_kind: config_dir_login",
+        "    isolation_locator: /tmp/p/work",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      asker.doctor = async () =>
+        ConformanceReport.parse({
+          harness_id: "asker",
+          status: "unavailable",
+          enabled_intents: [],
+          reasons: ["default store probe failed"],
+        });
+      asker.probeCredentialProfile = async (profile) => ({
+        profile_id: profile.profile_id,
+        harness_id: profile.harness_id,
+        availability: "unknown",
+        verification: "not_run",
+        verification_source: "local_store",
+        stale: true,
+        stale_age_ms: 42,
+        detail: "auth-status probe is stale",
+        last_verified_at: null,
+      });
+      const res = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "work",
+      });
+      expect(legacyOutcome(res), res.summary).toBe("success");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("does not dispatch a stale explicit pin whose credential ledger is condemned", async () => {
+    const repo = await initRepo();
+    const configDir = reapMk(join(tmpdir(), "claudexor-stale-revoked-profile-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: work",
+        "    harness_id: asker",
+        "    display_name: Work",
+        "    credential_kind: config_dir_login",
+        "    isolation_locator: /tmp/p/work",
+        "",
+      ].join("\n"),
+    );
+    try {
+      let starts = 0;
+      const asker = askAdapter("asker", function* (sessionId) {
+        starts += 1;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      asker.doctor = async () =>
+        ConformanceReport.parse({
+          harness_id: "asker",
+          status: "unavailable",
+          enabled_intents: [],
+          reasons: ["default auth-status probe failed"],
+        });
+      asker.probeCredentialProfile = async (profile) => ({
+        profile_id: profile.profile_id,
+        harness_id: profile.harness_id,
+        availability: "unknown",
+        verification: "not_run",
+        verification_source: "local_store",
+        stale: true,
+        stale_age_ms: 42,
+        detail: "auth-status probe is stale",
+        last_verified_at: null,
+      });
+      const res = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+        credentialUnusable: () => [
+          {
+            harness_id: "asker",
+            profile_id: "work",
+            model: null,
+            code: "auth_revoked",
+            source: "attempt_stream",
+            detail: "the prior attempt was rejected by the vendor",
+            observed_at: "2026-01-01T00:00:00.000Z",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+        ],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "work",
+      });
+      expect(legacyOutcome(res)).toBe("failed");
+      expect(res.summary).toContain("credential is unusable");
+      expect(res.summary).toContain("auth_revoked");
+      expect(starts).toBe(0);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("a doctor-OK harness still refuses an unready selected profile before spawn", async () => {
     const repo = await initRepo();
     const configDir = reapMk(join(tmpdir(), "claudexor-profile-preflight-"));

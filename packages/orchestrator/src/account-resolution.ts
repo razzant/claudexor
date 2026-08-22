@@ -6,7 +6,11 @@ import type {
   QuotaSnapshot,
 } from "@claudexor/schema";
 import { accountPoolRows, selectFromAccountPool } from "./account-pool.js";
-import { credentialProfilePolicyProblem, type CredentialProfilePolicyState } from "@claudexor/core";
+import {
+  credentialProfilePolicyProblem,
+  HarnessUnavailableError,
+  type CredentialProfilePolicyState,
+} from "@claudexor/core";
 import {
   credentialPoolExhausted,
   liveUnusableFor,
@@ -154,6 +158,20 @@ function pinnedWindowBlocked(profileId: string, harnessId: string, block: QuotaB
   );
 }
 
+/** A live credential ledger verdict outranks bounded stale auth evidence even
+ * on a strict pin. Keep the refusal typed as harness unavailability without
+ * inventing a quota/reset code for a credential that is actually revoked. */
+function pinnedCredentialUnusable(
+  profileId: string,
+  harnessId: string,
+  observation: CredentialUnusableObservation,
+): Error {
+  return new HarnessUnavailableError(
+    `credential profile "${profileId}" (${harnessId}) credential is unusable ` +
+      `(${observation.code}; a pinned account never rotates)`,
+  );
+}
+
 /**
  * Per-candidate rejection evidence of one exhausted POOL decision, in the
  * shape the typed `credential_pool_exhausted` terminal consumes: every
@@ -250,6 +268,11 @@ export async function resolveAccountForRun(
     // block (A4: reactive cooldown / spent window, stale-but-live included)
     // refuses too, since a cooldown instant is absolute clock truth.
     const pinned = ctx.pinnedProfile;
+    // A7: a prior typed auth/credential failure is stronger than the adapter's
+    // bounded stale LKG. Check the ledger before quota or stale admission so a
+    // revoked pinned token can never reach the vendor CLI.
+    const dead = liveUnusableFor(ctx.unusable, harnessId, pinned.profile_id, model);
+    if (dead) throw pinnedCredentialUnusable(pinned.profile_id, harnessId, dead);
     const breach = profileHeadroomBreach(
       snapshots,
       harnessId,
@@ -394,6 +417,9 @@ export async function resolveAccountForRun(
         harnessId,
         probe: ctx.probe,
         quota,
+        // A durable binding is already selected, like an explicit pin. Pool
+        // rotation below remains fresh-only.
+        allowStale: true,
       });
       const breach = profileHeadroomBreach(
         snapshots,

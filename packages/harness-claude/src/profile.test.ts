@@ -141,6 +141,50 @@ describe("Claude strict profile routing (INV-135)", () => {
     expect(stamped?.credential_route).toBe("vendor_native");
   });
 
+  it("uses a stale last-known-good profile session and emits typed disclosure", async () => {
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
+    dirs.push(dir);
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 42,
+      }),
+      anthropicApiKey: () => {
+        throw new Error("default key ladder must not run under a profile");
+      },
+      claudeOAuthToken: () => {
+        throw new Error("default token ladder must not run under a profile");
+      },
+      resolveProfileSecret: () => null,
+      runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: new Date().toISOString(),
+        };
+      },
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(
+      spec({ credential_profile: profile({ isolation_locator: dir }) }),
+    )) {
+      events.push(event);
+    }
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "message",
+        payload: { auth_status_stale: true, auth_status_stale_age_ms: 42 },
+      }),
+    );
+    expect(events.some((event) => event.type === "error")).toBe(false);
+  });
+
   it("config_dir_login with no verified login refuses typed — no fallback to the default ladder", async () => {
     const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
     dirs.push(dir);
@@ -351,6 +395,35 @@ describe("Claude credential-profile doctor probe (INV-135)", () => {
     });
     expect(status.last_verified_at).not.toBeNull();
     expect(probedEnv?.CLAUDE_CONFIG_DIR).toBe(canonicalProfileConfigDir(dir));
+  });
+
+  it("projects a stale profile session as unknown/not_run until refreshed", async () => {
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
+    dirs.push(dir);
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+        stale: true,
+        staleAgeMs: 17,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      resolveProfileSecret: () => null,
+    });
+    const status = await adapter.probeCredentialProfile!(profile({ isolation_locator: dir }));
+    expect(status).toMatchObject({
+      availability: "unknown",
+      verification: "not_run",
+      stale: true,
+      stale_age_ms: 17,
+      detail: "auth-status probe is stale; using last-known-good claude.ai login (17ms old)",
+    });
+    expect(status.last_verified_at).toBeNull();
   });
 
   it("maps the config-dir readiness edges to the documented contract (round-20)", async () => {

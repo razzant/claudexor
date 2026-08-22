@@ -1168,6 +1168,7 @@ export class Orchestrator {
     // One observation set for the whole admission pass, so two lanes cannot be
     // judged against different vendor epochs.
     const vendorQuota = this.credentials.vendorQuotaObservations();
+    const liveUnusable = this.deps.credentialUnusable?.() ?? [];
     for (const id of ids) {
       const adapter = this.deps.registry.get(id);
       if (!adapter) {
@@ -1246,14 +1247,8 @@ export class Orchestrator {
       const profileAdapter = this.deps.registry.get(id);
       const profileProbe = profileAdapter?.probeCredentialProfile?.bind(profileAdapter);
       const explicitPin = this.credentials.effectiveProfileId(input, id);
-      // The account candidates whose readiness may overlay the default-store
-      // verdict: the explicit pin when set; otherwise — row-aware UNPINNED
-      // admission — the thread-bound row followed by the harness's enabled
-      // pool rows, consulted only when the default doctor did not already
-      // admit the lane. A signed-in registry row is invisible to the default
-      // doctor (cursor after the host-Keychain retirement, or a named-rows-
-      // only claude/codex install), so an unpinned run must be admitted on
-      // row readiness exactly the way explicit pins already are.
+      const model = input.models?.[id] ?? cfgEntry?.default_model ?? null;
+      // Pins and bound/pool rows are checked against their own readiness.
       const rowCandidateIds: string[] = [];
       if (explicitPin) {
         rowCandidateIds.push(explicitPin);
@@ -1277,9 +1272,12 @@ export class Orchestrator {
           probe: profileProbe,
           // `verification: passed` from the local store only means a login file
           // is present. The poller's authenticated vendor call is the only
-          // liveness evidence we have, and admission is the surface that must
-          // act on it — otherwise the run dispatches into a revoked token.
+          // liveness evidence; admission must act on it or dispatch may use a revoked token.
           quota: vendorQuota,
+          unusable: liveUnusable,
+          model,
+          // Only an explicit/bound route may consume bounded stale LKG evidence.
+          allowStale: explicitPin !== null || input.threadAccountBindings?.[id] === candidateId,
         });
         if (verdict === "available") {
           profileAdmitted = true;

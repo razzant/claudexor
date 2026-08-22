@@ -539,6 +539,19 @@ adapter/doctor caches without clearing or replacing shared cached reports.
 An absent/logged-out source is `unavailable + not_run`; a probe failure that
 cannot decide source presence is `unknown + not_run`; present but wrong or
 unusable source material is `available + failed`.
+Claude's native `auth status` probe keeps that distinction under transient
+child-process or Keychain transport failure: concurrent reads of one exact
+`(binary, config-dir)` store share one bounded probe, a retry stays inside the
+original ten-second budget, and a positive result may be reused only as a
+typed, process-local stale observation for at most one minute. Claudexor-handled
+logout, login, profile, or secret mutations clear that observation (including
+an in-flight probe); an external vendor login/logout may remain visible for the
+bounded grace window. Stale evidence is never reported as a fresh passed login
+and does not alter profile selection or paid-route policy: an already explicit
+pin or durable thread binding may keep its exact config-dir route alive for
+this bounded grace, while unpinned pool/rotation selection remains fresh-only.
+This absorbs a probe failure only; it does not claim to serialize the vendor's
+OAuth refresh or to repair a revoked credential.
 Adapters declare the physical credential transport they support (`config_file`,
 `env_var`, `oauth_token_env`, `os_keychain`, `http_header`, or `none`) plus the
 containment strategy that keeps it honest. A transport may be platform-scoped;

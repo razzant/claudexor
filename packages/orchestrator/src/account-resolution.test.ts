@@ -182,6 +182,66 @@ describe("explicit api_key preference (Q3=A paid election)", () => {
     expect(context.apiKeyRouteNoted()).toBe(false);
     expect(context.events).toHaveLength(0);
   });
+
+  it("keeps a bound config-dir route during the adapter's bounded stale grace", async () => {
+    const bound = profileRow({ profile_id: "bound" });
+    const context = ctx({
+      registry: [bound, profileRow({ profile_id: "other" })],
+      boundProfileId: "bound",
+      probe: async (profile) => ({
+        profile_id: profile.profile_id,
+        harness_id: profile.harness_id,
+        availability: "unknown" as const,
+        verification: "not_run" as const,
+        verification_source: "local_store" as const,
+        stale: true,
+        stale_age_ms: 42,
+        detail: "auth-status probe is stale",
+        last_verified_at: null,
+      }),
+    });
+    await expect(resolveAccountForRun(context)).resolves.toBe(bound);
+    expect(context.events).toHaveLength(0);
+  });
+
+  it("refuses a stale explicit pin when its credential is live-condemned", async () => {
+    const pinned = profileRow({ profile_id: "pinned" });
+    let probes = 0;
+    const context = ctx({
+      registry: [pinned],
+      pinnedProfile: pinned,
+      probe: async (profile) => {
+        probes += 1;
+        return {
+          profile_id: profile.profile_id,
+          harness_id: profile.harness_id,
+          availability: "unknown" as const,
+          verification: "not_run" as const,
+          verification_source: "local_store" as const,
+          stale: true,
+          stale_age_ms: 42,
+          detail: "auth-status probe is stale",
+          last_verified_at: null,
+        };
+      },
+      unusable: [
+        {
+          harness_id: "claude",
+          profile_id: "pinned",
+          model: null,
+          code: "auth_revoked",
+          source: "vendor_poller",
+          detail: "vendor rejected this profile",
+          observed_at: "2026-01-01T00:00:00.000Z",
+          expires_at: "2099-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    await expect(resolveAccountForRun(context)).rejects.toThrow(
+      /credential is unusable \(auth_revoked;/,
+    );
+    expect(probes).toBe(0);
+  });
 });
 
 describe("bound-row A7 unusable ledger (thread stickiness)", () => {
