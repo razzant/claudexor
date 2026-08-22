@@ -1,5 +1,18 @@
 # @claudexor/delivery
 
+## 3.8.1
+
+### Patch Changes
+
+- Updated dependencies [ce6dba1]
+- Updated dependencies [2794ec7]
+  - @claudexor/core@3.8.1
+  - @claudexor/schema@3.8.1
+  - @claudexor/util@3.8.1
+  - @claudexor/workspace@3.8.1
+  - @claudexor/review@3.8.1
+  - @claudexor/policy@3.8.1
+
 ## 3.8.0
 
 ### Patch Changes

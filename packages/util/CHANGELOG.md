@@ -1,5 +1,17 @@
 # @claudexor/util
 
+## 3.8.1
+
+### Patch Changes
+
+- ce6dba1: Prepare an isolated macOS keychain inside each Antigravity credential profile before vendor probes, quota reads, logins, and runs. The vendor's existing file fallback and profile separation remain unchanged.
+- 2794ec7: Remove the engine-owned outer Seatbelt wrapper and restore each harness's
+  native access policy. Delegated mutating runs now keep stable project identity
+  separate from their disposable execution workspace, active requests use
+  `readonly`, `workspace_write`, or explicitly trusted `full`, and historical
+  outer-confinement artifacts remain readable without enabling new retired-mode
+  runs.
+
 ## 3.8.0
 
 ## 3.7.0

@@ -1,5 +1,23 @@
 # @claudexor/control-api
 
+## 3.8.1
+
+### Patch Changes
+
+- 2794ec7: Remove the engine-owned outer Seatbelt wrapper and restore each harness's
+  native access policy. Delegated mutating runs now keep stable project identity
+  separate from their disposable execution workspace, active requests use
+  `readonly`, `workspace_write`, or explicitly trusted `full`, and historical
+  outer-confinement artifacts remain readable without enabling new retired-mode
+  runs.
+- Updated dependencies [ce6dba1]
+- Updated dependencies [2794ec7]
+  - @claudexor/schema@3.8.1
+  - @claudexor/util@3.8.1
+  - @claudexor/delivery@3.8.1
+  - @claudexor/event-log@3.8.1
+  - @claudexor/secrets@3.8.1
+
 ## 3.8.0
 
 ### Patch Changes

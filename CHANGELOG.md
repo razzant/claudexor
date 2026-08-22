@@ -3,6 +3,12 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.8.1** (2026-08-22): profile-scoped Antigravity runs now create and use
+  a private macOS keychain under each profile HOME before the vendor touches
+  Keychain Services. This removes the recurring “Keychain not found” dialog
+  without changing the host default keychain, native-HOME behavior, or
+  multi-account separation. The release also carries the pending daemon
+  concurrency and native delegated-access changes already merged on `main`.
 - **v3.8.0** (2026-08-20): a host embedding Claudexor can finish `Connect` for
   a vendor CLI that is not installed yet. `claudexor harness install` gains an
   explicit `--target local`: npm-pinned vendors install into the managed

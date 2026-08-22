@@ -1,5 +1,17 @@
 # @claudexor/daemon
 
+## 3.8.1
+
+### Patch Changes
+
+- 39dae8d: Run up to twelve regular daemon jobs concurrently before queueing additional work.
+- Updated dependencies [ce6dba1]
+- Updated dependencies [2794ec7]
+  - @claudexor/core@3.8.1
+  - @claudexor/schema@3.8.1
+  - @claudexor/util@3.8.1
+  - @claudexor/journal@3.8.1
+
 ## 3.8.0
 
 ### Patch Changes
