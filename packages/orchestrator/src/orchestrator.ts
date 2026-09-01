@@ -45,6 +45,7 @@ import { join } from "node:path";
 import type {
   AccessProfile,
   AuthSourceReadiness,
+  AuthVerification,
   DeepScanSynthesis,
   RouteRankingRationale,
   RouteDropStage,
@@ -118,7 +119,11 @@ import {
   withInactivityWatchdog,
 } from "@claudexor/core";
 import { assertRouteModelsAllowed, runModelGovernedRoute } from "./modelGovernance.js";
-import { authModeForCredentialRoute, authModeForPreference } from "./auth-route-classification.js";
+import {
+  authModeForCredentialRoute,
+  authModeForPreference,
+  authRouteEvidenceFor,
+} from "./auth-route-classification.js";
 import { governRouteEffort } from "./effortGovernance.js";
 import { isFullAccess, RequestRequirementsResolver } from "./requestRequirements.js";
 import { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
@@ -272,7 +277,6 @@ import {
   attemptUsageCostSettlement,
   BudgetLedger,
   isBudgetTerminal,
-  type RouteAuthEvidence,
   type RouterCandidate,
   explainRanking,
   loadHarnessMetrics,
@@ -620,6 +624,7 @@ export interface RoutedAdapter {
     model: string | null;
     profile: CredentialProfile | null;
     route: "vendor_native" | "managed_api_key" | null;
+    profileVerification: AuthVerification | null;
   };
   /** Manifest `synthesize` capability (#27 / D-6): only such routes are eligible
    * to run the deep-scan bounded synthesis reducer over the scout reports. */
@@ -1392,7 +1397,12 @@ export class Orchestrator {
               this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
               status.authSources,
             ),
-          quotaAdmission: { model: null, profile: null, route: null },
+          quotaAdmission: {
+            model: null,
+            profile: null,
+            route: null,
+            profileVerification: null,
+          },
           supportsSynthesize: manifest.capabilities.synthesize,
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
@@ -1476,8 +1486,14 @@ export class Orchestrator {
               : routed.authRouteEstimate === "local_session"
                 ? ("vendor_native" as const)
                 : null;
+        const profileVerification = profile
+          ? await this.credentials.profileAuthVerification(profile)
+          : null;
         return {
-          prepared: { ...routed, quotaAdmission: { model, profile, route } },
+          prepared: {
+            ...routed,
+            quotaAdmission: { model, profile, route, profileVerification },
+          },
           refused: null,
         };
       }),
@@ -1638,7 +1654,11 @@ export class Orchestrator {
         // paid_fallback:never and ranks with a real economy tuple instead of
         // reading as unknown/paid. Absent (unknown route) falls back to the
         // metric-derived billingKnowledge below.
-        const authRoute = this.authRouteEvidenceFor(authMode, status?.authSources ?? []);
+        const authRoute = authRouteEvidenceFor(
+          authMode,
+          status?.authSources ?? [],
+          r.quotaAdmission.profileVerification,
+        );
         return {
           harnessId: r.adapter.id,
           available: true,
@@ -1752,40 +1772,6 @@ export class Orchestrator {
           : ledger.cooldownActive(id);
       },
     };
-  }
-
-  /**
-   * Typed auth-route evidence for one candidate (QA-034): the concrete
-   * credential route the resolved auth mode maps to, plus the doctor's
-   * verification for the source that route runs under. `local_session` →
-   * vendor_native + the native/OAuth source verification; `api_key` →
-   * managed_api_key + the key source verification. Unknown route → no evidence
-   * (the router keeps its conservative metric-derived billing). Verification is
-   * the source's typed verdict — never inferred from mere availability.
-   */
-  private authRouteEvidenceFor(
-    authMode: "local_session" | "api_key" | "unknown",
-    sources: AuthSourceReadiness[],
-  ): RouteAuthEvidence | undefined {
-    const usable = (s: AuthSourceReadiness): boolean =>
-      s.availability === "available" && s.verification !== "failed";
-    if (authMode === "local_session") {
-      const native = sources.find(
-        (s) => usable(s) && (s.source === "native_session" || s.source === "oauth_token_env"),
-      );
-      return { route: "vendor_native", verification: native?.verification ?? "not_run" };
-    }
-    if (authMode === "api_key") {
-      const key = sources.find(
-        (s) =>
-          usable(s) &&
-          (s.source === "api_key_env" ||
-            s.source === "api_key_flag" ||
-            s.source === "provider_auth_file"),
-      );
-      return { route: "managed_api_key", verification: key?.verification ?? "not_run" };
-    }
-    return undefined;
   }
 
   /**
