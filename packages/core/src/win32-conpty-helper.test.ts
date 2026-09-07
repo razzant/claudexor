@@ -4,8 +4,10 @@ import {
   type ChildProcessByStdio,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { release, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -48,13 +50,15 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(result.code).toBe(0);
     expect(result.signal).toBeNull();
     expect(result.stderr).toMatch(new RegExp(`^${protocol}\\tstarted\\t[1-9][0-9]*\\r?\\n$`));
-    const decoded = stripTerminalEscapes(result.stdout)
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("ARG\t"))
-      .map((line) => {
-        const fields = line.split("\t");
-        return decodeUtf16Hex(fields[3] ?? "");
-      });
+    // Real console output expands tabs and wraps long hex fields at the viewport.
+    const frames = stripTerminalEscapes(result.stdout).replace(/[\r\n]/g, "");
+    const decoded = [...frames.matchAll(/ARG\|(\d+)\|(\d+)\|([0-9A-F]*)\|END/g)].map(
+      (fields, index) => {
+        expect(Number(fields[1])).toBe(index);
+        expect(fields[3]!.length).toBe(Number(fields[2]) * 4);
+        return decodeUtf16Hex(fields[3]!);
+      },
+    );
     expect(decoded).toEqual([fixture, "--argv", ...values]);
   });
 
@@ -97,6 +101,179 @@ describe.skipIf(process.platform !== "win32")("Win32 ConPTY helper integration",
     expect(slow.code).toBe(0);
     expect(Buffer.byteLength(slow.stdout, "utf8")).toBeGreaterThan(64 * 1024);
   });
+
+  it("measures Win32 records versus UTF-8 CR (diagnostic, not acceptance)", async () => {
+    requireFixtures();
+    const sha256 = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+    const conhost = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(Get-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\\conhost.exe')).VersionInfo.FileVersion",
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 5_000 },
+    );
+    console.log(
+      "CONPTY_INPUT_PROVENANCE",
+      JSON.stringify({
+        source: spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim(),
+        node: process.versions.node,
+        uv: process.versions.uv,
+        os: release(),
+        image: process.env.ImageVersion ?? null,
+        conhost: conhost.stdout?.trim() ?? null,
+        conhostStatus: conhost.status,
+        helperSha256: sha256(helper),
+        fixtureSha256: sha256(fixture),
+        order: "ABBA".repeat(4),
+        readyMs: 5_000,
+        readMs: 5_000,
+        cleanupMs: 5_000,
+      }),
+    );
+    const payload = "one-shot-win32-code-77";
+    // Frozen A bytes match setup-login-io.ts; this does not change its encoder.
+    const record = (vk: number, sc: number, uc: number, down: number) =>
+      `\u001b[${vk};${sc};${uc};${down};0;1_`;
+    const records = [...payload].flatMap((c) => [
+      record(231, 0, c.charCodeAt(0), 1),
+      record(231, 0, c.charCodeAt(0), 0),
+    ]);
+    records.push(record(13, 28, 13, 1), record(13, 28, 13, 0));
+    const measurements: Array<{ ready: boolean; cleanup: boolean }> = [];
+    // Eight pairs, counterbalanced and serial; a bad arm remains an outcome.
+    for (const [index, arm] of [..."ABBA".repeat(4)].entries()) {
+      const root = mkdtempSync(join(tmpdir(), "conpty-input-probe-"));
+      const child = spawn(helper, ["--", fixture, "--input-probe"], {
+        windowsHide: true,
+        shell: false,
+        detached: false,
+        stdio: ["pipe", "pipe", "pipe"],
+        cwd: root,
+      });
+      let raw = "",
+        control = "",
+        stopped = false,
+        vendorPid = 0;
+      let completedWrites = 0,
+        attemptedWrites = 0,
+        completedBytes = 0;
+      let writeError: string | null = null,
+        processError: string | null = null;
+      let readyFields: number[] | null = null;
+      let resolveReady!: (ready: boolean) => void;
+      const ready = new Promise<boolean>((done) => {
+        resolveReady = done;
+      });
+      const finished = collect(child).catch((error: NodeJS.ErrnoException) => {
+        processError = error.code ?? "process_error";
+        return null;
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        raw += chunk.toString("utf8");
+        const match = /INPUT_READY\|(\d+)\|(\d+)\|([01])\|(\d+)\|(\d+)\|(\d+)\|END/.exec(
+          stripTerminalEscapes(raw),
+        );
+        if (match) {
+          readyFields = match.slice(1).map(Number);
+          resolveReady(true);
+        }
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        control += chunk.toString("ascii");
+        vendorPid = Number(
+          new RegExp(`${protocol}\\tstarted\\t([1-9][0-9]*)\\r?\\n`).exec(control)?.[1] ?? 0,
+        );
+      });
+      child.once("close", () => resolveReady(false));
+      child.once("error", () => resolveReady(false));
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        writeError ??= error.code ?? "write_error";
+      });
+      const chunks = arm === "A" ? records : [`${payload}\r`];
+      const send = (offset = 0): void => {
+        if (stopped || offset >= chunks.length || child.stdin.destroyed) return;
+        attemptedWrites++;
+        child.stdin.write(chunks[offset]!, (error?: Error | null) => {
+          if (error) {
+            writeError ??= (error as NodeJS.ErrnoException).code ?? "write_error";
+            return;
+          }
+          completedWrites++;
+          completedBytes += Buffer.byteLength(chunks[offset]!);
+          send(offset + 1);
+        });
+      };
+      let phase = "ready",
+        timedOut = false,
+        readySeen = false,
+        cleaned = false;
+      let result: CollectedChild | null = null;
+      try {
+        readySeen = await withTimeout(ready, 5_000, "input diagnostic ready");
+        if (readySeen) {
+          phase = "read";
+          try {
+            send();
+          } catch (error) {
+            writeError ??= (error as NodeJS.ErrnoException).code ?? "write_error";
+          }
+        }
+        result = await withTimeout(finished, 5_000, "input diagnostic read");
+        phase = "closed";
+      } catch {
+        timedOut = true;
+      } finally {
+        stopped = true;
+        const beforeCleanup = { completedWrites, attemptedWrites, completedBytes, writeError };
+        const returned = /INPUT_RETURNED\|([01])\|(\d+)\|([01])\|([01])\|END/.exec(
+          stripTerminalEscapes(raw),
+        );
+        const pids = [child.pid ?? 0, vendorPid].filter((pid) => pid > 0);
+        const aliveBeforeCleanup = pids.map((pid) => ({ pid, alive: pidAlive(pid) }));
+        try {
+          cleanupPids(pids);
+          await withTimeout(
+            Promise.all([expectPidsGone(pids), finished]),
+            5_000,
+            "input diagnostic cleanup",
+          );
+          cleaned = true;
+        } finally {
+          console.log(
+            "CONPTY_INPUT_MEASUREMENT",
+            JSON.stringify({
+              index,
+              arm,
+              phase,
+              timedOut,
+              ready: readyFields,
+              returned: returned?.slice(1).map(Number) ?? null,
+              win32ModeRequested: raw.includes("\u001b[?9001h"),
+              plannedWrites: chunks.length,
+              plannedBytes: chunks.reduce((n, s) => n + Buffer.byteLength(s), 0),
+              ...beforeCleanup,
+              processError,
+              exit: result?.code ?? null,
+              signal: result?.signal ?? null,
+              aliveBeforeCleanup,
+              cleanup: cleaned,
+            }),
+          );
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
+      measurements.push({ ready: readySeen, cleanup: cleaned });
+    }
+    // Instrument health only. Native read success/failure is data, never a
+    // substitute for the unchanged mandatory production-shaped acceptance.
+    console.log("CONPTY_INPUT_MEASUREMENT_COMPLETE", "16 cases; product acceptance NOT_EVALUATED");
+    expect(conhost.status).toBe(0);
+    expect(measurements).toHaveLength(16);
+    expect(measurements.every((m) => m.ready && m.cleanup)).toBe(true);
+  }, 300_000);
 
   it("types a child pre-start failure without claiming vendor start", async () => {
     requireFixtures();
@@ -238,8 +415,8 @@ function parseConsoleState(
   windowVisible: boolean;
   coninAvailable: boolean;
 } {
-  const match = new RegExp(`^${label}\\t([0-9]+)\\t([01])\\t([01])\\t([01])\\r?\\n?$`).exec(
-    stripTerminalEscapes(output),
+  const match = new RegExp(`^${label}\\|([0-9]+)\\|([01])\\|([01])\\|([01])\\|END$`).exec(
+    stripTerminalEscapes(output).trim(),
   );
   if (!match) throw new Error(`invalid ${label} console state`);
   return {
@@ -271,7 +448,7 @@ async function observeWorkerTreePids(child: ChildProcessWithoutNullStreams): Pro
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
       const worker = /WORKER\t([1-9][0-9]*)\t([1-9][0-9]*)/.exec(stdout);
-      const vendor = /PIDS\t([1-9][0-9]*)\t([1-9][0-9]*)/.exec(stdout);
+      const vendor = /PIDS\|([1-9][0-9]*)\|([1-9][0-9]*)\|END/.exec(stdout);
       if (!worker || !vendor) return;
       clearTimeout(timer);
       resolvePids({

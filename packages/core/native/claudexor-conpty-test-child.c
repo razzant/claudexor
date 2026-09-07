@@ -26,10 +26,10 @@ static void print_decoded_argv(void) {
   if (decoded == NULL) ExitProcess(70);
   for (int index = 0; index < decoded_argc; index += 1) {
     size_t length = wcslen(decoded[index]);
-    printf("ARG\t%d\t%zu\t", index, length);
+    printf("ARG|%d|%zu|", index, length);
     for (size_t unit = 0; unit < length; unit += 1)
       printf("%04X", (unsigned)decoded[index][unit]);
-    printf("\n");
+    printf("|END\n");
   }
   fflush(stdout);
   LocalFree(decoded);
@@ -51,14 +51,41 @@ static int run_interactive(void) {
   fwrite(second, 1, sizeof(second) - 1, stdout);
   fflush(stdout);
 
+  /* A successful login must read the submitted code through the console,
+   * not fill fgets from raw terminal records stolen from the parent's pipe. */
+  DWORD input_mode = 0;
+  if (!GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &input_mode)) return 4;
   char code[512];
   if (fgets(code, sizeof(code), stdin) == NULL) return 3;
   size_t length = strlen(code);
   while (length > 0 && (code[length - 1] == '\r' || code[length - 1] == '\n'))
     code[--length] = '\0';
+  if (strcmp(code, "one-shot-win32-code-77") != 0) return 5;
   printf("\x1b[31mCODE:%s\x1b[0m\r\n", code);
   fflush(stdout);
   return 0;
+}
+
+/* Diagnostic sibling of run_interactive: preserve fgets and the console mode,
+ * but report only mode/read facts, never the input or an authentication URL. */
+static int run_input_probe(void) {
+  HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+  DWORD mode = 0;
+  BOOL mode_ok = GetConsoleMode(input, &mode);
+  printf("INPUT_READY|%lu|%lu|%d|%lu|%u|%u|END\n",
+         (unsigned long)GetCurrentProcessId(), (unsigned long)GetFileType(input),
+         mode_ok != FALSE, (unsigned long)mode, GetConsoleCP(), GetConsoleOutputCP());
+  fflush(stdout);
+  char code[512];
+  BOOL read_ok = fgets(code, sizeof(code), stdin) != NULL;
+  size_t length = read_ok ? strlen(code) : 0;
+  while (length > 0 && (code[length - 1] == '\r' || code[length - 1] == '\n'))
+    code[--length] = '\0';
+  printf("INPUT_RETURNED|%d|%zu|%d|%d|END\n", read_ok != FALSE,
+         length, read_ok && strcmp(code, "one-shot-win32-code-77") == 0,
+         ferror(stdin) != 0);
+  fflush(stdout);
+  return 0; /* Measurement completed; content equality is reported separately. */
 }
 
 static int conin_available(void) {
@@ -176,7 +203,7 @@ static int append_fake_evidence(const wchar_t *home, const char *mode,
 static void print_console_state(HANDLE destination, const char *label) {
   HWND window = GetConsoleWindow();
   char line[96];
-  int length = snprintf(line, sizeof(line), "%s\t%u\t%d\t%d\t%d\n", label,
+  int length = snprintf(line, sizeof(line), "%s|%u|%d|%d|%d|END\n", label,
                         (unsigned)GetConsoleCP(), window != NULL ? 1 : 0,
                         window != NULL && IsWindowVisible(window) ? 1 : 0,
                         conin_available());
@@ -243,7 +270,7 @@ static int spawn_descendant(const wchar_t *self, BOOL stream_output,
   }
   free(command);
   CloseHandle(process.hThread);
-  printf("PIDS\t%lu\t%lu\n", (unsigned long)GetCurrentProcessId(),
+  printf("PIDS|%lu|%lu|END\n", (unsigned long)GetCurrentProcessId(),
          (unsigned long)process.dwProcessId);
   fflush(stdout);
   if (stream_output) {
@@ -299,6 +326,8 @@ static int run_fake_agy(int argc, wchar_t **argv) {
 }
 
 int wmain(int argc, wchar_t **argv) {
+  if (argc == 2 && wcscmp(argv[1], L"--input-probe") == 0)
+    return run_input_probe();
   int fake = run_fake_agy(argc, argv);
   if (fake >= 0) return fake;
   if (argc >= 2 && wcscmp(argv[1], L"--argv") == 0) {

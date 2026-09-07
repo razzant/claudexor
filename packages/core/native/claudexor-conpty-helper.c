@@ -403,6 +403,11 @@ static int run_child(const ConPtyApi *api, int argc, wchar_t **argv) {
   ZeroMemory(&process, sizeof(process));
   ZeroMemory(&output_pump, sizeof(output_pump));
   startup.StartupInfo.cb = sizeof(startup);
+  /* Suppress Windows' implicit duplication of redirected parent std handles.
+   * The zeroed handles are filled from the pseudoconsole, not our transport
+   * pipes. bInheritHandles=FALSE alone does not prevent that duplication.
+   * See microsoft/terminal discussion #15814. */
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
 
   conpty_input = GetStdHandle(STD_INPUT_HANDLE);
   if (conpty_input == NULL || conpty_input == INVALID_HANDLE_VALUE) {

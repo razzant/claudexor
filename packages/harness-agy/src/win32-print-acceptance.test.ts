@@ -377,7 +377,7 @@ function parseConsoleState(
   windowVisible: boolean;
   coninAvailable: boolean;
 } {
-  const match = new RegExp(`${label}\\t([0-9]+)\\t([01])\\t([01])\\t([01])`).exec(output);
+  const match = new RegExp(`${label}\\|([0-9]+)\\|([01])\\|([01])\\|([01])\\|END`).exec(output);
   if (!match) throw new Error(`invalid ${label} console state`);
   return {
     consoleCodePage: Number(match[1]),

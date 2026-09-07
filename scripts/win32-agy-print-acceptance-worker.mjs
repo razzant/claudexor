@@ -214,7 +214,17 @@ try {
   });
   const loginProcess = await loginFinished;
   const loginReceipt = protocol.readRunnerResult(manifest.resultPath);
-  assert(loginProcess.code === 0, `client_pty worker exited ${String(loginProcess.code)}`);
+  assert(
+    loginProcess.code === 0,
+    `client_pty worker exited ${String(loginProcess.code)}; receipt=${JSON.stringify({
+      present: loginReceipt !== null,
+      commandStarted: loginReceipt?.commandStarted ?? null,
+      exitCode: loginReceipt?.exitCode ?? null,
+      signal: loginReceipt?.signal ?? null,
+      errorCode: loginReceipt?.errorCode ?? null,
+      stage: protocol.readRunnerState(manifest.statePath)?.stage ?? null,
+    })}`,
+  );
   assert(loginProcess.signal === null, "client_pty worker exited by signal");
   assert(loginReceipt?.commandStarted === true, "client_pty receipt did not start the command");
   assert(loginReceipt?.exitCode === 0, "client_pty receipt did not record exit 0");
@@ -589,7 +599,7 @@ function readEvidence(home) {
 }
 
 function parsePidLine(output) {
-  const match = /PIDS\t([1-9][0-9]*)\t([1-9][0-9]*)/.exec(output);
+  const match = /PIDS\|([1-9][0-9]*)\|([1-9][0-9]*)\|END/.exec(output);
   if (!match) throw new Error("hanging fake agy did not disclose exact PIDs");
   return { vendor: Number(match[1]), descendant: Number(match[2]) };
 }
