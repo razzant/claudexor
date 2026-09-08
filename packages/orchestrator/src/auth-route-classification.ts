@@ -1,4 +1,5 @@
-import type { AuthPreference } from "@claudexor/schema";
+import type { RouteAuthEvidence } from "@claudexor/budget";
+import type { AuthPreference, AuthSourceReadiness, AuthVerification } from "@claudexor/schema";
 
 /**
  * Auth-mode classification for route ranking and billing evidence (#121
@@ -27,4 +28,36 @@ export function authModeForPreference(
   if (preference === "api_key") return "api_key";
   if (preference === "subscription") return "local_session";
   return null;
+}
+
+/** Typed auth evidence for the concrete route selected before budget ranking. */
+export function authRouteEvidenceFor(
+  authMode: "local_session" | "api_key" | "unknown",
+  sources: AuthSourceReadiness[],
+  profileVerification: AuthVerification | null,
+): RouteAuthEvidence | undefined {
+  const usable = (source: AuthSourceReadiness): boolean =>
+    source.availability === "available" && source.verification !== "failed";
+  if (authMode === "local_session") {
+    if (profileVerification !== null) {
+      return { route: "vendor_native", verification: profileVerification };
+    }
+    const native = sources.find(
+      (source) =>
+        usable(source) &&
+        (source.source === "native_session" || source.source === "oauth_token_env"),
+    );
+    return { route: "vendor_native", verification: native?.verification ?? "not_run" };
+  }
+  if (authMode === "api_key") {
+    const key = sources.find(
+      (source) =>
+        usable(source) &&
+        (source.source === "api_key_env" ||
+          source.source === "api_key_flag" ||
+          source.source === "provider_auth_file"),
+    );
+    return { route: "managed_api_key", verification: key?.verification ?? "not_run" };
+  }
+  return undefined;
 }

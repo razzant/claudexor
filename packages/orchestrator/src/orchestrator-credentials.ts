@@ -9,6 +9,7 @@
  */
 import type {
   AuthPreference,
+  AuthVerification,
   CredentialProfile,
   CredentialUnusableObservation,
   HarnessRunSpec,
@@ -332,5 +333,18 @@ export class OrchestratorCredentials {
       notePoolApiKeyRoute: () => this.poolApiKeyRoutes.note(input, harnessId),
       emit: (type, payload) => log?.emit(type, payload),
     });
+  }
+
+  /** Billing evidence for the exact profile selected by preflight. The default
+   * doctor's auth sources describe a different credential store, so they must
+   * not classify a named profile. Only a vendor-backed profile verification is
+   * strong enough to prove a subscription-entitled native route. */
+  async profileAuthVerification(profile: CredentialProfile): Promise<AuthVerification> {
+    const adapter = this.host.registry().get(profile.harness_id);
+    const status = vendorVerifiedProfileStatus(
+      await probeCredentialProfileStatus(profile, adapter?.probeCredentialProfile?.bind(adapter)),
+      this.vendorQuotaObservations(),
+    );
+    return status.verification_source === "vendor" ? status.verification : "not_run";
   }
 }
