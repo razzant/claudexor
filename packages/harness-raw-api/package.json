@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-raw-api",
-  "version": "3.10.1",
+  "version": "3.10.2",
   "license": "MIT",
   "description": "Raw-API harness: OpenAI-compatible chat completions with typed, isolated Git-patch implementation.",
   "type": "module",

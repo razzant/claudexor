@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/mcp-server",
-  "version": "3.10.1",
+  "version": "3.10.2",
   "license": "MIT",
   "description": "MCP server exposing durable Claudexor run, status, cancel, result, and interaction tools.",
   "type": "module",

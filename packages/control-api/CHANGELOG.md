@@ -1,5 +1,17 @@
 # @claudexor/control-api
 
+## 3.10.2
+
+### Patch Changes
+
+- Preserve useful contradictory Council drafts as explicitly unverified merger inputs and move journal maintenance after admission, including Windows pending-tail recovery and native coverage.
+- Updated dependencies
+  - @claudexor/schema@3.10.2
+  - @claudexor/delivery@3.10.2
+  - @claudexor/event-log@3.10.2
+  - @claudexor/secrets@3.10.2
+  - @claudexor/util@3.10.2
+
 ## 3.10.1
 
 ### Patch Changes

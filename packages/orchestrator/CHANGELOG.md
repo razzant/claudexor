@@ -1,5 +1,27 @@
 # @claudexor/orchestrator
 
+## 3.10.2
+
+### Patch Changes
+
+- Preserve useful contradictory Council drafts as explicitly unverified merger inputs and move journal maintenance after admission, including Windows pending-tail recovery and native coverage.
+- Updated dependencies
+  - @claudexor/schema@3.10.2
+  - @claudexor/arbitration@3.10.2
+  - @claudexor/budget@3.10.2
+  - @claudexor/config@3.10.2
+  - @claudexor/context@3.10.2
+  - @claudexor/core@3.10.2
+  - @claudexor/delivery@3.10.2
+  - @claudexor/event-log@3.10.2
+  - @claudexor/gateway@3.10.2
+  - @claudexor/policy@3.10.2
+  - @claudexor/review@3.10.2
+  - @claudexor/workspace@3.10.2
+  - @claudexor/synthesis@3.10.2
+  - @claudexor/artifact-store@3.10.2
+  - @claudexor/util@3.10.2
+
 ## 3.10.1
 
 ### Patch Changes

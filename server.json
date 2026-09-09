@@ -9,13 +9,13 @@
     "id": "1259999244"
   },
   "websiteUrl": "https://razzant.github.io/claudexor/",
-  "version": "3.10.1",
+  "version": "3.10.2",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "claudexor",
-      "version": "3.10.1",
+      "version": "3.10.2",
       "transport": {
         "type": "stdio"
       },

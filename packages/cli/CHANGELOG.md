@@ -1,5 +1,35 @@
 # @claudexor/cli
 
+## 3.10.2
+
+### Patch Changes
+
+- Preserve useful contradictory Council drafts as explicitly unverified merger inputs and move journal maintenance after admission, including Windows pending-tail recovery and native coverage.
+- Updated dependencies
+  - @claudexor/journal@3.10.2
+  - @claudexor/daemon@3.10.2
+  - @claudexor/orchestrator@3.10.2
+  - @claudexor/control-api@3.10.2
+  - @claudexor/schema@3.10.2
+  - @claudexor/acp-server@3.10.2
+  - @claudexor/config@3.10.2
+  - @claudexor/core@3.10.2
+  - @claudexor/delivery@3.10.2
+  - @claudexor/gateway@3.10.2
+  - @claudexor/harness-agy@3.10.2
+  - @claudexor/harness-claude@3.10.2
+  - @claudexor/harness-codex@3.10.2
+  - @claudexor/harness-cursor@3.10.2
+  - @claudexor/harness-fake@3.10.2
+  - @claudexor/harness-opencode@3.10.2
+  - @claudexor/harness-raw-api@3.10.2
+  - @claudexor/mcp-server@3.10.2
+  - @claudexor/review@3.10.2
+  - @claudexor/workspace@3.10.2
+  - @claudexor/artifact-store@3.10.2
+  - @claudexor/secrets@3.10.2
+  - @claudexor/util@3.10.2
+
 ## 3.10.1
 
 ### Patch Changes

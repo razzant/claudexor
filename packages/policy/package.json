@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/policy",
-  "version": "3.10.1",
+  "version": "3.10.2",
   "license": "MIT",
   "description": "Typed risk classifier + thin policy (path guard, require-human, deny lists). No keyword-regex governance.",
   "type": "module",

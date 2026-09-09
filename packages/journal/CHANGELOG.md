@@ -1,5 +1,12 @@
 # @claudexor/journal
 
+## 3.10.2
+
+### Patch Changes
+
+- Preserve useful contradictory Council drafts as explicitly unverified merger inputs and move journal maintenance after admission, including Windows pending-tail recovery and native coverage.
+  - @claudexor/util@3.10.2
+
 ## 3.10.1
 
 ### Patch Changes

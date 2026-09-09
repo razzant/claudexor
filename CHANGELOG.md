@@ -4,6 +4,8 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v3.10.2** (2026-09-09): preserves useful Council drafts whose completion report contradicts its required inputs as explicitly unverified merger inputs, while keeping the original attempt failed and inspectable. Automatic journal compaction now runs after normal admission with full acknowledged history, cursor continuity, and cancellable single-writer installation; Windows pending-tail recovery uses a verified temporary descriptor while ordinary append behavior stays unchanged.
+
 - **v3.10.1** (2026-09-08): Antigravity model and quota checks use closed pipe
   input so a failed silent-auth check cannot open interactive sign-in. Explicit
   login retains its terminal. Ambiguous authentication timeouts remain probe
