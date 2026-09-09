@@ -1206,6 +1206,12 @@ to this operation's invocation, which rechecks the current account fingerprint;
 no catalog or credentials are cached across operations. Unknown fingerprints
 retain fresh discovery and cannot authorize native continuation reuse.
 Its single inference POST follows a durable dispatch receipt.
+Caller system messages are translated to the native `developer` role in `input`,
+including the first system message. The required `instructions` field is empty:
+flattening large context there hits a server string limit (#282), and the Codex
+backend rejects `system` roles in `input`. Text blocks and message order are
+preserved without truncation or summarization. This transport cannot preserve a
+distinct system-over-developer priority; both remain above user input.
 Responses SSE is translated structurally, including image blocks, original tool
 IDs and complete native output items. Unknown model/window/usage/cash remains
 unknown; `maxOutputTokens` and `temperature` are explicit unsupported options,

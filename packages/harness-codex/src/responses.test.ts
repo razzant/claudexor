@@ -69,6 +69,33 @@ function stream(value: string, chunkSize = 5): Response {
 }
 
 describe("Codex model request translation", () => {
+  it("maps large caller system text to native developer input without flattening blocks", () => {
+    const blocks = ["SYSTEM\n\u0000🐍\u2028", "reference ".repeat(120_000), "\nEND"];
+    const body = buildResponsesRequest(
+      request({
+        messages: [
+          { role: "system", content: blocks.map((text) => ({ type: "text", text })) },
+          { role: "developer", content: "Later guidance" },
+          { role: "user", content: "Question" },
+        ],
+      }),
+      route,
+    );
+    expect(body.instructions).toBe("");
+    expect(body.input).toEqual([
+      {
+        type: "message",
+        role: "developer",
+        content: blocks.map((text) => ({ type: "input_text", text })),
+      },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "Later guidance" }],
+      },
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Question" }] },
+    ]);
+  });
   it("uses own instructions and preserves developer/system order and literal content", () => {
     const value = request({
       messages: [
@@ -79,15 +106,24 @@ describe("Codex model request translation", () => {
       ],
     });
     const body = buildResponsesRequest(value, route);
-    expect(body.instructions).toBe("SYSTEM\n\u0000raw");
+    expect(body.instructions).toBe("");
     expect(body.input).toEqual([
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "SYSTEM\n\u0000raw" }],
+      },
       {
         type: "message",
         role: "developer",
         content: [{ type: "input_text", text: "higher guidance" }],
       },
       { type: "message", role: "user", content: [{ type: "input_text", text: "user" }] },
-      { type: "message", role: "system", content: [{ type: "input_text", text: "late system" }] },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "late system" }],
+      },
     ]);
     expect(body).toMatchObject({
       store: false,

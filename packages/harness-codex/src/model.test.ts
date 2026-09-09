@@ -248,7 +248,14 @@ describe("single-generation Codex adapter", () => {
     expect(sentHeaders.get("originator")).toBe("claudexor");
     expect(sentHeaders.get("ChatGPT-Account-ID")).toBe("account-one");
     expect(JSON.parse(init!.body as string)).toMatchObject({
-      instructions: "Own SYSTEM and BIBLE",
+      instructions: "",
+      input: expect.arrayContaining([
+        {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "Own SYSTEM and BIBLE" }],
+        },
+      ]),
       model: "model-one",
       tool_choice: "required",
     });

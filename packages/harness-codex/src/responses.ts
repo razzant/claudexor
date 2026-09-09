@@ -142,15 +142,14 @@ export function validateCodexModelOptions(options: ModelCallOptions): void {
   }
 }
 
-/** Pure request translation. The first system message is the actual instructions field. */
+/** Preserve caller order and blocks; Codex represents system guidance as developer input. */
 export function buildResponsesRequest(
   request: ModelCallRequest,
   route: ModelRoute,
 ): Record<string, unknown> {
   validateCodexModelOptions(request.options);
-  let instructions = "";
   const input: unknown[] = [];
-  for (const [index, message] of request.messages.entries()) {
+  for (const message of request.messages) {
     if (message.tool_calls?.length && message.role !== "assistant")
       invalid("Only assistant messages can contain tool calls.");
     if (message.name !== undefined && message.role !== "tool")
@@ -158,11 +157,6 @@ export function buildResponsesRequest(
     const native = replay(message, route);
     if (native) {
       input.push(...native);
-      continue;
-    }
-    if (index === 0 && message.role === "system") {
-      const parts = content(message.content, "system");
-      instructions = parts.map((part) => record(part)?.text as string).join("\n");
       continue;
     }
     if (message.role === "tool") {
@@ -177,7 +171,13 @@ export function buildResponsesRequest(
       continue;
     }
     const parts = content(message.content, message.role);
-    if (parts.length > 0) input.push({ type: "message", role: message.role, content: parts });
+    // The Codex backend rejects system input; developer is its native instruction role.
+    if (parts.length > 0)
+      input.push({
+        type: "message",
+        role: message.role === "system" ? "developer" : message.role,
+        content: parts,
+      });
     if (message.tool_calls?.length) {
       for (const call of message.tool_calls)
         input.push({
@@ -191,7 +191,8 @@ export function buildResponsesRequest(
   const options = request.options;
   return {
     model: request.model,
-    instructions,
+    // Codex requires the field, but caller instructions remain in ordered input.
+    instructions: "",
     input,
     tools: request.tools.map(({ function: fn }) => ({
       type: "function",
