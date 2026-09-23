@@ -18,11 +18,18 @@ export const CLAUDE_KNOWN_MODELS: readonly string[] = [
   "haiku",
   "fable",
   "best",
-  // Fable 5.1 requires Claude Code >= 2.1.251. Re-verified through the
-  // pinned 2.1.261 CLI with observed_model claude-fable-5-1.
+  // Fable 5.1 requires Claude Code >= 2.1.251. The historical 2.1.261
+  // capture observed claude-fable-5-1; this pin bump does not re-date it.
   "claude-fable-5-1",
   "claude-fable-5",
   "claude-sonnet-5",
+  // Opus 5.5 arrived in Claude Code 2.1.280 ("Added Claude Opus 5.5
+  // (`claude-opus-5-5`), now the default Opus model"). Verified against the
+  // pinned binary — the id appears in its own platform model tables — and
+  // against the vendor's model overview, which publishes `claude-opus-5-5` as
+  // both the Claude API ID and the alias. Added, never substituted: the older
+  // full ids below stay admissible on accounts that still serve them.
+  "claude-opus-5-5",
   "claude-opus-5",
   "claude-opus-4-8",
   "claude-opus-4-7",

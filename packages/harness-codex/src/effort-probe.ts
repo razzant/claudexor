@@ -15,7 +15,7 @@
  *
  * A probe is never load-bearing. Missing binary, an older app-server without
  * `model/list`, a timeout or malformed output all fall back to the recorded
- * snapshot below and the run proceeds.
+ * snapshot (effort-snapshot.ts) and the run proceeds.
  */
 import { spawn } from "node:child_process";
 import type { HarnessEvent, HarnessRunSpec, ModelEffortCapability } from "@claudexor/schema";
@@ -25,7 +25,10 @@ import { nowIso } from "@claudexor/util";
 import { readCodexProcessingModels } from "./processing.js";
 import type { ProcessingCapability, HarnessModel } from "@claudexor/schema";
 import { BIN, probeEnv } from "./missing-cli.js";
-import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
+import {
+  CODEX_EFFORT_SNAPSHOT,
+  CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
+} from "./effort-snapshot.js";
 
 export type CodexEffortCapability = Record<string, ModelEffortCapability>;
 
@@ -43,44 +46,6 @@ export interface CodexEffortCatalog {
   processing?: Record<string, ProcessingCapability>;
   nativeModels?: HarnessModel[];
 }
-/**
- * Recorded fallback coverage: the pinned CLI's visible `model/list` capture,
- * plus unchanged ladders retained from historical account captures. Presence
- * is a union, not a claim that every account advertises every model: the
- * freshness gate checks live entries while permitting snapshot-only entries.
- * Used ONLY when the live probe cannot answer; it is vendor evidence, never an
- * allow-list this repo maintains by hand. `defaultModel` comes from the pinned
- * CLI capture; historical defaults do not override its `isDefault: true`.
- */
-export const CODEX_EFFORT_SNAPSHOT: CodexEffortCatalog = {
-  models: {
-    "gpt-6-astra": {
-      levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      default: "medium",
-    },
-    "gpt-5.6-sol": {
-      levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      default: "low",
-    },
-    "gpt-5.6-terra": {
-      levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      default: "medium",
-    },
-    "gpt-5.6-luna": { levels: ["low", "medium", "high", "xhigh", "max"], default: "medium" },
-    "gpt-5.5": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
-    "gpt-5.4": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
-    "gpt-5.4-mini": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
-    "gpt-5.3-codex-spark": { levels: ["low", "medium", "high", "xhigh"], default: "high" },
-    "gpt-5.2": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
-  },
-  defaultModel: "gpt-6-astra",
-};
-
-/** Vendor CLI version `CODEX_EFFORT_SNAPSHOT` was captured from. Aliases the
- * per-package vendor-version SSOT (vendor-cli-version.ts), the same constant
- * the remote installer pins — the freshness gate and the installed bytes can
- * never disagree about which version this release vouches for. */
-export const CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST: string = CODEX_VENDOR_CLI_VERSION;
 
 /**
  * Harness-wide merged ladder of an advertised catalog, weakest→strongest. Kept

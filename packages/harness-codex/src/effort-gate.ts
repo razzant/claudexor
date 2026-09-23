@@ -6,12 +6,12 @@
  */
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import {
-  CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
   codexEffortDisclosureEvent,
   codexEffortsForEnv,
   type CodexEffortCatalog,
   type CodexEffortProbe,
 } from "./effort-probe.js";
+import { CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST } from "./effort-snapshot.js";
 
 /**
  * Whether the recorded snapshot may be TRUSTED for arg emission against the
@@ -22,7 +22,7 @@ import {
  * `claudeSnapshotTrustedForVersion`.
  *
  * The installed version string is whatever `codex --version` printed
- * (e.g. `codex-cli 0.153.3`), so the comparison extracts the full dotted
+ * (e.g. `codex-cli 0.156.1`), so the comparison extracts the full dotted
  * numeric token and requires it to EQUAL the snapshot stamp exactly. An
  * unknown or unparseable version can never vouch for the snapshot.
  */

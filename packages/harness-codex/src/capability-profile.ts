@@ -6,6 +6,38 @@ import {
 /** One manifest-owned declaration of the managed login's stdin contract. */
 export const CODEX_MANAGED_LOGIN = { stdin: "none" } as const;
 
+/**
+ * Manifest model truth for the routes the live `model/list` inventory does not
+ * answer (INV-104). Lives beside the capability profile for the same reason
+ * the claude adapter's `CLAUDE_KNOWN_MODELS` does: vendor model truth changes
+ * when the vendor ships models, which is a different trigger from anything in
+ * the adapter's run loop, and both adapters should be read the same way.
+ *
+ * Codex declares `model_inventory_absence: "advisory"`, so on the native route
+ * this list ADMITS without being able to refuse; unscoped consumers (settings
+ * writes, the doctor, automatic reviewer selection) still judge against it
+ * strictly. Entries are added on vendor evidence and retired only on vendor
+ * evidence — a bundled catalog that stops listing an id does not prove an
+ * account lost it. The current pin's bundled capture verifies its listed
+ * entries; other ids retain their earlier evidence, not a new capture claim.
+ */
+export const CODEX_KNOWN_MODELS: readonly string[] = [
+  "gpt-6-astra",
+  // GPT-6 Sol and GPT-6 Luna arrived in codex-cli 0.156.1 (rust-v0.156.1,
+  // "[hotfix 0.156.0] Add GPT-6 Sol and Luna to the model catalog").
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex-spark",
+  "gpt-5.2",
+];
+
 export const CODEX_CAPABILITY_PROFILE: HarnessCapabilityProfile =
   HarnessCapabilityProfileSchema.parse({
     auth: {

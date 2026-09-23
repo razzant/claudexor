@@ -11,4 +11,4 @@ import type { PinnedVendorCliVersion } from "@claudexor/util";
  * effort snapshot against the same CLI build — the stamp is a verification
  * claim, not a wish.
  */
-export const CLAUDE_VENDOR_CLI_VERSION: PinnedVendorCliVersion = "2.1.261";
+export const CLAUDE_VENDOR_CLI_VERSION: PinnedVendorCliVersion = "2.1.280";

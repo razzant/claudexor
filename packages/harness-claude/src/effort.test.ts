@@ -46,9 +46,9 @@ const HELP_2_1_165_NARROW = [
 ].join("\n");
 
 describe("the claude ladder is a property of the INSTALLED binary", () => {
-  it("keeps the release snapshot equal to the recorded 2.1.261 help ladder", () => {
-    const help = readFileSync(new URL("../fixtures/help-2.1.261.txt", import.meta.url), "utf8");
-    expect(CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST).toBe("2.1.261");
+  it("keeps the release snapshot equal to the recorded 2.1.280 help ladder", () => {
+    const help = readFileSync(new URL("../fixtures/help-2.1.280.txt", import.meta.url), "utf8");
+    expect(CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST).toBe("2.1.280");
     expect(parseClaudeEffortHelp(help)).toEqual(CLAUDE_EFFORT_SNAPSHOT);
   });
 
@@ -265,13 +265,13 @@ describe("the claude effort probe degrades gracefully", () => {
   });
 
   it("snapshot trust is exact-version, and an unknown/unparseable version never vouches", () => {
-    expect(claudeSnapshotTrustedForVersion("2.1.261")).toBe(true);
-    expect(claudeSnapshotTrustedForVersion("2.1.261 (Claude Code)")).toBe(true);
+    expect(claudeSnapshotTrustedForVersion("2.1.280")).toBe(true);
+    expect(claudeSnapshotTrustedForVersion("2.1.280 (Claude Code)")).toBe(true);
     expect(claudeSnapshotTrustedForVersion("2.1.165")).toBe(false);
     expect(claudeSnapshotTrustedForVersion("2.1.89")).toBe(false);
     // A LONGER dotted token is a different version, not a prefix match.
-    expect(claudeSnapshotTrustedForVersion("2.1.261.1")).toBe(false);
-    expect(claudeSnapshotTrustedForVersion("2.1.2610")).toBe(false);
+    expect(claudeSnapshotTrustedForVersion("2.1.280.1")).toBe(false);
+    expect(claudeSnapshotTrustedForVersion("2.1.2800")).toBe(false);
     expect(claudeSnapshotTrustedForVersion(null)).toBe(false);
     expect(claudeSnapshotTrustedForVersion("claude (version unknown)")).toBe(false);
   });

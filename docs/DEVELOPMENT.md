@@ -263,6 +263,10 @@ Tests and local smokes must never touch real user state:
 - Isolate global config, the daemon (token/socket/jobs/logs), trust files, and
   run artifacts by pointing `CLAUDEXOR_CONFIG_DIR` at a temp dir; isolate host
   plugin files by pointing `HOME` at a temp dir.
+- Canary `makeSandbox()` admits only the shared runtime environment key sets,
+  then scopes HOME/XDG/Windows application-data roots. Ambient provider keys
+  and harness route overrides must not make an offline fake race discover real
+  reviewers; sandbox-specific overrides remain explicit at each CLI call.
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public
   CLI cannot select a storage backend.

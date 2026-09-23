@@ -9,6 +9,7 @@
     "yaml": "^2.6.1"
   },
   "devDependencies": {
+    "@claudexor/core": "workspace:*",
     "@claudexor/schema": "workspace:*"
   }
 }

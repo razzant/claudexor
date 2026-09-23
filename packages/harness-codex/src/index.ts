@@ -24,8 +24,6 @@ import {
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
 import {
-  CODEX_EFFORT_SNAPSHOT,
-  CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
   codexEffortFor,
   codexEffortsForEnv,
   probeCodexEfforts,
@@ -33,11 +31,16 @@ import {
   type CodexEffortCatalog,
   type CodexEffortProbe,
 } from "./effort-probe.js";
+import {
+  CODEX_EFFORT_SNAPSHOT,
+  CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
+} from "./effort-snapshot.js";
 import { codexRunEffortResolution } from "./effort-gate.js";
 export { codexConfigHasNodeRepl } from "./toml.js";
 import { codexConfigHasNodeRepl, tomlBasicString } from "./toml.js";
 import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
-export { CODEX_EFFORT_SNAPSHOT, clearCodexEffortCache, unionEffortLevels } from "./effort-probe.js";
+export { clearCodexEffortCache, unionEffortLevels } from "./effort-probe.js";
+export { CODEX_EFFORT_SNAPSHOT } from "./effort-snapshot.js";
 export { CODEX_VENDOR_CLI_VERSION };
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
@@ -75,7 +78,7 @@ export {
   ensureCodexApiAuth,
   probeLogin,
 } from "./auth.js";
-import { CODEX_CAPABILITY_PROFILE } from "./capability-profile.js";
+import { CODEX_CAPABILITY_PROFILE, CODEX_KNOWN_MODELS } from "./capability-profile.js";
 export { CODEX_MANAGED_LOGIN } from "./capability-profile.js";
 import {
   CODEX_FILE_AUTH_ARGS,
@@ -430,19 +433,9 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           effort_levels_verified_against: efforts.live
             ? version
             : CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
-          // Manifest truth for routes the live probe does not answer; no hidden models.
-          known_models: [
-            "gpt-6-astra",
-            "gpt-5.6",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex-spark",
-            "gpt-5.2",
-          ],
+          // Manifest truth for routes the live probe does not answer; no hidden
+          // models. Owned by capability-profile.ts, like claude's list.
+          known_models: [...CODEX_KNOWN_MODELS],
           known_models_verified_against: CODEX_VENDOR_CLI_VERSION,
         },
         capability_profile: {

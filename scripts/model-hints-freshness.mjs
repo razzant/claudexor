@@ -83,7 +83,7 @@ for (const adapter of buildRegistry({ includeFakes: false }).values()) {
  */
 const EFFORT_SNAPSHOTS = {
   codex: {
-    module: "packages/harness-codex/dist/effort-probe.js",
+    module: "packages/harness-codex/dist/effort-snapshot.js",
     accountScoped: true,
     read: (m) =>
       Object.fromEntries(

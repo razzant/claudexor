@@ -144,6 +144,7 @@ describe("claude D-16 signal fixtures", () => {
       constraint_id: "seven_day_opus",
       applies_to_models: [
         "opus",
+        "claude-opus-5-5",
         "claude-opus-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
