@@ -35,8 +35,8 @@ export async function probeCursorDoctorForAccounts(
       report: ConformanceReportSchema.parse({
         harness_id: "cursor",
         status: "unavailable",
-        checks: [{ id: "installed", status: "fail", detail: "cursor-agent not found" }],
-        reasons: ["cursor-agent not found (install Cursor CLI or set CLAUDEXOR_CURSOR_BIN)"],
+        checks: [{ id: "installed", status: "fail", detail: "Cursor CLI not found (`cursor-agent` or `agent`)" }],
+        reasons: ["Cursor CLI not found: neither `cursor-agent` nor a Cursor `agent` on PATH (install Cursor CLI or set CLAUDEXOR_CURSOR_BIN)"],
       }),
       identity: null,
     };

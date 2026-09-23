@@ -2,8 +2,9 @@ import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
 import type { AuthPreference } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
+import { resolveCursorBin } from "./bin.js";
 
-const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
+const BIN = resolveCursorBin();
 const CURSOR_LOGGED_OUT =
   /not logged in|not authenticated|unauthenticated|authentication required|no account|account\s*:\s*(?:none|unknown|not configured|-)(?:\s|$)|authenticated\s*:\s*(?:false|no|none|0)|logged in\s*:\s*(?:false|no|none|0)/i;
 const CURSOR_JSON_STATUS_UNSUPPORTED =
