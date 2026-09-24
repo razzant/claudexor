@@ -463,9 +463,15 @@ recorded snapshot (stamped vendor data, kept in its captured order) when a
 probe cannot answer, so a probe failure costs freshness, never the run; both
 probes are cached, and `scripts/model-hints-freshness.mjs` WARNS when the live
 ladders disagree with the snapshot. Codex model membership is account-scoped,
-so its recorded fallback covers the union of verified account catalogs: every
-live model must match its recorded ladder/default, while a recorded-only model
-does not make another account stale. Effort ceilings are per MODEL, not per
+so its recorded fallback is deliberately a UNION rather than any one account's
+roster: the pinned CLI's own bundled catalog — captured from `app-server`
+`model/list` under a throwaway home with no login, so it describes what the
+BINARY ships with and is never presented as an entitlement — plus ladders
+retained from earlier captures, since a bundled list dropping an id does not
+prove an account lost the model. Every live model must match its recorded
+ladder/default, while a recorded-only model does not make another account
+stale. The capture declares that provenance in its own header, so a reader
+can tell a bundled roster from an account's. Effort ceilings are per MODEL, not per
 harness (gpt-6-astra and gpt-5.6-sol take `ultra`, gpt-5.4 stops at `xhigh`), so
 `effortLevelsForModel` narrows the harness-wide merged ladder for the routed
 model. The shared normalizer then passes an ADVERTISED level through verbatim,

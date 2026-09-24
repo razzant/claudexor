@@ -8,6 +8,12 @@
 # the wire: the adapter finalizes the turn's last agent_message on
 # turn.completed (requires the CodexParseState the run loop passes).
 #
+# The pinned-CLI model catalog capture is models-0.156.1.json (not listed
+# below: this manifest covers stream fixtures). The stream recordings here keep
+# their own 0.153.3 stamps because that is the CLI that produced those bytes —
+# a recording is never relabelled to match a newer pin, so the freshness gate
+# reports honest drift until each one is re-captured.
+#
 # `started_events: 1` pins the run-boundary dedup: every fixture here — the
 # recorded 0.153.3 stream included — carries codex's native
 # `thread.started` + `turn.started` PAIR for one run, and the adapter must

@@ -6,7 +6,10 @@
 # and the recording machine's environment fingerprint (installed skills /
 # slash commands / memory paths) are replaced with neutral placeholders;
 # frame shapes and event ordering are untouched.
-# The 2.1.261 help capture is help-2.1.261.txt. Controlled endpoint recordings
+# The pinned-CLI help capture is help-2.1.280.txt; the stream recordings below
+# keep their own 2.1.261 stamps because that is the CLI that produced those
+# bytes — a recording is never relabelled to match a newer pin.
+# Controlled endpoint recordings
 # below use the unmodified native CLI with public synthetic inputs, local
 # Anthropic-compatible responses, and synthetic local auth markers. The CLI
 # itself emits every recorded stdout frame; these probes make no vendor call.

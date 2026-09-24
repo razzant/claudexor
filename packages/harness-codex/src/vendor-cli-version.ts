@@ -9,4 +9,4 @@ import type { PinnedVendorCliVersion } from "@claudexor/util";
  * Bump it ONLY while re-recording the effort snapshot (and re-checking the
  * manifest's known-model hints) against the same CLI build.
  */
-export const CODEX_VENDOR_CLI_VERSION: PinnedVendorCliVersion = "0.153.3";
+export const CODEX_VENDOR_CLI_VERSION: PinnedVendorCliVersion = "0.156.1";

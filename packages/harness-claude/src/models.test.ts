@@ -79,6 +79,9 @@ describe("the claude manifest model truth source", () => {
     ]);
     expect(claudeQuotaModelAliases(" Opus ")).toEqual([
       "opus",
+      // Opus 5.5 joins its family from the known-model list alone — the
+      // projection has no second table to patch.
+      "claude-opus-5-5",
       "claude-opus-5",
       "claude-opus-4-8",
       "claude-opus-4-7",

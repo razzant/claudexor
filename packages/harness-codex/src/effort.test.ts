@@ -15,6 +15,8 @@ import {
 import {
   CODEX_EFFORT_SNAPSHOT,
   CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
+} from "./effort-snapshot.js";
+import {
   codexEffortCacheSize,
   codexEffortClampedEvent,
   codexEffortCapability,
@@ -227,7 +229,7 @@ describe("codex effort probe degrades gracefully", () => {
 
   it("the snapshot matches every visible model in the pinned CLI capture and keeps historical coverage", () => {
     const capture = JSON.parse(
-      readFileSync(new URL("../fixtures/models-0.153.3.json", import.meta.url), "utf8"),
+      readFileSync(new URL("../fixtures/models-0.156.1.json", import.meta.url), "utf8"),
     ) as { data: unknown[] };
     const recorded = readModelListEfforts(capture.data);
     expect(recorded).not.toBeNull();
@@ -257,7 +259,7 @@ describe("the effort probe is cached, not re-spawned per call", () => {
   function stubAdapter(probeEfforts: () => Promise<CodexEffortCatalog | null>, nowMs = () => 0) {
     let calls = 0;
     const adapter = createCodexAdapter({
-      detectVersion: async () => "codex-cli 0.153.3",
+      detectVersion: async () => "codex-cli 0.156.1",
       probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
       hasApiKey: () => false,
       probeEfforts: async () => {
@@ -297,7 +299,7 @@ describe("the effort probe is cached, not re-spawned per call", () => {
       "max",
       "ultra",
     ]);
-    expect(manifest.capabilities.effort_levels_verified_against).toBe("0.153.3");
+    expect(manifest.capabilities.effort_levels_verified_against).toBe("0.156.1");
     expect(manifest.capabilities.known_models_verified_against).toBe(CODEX_VENDOR_CLI_VERSION);
     expect(manifest.capabilities.known_models).toEqual(
       expect.arrayContaining(Object.keys(CODEX_EFFORT_SNAPSHOT.models)),
@@ -309,7 +311,7 @@ describe("the effort probe is cached, not re-spawned per call", () => {
     clearCodexEffortCache();
     const { adapter } = stubAdapter(async () => CODEX_EFFORT_SNAPSHOT);
     const manifest = await adapter.discover();
-    expect(manifest.capabilities.effort_levels_verified_against).toBe("codex-cli 0.153.3");
+    expect(manifest.capabilities.effort_levels_verified_against).toBe("codex-cli 0.156.1");
     clearCodexEffortCache();
   });
 });
@@ -726,7 +728,7 @@ describe("an effort dropped AFTER preflight is disclosed on the run (INV-105)", 
     clearCodexEffortCache();
     let cliArgs: string[] | undefined;
     const adapter = createCodexAdapter({
-      detectVersion: async () => "codex-cli 0.153.3",
+      detectVersion: async () => "codex-cli 0.156.1",
       probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
       hasApiKey: () => false,
       probeEfforts: async () => profileCatalog,
@@ -764,12 +766,12 @@ describe("an effort dropped AFTER preflight is disclosed on the run (INV-105)", 
 
 describe("the snapshot fallback drives arg emission ONLY on the version it was captured from (INV-105)", () => {
   it("snapshot trust is exact-version, and an unknown/unparseable version never vouches", () => {
-    expect(codexSnapshotTrustedForVersion("0.153.3")).toBe(true);
-    expect(codexSnapshotTrustedForVersion("codex-cli 0.153.3")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("0.156.1")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("codex-cli 0.156.1")).toBe(true);
     expect(codexSnapshotTrustedForVersion("codex-cli 0.98.0")).toBe(false);
     // A LONGER dotted token is a different version, not a prefix match.
-    expect(codexSnapshotTrustedForVersion("0.153.3.1")).toBe(false);
-    expect(codexSnapshotTrustedForVersion("0.153.30")).toBe(false);
+    expect(codexSnapshotTrustedForVersion("0.156.1.1")).toBe(false);
+    expect(codexSnapshotTrustedForVersion("0.156.10")).toBe(false);
     expect(codexSnapshotTrustedForVersion(null)).toBe(false);
     expect(codexSnapshotTrustedForVersion("codex (version unknown)")).toBe(false);
   });
@@ -1035,7 +1037,7 @@ describe("an effort the run CLAMPED is disclosed too (INV-105) — a moved level
     clearCodexEffortCache();
     let cliArgs: string[] | undefined;
     const adapter = createCodexAdapter({
-      detectVersion: async () => "codex-cli 0.153.3",
+      detectVersion: async () => "codex-cli 0.156.1",
       probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
       hasApiKey: () => false,
       probeEfforts: async () => catalog,

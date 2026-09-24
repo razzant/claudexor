@@ -26,7 +26,8 @@ export const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 
 /**
  * Recorded fallback, captured from `claude --help` on the CLI version stamped
- * below (2.1.261 retains the full low/medium/high/xhigh/max ladder). Used ONLY
+ * below (2.1.280 retains the full low/medium/high/xhigh/max ladder unchanged
+ * from 2.1.261 — re-read from the 2.1.280 binary, not carried over). Used ONLY
  * when the live parse cannot answer.
  */
 export const CLAUDE_EFFORT_SNAPSHOT: readonly EffortHint[] = [
@@ -52,7 +53,7 @@ export const CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST: string = CLAUDE_VENDOR_CLI
  * — `--effort xhigh` then went to a CLI that refuses the flag.
  *
  * The installed version string is whatever `claude --version` printed
- * (e.g. `2.1.261 (Claude Code)`), so the comparison extracts the full dotted
+ * (e.g. `2.1.280 (Claude Code)`), so the comparison extracts the full dotted
  * numeric token and requires it to EQUAL the snapshot stamp exactly. An
  * unknown or unparseable version can never vouch for the snapshot.
  */

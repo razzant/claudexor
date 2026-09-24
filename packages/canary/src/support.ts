@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import { CLEAN_ENV_ALLOWLIST, WINDOWS_RUNTIME_ENV_KEYS, pickAllowlistedEnv } from "@claudexor/core";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const CLI = join(repoRoot, "packages", "cli", "dist", "cli.js");
@@ -74,8 +75,17 @@ export function makeSandbox(): Sandbox {
   );
   chmodSync(codexStub, 0o755);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    // A temp HOME alone does not isolate discovery: inherited provider keys
+    // made offline best-of canaries start real automatic reviewer probes.
+    // Reuse runtime keys, then scope HOME/XDG/Windows application-data roots.
+    ...pickAllowlistedEnv(process.env, [...CLEAN_ENV_ALLOWLIST, ...WINDOWS_RUNTIME_ENV_KEYS]),
     HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, "AppData", "Roaming"),
+    LOCALAPPDATA: join(home, "AppData", "Local"),
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+    XDG_DATA_HOME: join(home, ".local", "share"),
     CLAUDEXOR_CONFIG_DIR: configDir,
     CLAUDEXOR_DISABLE_STORED_SECRETS: "1",
     CLAUDEXOR_CODEX_BIN: codexStub,

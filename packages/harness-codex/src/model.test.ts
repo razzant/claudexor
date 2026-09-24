@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CredentialProfile, ModelCallRequest, ModelCallResult } from "@claudexor/schema";
 import { createCodexModelAdapter, parseCodexModelCatalog } from "./model.js";
 import { CODEX_MODEL_INVENTORY } from "./processing-session.js";
+import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
 const catalog = {
   models: [
@@ -351,7 +352,9 @@ describe("exact-profile Codex model catalog", () => {
       ],
     });
     expect(result.provenance).toBe("provider_http");
-    expect(fixture.fetcher.mock.calls[0]?.[0]).toContain("/models?client_version=0.153.3");
+    expect(fixture.fetcher.mock.calls[0]?.[0]).toContain(
+      `/models?client_version=${CODEX_VENDOR_CLI_VERSION}`,
+    );
     expect(result.accountFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(result)).not.toContain(fixture.token);
     expect(fixture.onDispatch).not.toHaveBeenCalled();

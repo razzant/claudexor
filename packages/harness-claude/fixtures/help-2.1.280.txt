@@ -37,10 +37,13 @@ Options:
                                         session in the background under the same
                                         ID, or starts a copy and says so when
                                         the session is already running
-  --bare                                Minimal mode: skip hooks, LSP, plugin
-                                        sync, attribution, auto-memory,
-                                        background prefetches, keychain reads,
-                                        and CLAUDE.md auto-discovery. Sets
+  --bare                                Minimal mode: skip hooks (those defined
+                                        in settings and by installed plugins;
+                                        features built into Claude Code are
+                                        unaffected), LSP, plugin sync,
+                                        attribution, auto-memory, background
+                                        prefetches, keychain reads, and
+                                        CLAUDE.md auto-discovery. Sets
                                         CLAUDE_CODE_SIMPLE=1. Anthropic auth is
                                         strictly ANTHROPIC_API_KEY or
                                         apiKeyHelper via --settings (OAuth and
@@ -89,8 +92,7 @@ Options:
                                         overloaded or not available. Accepts a
                                         comma-separated list to try each in
                                         order. Re-tries the primary at the start
-                                        of each user turn. (only works with
-                                        --print)
+                                        of each user turn.
   --file <specs...>                     File resources to download at startup.
                                         Format: file_id:relative_path (e.g.,
                                         --file file_abc:doc.txt
@@ -155,7 +157,8 @@ Options:
                                         (choices: "host", "none", default:
                                         "host")
   --plugin-dir <path>                   Load a plugin from a directory or .zip
-                                        for this session only (repeatable:
+                                        for this session only; a folder of
+                                        plugins loads each child (repeatable:
                                         --plugin-dir A --plugin-dir B.zip)
                                         (default: [])
   --plugin-url <url>                    Fetch a plugin .zip from a URL for this
@@ -204,15 +207,15 @@ Options:
                                         open interactive picker with optional
                                         search term
   --safe-mode                           Start with all customizations
-                                        (CLAUDE.md, skills, plugins, hooks, MCP
-                                        servers, custom commands and agents,
-                                        output styles, workflows, custom themes,
-                                        keybindings, and more) disabled — useful
-                                        for troubleshooting a broken
+                                        (CLAUDE.md, skills, installed plugins,
+                                        hooks, MCP servers, custom commands and
+                                        agents, output styles, workflows, custom
+                                        themes, keybindings, and more) disabled
+                                        — useful for troubleshooting a broken
                                         configuration. Admin-managed (policy)
                                         settings still apply. Auth, model
-                                        selection, built-in tools, and
-                                        permissions work normally. Sets
+                                        selection, built-in tools and plugins,
+                                        and permissions work normally. Sets
                                         CLAUDE_CODE_SAFE_MODE=1.
   --session-id <uuid>                   Use a specific session ID for the
                                         conversation (must be a valid UUID)
@@ -225,22 +228,20 @@ Options:
   --system-prompt <prompt>              System prompt to use for the session
   --system-prompt-snapshot <on|off>     Record the system prompt once per
                                         conversation and reuse it verbatim on
-                                        every request and resume (recommended:
-                                        on). By default it is on for the
-                                        built-in prompt, and passing
+                                        every request and resume. on (the
+                                        default): the prompt is rendered on the
+                                        conversation's first request — a
                                         --system-prompt or
-                                        --append-system-prompt turns it off so
-                                        the given text applies fresh each
-                                        launch. on: an existing record in the
-                                        conversation is sent as-is (a later
-                                        launch's different
-                                        --system-prompt/--append-system-prompt
-                                        is ignored until compaction); otherwise
-                                        the prompt is rendered with the append
-                                        included, sent, and recorded. off: never
-                                        record. No effect where system-prompt
-                                        recording is not yet enabled. (choices:
-                                        "on", "off")
+                                        --append-system-prompt included — sent,
+                                        and recorded; every later request and
+                                        resume sends the record as-is, even when
+                                        a later launch passes different text,
+                                        until the conversation is compacted.
+                                        off: never record; the prompt is
+                                        rendered fresh every request (for
+                                        iterating on prompt text). No effect
+                                        where system-prompt recording is not yet
+                                        enabled. (choices: "on", "off")
   --teleport [session]                  Resume a teleport session, optionally
                                         specify session ID
   --tmux                                Create a tmux session for the worktree
