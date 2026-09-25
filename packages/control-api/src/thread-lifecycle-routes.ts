@@ -36,6 +36,7 @@ async function lifecycle(
   ctx: ThreadLifecycleRouteCtx,
   threadId: string,
   service: ((id: string) => Promise<unknown>) | undefined,
+  requiresIdle: boolean,
   res: ServerResponse,
 ): Promise<void> {
   if (!service) {
@@ -44,6 +45,15 @@ async function lifecycle(
   }
   await chainThreadMutation(ctx.turnCtx.threadTurnChains, threadId, async () => {
     try {
+      const active = requiresIdle
+        ? findActiveMutatingThreadRun(await ctx.listRuns(), threadId)
+        : undefined;
+      if (active) {
+        throw Object.assign(
+          new Error(`thread ${threadId} has an active mutating turn (${active.state})`),
+          { status: 409, code: "thread_busy" },
+        );
+      }
       ctx.json(res, 200, ControlThread.parse(projectThread(await service(threadId), false)));
     } catch (error) {
       ctx.requestError(res, error);
@@ -65,6 +75,7 @@ export async function handleThreadLifecycleRoutes(
       ctx,
       decodeURIComponent(threadTrashMatch[1] as string),
       ctx.services?.trashThread,
+      true,
       res,
     );
     return true;
@@ -75,6 +86,7 @@ export async function handleThreadLifecycleRoutes(
       ctx,
       decodeURIComponent(threadRestoreMatch[1] as string),
       ctx.services?.restoreThread,
+      false,
       res,
     );
     return true;
@@ -85,6 +97,7 @@ export async function handleThreadLifecycleRoutes(
       ctx,
       decodeURIComponent(threadPurgeMatch[1] as string),
       ctx.services?.purgeThread,
+      true,
       res,
     );
     return true;

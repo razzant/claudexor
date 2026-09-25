@@ -6777,6 +6777,66 @@ describe("DaemonControlApiServer", () => {
   });
 
   for (const activeState of ["queued", "running"] as const) {
+    it(`refuses thread trash and purge with thread_busy while a mutating turn is ${activeState}`, async () => {
+      const { daemon } = fakeDaemon();
+      const now = new Date().toISOString();
+      const threadObj = {
+        schema_version: 2,
+        id: "th-lifecycle-busy",
+        created_at: now,
+        updated_at: now,
+        repo: { root: tmpdir(), base_ref: "HEAD" },
+        title: "busy thread",
+        mode: "agent",
+        workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+        auth_preference: "auto",
+        primary_harness: null,
+        eligible_harnesses: [],
+        routingGoal: "auto",
+        run_ids: [],
+        head_run_id: null,
+        state: "active",
+      };
+      let mutations = 0;
+      const busyDaemon: DaemonFacadeClient = {
+        ...daemon,
+        async list() {
+          return [
+            {
+              id: "job-active",
+              state: activeState,
+              params: { threadId: "th-lifecycle-busy", mode: "agent" },
+            },
+          ];
+        },
+      };
+      await withDaemonServer(
+        busyDaemon,
+        async (base) => {
+          for (const action of ["trash", "purge"]) {
+            const response = await apiFetch(`${base}/threads/th-lifecycle-busy/${action}`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}` },
+            });
+            expect(response.status).toBe(409);
+            expect(((await response.json()) as { code: string }).code).toBe("thread_busy");
+          }
+          expect(mutations).toBe(0);
+        },
+        undefined,
+        {
+          trashThread: async () => {
+            mutations += 1;
+            return threadObj;
+          },
+          purgeThread: async () => {
+            mutations += 1;
+            return threadObj;
+          },
+        },
+      );
+    });
+
     it(`refuses thread apply with thread_busy while a mutating turn is ${activeState}`, async () => {
       const now = new Date().toISOString();
       const threadObj = {

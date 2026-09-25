@@ -389,6 +389,26 @@ public final class GatewayClient: Sendable {
         return try Self.decoder.decode(ThreadSummary.self, from: data)
     }
 
+    /// Move a thread into recoverable trash before an explicit purge.
+    public func trashThread(id: String) async throws -> ThreadSummary {
+        try await mutateThreadLifecycle(id: id, action: "trash")
+    }
+
+    /// Irreversibly purge a thread that is already in trash.
+    public func purgeThread(id: String) async throws -> ThreadSummary {
+        try await mutateThreadLifecycle(id: id, action: "purge")
+    }
+
+    private func mutateThreadLifecycle(id: String, action: String) async throws -> ThreadSummary {
+        let req = request("threads/\(id)/\(action)", method: "POST")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(ThreadSummary.self, from: data)
+    }
+
     /// Deliver an isolated thread's accumulated worktree diff to its project.
     public func applyThread(id: String, body: ThreadApplyRequest) async throws -> ThreadApplyResponse {
         var req = request("threads/\(id)/apply", method: "POST")

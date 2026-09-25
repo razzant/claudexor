@@ -952,6 +952,43 @@ import Testing
         #expect(reopenObj?["state"] as? String == "active")
     }
 
+    @Test func permanentThreadDeleteUsesTrashThenPurgeAndStopsOnTrashFailure() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t", session: session)
+        defer { RequestStubURLProtocol.handler = nil }
+        let body = Data(#"{"id":"th-1","title":"Delete me","repoRoot":"/tmp/project","mode":"agent","workspaceMode":"in_place","authPreference":"auto","primaryHarness":null,"eligibleHarnesses":[],"state":"trashed","trashedAt":"2026-09-24T00:00:00Z","purgeAfter":"2026-10-24T00:00:00Z","runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"2026-09-24T00:00:00Z","updatedAt":"2026-09-24T00:00:00Z"}"#.utf8)
+        nonisolated(unsafe) var paths: [String] = []
+        RequestStubURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            return (
+                HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"])!,
+                body)
+        }
+
+        _ = try await client.trashThread(id: "th-1")
+        _ = try await client.purgeThread(id: "th-1")
+        #expect(paths == ["/v2/threads/th-1/trash", "/v2/threads/th-1/purge"])
+
+        paths = []
+        RequestStubURLProtocol.handler = { request in
+            paths.append(request.url?.path ?? "")
+            return (
+                HTTPURLResponse(
+                    url: request.url!, statusCode: 409, httpVersion: "HTTP/1.1", headerFields: nil)!,
+                Data(#"{"code":"thread_busy","message":"thread is busy"}"#.utf8))
+        }
+        do {
+            _ = try await client.trashThread(id: "th-1")
+            _ = try await client.purgeThread(id: "th-1")
+        } catch {}
+        #expect(paths == ["/v2/threads/th-1/trash"])
+    }
+
     @Test func harnessStatusDecodesConfiguredModelCheck() throws {
         let json = """
         {"id":"codex","status":"ok","enabledIntents":[],"disabledIntents":[],"checks":[],

@@ -401,6 +401,55 @@ extension AppModel {
         await setThreadState(locationID: locationID, id: id, state: "active")
     }
 
+    /// Permanent delete is deliberately two-phase: the server must acknowledge
+    /// recoverable trash before the irreversible purge is attempted.
+    func permanentlyDeleteThread(locationID: ExecutionLocationID, id: String) async {
+        func refreshProjection() async {
+            if locationID == .local {
+                await refreshThreads()
+            } else {
+                await refreshRemoteThreads(locationID)
+            }
+        }
+
+        guard !isThreadBusy(id, at: locationID) else {
+            threadStatus = "Stop the running turn before permanently deleting this thread."
+            return
+        }
+        guard let requestClient = gateway(for: locationID) else {
+            threadStatus = "Engine offline — reconnect to delete this thread."
+            return
+        }
+        var trashed = false
+        do {
+            _ = try await requestClient.trashThread(id: id)
+            trashed = true
+            guard isCurrentGateway(requestClient, at: locationID) else {
+                await refreshProjection()
+                threadStatus = "Engine connection changed after trashing; permanent deletion was not attempted."
+                return
+            }
+            _ = try await requestClient.purgeThread(id: id)
+            guard isCurrentGateway(requestClient, at: locationID) else {
+                await refreshProjection()
+                threadStatus = "Thread was purged, but the engine connection changed before refresh."
+                return
+            }
+
+            if selectedExecutionLocation == locationID, selectedThreadId == id {
+                startDraftThread()
+            }
+            await refreshProjection()
+        } catch {
+            if trashed {
+                await refreshProjection()
+                threadStatus = "Thread was trashed, but permanent deletion could not be confirmed: \(userMessage(for: error))"
+            } else {
+                threadStatus = "Could not permanently delete thread: \(userMessage(for: error))"
+            }
+        }
+    }
+
     private func setThreadState(
         locationID: ExecutionLocationID,
         id: String,

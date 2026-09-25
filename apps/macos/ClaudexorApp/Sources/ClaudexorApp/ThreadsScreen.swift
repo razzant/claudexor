@@ -316,11 +316,34 @@ struct ThreadsScreen: View {
                 }
             }
         )) { renameSheet }
+        .confirmationDialog(
+            "Delete thread permanently?",
+            isPresented: Binding(
+                get: { deleteTargetId != nil },
+                set: {
+                    if !$0 {
+                        deleteTargetId = nil
+                        deleteTargetLocation = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Permanently", role: .destructive) { confirmPermanentDelete() }
+            Button("Cancel", role: .cancel) {
+                deleteTargetId = nil
+                deleteTargetLocation = nil
+            }
+        } message: {
+            Text("This removes the conversation and its thread workspace. This action cannot be undone.")
+        }
     }
 
     @State var renameDraft = ""
     @State var renameTargetId: String?
     @State var renameTargetLocation: ExecutionLocationID?
+    @State var deleteTargetId: String?
+    @State var deleteTargetLocation: ExecutionLocationID?
     // MARK: Conversation pane
 
     private var conversation: some View {

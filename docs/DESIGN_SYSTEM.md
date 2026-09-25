@@ -503,9 +503,10 @@ frequency and volume are. The contracts:
 - Single window, **three regions**:
   - **Thread list (glass sidebar):** the conversations, with a needs-you marker;
     "New" enters the draft state (the first message materializes the thread).
-    Each row carries a context menu — Rename… (title sheet) and
-    Archive/Reopen — riding the server-owned `PATCH /threads/:id`
-    (`title`/`state`); no local-only thread state. The sidebar's BOTTOM-LEFT
+    Each row carries a context menu — Rename… (title sheet), Archive/Reopen,
+    and confirmed permanent deletion. Deletion is disabled while the head run
+    is active and uses server-owned trash then purge; rename/archive ride
+    `PATCH /threads/:id` (`title`/`state`). No local-only thread state. The sidebar's BOTTOM-LEFT
     carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
     single-line trigger — worst-readiness dot + the account name (or "N
     accounts") + worst quota % + chevron — that opens a popover to manage
