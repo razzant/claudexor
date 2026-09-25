@@ -1,5 +1,7 @@
 import {
   ControlProblem,
+  ControlThread,
+  ControlThreadTurnResponse,
   isTerminalLifecycle,
   ModeKind,
   RunExecution,
@@ -93,6 +95,9 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       );
     }
     if (p?.mode === "__journal_recovery") return journalRecoveryQuery(p);
+    if (p?.mode === "__thread_create" || p?.mode === "__thread_turn") {
+      return threadQuery(p, options.requireExistingDaemon === true);
+    }
     if (typeof p?.mode === "string" && p.mode.startsWith("__acp_session_")) {
       if (!options.acpSessionQuery) {
         throw new Error("ACP session operation reached a non-ACP surface");
@@ -133,6 +138,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       ...(p?.council === true ? { council: true } : {}),
       ...(Array.isArray(p?.tests) ? { tests: p.tests } : {}),
       ...(p?.paidBudget ? { paidBudget: p.paidBudget } : {}),
+      ...(p?.credentialProfileId ? { credentialProfileId: String(p.credentialProfileId) } : {}),
       ...(p?.access ? { access: String(p.access) } : {}),
       // `externalContextPolicy` is the control-api-parity alias of `web`; the
       // validator already enforced equality when both are present. Honor the
@@ -246,6 +252,84 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       }
       throw error;
     }
+  };
+}
+
+async function threadQuery(
+  input: Record<string, unknown>,
+  requireExistingDaemon: boolean,
+): Promise<Record<string, unknown>> {
+  const connection = requireExistingDaemon ? await connectDaemonIfRunning() : await ensureDaemon();
+  if (!connection) throw new Error(BELT_DAEMON_LOST);
+  const creating = input["mode"] === "__thread_create";
+  const threadId = typeof input["threadId"] === "string" ? input["threadId"] : "";
+  const path = creating ? "/threads" : `/threads/${encodeURIComponent(threadId)}/turns`;
+  const body: Record<string, unknown> = creating
+    ? {
+        ...(input["title"] ? { title: input["title"] } : {}),
+        scope: { kind: "project", root: String(input["repoPath"] ?? process.cwd()) },
+        ...(input["defaultMode"] ? { mode: input["defaultMode"] } : {}),
+        ...(input["workspace"] ? { workspace: input["workspace"] } : {}),
+        ...(input["credentialProfileId"]
+          ? { credentialProfileId: input["credentialProfileId"] }
+          : {}),
+        ...(input["primaryHarness"] ? { primaryHarness: input["primaryHarness"] } : {}),
+        ...(input["eligibleHarnesses"] ? { eligibleHarnesses: input["eligibleHarnesses"] } : {}),
+        ...(input["access"] ? { access: input["access"] } : {}),
+      }
+    : {
+        prompt: String(input["prompt"] ?? ""),
+        ...(input["runMode"] ? { mode: input["runMode"] } : {}),
+        ...(input["harness"] ? { harnesses: [input["harness"]] } : {}),
+        ...(input["primaryHarness"] ? { primaryHarness: input["primaryHarness"] } : {}),
+        ...(input["model"] ? { model: input["model"] } : {}),
+        ...(input["effort"] ? { effort: input["effort"] } : {}),
+        ...(input["credentialProfileId"]
+          ? { credentialProfileId: input["credentialProfileId"] }
+          : {}),
+        ...(input["access"] ? { access: input["access"] } : {}),
+        ...(input["web"] ? { web: input["web"] } : {}),
+        ...(input["maxSeconds"] ? { maxSeconds: input["maxSeconds"] } : {}),
+      };
+  const response = await controlApiFetch(connection.addr, path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) {
+    throw controlProblemError(
+      response.status,
+      result,
+      `thread ${creating ? "create" : "turn"} failed (HTTP ${response.status})`,
+    );
+  }
+  if (creating) {
+    const parsed = ControlThread.safeParse(result);
+    if (!parsed.success) {
+      throw controlProblemError(
+        502,
+        { code: "invalid_response", error: "daemon returned an invalid thread response" },
+        "daemon returned an invalid thread response",
+      );
+    }
+    return {
+      ...parsed.data,
+      threadId: parsed.data.id,
+      summary: `created thread ${parsed.data.id}`,
+    };
+  }
+  const parsed = ControlThreadTurnResponse.safeParse(result);
+  if (!parsed.success) {
+    throw controlProblemError(
+      502,
+      { code: "invalid_response", error: "daemon returned an invalid thread-turn response" },
+      "daemon returned an invalid thread-turn response",
+    );
+  }
+  return {
+    ...parsed.data,
+    summary: `queued turn ${parsed.data.turnId} on thread ${parsed.data.threadId}`,
   };
 }
 

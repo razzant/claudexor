@@ -440,6 +440,7 @@ completion; follow the handle with the status/result tools before claiming an
 answer, finished work, or applyability.
 The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`,
 `claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
+`claudexor_thread_create`, `claudexor_thread_turn`,
 `claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
@@ -453,8 +454,11 @@ honors per-vendor rate-limit cooldowns),
 `claudexor_apply_check`, and
 `claudexor_journal_recovery`. The destructive
 `claudexor_quarantine_journal` requires an exact partition fingerprint and
-explicit `quarantine_and_start_fresh` confirmation. MCP does not claim live
-thread parity.
+explicit `quarantine_and_start_fresh` confirmation. One-shot runs and thread
+turns accept `credentialProfileId` as a strict account pin. Create a thread
+once, enqueue follow-ups with `claudexor_thread_turn`, then follow each returned
+`runId` with the ordinary status/result tools. If a turn returns only a queued
+`jobId`, use `claudexor_runs` to recover its `runId` after binding.
 
 Tools declare MCP behavior annotations (readOnlyHint for every non-agent
 route — ask/plan are read-only) and, for run tools and

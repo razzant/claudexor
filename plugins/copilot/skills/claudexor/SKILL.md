@@ -52,7 +52,12 @@ Start read-only unless the user explicitly asked to change or create files.
    `claudexor_plan` for a read-only implementation plan.
 5. Only for explicit implementation intent, use `claudexor_run`,
    `claudexor_best_of`, or `claudexor_create`. Pass an absolute `repoPath`
-   whenever the target repository could be ambiguous.
+   whenever the target repository could be ambiguous. Pass
+   `credentialProfileId` to pin the run strictly to one account.
+6. For durable multi-turn work, call `claudexor_thread_create` once and enqueue
+   each follow-up with `claudexor_thread_turn`. Follow the returned `runId` with
+   the same status/result tools as a one-shot run; if only a queued `jobId` is
+   returned, use `claudexor_runs` to recover its `runId` after binding.
 
 Run tools enqueue work and return a durable handle, not terminal output or
 proof of completion. Use `claudexor_runs`, `claudexor_inspect`,
