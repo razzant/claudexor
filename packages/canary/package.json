@@ -6,7 +6,7 @@
   "description": "Canary golden stories: user-level E2E smokes over the PUBLIC surfaces (built CLI + fake harnesses), pinned to Bible invariants. Run via `pnpm canary`.",
   "type": "module",
   "dependencies": {
-    "yaml": "^2.6.1"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@claudexor/schema": "workspace:*"

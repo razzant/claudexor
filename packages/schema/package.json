@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@claudexor/util": "workspace:*",
-    "zod": "^4.4.3",
+    "zod": "^4.6.5",
     "zod-to-json-schema": "^3.24.1"
   },
   "repository": {
