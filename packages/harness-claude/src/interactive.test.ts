@@ -11,6 +11,7 @@ import {
   interactionRequestFromNative,
   isControlRequestFrame,
   isResultFrame,
+  userMessageFrame,
 } from "./interactive.js";
 
 function fakeIo(): { io: ChildStdin; written: string[]; ended: boolean; close(): void } {
@@ -68,6 +69,25 @@ describe("claude interactive control protocol", () => {
     const frame = JSON.parse(initialUserMessageFrame("hello")) as Record<string, any>;
     expect(frame["type"]).toBe("user");
     expect(frame["message"]["content"][0]["text"]).toBe("hello");
+  });
+
+  it("gives every user frame the recorded identity shape: a uuid (fresh per prompt, the caller's for a live message) and a null parent", () => {
+    // The prompt's own uuid keeps its --replay-user-messages echo identifiable
+    // (and ignored) beside the live messages' echoes: two prompts never share one.
+    const a = JSON.parse(initialUserMessageFrame("hello")) as Record<string, any>;
+    const b = JSON.parse(initialUserMessageFrame("hello")) as Record<string, any>;
+    expect(typeof a["uuid"]).toBe("string");
+    expect(a["uuid"]).not.toBe(b["uuid"]);
+    expect(a["parent_tool_use_id"]).toBeNull();
+    // A live message rides the exact frame recorded on 2.1.283 with the
+    // message id as its uuid — the key every receipt is correlated by.
+    expect(JSON.parse(userMessageFrame("Also say MANGO.", "live-msg-1"))).toEqual({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "Also say MANGO." }] },
+      parent_tool_use_id: null,
+      uuid: "live-msg-1",
+    });
+    expect(JSON.parse(initialUserMessageFrame("hello", [], "pinned"))["uuid"]).toBe("pinned");
   });
 
   it("puts an admitted generic-file sentinel in the stream-json vendor payload", () => {

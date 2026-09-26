@@ -10,6 +10,7 @@ import { isAbsolute } from "node:path";
 import {
   ControlQueuedRunInfo,
   ControlRunStartRequest,
+  PROJECT_NOT_REGISTERED_REQUIRED_ACTIONS,
   RecordedControlRunStartRequest,
   RETIRED_EXTERNAL_SANDBOX_FULL,
   runAccessStrategyViolation,
@@ -228,6 +229,24 @@ function retiredAccessProfileError(): Error {
   );
 }
 
+/**
+ * The daemon's typed refusal for an unregistered project root, or null. It
+ * crosses the daemon socket with code/status/retryable only, so the one
+ * remedy is restored here; a caller-facing answer is a 404 the caller fixes
+ * by registering the root (or declaring scope.ephemeral), never a retry.
+ */
+function projectNotRegisteredError(error: unknown): Error | null {
+  if (!(error instanceof Error)) return null;
+  const typed = error as Error & { code?: unknown; status?: unknown; requiredActions?: unknown };
+  if (typed.code !== "project_not_registered") return null;
+  const actions = Array.isArray(typed.requiredActions) ? typed.requiredActions : [];
+  return Object.assign(typed, {
+    status: typeof typed.status === "number" ? typed.status : 404,
+    retryable: false,
+    requiredActions: actions.length > 0 ? actions : [...PROJECT_NOT_REGISTERED_REQUIRED_ACTIONS],
+  });
+}
+
 export interface RunCreateRouteContext {
   daemon: DaemonFacadeClient;
   readBody(req: IncomingMessage): Promise<unknown>;
@@ -243,7 +262,9 @@ export interface RunCreateRouteContext {
  * fails after the first durable lookup missed it. The second lookup is a
  * single race-closing probe, not polling. Only a successful miss preserves
  * the preflight refusal; an unreadable durable index leaves custody unknown
- * and asks the caller to replay the same idempotency key.
+ * and asks the caller to replay the same idempotency key. The daemon's typed
+ * `project_not_registered` is not an unreadable index: it passes through as
+ * its own 404 so the caller registers the root instead of retrying forever.
  */
 export async function findAcceptedAroundPreflight<T>(
   findAccepted: () => Promise<T | null | undefined>,
@@ -252,7 +273,9 @@ export async function findAcceptedAroundPreflight<T>(
   const lookup = async (): Promise<T | null | undefined> => {
     try {
       return await findAccepted();
-    } catch {
+    } catch (error) {
+      const unregistered = projectNotRegisteredError(error);
+      if (unregistered) throw unregistered;
       throw Object.assign(
         new Error(
           "idempotency status is temporarily unavailable; retry the same operation with the same Idempotency-Key",
@@ -430,12 +453,21 @@ export async function handleRunCreate(
       idempotencyRequest: params,
     });
   } catch (error) {
+    // A root unregistered between the lookup and enqueue answers the same
+    // typed refusal as the lookup; every typed enqueue error keeps its facts.
+    const typed = (projectNotRegisteredError(error) ?? error) as {
+      status?: unknown;
+      code?: unknown;
+      retryable?: unknown;
+      requiredActions?: unknown;
+    } | null;
     const status =
-      error && typeof error === "object" && "status" in error
-        ? Number((error as { status: number }).status)
-        : 500;
+      typed && typeof typed === "object" && "status" in typed ? Number(typed.status) : 500;
     return ctx.json(res, status, {
       error: error instanceof Error ? error.message : "enqueue failed",
+      ...(typeof typed?.code === "string" ? { code: typed.code } : {}),
+      ...(typeof typed?.retryable === "boolean" ? { retryable: typed.retryable } : {}),
+      ...(Array.isArray(typed?.requiredActions) ? { requiredActions: typed.requiredActions } : {}),
     });
   }
   try {

@@ -510,3 +510,111 @@ describe("runCliHarness harness_reported_error terminal fact", () => {
     expect(reported(events)).toBe(false);
   }, 15_000);
 });
+
+/**
+ * Live-input seam (Claude's native queue fold): the adapter's live-input owner
+ * receives the stdin handle once after spawn and `null` exactly once when stdin
+ * closes; `closeStdinOn` returning false HOLDS the session open past a native
+ * terminal frame so the CLI can run a queued message as its next turn.
+ */
+const FAKE_MULTI_TURN_CLI = `
+const rl = require('node:readline').createInterface({ input: process.stdin });
+let users = 0;
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'user') return;
+  users += 1;
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', n: users }));
+});
+rl.on('close', () => process.exit(0));
+`;
+
+describe("runCliHarness session onIo + hold", () => {
+  const userFrame = JSON.stringify({ type: "user", message: { content: [] } }) + "\n";
+
+  it("hands the live handle to onIo after the initial frame and null exactly once when the result closes stdin", async () => {
+    const calls: string[] = [];
+    const events: HarnessEvent[] = [];
+    for await (const ev of runCliHarness({
+      bin: process.execPath,
+      args: ["-e", FAKE_MULTI_TURN_CLI],
+      spec: spec(),
+      parseEvent: (obj) => ((obj as Record<string, unknown>)["type"] === "result" ? [] : null),
+      session: {
+        initialStdin: userFrame,
+        matches: () => false,
+        handle: async function* () {},
+        closeStdinOn: (obj) => (obj as Record<string, unknown>)["type"] === "result",
+        onIo: (io, sessionId) => calls.push(`${io ? "io" : "null"}:${sessionId}`),
+      },
+    })) {
+      events.push(ev);
+    }
+    expect(calls).toEqual(["io:ses-loop", "null:ses-loop"]);
+    expect(events.at(-1)).toMatchObject({ type: "completed", payload: { exit_code: 0 } });
+  }, 15_000);
+
+  it("keeps stdin open while closeStdinOn is false, so a second frame written through the handle runs as the next turn", async () => {
+    const calls: string[] = [];
+    let io: ChildStdin | null = null;
+    const results: number[] = [];
+    for await (const ev of runCliHarness({
+      bin: process.execPath,
+      args: ["-e", FAKE_MULTI_TURN_CLI],
+      spec: spec(),
+      parseEvent: (obj) => {
+        const o = obj as Record<string, unknown>;
+        if (o["type"] !== "result") return null;
+        results.push(Number(o["n"]));
+        return [
+          {
+            type: "message",
+            session_id: "ses-loop",
+            ts: new Date().toISOString(),
+            text: `r${o["n"]}`,
+          },
+        ];
+      },
+      session: {
+        initialStdin: userFrame,
+        matches: () => false,
+        handle: async function* () {},
+        // The FIRST result does not close the session (a "queued" message is
+        // still pending); the second one does.
+        closeStdinOn: (obj) => (obj as Record<string, unknown>)["n"] === 2,
+        onIo: (handle) => {
+          calls.push(handle ? "io" : "null");
+          io = handle;
+        },
+      },
+    })) {
+      if (ev.type === "message" && ev.text === "r1") {
+        // stdin is still open after result#1: the live handle accepts the next frame.
+        expect(io).not.toBeNull();
+        io!.write(userFrame);
+      }
+    }
+    expect(results).toEqual([1, 2]);
+    expect(calls).toEqual(["io", "null"]);
+    expect(io).toBeNull();
+  }, 15_000);
+
+  it("still reports null once in the finally when the child exits without a closing frame", async () => {
+    const calls: string[] = [];
+    for await (const _ev of runCliHarness({
+      bin: process.execPath,
+      args: ["-e", "process.stdin.resume(); setTimeout(() => process.exit(0), 50)"],
+      spec: spec(),
+      parseEvent: () => null,
+      session: {
+        matches: () => false,
+        handle: async function* () {},
+        closeStdinOn: () => false,
+        onIo: (io) => calls.push(io ? "io" : "null"),
+      },
+    })) {
+      // drain
+    }
+    expect(calls).toEqual(["io", "null"]);
+  }, 15_000);
+});

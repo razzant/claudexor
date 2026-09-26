@@ -87,8 +87,8 @@ import {
   handleControlRequestFrame,
   initialSessionFrames,
   isControlRequestFrame,
-  isResultFrame,
 } from "./interactive.js";
+import { createClaudeLiveInput, type ClaudeLiveInput } from "./live-input.js";
 import { CLAUDE_MODEL_INVENTORY, probeClaudeModels } from "./model-probe.js";
 
 export const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter(
@@ -286,10 +286,14 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
     runCliHarness,
     ...deps,
   };
+  const live = createClaudeLiveInput();
   return {
     id: "claude",
     capabilityProfile: CLAUDE_CAPABILITY_PROFILE,
     prepareProcessing: prepareClaudeSessionProcessing,
+    // Live input into a running interactive session (live-input.ts): typed
+    // receipts from the native stdin queue; never cancels or fails the run.
+    message: live.message,
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
       if (version === null) {
@@ -595,11 +599,11 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
     },
 
     run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-      return runClaude(spec, runtime);
+      return runClaude(spec, runtime, live);
     },
 
     review(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-      return runClaude(spec, runtime);
+      return runClaude(spec, runtime, live);
     },
 
     models(spec) {
@@ -652,6 +656,8 @@ export function claudeArgsForSpec(
         "--verbose",
         "--permission-prompt-tool",
         "stdio",
+        // Echo every stdin user frame back (`isReplay`): the live-input receipt.
+        "--replay-user-messages",
         ...permissionArgs(spec.access),
       ]
     : [
@@ -775,6 +781,7 @@ function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: S
 async function* runClaude(
   spec: HarnessRunSpec,
   runtime: ClaudeRuntimeDeps,
+  live: ClaudeLiveInput,
 ): AsyncIterable<HarnessEvent> {
   const abortSignal = abortSignalFromSpec(spec);
   if (spec.access === "readonly") {
@@ -937,7 +944,8 @@ async function* runClaude(
     redact: redactSecrets,
     parseEvent: (obj, sessionId) => {
       const parsed = baseParser(obj, sessionId);
-      const out = observeProcessing ? observeProcessing(obj, parsed, sessionId) : parsed;
+      const processed = observeProcessing ? observeProcessing(obj, parsed, sessionId) : parsed;
+      const out = live.observe(obj, processed, sessionId);
       if (out) {
         for (const ev of out) {
           // The auth route is fixed before spawn. Carry it on every event so
@@ -956,7 +964,11 @@ async function* runClaude(
             initialStdin: initialSessionFrames(spec.prompt, attachmentBlocks),
             matches: isControlRequestFrame,
             handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
-            closeStdinOn: isResultFrame,
+            // Held open past a result while a live message is queued|started or
+            // a run-owned background task is open (the CLI then runs the next
+            // native turn in this process); closes on the first quiet result.
+            closeStdinOn: (obj) => live.closeStdinOn(spec.session_id, obj),
+            onIo: live.onIo,
           },
         }
       : {}),

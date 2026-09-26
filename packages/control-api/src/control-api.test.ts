@@ -9489,6 +9489,149 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  // The daemon socket transports code/status/retryable; requiredActions do not cross it.
+  const unregisteredRootError = (root: string) =>
+    Object.assign(new Error(`project is not registered: ${root}`), {
+      code: "project_not_registered",
+      status: 404,
+      retryable: false,
+    });
+
+  it("POST /runs answers a typed 404 for an unregistered root and succeeds after POST /projects", async () => {
+    const { daemon } = fakeDaemon();
+    const root = reapMk(join(tmpdir(), "claudexor-unregistered-root-"));
+    const registered = new Set<string>();
+    const requireRegistered = (params: unknown) => {
+      const scope = (params as { scope?: { kind?: string; root?: string } }).scope;
+      if (scope?.kind === "project" && scope.root && !registered.has(scope.root)) {
+        throw unregisteredRootError(scope.root);
+      }
+    };
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted(params) {
+        requireRegistered(params);
+        return null;
+      },
+      async enqueue(params, options) {
+        requireRegistered(params);
+        enqueueCalls += 1;
+        return daemon.enqueue(params, options);
+      },
+    };
+    const now = new Date().toISOString();
+    const services: DaemonControlApiOptions["services"] = {
+      registerProject: async (input) => {
+        registered.add((input as { root: string }).root);
+        return {
+          schema_version: 2,
+          id: "prj-unregistered",
+          root,
+          created_at: now,
+          updated_at: now,
+        };
+      },
+    };
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        const start = () =>
+          apiFetch(`${base}/runs`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "unregistered-root" },
+            body: JSON.stringify({
+              prompt: "hello",
+              mode: "agent",
+              scope: { kind: "project", root },
+            }),
+          });
+        const refused = await start();
+        expect(refused.status).toBe(404);
+        expect(await refused.json()).toMatchObject({
+          code: "project_not_registered",
+          retryable: false,
+          requiredActions: [expect.stringMatching(/POST \/v2\/projects.*scope\.ephemeral=true/)],
+        });
+        expect(enqueueCalls).toBe(0);
+
+        const registration = await apiFetch(`${base}/projects`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ root }),
+        });
+        expect(registration.status).toBe(200);
+
+        const accepted = await start();
+        expect(accepted.status).toBe(200);
+        expect(await accepted.json()).toMatchObject({ jobId: expect.any(String) });
+        expect(enqueueCalls).toBe(1);
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("POST /runs answers the same typed 404 when the root is unregistered between lookup and enqueue", async () => {
+    const { daemon, record } = fakeDaemon();
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted() {
+        return null;
+      },
+      async enqueue() {
+        throw unregisteredRootError(String(record.runDir));
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "unregistered-race" },
+        body: JSON.stringify({
+          prompt: "hello",
+          mode: "agent",
+          scope: { kind: "project", root: record.runDir },
+        }),
+      });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({
+        code: "project_not_registered",
+        retryable: false,
+        requiredActions: [expect.stringMatching(/POST \/v2\/projects/)],
+      });
+    });
+  });
+
+  it("Exact Retry answers a typed 404, not the custody 503, when the source root is unregistered", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    let enqueueCalls = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async findAccepted() {
+        throw unregisteredRootError(String(record.runDir));
+      },
+      async enqueue() {
+        enqueueCalls += 1;
+        throw new Error("an unregistered retry must not enqueue");
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "unregistered-retry" },
+        body: "{}",
+      });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({
+        code: "project_not_registered",
+        retryable: false,
+        requiredActions: [expect.stringMatching(/POST \/v2\/projects/)],
+      });
+      expect(enqueueCalls).toBe(0);
+    });
+  });
+
   it.each([undefined, false, true])(
     "preserves recorded review=%s through Retry, Run Again and decision rerun",
     async (review) => {

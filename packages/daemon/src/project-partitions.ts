@@ -6,7 +6,7 @@ import type {
   Thread,
   ThreadTurn,
 } from "@claudexor/schema";
-import { isEphemeralRunScope } from "@claudexor/schema";
+import { isEphemeralRunScope, PROJECT_NOT_REGISTERED_REQUIRED_ACTIONS } from "@claudexor/schema";
 import { hashJson, isClaudexorOwnedRuntimePath } from "@claudexor/util";
 import type { CommandStore } from "./command-store.js";
 import type { JournalManager, JournalProjectionSlot } from "./journal-manager.js";
@@ -523,6 +523,8 @@ export class ProjectPartitions implements CommandAuthority {
       throw Object.assign(new Error(`project is not registered: ${root}`), {
         code: "project_not_registered",
         status: 404,
+        retryable: false,
+        requiredActions: [...PROJECT_NOT_REGISTERED_REQUIRED_ACTIONS],
       });
     }
     return this.partitions.ensure(project.id);

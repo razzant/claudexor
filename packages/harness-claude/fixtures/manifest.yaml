@@ -191,3 +191,65 @@ fixtures:
   # events), hence synthetic per the docs/CHECKLISTS.md fixture rule.
   signals/org-disabled-subscription.jsonl:
     source: synthetic
+  # LIVE INPUT — the native stdin queue fold (claude 2.1.283, live
+  # subscription, model sonnet, recorded 2026-09-26 THROUGH the production
+  # adapter path: createClaudeAdapter -> runClaude -> runCliHarness with the
+  # adapter's own argv, the live-input owner writing the message through
+  # `message()`). DIRECTIONAL wire recordings like protocol/: every
+  # `client->cli` frame (the initialize handshake, the initial prompt, the live
+  # message) sits at the exact position it was written, every `cli->client`
+  # frame is the CLI's raw stdout in order. live-input-fixtures.test.ts replays
+  # them 1:1 through the real adapter against a fake CLI that releases each
+  # recorded stdin frame only once the adapter wrote it.
+  # Sanitized: session ids, uuids (message/lifecycle/result uuids stay
+  # consistent across frames), message/tool-use/request ids, the thinking
+  # signature, the account block and pid of the initialize answer, the
+  # environment fingerprint (tools / slash commands / skills / agents / plugins
+  # / memory, scratchpad, socket and output-style paths, cwd), rate-limit
+  # utilization and reset instants, the request wall clock. Usage, cost and
+  # duration numbers are the recording's own.
+  #
+  # A live message written while the FIRST Bash step ran (queued within 1 ms)
+  # was consumed inside the same turn right after that tool batch: replay echo
+  # + `started`, the model ran step 2 and answered with MANGO in its report,
+  # `completed` preceded the ONE result whose user_message_uuids lists both
+  # the prompt and the message. Foreground Bash emits system/task_started with
+  # is_backgrounded:false (never a hold).
+  stream-json/recorded-live-fold-2.1.283.jsonl:
+    source: recorded
+    cli_version: "2.1.283"
+    recorded_at: "2026-09-26"
+    capture: "live subscription; production adapter path; two Bash steps (python3 time.sleep 12 s, then 3 s); live message written 1.5 s after the first tool_call"
+    sanitized: "ids, signature, account, environment fingerprint, paths, rate-limit telemetry"
+    expectations:
+      final_messages: 1
+      final_source: "result"
+      final_is_last_message: true
+      thinking_events: 0
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: false
+  # A live message written while the model composed its FINAL text (after the
+  # only tool result) stayed queued through result#1 (user_message_uuids lists
+  # only the prompt) and ran as the NEXT native turn of the same process with
+  # stdin held open: `started`, a second system/init, the replay echo, the
+  # MANGO answer and result#2 (user_message_uuids = the message), then exit 0
+  # once the adapter closed stdin. total_cost_usd is cumulative across the two
+  # results (0.0963518 then 0.114749): the adapter emits the second usage as
+  # the delta.
+  stream-json/recorded-live-final-text-2.1.283.jsonl:
+    source: recorded
+    cli_version: "2.1.283"
+    recorded_at: "2026-09-26"
+    capture: "live subscription; production adapter path; Bash echo + a long essay as the final report; live message written 1.5 s after the tool_result"
+    sanitized: "ids, signature, account, environment fingerprint, paths, rate-limit telemetry"
+    expectations:
+      final_messages: 2
+      final_source: "result"
+      final_is_last_message: true
+      thinking_events: 0
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: false

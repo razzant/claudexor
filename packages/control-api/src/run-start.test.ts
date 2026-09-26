@@ -106,6 +106,50 @@ describe("findAcceptedAroundPreflight", () => {
     });
     expect(probes).toBe(2);
   });
+
+  it("surfaces the daemon's typed project_not_registered as a 404, not an unknown custody 503", async () => {
+    // The daemon socket carries code/status/retryable but drops requiredActions.
+    const transported = Object.assign(new Error("project is not registered: /tmp/unregistered"), {
+      code: "project_not_registered",
+      status: 404,
+      retryable: false,
+    });
+    let preflights = 0;
+    const refusal = await findAcceptedAroundPreflight(
+      async () => {
+        throw transported;
+      },
+      async () => {
+        preflights += 1;
+      },
+    ).catch((error: unknown) => error);
+    expect(refusal).toBe(transported);
+    expect(refusal).toMatchObject({
+      status: 404,
+      code: "project_not_registered",
+      retryable: false,
+      requiredActions: [expect.stringMatching(/POST \/v2\/projects.*scope\.ephemeral=true/)],
+    });
+    expect(preflights).toBe(0);
+  });
+
+  it("keeps an unrelated lookup failure on the retryable 503", async () => {
+    await expect(
+      findAcceptedAroundPreflight(
+        async () => {
+          throw Object.assign(new Error("journal partition quarantined"), {
+            code: "partition_unavailable",
+            status: 503,
+          });
+        },
+        async () => undefined,
+      ),
+    ).rejects.toMatchObject({
+      status: 503,
+      code: "idempotency_status_unavailable",
+      retryable: true,
+    });
+  });
 });
 
 describe("ephemeral project roots", () => {

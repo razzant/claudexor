@@ -123,3 +123,10 @@ export const ControlProjectRemoveReceipt = z
     "DELETE /v2/projects/:id receipt: registry entry removed, journal partition archived, artifacts left to GC.",
   );
 export type ControlProjectRemoveReceipt = z.infer<typeof ControlProjectRemoveReceipt>;
+
+/** The one caller remedy for the typed `project_not_registered` refusal (404):
+ * the daemon raises it and the control API restores it on the wire, because the
+ * daemon socket transport carries code/status/retryable but not requiredActions. */
+export const PROJECT_NOT_REGISTERED_REQUIRED_ACTIONS: readonly string[] = [
+  'Register the root with POST /v2/projects {"root": …} (Idempotency-Key required), or declare scope.ephemeral=true for a one-shot tree.',
+];

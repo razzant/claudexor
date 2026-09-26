@@ -331,6 +331,20 @@ describe("ProjectPartitions", () => {
     expect(() => f.partitions.forRequest({ scope: { kind: "project", root: project } })).toThrow(
       /not registered/,
     );
+    // The refusal is a caller fix, not a transient: it names the two remedies
+    // so the control API can answer a typed 404 instead of a retryable 503.
+    let refusal: unknown;
+    try {
+      f.partitions.forRequest({ scope: { kind: "project", root: project } });
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toMatchObject({
+      code: "project_not_registered",
+      status: 404,
+      retryable: false,
+      requiredActions: [expect.stringMatching(/POST \/v2\/projects.*scope\.ephemeral=true/)],
+    });
     const thread = f.partitions.createThread({ repoRoot: project });
     expect(f.partitions.getThread(thread.id)?.repo?.root).toBe(realpathSync(project));
     expect(f.projects.current().list()).toHaveLength(1);

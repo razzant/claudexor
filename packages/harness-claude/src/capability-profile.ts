@@ -81,6 +81,12 @@ export const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile =
     // Claude does not sandbox its MCP servers, so the belt reaches the daemon at
     // workspace_write — no full-access requirement (contrast codex).
     mcp_injection_requires_full_access: false,
+    // Live input rides the native stdin queue (live-input.ts): a user frame
+    // written while a tool runs is queued at once and consumed inside the same
+    // turn right after the current tool batch; one that arrives during the
+    // final text runs as the next native turn of the same process. Recorded on
+    // Claude Code 2.1.283 (fixtures/stream-json/recorded-live-*-2.1.283.jsonl).
+    live_input: "next_tool_boundary",
     attachment_inputs: [
       {
         kind: "image",

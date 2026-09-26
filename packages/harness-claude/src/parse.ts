@@ -42,8 +42,22 @@ export function createClaudeParser(opts: ClaudeParserOptions = {}): ClaudeEventP
   const pendingTools = new Map<string, ToolRef>();
   const deniedTools = new Set(opts.deniedTools ?? []);
   const requiredMcpServers = new Set(opts.requiredMcpServers ?? []);
+  const turns: ClaudeTurnState = { results: 0, cumulativeCostUsd: null };
   return (obj: Json, sessionId: string): HarnessEvent[] | null =>
-    parseClaudeEventStateful(obj, sessionId, pendingTools, deniedTools, requiredMcpServers);
+    parseClaudeEventStateful(obj, sessionId, pendingTools, deniedTools, requiredMcpServers, turns);
+}
+
+/**
+ * Native-turn state of one streaming session. A live message that arrives
+ * during the final text runs as the NEXT native turn of the same process
+ * (live-input.ts): a `result` followed by a second `system/init` and a second
+ * `result` in one run. `total_cost_usd` is CUMULATIVE across those turns (SDK
+ * streaming-input contract) while `usage` tokens stay per turn.
+ */
+interface ClaudeTurnState {
+  /** Results seen so far; an init after one is the next native turn, not a new start. */
+  results: number;
+  cumulativeCostUsd: number | null;
 }
 
 /** Stateless convenience used by tests; resolves results within a single call only. */
@@ -131,12 +145,44 @@ function parseClaudeEventStateful(
   pendingTools: Map<string, ToolRef>,
   deniedTools = new Set<string>(),
   requiredMcpServers = new Set<string>(),
+  turns: ClaudeTurnState = { results: 0, cumulativeCostUsd: null },
 ): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
 
   if (type === "system" && obj.subtype === "init") {
     const mcp = requiredMcpStartupReceipts(obj.mcp_servers, requiredMcpServers);
+    const mcpFailure: HarnessEvent[] =
+      mcp.failed.length > 0
+        ? [
+            {
+              type: "error",
+              session_id: sessionId,
+              ts,
+              error: `Required injected MCP startup failed: ${mcp.failed.join(", ")}`,
+              payload: {
+                code: "required_mcp_startup_failed",
+                mcp_servers: mcp.failed.map((name) => ({ name, status: "failed" })),
+              },
+            },
+          ]
+        : [];
+    // An init AFTER a result is the same process starting its next native turn
+    // for a queued live message (recorded on 2.1.283): the run started ONCE
+    // (attempt trackers restart on `started`), so the turn boundary rides a
+    // typed status event; a required-MCP failure still stops the run.
+    if (turns.results > 0) {
+      return [
+        {
+          type: "status",
+          session_id: sessionId,
+          ts,
+          text: `native turn ${turns.results + 1} started in the same session`,
+          payload: { code: "native_turn_started", turn: turns.results + 1 },
+        },
+        ...mcpFailure,
+      ];
+    }
     return [
       {
         type: "started",
@@ -151,20 +197,7 @@ function parseClaudeEventStateful(
           ...(typeof obj.session_id === "string" ? { native_session_id: obj.session_id } : {}),
         },
       },
-      ...(mcp.failed.length > 0
-        ? [
-            {
-              type: "error" as const,
-              session_id: sessionId,
-              ts,
-              error: `Required injected MCP startup failed: ${mcp.failed.join(", ")}`,
-              payload: {
-                code: "required_mcp_startup_failed",
-                mcp_servers: mcp.failed.map((name) => ({ name, status: "failed" })),
-              },
-            },
-          ]
-        : []),
+      ...mcpFailure,
     ];
   }
 
@@ -287,6 +320,10 @@ function parseClaudeEventStateful(
   }
 
   if (type === "user") {
+    // `--replay-user-messages` echo of a stdin user frame (the initial prompt
+    // or a live message): a consumption RECEIPT that live-input.ts correlates
+    // by uuid, never a tool_result — the parser emits nothing for it.
+    if (obj.isReplay === true) return [];
     const content: Json[] = obj.message?.content ?? [];
     const out: HarnessEvent[] = [];
     for (const block of content) {
@@ -360,6 +397,7 @@ function parseClaudeEventStateful(
   if (type === "result") {
     // The session is finishing: release its accumulated task list.
     releaseSessionTasks(sessionId);
+    turns.results += 1;
     const out: HarnessEvent[] = [];
     const u = obj.usage ?? {};
     const input = InputTokenUsage.shape.total_tokens.safeParse(u.input_tokens).data ?? null;
@@ -368,6 +406,12 @@ function parseClaudeEventStateful(
     const write =
       InputTokenUsage.shape.cache_write_tokens.safeParse(u.cache_creation_input_tokens).data ??
       null;
+    // The orchestrator SUMS every usage event's cost, so a second native turn
+    // must carry the DELTA of the cumulative total (first result = full value).
+    const total = numberOrUndef(obj.total_cost_usd);
+    const previous = turns.cumulativeCostUsd;
+    const delta = total === undefined ? undefined : previous === null ? total : total - previous;
+    if (total !== undefined) turns.cumulativeCostUsd = total;
     out.push({
       type: "usage",
       session_id: sessionId,
@@ -382,9 +426,18 @@ function parseClaudeEventStateful(
           cache_read_tokens: read,
           cache_write_tokens: write,
         },
-        cost_usd: numberOrUndef(obj.total_cost_usd),
+        cost_usd: delta !== undefined && delta < 0 ? 0 : delta,
       },
     });
+    if (delta !== undefined && delta < 0) {
+      out.push({
+        type: "status",
+        session_id: sessionId,
+        ts,
+        text: `cumulative total_cost_usd fell from ${previous} to ${total}; this turn's cost is clamped to 0`,
+        payload: { code: "usage_cost_delta_negative", total_cost_usd: total, previous },
+      });
+    }
     // Finality is claimed ONLY for a SUCCESS result (review sol #1); an
     // `is_error:true` result (e.g. terminal_reason:"prompt_too_long", still
     // labeled subtype:"success") carries error prose, not a deliverable — it
@@ -477,6 +530,12 @@ function parseClaudeEventStateful(
   // initialize handshake (and cancel acks) are recognized plumbing, never
   // counted as dropped events.
   if (type === "control_response" || type === "control_cancel_request") return [];
+
+  // Stdin-message lifecycle frames (`command_lifecycle`: queued / started /
+  // completed / cancelled …, keyed by the frame's uuid). Receipts for OUR live
+  // messages are correlated by live-input.ts; the frames themselves are
+  // recognized plumbing, never dropped events.
+  if (type === "command_lifecycle") return [];
 
   return null;
 }

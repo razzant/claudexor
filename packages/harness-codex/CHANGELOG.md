@@ -1,5 +1,16 @@
 # @claudexor/harness-codex
 
+## 3.17.0
+
+### Patch Changes
+
+- Updated dependencies [092ec2b]
+- Updated dependencies [951489f]
+  - @claudexor/core@3.17.0
+  - @claudexor/schema@3.17.0
+  - @claudexor/secrets@3.17.0
+  - @claudexor/util@3.17.0
+
 ## 3.16.0
 
 ### Patch Changes
