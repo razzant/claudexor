@@ -33,6 +33,18 @@ import Testing
         #expect(hasLink)
     }
 
+    @Test func unsupportedScopedFilesRevealWhileOutOfScopeFilesStayRefused() throws {
+        let base = NSTemporaryDirectory() + "markdown-link-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let executable = base + "/tool.command"
+        try Data("#!/bin/sh".utf8).write(to: URL(fileURLWithPath: executable))
+
+        #expect(MarkdownOutputView.localFileAction(executable, roots: [base]) == .reveal(path: executable))
+        if case .refuse = MarkdownOutputView.localFileAction("/etc/hosts", roots: [base]) {} else {
+            Issue.record("out-of-scope files must not be revealed")
+        }
+    }
+
     @Test func longAnswerDetectionCollapsesWallsOfTextOnly() {
         #expect(!TurnCard.isLongAnswer("short answer"))
         #expect(TurnCard.isLongAnswer(String(repeating: "long text ", count: 200)))

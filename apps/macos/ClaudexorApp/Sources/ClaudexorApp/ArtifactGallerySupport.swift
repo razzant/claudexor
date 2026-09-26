@@ -63,28 +63,25 @@ enum GalleryLoadDecision: Equatable {
     case commit(failed: [String])
 }
 
-/// Write bytes to a fresh unpredictable 0700 dir and hand them to the system
-/// opener (pdf, binaries, oversize images). Shared by the image card and the
-/// document row. Release-wave sol #4: the artifact name is agent-controlled, so
+/// Stage bytes in a fresh unpredictable 0700 dir for the in-app preview sheet.
+/// Shared by the image card and document row. The artifact name is agent-controlled, so
 /// a basename-only name under a fresh private dir + `.atomic` write closes the
 /// symlink-overwrite primitive. QA-062: the copy now lives under the single
 /// TRACKED handoff root (`ExternalArtifactHandoff`) so a bounded-age startup
 /// sweep can reclaim it — the write-side hardening is unchanged.
 @MainActor
-func openArtifactExternally(
+func stagedArtifactPreview(
     model: AppModel,
     locationID: ExecutionLocationID,
     runId: String,
     path: String,
     produced: Bool
-) async {
+) async throws -> SafeFilePreviewRequest {
     let data = produced
         ? await model.producedBytes(runId: runId, path: path, locationID: locationID)
         : await model.artifactBytes(runId: runId, path: path, locationID: locationID)
-    guard let data else { return }
-    do {
-        let url = try ExternalArtifactHandoff.standard()
-            .stage(data: data, suggestedName: (path as NSString).lastPathComponent)
-        NSWorkspace.shared.open(url)
-    } catch { /* opening a preview is best-effort */ }
+    guard let data else { throw CocoaError(.fileReadUnknown) }
+    let url = try ExternalArtifactHandoff.standard()
+        .stage(data: data, suggestedName: (path as NSString).lastPathComponent)
+    return .localFile(url: url, kind: ScopedInlineImage.previewKind(path: path))
 }

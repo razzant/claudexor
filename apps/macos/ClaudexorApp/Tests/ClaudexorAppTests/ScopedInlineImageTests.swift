@@ -85,38 +85,66 @@ import Testing
         #expect(paths == ["shots/action.png", "shots/absolute.jpg"])
     }
 
-    /// sol #11/#14: a scoped file-link opens ONLY safe document/image types;
-    /// an executable/script inside the repo is refused (with a reason), never
-    /// launched; out-of-scope is refused too.
-    @Test func openDecisionAllowsSafeTypesAndRefusesExecutablesAndOutOfScope() throws {
-        let base = NSTemporaryDirectory() + "open-" + UUID().uuidString + "/repo"
+    @Test func previewDecisionUsesLiteralSourceQuickLookAndBlockedLanes() throws {
+        let base = NSTemporaryDirectory() + "preview-" + UUID().uuidString + "/repo"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
-        for (name, data) in [("doc.md", "hi"), ("shot.png", "x"), ("evil.command", "#!/bin/sh"), ("run.sh", "echo")] {
-            try Data(data.utf8).write(to: URL(fileURLWithPath: base + "/" + name))
+        for name in ["main.ts", "page.html", "shape.svg", "manual.pdf", "clip.mov", "evil.command"] {
+            try Data("content".utf8).write(to: URL(fileURLWithPath: base + "/" + name))
         }
-        if case .open = ScopedInlineImage.openDecision(base + "/doc.md", roots: [base]) {} else {
-            Issue.record("a .md should open")
+        for source in ["main.ts", "page.html", "shape.svg"] {
+            #expect(ScopedInlineImage.previewDecision(base + "/" + source, roots: [base]).kind == .source)
         }
-        if case .open = ScopedInlineImage.openDecision(base + "/shot.png", roots: [base]) {} else {
-            Issue.record("a .png should open")
+        for quickLook in ["manual.pdf", "clip.mov"] {
+            #expect(ScopedInlineImage.previewDecision(base + "/" + quickLook, roots: [base]).kind == .quickLook)
         }
-        if case .refuse(let r) = ScopedInlineImage.openDecision(base + "/evil.command", roots: [base]) {
-            #expect(r.contains("unsafe"))
-        } else { Issue.record(".command must be refused") }
-        if case .refuse = ScopedInlineImage.openDecision(base + "/run.sh", roots: [base]) {} else {
-            Issue.record(".sh must be refused")
+        if case .blocked = ScopedInlineImage.previewDecision(base + "/evil.command", roots: [base]).kind {} else {
+            Issue.record("an executable must never enter a preview renderer")
         }
-        // confirm #3: active formats that execute in the default handler
-        // (.html/.svg run JavaScript in the browser) are refused, not opened.
-        for active in ["page.html", "vec.svg", "x.htm"] {
-            try Data("<script>".utf8).write(to: URL(fileURLWithPath: base + "/" + active))
-            if case .refuse = ScopedInlineImage.openDecision(base + "/" + active, roots: [base]) {} else {
-                Issue.record("\(active) must be refused (active format)")
-            }
+        if case .blocked = ScopedInlineImage.previewDecision("/etc/hosts", roots: [base]).kind {} else {
+            Issue.record("an out-of-scope file must remain refused")
         }
-        if case .refuse(let r) = ScopedInlineImage.openDecision("/etc/hosts", roots: [base]) {
-            #expect(r.contains("scope"))
-        } else { Issue.record("out-of-scope must be refused") }
+    }
+
+    @Test func boundedSourceRefusesSymlinksAndCapsReads() throws {
+        let base = NSTemporaryDirectory() + "source-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let file = URL(fileURLWithPath: base + "/large.txt")
+        let link = URL(fileURLWithPath: base + "/link.txt")
+        try Data(repeating: 65, count: 33).write(to: file)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
+
+        let source = try SafeFilePreviewRequest.boundedSource(at: file, maxBytes: 16)
+        #expect(source.bytes.count == 16)
+        #expect(source.wasTruncated)
+        #expect(throws: SafeFilePreviewRequest.SourceReadError.self) {
+            try SafeFilePreviewRequest.boundedSource(at: link, maxBytes: 16)
+        }
+    }
+
+    @Test func scopedPreviewSnapshotsTheVerifiedFile() async throws {
+        let base = NSTemporaryDirectory() + "snapshot-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        let file = URL(fileURLWithPath: base + "/note.txt")
+        try Data("before".utf8).write(to: file)
+
+        let request = try await SafeFilePreviewRequest.scopedLocalFile(
+            url: file, roots: [base], kind: .source)
+        try Data("after".utf8).write(to: file)
+
+        #expect(request.source?.text == "before")
+        #expect(request.url != file)
+        #expect(try Data(contentsOf: request.url) == Data("before".utf8))
+        let escape = URL(fileURLWithPath: base + "/escape.txt")
+        try FileManager.default.createSymbolicLink(
+            at: escape, withDestinationURL: URL(fileURLWithPath: "/etc/hosts"))
+        await #expect(throws: SafeFilePreviewRequest.SourceReadError.self) {
+            try await SafeFilePreviewRequest.scopedLocalFile(
+                url: URL(fileURLWithPath: "/etc/hosts"), roots: [base], kind: .source)
+        }
+        await #expect(throws: SafeFilePreviewRequest.SourceReadError.self) {
+            try await SafeFilePreviewRequest.scopedLocalFile(
+                url: escape, roots: [base], kind: .source)
+        }
     }
 
     @Test func markdownIsHardBoundedBeforeLayoutWithDisclosure() {

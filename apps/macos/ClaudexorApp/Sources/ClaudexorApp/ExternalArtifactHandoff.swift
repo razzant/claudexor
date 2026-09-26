@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// QA-062 (issue-062): the "Open externally" affordance used to scatter a fresh
@@ -128,6 +129,37 @@ struct ExternalArtifactHandoff {
     /// reduced to a basename with an `artifact` fallback (agent-controlled names
     /// never escape the private dir); the write is atomic.
     func stage(data: Data, suggestedName: String) throws -> URL {
+        let (dir, url) = try makeDestination(suggestedName: suggestedName)
+        do {
+            try data.write(to: url, options: [.atomic])
+            return url
+        } catch {
+            try? fileManager.removeItem(at: dir)
+            throw error
+        }
+    }
+
+    /// Copy one already-open, verified regular file into the private handoff
+    /// area. The descriptor pins the inode, so later path/symlink swaps cannot
+    /// change what Quick Look receives.
+    func stage(
+        openFileDescriptor source: Int32,
+        suggestedName: String,
+        maximumBytes: Int
+    ) throws -> URL {
+        precondition(maximumBytes >= 0 && maximumBytes < Int.max)
+        let copy = Darwin.dup(source)
+        guard copy >= 0, lseek(copy, 0, SEEK_SET) == 0 else {
+            if copy >= 0 { Darwin.close(copy) }
+            throw CocoaError(.fileReadUnknown)
+        }
+        let handle = FileHandle(fileDescriptor: copy, closeOnDealloc: true)
+        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        guard data.count <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }
+        return try stage(data: data, suggestedName: suggestedName)
+    }
+
+    private func makeDestination(suggestedName: String) throws -> (directory: URL, file: URL) {
         let base = ((suggestedName as NSString).lastPathComponent as NSString).lastPathComponent
         // `lastPathComponent` of "/" is "/", which is neither empty nor "."/".." —
         // guard it too so a bare-slash name can never be appended as the file.
@@ -142,8 +174,7 @@ struct ExternalArtifactHandoff {
         try fileManager.createDirectory(
             at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         let url = dir.appendingPathComponent(safeName)
-        try data.write(to: url, options: [.atomic])
-        return url
+        return (dir, url)
     }
 
     /// Reclaim tracked copies older than `maxAge`. Returns the count removed (for

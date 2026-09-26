@@ -633,8 +633,9 @@ frequency and volume are. The contracts:
     Outcome facts at the top; run detail is DEMOTED, not deleted — it is the
     run-filtered state of this panel. Changes = the thread-cumulative diff
     (isolated-thread apply-thread action + per-run diffs beneath); Artifacts = a
-    gallery across the thread's runs (images grid + compact file rows) with an
-    "Open preview" affordance for the project's `index.html`; Evidence = per-run
+    gallery across the thread's runs (images grid + compact file rows) with
+    bounded in-app previews; HTML/SVG render as literal source and every preview
+    offers Reveal in Finder. Evidence = per-run
     diagnostics/receipts. Empty thread / no output → an honest "No project output
     in this thread." The Canvas mode is retired (artifacts fold into this panel).
     The workspace is the sanctioned extension of the one-screen doctrine — never
@@ -715,7 +716,9 @@ views in the shared design-system files; screens compose them.
     `stream_deltas` the current message grows live and the complete text
     replaces it. Agent images render inline ONLY inside the thread's
     repoRoot / run dir (canonical-path scope, bounded decode, disclosed
-    refusal outside the scope); file links open through the same gate.
+    refusal outside the scope). Local file links use the same gate: safe formats
+    open from a staged snapshot in source/Quick Look, unsupported in-scope files
+    reveal in Finder, and executable or out-of-scope targets never launch.
   - **"What changed since this turn"** marker + an **attention state** (working /
     blocked / needs-permission / done) on the turn card and its thread row.
 - **Chat composer.** ONE floating Liquid-Glass panel

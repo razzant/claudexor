@@ -334,6 +334,8 @@ private struct ArtifactImageCard: View {
     /// D15 identity-keyed image slot: a card reused for a different run/path never
     /// shows the previous file's bytes. `DecodedImage` boxes the actor crossing.
     @State private var imageSlot = PayloadSlot<DecodedImage>()
+    @State private var previewRequest: SafeFilePreviewRequest?
+    @State private var previewFailed = false
 
     private var identity: PayloadIdentity {
         PayloadIdentity(
@@ -348,12 +350,16 @@ private struct ArtifactImageCard: View {
     var body: some View {
         Button {
             Task {
-                await openArtifactExternally(
-                    model: model,
-                    locationID: locationID,
-                    runId: runId,
-                    path: art.path,
-                    produced: produced)
+                do {
+                    previewRequest = try await stagedArtifactPreview(
+                        model: model,
+                        locationID: locationID,
+                        runId: runId,
+                        path: art.path,
+                        produced: produced)
+                } catch {
+                    previewFailed = true
+                }
             }
         } label: {
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
@@ -366,8 +372,12 @@ private struct ArtifactImageCard: View {
             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
-        .help("\(art.path) — click to open full size")
+        .help("\(art.path) — click to preview full size")
         .task(id: identity) { await loadImage() }
+        .sheet(item: $previewRequest) { SafeFilePreviewSheet(request: $0) }
+        .alert("Preview unavailable", isPresented: $previewFailed) {
+            Button("OK", role: .cancel) {}
+        }
     }
 
     @ViewBuilder private var preview: some View {
@@ -438,7 +448,8 @@ private struct ArtifactRow: View {
     /// the M9-UX item-8 bug fix: the viewer no longer blocks on the whole fetch
     /// before appearing.
     @State private var textSlot = PayloadSlot<String>()
-    @State private var showViewer = false
+    @State private var previewRequest: SafeFilePreviewRequest?
+    @State private var previewFailed = false
 
     private var category: ArtifactCategory { ArtifactCategory.of(mime: art.mime, path: art.path) }
     private var isText: Bool { category == .text }
@@ -462,7 +473,7 @@ private struct ArtifactRow: View {
                         .lineLimit(1).truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Image(systemName: isText ? "chevron.right" : "arrow.up.forward.app")
+                Image(systemName: "chevron.right")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             .padding(.vertical, Theme.Spacing.xs)
@@ -472,10 +483,13 @@ private struct ArtifactRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(isText ? "\(art.path) — open text viewer" : "\(art.path) — open externally")
+        .help("\(art.path) — preview")
         // Lazily fetch text for the preview + viewer (visible rows only).
         .task(id: identity) { if isText { await loadText() } }
-        .sheet(isPresented: $showViewer) { textViewer }
+        .sheet(item: $previewRequest) { SafeFilePreviewSheet(request: $0) }
+        .alert("Preview unavailable", isPresented: $previewFailed) {
+            Button("OK", role: .cancel) {}
+        }
     }
 
     /// The one-line summary: type · size, plus a content preview once loaded.
@@ -515,54 +529,18 @@ private struct ArtifactRow: View {
     }
 
     private func tap() {
-        if isText {
-            showViewer = true                       // opens INSTANTLY; content streams in
-        } else {
-            Task {
-                await openArtifactExternally(
+        Task {
+            do {
+                previewRequest = try await stagedArtifactPreview(
                     model: model,
                     locationID: locationID,
                     runId: runId,
                     path: art.path,
                     produced: produced)
+            } catch {
+                previewFailed = true
             }
         }
-    }
-
-    @ViewBuilder private var textViewer: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(fileName).font(.headline)
-                Spacer()
-                Button("Done") { showViewer = false }
-            }
-            .padding(Theme.Spacing.md)
-            Divider()
-            Group {
-                switch textSlot.state {
-                case .loaded(let text):
-                    ScrollView {
-                        MarkdownOutputView(markdown: text)
-                            .padding(Theme.Spacing.md)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                case .empty:
-                    ContentUnavailableView("Empty file", systemImage: "doc")
-                case .failed(let error):
-                    VStack(spacing: Theme.Spacing.sm) {
-                        Text(error.message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
-                            .multilineTextAlignment(.center)
-                        Button("Retry") { Task { await loadText(force: true) } }
-                            .buttonStyle(.bordered).controlSize(.small)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                case .idle, .loading:
-                    ProgressView("Loading \(fileName)…").controlSize(.small)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-        }
-        .frame(minWidth: 520, minHeight: 360)
     }
 
     private func loadText(force: Bool = false) async {

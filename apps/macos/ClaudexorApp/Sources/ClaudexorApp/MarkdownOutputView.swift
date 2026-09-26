@@ -21,6 +21,7 @@ struct MarkdownOutputView: View {
     /// A visible, dismissible refusal for a blocked file-link click (sol #14):
     /// out-of-scope or unsafe-type targets never fail silently.
     @State private var linkRefusal: String?
+    @State private var previewRequest: SafeFilePreviewRequest?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -74,12 +75,10 @@ struct MarkdownOutputView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // W-C7: FILE links open via NSWorkspace, but ONLY for an in-scope
-        // SAFE-type file — an out-of-scope target OR an executable/script/app
-        // (a `.command`/`.app` would launch agent code, sol #11) is refused
-        // with a VISIBLE disclosure, not a silent beep (sol #14). Web links
-        // keep normal browser behavior. This gate also covers links that live
-        // INSIDE table cells (their inline text runs the same openURL action).
+        .sheet(item: $previewRequest) { SafeFilePreviewSheet(request: $0) }
+        // Local agent files never launch a handler directly. Safe formats open
+        // in the bounded source/Quick Look sheet; unsupported in-scope files are
+        // revealed in Finder, while out-of-scope paths remain refused.
         .environment(\.openURL, OpenURLAction { url in
             guard url.isFileURL || url.scheme == nil else { return .systemAction }
             let raw = url.isFileURL ? url.path : url.absoluteString
@@ -95,9 +94,19 @@ struct MarkdownOutputView: View {
                 }
                 return .handled
             }
-            switch ScopedInlineImage.openDecision(raw, roots: fileScopeRoots) {
-            case .open(let path):
-                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            switch Self.localFileAction(raw, roots: fileScopeRoots) {
+            case .preview(let path, let kind):
+                Task {
+                    do {
+                        previewRequest = try await .scopedLocalFile(
+                            url: URL(fileURLWithPath: path), roots: fileScopeRoots, kind: kind)
+                        linkRefusal = nil
+                    } catch {
+                        linkRefusal = "Link not opened: the file changed or could not be staged safely."
+                    }
+                }
+            case .reveal(let path):
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                 linkRefusal = nil
             case .refuse(let reason):
                 linkRefusal = "Link not opened: \(reason)."
@@ -105,6 +114,22 @@ struct MarkdownOutputView: View {
             }
             return .handled
         })
+    }
+
+    enum LocalFileAction: Equatable {
+        case preview(path: String, kind: AgentFilePreviewKind)
+        case reveal(path: String)
+        case refuse(reason: String)
+    }
+
+    nonisolated static func localFileAction(_ target: String, roots: [String]) -> LocalFileAction {
+        let decision = ScopedInlineImage.previewDecision(target, roots: roots)
+        guard let path = decision.path else {
+            if case .blocked(let reason) = decision.kind { return .refuse(reason: reason) }
+            return .refuse(reason: "file is unavailable")
+        }
+        if case .blocked = decision.kind { return .reveal(path: path) }
+        return .preview(path: path, kind: decision.kind)
     }
 
     @ViewBuilder

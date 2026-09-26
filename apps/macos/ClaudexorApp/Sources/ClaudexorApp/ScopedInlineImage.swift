@@ -20,6 +20,8 @@ struct ScopedInlineImage: View {
     /// compressed image must not stall the chat UI from `body` evaluation.
     private enum Load { case loading, ready(NSImage, String), failed, outOfScope }
     @State private var load: Load = .loading
+    @State private var previewRequest: SafeFilePreviewRequest?
+    @State private var previewFailed = false
 
     /// Off-main handoff of an already-bounded decode. NSImage is read-only
     /// here; the box makes the actor crossing explicit for Swift 6.
@@ -32,6 +34,12 @@ struct ScopedInlineImage: View {
 
     var body: some View {
         content
+            .sheet(item: $previewRequest) { SafeFilePreviewSheet(request: $0) }
+            .alert("Preview unavailable", isPresented: $previewFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("The file changed or could not be staged safely.")
+            }
             .task(id: target + "|" + roots.joined(separator: ":")) {
                 // A new (target, roots) resets to loading so a prior image is
                 // never shown for the new identity (confirm #4).
@@ -72,8 +80,17 @@ struct ScopedInlineImage: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(maxWidth: 560, maxHeight: 340, alignment: .leading)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
-                .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
-                .help(alt.isEmpty ? path : "\(alt) — \(path). Click to open.")
+                .onTapGesture {
+                    Task {
+                        do {
+                            previewRequest = try await .scopedLocalFile(
+                                url: URL(fileURLWithPath: path), roots: roots, kind: .quickLook)
+                        } catch {
+                            previewFailed = true
+                        }
+                    }
+                }
+                .help(alt.isEmpty ? path : "\(alt) — \(path). Click to preview.")
                 .accessibilityLabel(alt.isEmpty ? "agent image" : alt)
         case .failed:
             refusal("image could not be decoded (or exceeds the preview size bound)")
@@ -127,32 +144,36 @@ struct ScopedInlineImage: View {
 
     nonisolated static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
 
-    /// Documents/images safe to hand to `NSWorkspace.open` directly. Being
-    /// inside repoRoot does NOT make agent output trusted — a `.command` /
-    /// `.app` / `.sh` link would launch agent-produced CODE on click (sol #11),
-    /// so opening is allowed ONLY for this allowlist; anything else is refused
-    /// (reveal-in-Finder stays a safe manual fallback). ACTIVE formats that
-    /// execute in the default handler — .html/.htm/.svg run JavaScript in the
-    /// browser — are deliberately EXCLUDED (confirm #3).
-    nonisolated static let openableExtensions: Set<String> = imageExtensions.union([
-        "txt", "md", "markdown", "json", "yaml", "yml", "csv", "log",
-        "pdf", "rtf", "xml", "toml",
+    nonisolated static let quickLookExtensions: Set<String> = imageExtensions.union([
+        "pdf", "rtf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+        "pages", "numbers", "key", "mov", "mp4", "m4v", "mp3", "wav", "aiff",
     ])
 
-    /// Decide how a scoped file-link click resolves: `.open` for an in-scope
-    /// SAFE-type file, else `.refuse(reason)` — never a silent no-op. Pure
-    /// (given the FS) so the policy is unit-tested.
-    enum OpenDecision: Equatable { case open(String); case refuse(String) }
-    nonisolated static func openDecision(_ target: String, roots: [String]) -> OpenDecision {
-        guard let path = scopedFilePath(target, roots: roots) else {
-            return .refuse("outside this thread's scope")
-        }
-        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
-        guard openableExtensions.contains(ext) else {
-            return .refuse("unsafe file type “.\(ext)” — reveal it in Finder instead")
-        }
-        return .open(path)
+    struct PreviewDecision: Equatable {
+        let path: String?
+        let kind: AgentFilePreviewKind
     }
+
+    nonisolated static func previewDecision(_ target: String, roots: [String]) -> PreviewDecision {
+        guard let path = scopedFilePath(target, roots: roots) else {
+            return PreviewDecision(
+                path: nil,
+                kind: .blocked(reason: "File is outside this thread's scope."))
+        }
+        return PreviewDecision(path: path, kind: previewKind(path: path))
+    }
+
+    nonisolated static func previewKind(path: String) -> AgentFilePreviewKind {
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        if ArtifactCategory.semanticTextExtensions.contains(ext) || ["html", "htm"].contains(ext) {
+            return .source
+        }
+        if quickLookExtensions.contains(ext) {
+            return .quickLook
+        }
+        return .blocked(reason: "This file type is not rendered in-app.")
+    }
+
     /// Refuse absurd source files outright (a 2GB "png" is not a chat preview).
     nonisolated static let maxSourceBytes = 64 * 1024 * 1024
     nonisolated static let maxThumbnailPixels = 1_200
