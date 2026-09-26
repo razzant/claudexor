@@ -22,6 +22,8 @@ import {
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
   ControlThread,
+  ControlThreadCreateRequest,
+  ControlThreadUpdateRequest,
   ControlThreadTurnRequest,
   ConformanceReport,
   FrozenTaskContractArtifact,
@@ -463,6 +465,19 @@ describe("EffortHint is an OPEN vocabulary, bounded by shape only", () => {
 });
 
 describe("Control API schemas", () => {
+  it("accepts a server-owned thread folder and an explicit clear", () => {
+    expect(ControlThreadCreateRequest.parse({ folder: "Research" }).folder).toBe("Research");
+    expect(ControlThreadUpdateRequest.parse({ folder: null }).folder).toBeNull();
+    expect(
+      ControlThread.parse({
+        id: "th-1",
+        folder: "Research",
+        createdAt: "2026-09-24T00:00:00Z",
+        updatedAt: "2026-09-24T00:00:00Z",
+      }).folder,
+    ).toBe("Research");
+  });
+
   it("accepts typed plan-answer provenance only on the thread-turn boundary", () => {
     expect(
       ControlThreadTurnRequest.safeParse({

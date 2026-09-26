@@ -10,6 +10,7 @@ import Foundation
 public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let title: String?
+    public let folder: String?
     public let repoRoot: String?
     public let mode: String?
     /// in_place (default) mutates the live tree; isolated keeps a thread worktree.
@@ -381,6 +382,7 @@ public struct ThreadDetailResponse: Codable, Sendable {
 
 public struct CreateThreadRequest: Codable, Sendable {
     public var title: String?
+    public var folder: String?
     public var scope: RunScope
     public var mode: String?
     /// in_place (default) or isolated — how this thread's turns touch files.
@@ -395,11 +397,13 @@ public struct CreateThreadRequest: Codable, Sendable {
     /// repo trust default. Same five-value `access` enum as a run start.
     public var access: String?
 
-    public init(title: String? = nil, scope: RunScope = .none, mode: String? = nil,
+    public init(title: String? = nil, folder: String? = nil,
+                scope: RunScope = .none, mode: String? = nil,
                 workspace: String? = nil, authPreference: String? = nil, primaryHarness: String? = nil,
                 eligibleHarnesses: [String]? = nil, credentialProfileId: String? = nil,
                 access: String? = nil) {
         self.title = title
+        self.folder = folder
         self.scope = scope
         self.mode = mode
         self.workspace = workspace
@@ -415,6 +419,8 @@ public struct CreateThreadRequest: Codable, Sendable {
 /// sticky primary harness / eligible pool. Encoded only (request body).
 public struct UpdateThreadRequest: Encodable, Sendable {
     public var title: String?
+    /// Double-optional: .some(nil) moves back to ungrouped; .none leaves unchanged.
+    public var folder: String??
     public var state: String?
     /// Double-optional: .some(nil) clears primary back to auto; .none leaves unchanged.
     public var primaryHarness: String??
@@ -428,10 +434,11 @@ public struct UpdateThreadRequest: Encodable, Sendable {
     /// same five-value `access` enum as a run start (verified in
     /// packages/schema/generated/ControlThreadUpdateRequest.schema.json).
     public var access: String??
-    public init(title: String? = nil, state: String? = nil,
+    public init(title: String? = nil, folder: String?? = nil, state: String? = nil,
                 primaryHarness: String?? = nil, eligibleHarnesses: [String]? = nil,
                 credentialProfileId: String?? = nil, access: String?? = nil) {
         self.title = title
+        self.folder = folder
         self.state = state
         self.primaryHarness = primaryHarness
         self.eligibleHarnesses = eligibleHarnesses
@@ -440,12 +447,13 @@ public struct UpdateThreadRequest: Encodable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case title, state, primaryHarness, eligibleHarnesses, credentialProfileId, access
+        case title, folder, state, primaryHarness, eligibleHarnesses, credentialProfileId, access
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(title, forKey: .title)
+        if let folder { try c.encode(folder, forKey: .folder) }
         try c.encodeIfPresent(state, forKey: .state)
         // .some(nil) encodes an explicit JSON null (= clear primary to auto).
         if let primaryHarness { try c.encode(primaryHarness, forKey: .primaryHarness) }

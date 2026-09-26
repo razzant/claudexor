@@ -8,6 +8,12 @@
           "type": "string",
           "description": "Initial thread title."
         },
+        "folder": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Initial sidebar folder."
+        },
         "scope": {
           "anyOf": [
             {

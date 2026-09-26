@@ -382,6 +382,68 @@ extension AppModel {
         } catch { threadStatus = userMessage(for: error) }
     }
 
+    func setThreadFolder(
+        locationID: ExecutionLocationID,
+        id: String,
+        folder: String?
+    ) async {
+        guard let requestClient = gateway(for: locationID) else {
+            threadStatus = "Engine offline — reconnect to move the thread."
+            return
+        }
+        do {
+            let updated = try await requestClient.updateThread(
+                id: id, body: UpdateThreadRequest(folder: .some(folder)))
+            guard isCurrentGateway(requestClient, at: locationID) else { return }
+            applyThreadUpdate(updated, at: locationID)
+        } catch {
+            threadStatus = userMessage(for: error)
+        }
+    }
+
+    func renameThreadFolder(_ oldName: String, to newName: String) async {
+        guard oldName != newName else { return }
+        await updateThreads(inFolder: oldName, to: newName)
+    }
+
+    func removeThreadFolder(_ name: String) async {
+        await updateThreads(inFolder: name, to: nil)
+    }
+
+    private func updateThreads(inFolder oldName: String, to newName: String?) async {
+        let members = threads(in: oldName)
+        let locations = Set(members.map(\.locationID))
+        var failures = 0
+        for member in members {
+            guard let requestClient = gateway(for: member.locationID) else {
+                failures += 1
+                continue
+            }
+            do {
+                let updated = try await requestClient.updateThread(
+                    id: member.thread.id,
+                    body: UpdateThreadRequest(folder: .some(newName)))
+                guard isCurrentGateway(requestClient, at: member.locationID) else {
+                    failures += 1
+                    continue
+                }
+                applyThreadUpdate(updated, at: member.locationID)
+            } catch {
+                failures += 1
+            }
+        }
+        for locationID in locations {
+            if locationID == .local {
+                await refreshThreads()
+            } else {
+                await refreshRemoteThreads(locationID)
+            }
+        }
+        if failures > 0 {
+            threadStatus = "Updated \(members.count - failures) of \(members.count) threads; \(failures) failed."
+        }
+    }
+
     /// Archive (close) a thread; it stays inspectable, out of the active list.
     func archiveThread(_ id: String) async {
         await setThreadState(locationID: selectedExecutionLocation, id: id, state: "closed")

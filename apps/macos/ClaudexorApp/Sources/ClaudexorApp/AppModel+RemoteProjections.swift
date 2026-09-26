@@ -12,6 +12,15 @@ extension AppModel {
         }
     }
 
+    var threadFolderNames: [String] {
+        Array(Set(locatedThreads.compactMap(\.thread.folder)))
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    func threads(in folder: String?) -> [LocatedThread] {
+        locatedThreads.filter { $0.thread.folder == folder }
+    }
+
     var selectedLocatedThreadID: String? {
         guard let selectedThreadId else { return nil }
         return "\(selectedExecutionLocation.rawValue)|\(selectedThreadId)"

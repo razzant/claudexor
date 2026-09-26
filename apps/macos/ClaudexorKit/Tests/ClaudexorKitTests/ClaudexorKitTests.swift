@@ -812,6 +812,16 @@ import Testing
         #expect(r?["primaryHarness"] == nil)
     }
 
+    @Test func threadFolderDecodesAndPatchEncodesClear() throws {
+        let rich = #"{"id":"th-folder","title":"t","repoRoot":"/p","mode":"agent","workspaceMode":"in_place","authPreference":"auto","folder":"Research","primaryHarness":null,"eligibleHarnesses":[],"state":"active","runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"t","updatedAt":"t"}"#
+        let thread = try JSONDecoder().decode(ThreadSummary.self, from: Data(rich.utf8))
+        #expect(thread.folder == "Research")
+        let clear = UpdateThreadRequest(folder: .some(nil))
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(clear)) as? [String: Any]
+        #expect(object?.keys.contains("folder") == true)
+        #expect(object?["folder"] is NSNull)
+    }
+
     @Test func harnessSettingsPatchEncodesFullPerHarnessFields() throws {
         let patch = HarnessSettingsPatch(enabled: true, toolsAllow: ["bash"],
                                          toolsDeny: ["net"], fallbackModel: .some("gpt-5-mini"),

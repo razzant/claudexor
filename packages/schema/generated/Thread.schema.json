@@ -59,6 +59,21 @@
           "default": null,
           "description": "Thread title; null until set."
         },
+        "folder": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "User-visible thread folder name."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional server-owned sidebar folder; null means ungrouped.",
+          "default": null
+        },
         "mode": {
           "type": "string",
           "enum": [

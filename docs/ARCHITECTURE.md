@@ -1753,7 +1753,9 @@ Endpoint semantics beyond the inventory:
   thread once a mutating turn materializes it. It also carries sticky routing — `primaryHarness` and
   `eligibleHarnesses` — that its turns inherit; `PATCH /v2/threads/:id` renames /
   archives a thread (title + open/closed state) and switches the sticky
-  routing.
+  routing. Its optional `folder` label is daemon-owned and journaled with the
+  thread; the client derives folder sections from those labels rather than
+  keeping a second local folder store.
 - `POST /v2/threads/:id/turns` enqueues a follow-up run anchored to the thread.
   Mutating Agent turns run IN-PLACE in the execution tree — the live project for
   an in-place thread, or the thread's worktree for an isolated thread. Read-only

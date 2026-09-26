@@ -21,7 +21,13 @@ import {
 export { ControlQuotaResponse } from "./quota.js";
 import { RunOutcomeFacts } from "./decision.js";
 import { EffortHint, InputTokenUsage, InteractionQuestion } from "./harness.js";
-import { ContinuityKind, ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
+import {
+  ContinuityKind,
+  ThreadFolderName,
+  ThreadState,
+  ThreadTurnKind,
+  WorkspaceMode,
+} from "./thread.js";
 import { ResourceAttachmentRef } from "./attachment.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
 import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
@@ -1052,6 +1058,9 @@ export const ControlThread = z
   .object({
     id: Id.describe("Thread id."),
     title: z.string().nullable().default(null).describe("Thread title; null until set."),
+    folder: ThreadFolderName.nullable()
+      .default(null)
+      .describe("Optional sidebar folder; null means ungrouped."),
     repoRoot: z
       .string()
       .nullable()
@@ -1291,6 +1300,7 @@ export type ControlThreadTurn = z.infer<typeof ControlThreadTurn>;
 export const ControlThreadCreateRequest = z
   .object({
     title: z.string().optional().describe("Initial thread title."),
+    folder: ThreadFolderName.optional().describe("Initial sidebar folder."),
     scope: RunScope.default({ kind: "none" }),
     mode: ModeKind.optional().describe("Default mode for new turns."),
     workspace: WorkspaceMode.optional().describe(
@@ -1319,6 +1329,9 @@ export type ControlThreadCreateRequest = z.infer<typeof ControlThreadCreateReque
 export const ControlThreadUpdateRequest = z
   .object({
     title: z.string().optional().describe("New thread title."),
+    folder: ThreadFolderName.nullable()
+      .optional()
+      .describe("New sidebar folder; null moves the thread to ungrouped."),
     state: z.enum(["active", "closed"]).optional().describe("New open/archive state."),
     primaryHarness: NonBlankString.nullable()
       .optional()

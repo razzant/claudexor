@@ -64,6 +64,7 @@ const UPSERTED = "thread.entities_upserted";
 
 export interface CreateThreadInput {
   title?: string;
+  folder?: string | null;
   repoRoot?: string | null;
   mode?: Thread["mode"];
   /** in_place (default) mutates the live tree; isolated keeps a thread worktree. */
@@ -93,6 +94,7 @@ export interface CreateTurnInput {
 
 export interface UpdateThreadInput {
   title?: string;
+  folder?: string | null;
   state?: "active" | "closed";
   /** Switch the sticky primary harness (null => clear back to auto). */
   primaryHarness?: string | null;

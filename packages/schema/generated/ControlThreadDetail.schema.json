@@ -20,6 +20,21 @@
               "default": null,
               "description": "Thread title; null until set."
             },
+            "folder": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "User-visible thread folder name."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional sidebar folder; null means ungrouped.",
+              "default": null
+            },
             "repoRoot": {
               "type": [
                 "string",

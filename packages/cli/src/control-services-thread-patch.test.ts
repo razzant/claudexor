@@ -44,6 +44,7 @@ describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
       primaryHarness: "claude",
       credentialProfileId: "work",
       eligibleHarnesses: ["claude"],
+      folder: "Research",
     });
     // The schema contract promises the sticky profile is settable/clearable;
     // a service-layer drop silently voids it (the exact blocker class).
@@ -52,6 +53,7 @@ describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
       primaryHarness: "claude",
       credentialProfileId: "work",
       eligibleHarnesses: ["claude"],
+      folder: "Research",
     });
     await services.updateThread("th-1", { credentialProfileId: null });
     expect(seen).toMatchObject({ credentialProfileId: null });

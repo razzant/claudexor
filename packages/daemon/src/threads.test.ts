@@ -429,6 +429,18 @@ describe("ThreadStore", () => {
     expect(s.getThread(t.id)?.access).toBe("full");
   });
 
+  it("persists, renames, and clears a thread folder across journal replay", () => {
+    const { root, journal, s } = store();
+    const thread = s.createThread({ repoRoot: "/tmp/proj", folder: "Research" });
+    expect(thread.folder).toBe("Research");
+    s.updateThread(thread.id, { folder: "Shipping" });
+    expect(s.getThread(thread.id)?.folder).toBe("Shipping");
+    const reloaded = reload(root, journal);
+    expect(reloaded.getThread(thread.id)?.folder).toBe("Shipping");
+    reloaded.updateThread(thread.id, { folder: null });
+    expect(reloaded.getThread(thread.id)?.folder).toBeNull();
+  });
+
   it("resume never crosses credential profiles (INV-135)", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });

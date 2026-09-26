@@ -29,6 +29,7 @@ export function projectThread(raw: unknown, needsHuman: boolean): ControlThread 
   return ControlThread.parse({
     id: t["id"],
     title: t["title"] ?? null,
+    folder: t["folder"] ?? null,
     repoRoot: repo?.root ?? null,
     mode: t["mode"],
     workspaceMode: workspace?.mode ?? "in_place",

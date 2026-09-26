@@ -504,8 +504,10 @@ frequency and volume are. The contracts:
   - **Thread list (glass sidebar):** the conversations, with a needs-you marker;
     "New" enters the draft state (the first message materializes the thread).
     Each row carries a context menu — Rename… (title sheet) and
-    Archive/Reopen — riding the server-owned `PATCH /threads/:id`
-    (`title`/`state`); no local-only thread state. The sidebar's BOTTOM-LEFT
+    Archive/Reopen, and folder assignment — riding the server-owned
+    `PATCH /threads/:id` (`title`/`state`/`folder`); no local-only thread state.
+    Folder names are derived from their member threads, so empty folders do not
+    persist. The sidebar's BOTTOM-LEFT
     carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
     single-line trigger — worst-readiness dot + the account name (or "N
     accounts") + worst quota % + chevron — that opens a popover to manage

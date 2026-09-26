@@ -8,6 +8,20 @@
           "type": "string",
           "description": "New thread title."
         },
+        "folder": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "User-visible thread folder name."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New sidebar folder; null moves the thread to ungrouped."
+        },
         "state": {
           "type": "string",
           "enum": [

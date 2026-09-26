@@ -176,6 +176,7 @@ export function buildNewThread(input: CreateThreadInput): Thread {
     updated_at: now,
     repo: input.repoRoot ? { root: input.repoRoot, base_ref: "HEAD" } : null,
     title: input.title ?? null,
+    folder: input.folder ?? null,
     // Default mode follows the scope: a no-project thread can only Ask
     // (read-only), so it must NOT default to agent (which would 400 on the
     // first turn for lack of a project root). A project thread defaults to agent.
@@ -201,6 +202,7 @@ export function mergeThreadPatch(thread: Thread, patch: UpdateThreadInput): Thre
   const next = ThreadSchema.parse({
     ...thread,
     ...(patch.title !== undefined ? { title: patch.title } : {}),
+    ...(patch.folder !== undefined ? { folder: patch.folder } : {}),
     ...(patch.state !== undefined ? { state: patch.state } : {}),
     ...(patch.primaryHarness !== undefined ? { primary_harness: patch.primaryHarness } : {}),
     ...(patch.credentialProfileId !== undefined

@@ -109,6 +109,70 @@ extension ThreadsScreen {
         Task { await model.renameThread(locationID: locationID, id: id, title: title) }
     }
 
+    var threadFolderSheet: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text(renameFolderTarget == nil ? "New folder" : "Rename folder")
+                .font(.headline)
+            TextField("Folder name", text: $folderDraft)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submitThreadFolder() }
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    folderThreadTarget = nil
+                    renameFolderTarget = nil
+                }
+                Button(renameFolderTarget == nil ? "Create" : "Rename") {
+                    submitThreadFolder()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .disabled(folderDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(Theme.Spacing.lg)
+        .frame(width: 360)
+    }
+
+    func submitThreadFolder() {
+        let name = folderDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let thread = folderThreadTarget
+        let oldName = renameFolderTarget
+        folderThreadTarget = nil
+        renameFolderTarget = nil
+        if let thread {
+            Task {
+                await model.setThreadFolder(
+                    locationID: thread.locationID,
+                    id: thread.thread.id,
+                    folder: name)
+            }
+        } else if let oldName {
+            Task { await model.renameThreadFolder(oldName, to: name) }
+        }
+    }
+
+    func threadFolderHeader(_ folder: String) -> some View {
+        HStack {
+            Label(folder, systemImage: "folder")
+            Spacer()
+            Menu {
+                Button("Rename…") {
+                    folderDraft = folder
+                    renameFolderTarget = folder
+                }
+                Button("Remove Folder…", role: .destructive) {
+                    removeFolderTarget = folder
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .help("Folder actions")
+        }
+    }
+
     func threadRow(_ located: LocatedThread) -> some View {
         let thread = located.thread
         return VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
@@ -144,6 +208,31 @@ extension ThreadsScreen {
                 renameDraft = thread.title ?? ""
                 renameTargetId = thread.id
                 renameTargetLocation = located.locationID
+            }
+            Menu("Move to Folder") {
+                Button("Ungrouped") {
+                    Task {
+                        await model.setThreadFolder(
+                            locationID: located.locationID,
+                            id: thread.id,
+                            folder: nil)
+                    }
+                }
+                ForEach(model.threadFolderNames, id: \.self) { folder in
+                    Button(folder) {
+                        Task {
+                            await model.setThreadFolder(
+                                locationID: located.locationID,
+                                id: thread.id,
+                                folder: folder)
+                        }
+                    }
+                }
+                Divider()
+                Button("New Folder…") {
+                    folderDraft = ""
+                    folderThreadTarget = located
+                }
             }
             // ThreadState is active|closed (server enum) — "closed" is the
             // archived state; Reopen PATCHes back to "active".

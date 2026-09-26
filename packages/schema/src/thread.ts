@@ -29,6 +29,13 @@ export const ThreadState = z
   .describe("Thread lifecycle state: active, closed, trashed for recovery, or terminally purged.");
 export type ThreadState = z.infer<typeof ThreadState>;
 
+export const ThreadFolderName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(120)
+  .describe("User-visible thread folder name.");
+
 export const SessionState = z
   .enum(["live", "stale", "rebound"])
   .describe(
@@ -106,6 +113,9 @@ export const Thread = z
       .default(null)
       .describe("Project the thread is anchored to; null for a no-project Ask thread."),
     title: z.string().nullable().default(null).describe("Thread title; null until set."),
+    folder: ThreadFolderName.nullable()
+      .default(null)
+      .describe("Optional server-owned sidebar folder; null means ungrouped."),
     /** Default mode for new turns; individual turns may override. */
     mode: ModeKind.default("agent").describe(
       "Default mode for new turns; individual turns may override.",
