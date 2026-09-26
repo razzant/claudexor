@@ -26,7 +26,7 @@
     "@claudexor/schema": "workspace:*",
     "@claudexor/secrets": "workspace:*",
     "@claudexor/util": "workspace:*",
-    "yaml": "^2.6.1"
+    "yaml": "^2.9.1"
   },
   "repository": {
     "type": "git",
