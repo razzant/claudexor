@@ -14,6 +14,7 @@ import {
   CURSOR_MANAGED_LOGIN,
   canonicalCursorProfileHome,
   cursorProfilePathEnv,
+  resolveCursorBin,
 } from "@claudexor/harness-cursor";
 import { AGY_MANAGED_LOGIN, canonicalAgyProfileHome } from "@claudexor/harness-agy";
 import type { ManagedLogin } from "@claudexor/schema";
@@ -76,9 +77,9 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
     displayCommand: "claude auth login",
   },
   cursor: {
-    binaryName: () => process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent",
+    binaryName: () => resolveCursorBin(),
     args: ["login"],
-    displayCommand: "cursor-agent login",
+    displayCommand: `${resolveCursorBin().split("/").pop() ?? "cursor-agent"} login`,
   },
   agy: {
     binaryName: () => process.env.CLAUDEXOR_AGY_BIN || "agy",

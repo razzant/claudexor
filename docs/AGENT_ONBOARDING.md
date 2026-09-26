@@ -56,7 +56,7 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    default + this isolation instruction) but cannot prevent it.
    `claudexor auth login codex --browser-redirect` is the explicit opt-in for
    the older localhost-callback flow. **NEVER run a bare `codex login`,
-   `claude auth login`, `cursor-agent login`, or interactive `agy`** — Claudexor
+   `claude auth login`, `agent login` / `cursor-agent login`, or interactive `agy`** — Claudexor
    cannot bind or verify a requested profile around that process, and an
    OS-user-scoped vendor transport may change the credential for the whole OS
    user (Bible INV-067). To remove a row, use `claudexor profiles remove`;

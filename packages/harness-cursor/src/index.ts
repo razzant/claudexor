@@ -68,8 +68,11 @@ export {
   selectCursorAuthRoute,
   shouldDiscloseCursorAutoApiRoute,
 } from "./auth.js";
+import { resolveCursorBin } from "./bin.js";
 
-export const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
+export { findOnPath, isCursorInstall, resolveCursorBin } from "./bin.js";
+/** The Cursor CLI command: override, `cursor-agent`, or a verified `agent` (see bin.ts). */
+export const BIN = resolveCursorBin();
 // Long enough for one sequential reviewer panel pass; still bounded so revoked
 // keys do not remain smoke-proven for a whole daemon lifetime.
 const CURSOR_API_SMOKE_CACHE_TTL_MS = 60 * 60_000;
@@ -281,7 +284,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
       const version = await runtime.detectVersion();
       if (version === null) {
         throw new HarnessUnavailableError(
-          "cursor-agent not found on PATH (set CLAUDEXOR_CURSOR_BIN)",
+          "Cursor CLI not found on PATH: neither `cursor-agent` nor a Cursor `agent` (set CLAUDEXOR_CURSOR_BIN)",
         );
       }
       // D-U3: there is no default native session to detect (the host Keychain
