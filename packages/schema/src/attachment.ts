@@ -49,10 +49,10 @@ export type AttachmentInputClass = z.infer<typeof AttachmentInputClass>;
 export const ControlUploadCreateRequest = z
   .object({
     purpose: z
-      .literal("model")
+      .enum(["model", "image"])
       .optional()
       .describe(
-        "Model-operation payload, never an Agent attachment; absent preserves attachment semantics.",
+        "Model-operation payload, or image-purpose request/result bytes written by the daemon's image custody (callers inline image edit inputs in the image-operation request instead); never an Agent attachment; absent preserves attachment semantics.",
       ),
     kind: AttachmentKind,
     mime: z.string().min(1),
@@ -76,9 +76,11 @@ export const ControlResource = z
   .object({
     resourceId: Id,
     purpose: z
-      .literal("model")
+      .enum(["model", "image"])
       .optional()
-      .describe("Immutable model-operation purpose; absent means a legacy or ordinary attachment."),
+      .describe(
+        "Immutable model- or image-operation purpose; absent means a legacy or ordinary attachment.",
+      ),
     kind: AttachmentKind,
     mime: z.string().min(1),
     name: z.string(),

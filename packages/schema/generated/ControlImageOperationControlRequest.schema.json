@@ -1,0 +1,27 @@
+{
+  "$ref": "#/definitions/ControlImageOperationControlRequest",
+  "definitions": {
+    "ControlImageOperationControlRequest": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "cancel"
+        },
+        "reasonCode": {
+          "type": "string",
+          "enum": [
+            "user_cancelled",
+            "host_cancelled",
+            "owner_task_gone"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

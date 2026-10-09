@@ -1,10 +1,15 @@
 import { parseCommandListQuery, selectCommandRecords } from "./command-list-select.js";
 import { retainedEnvelopeOfRun } from "@claudexor/workspace";
 import type { JobRecord } from "./server.js";
-import { continuedRunOf, isModelOperation } from "@claudexor/schema";
+import { continuedRunOf, isImageOperation, isModelOperation } from "@claudexor/schema";
 
 export function productCommandRecords(records: readonly JobRecord[]): JobRecord[] {
-  return records.filter((record) => !isDeliveryCommand(record) && !isModelOperation(record.params));
+  return records.filter(
+    (record) =>
+      !isDeliveryCommand(record) &&
+      !isModelOperation(record.params) &&
+      !isImageOperation(record.params),
+  );
 }
 
 /** Addressed selection is shared by socket reads and in-process consumers. */
@@ -71,12 +76,15 @@ export function prunableCommandIds(
   now: number,
   maxParamsBytes = MAX_RETAINED_COMMAND_PARAMS_BYTES,
 ): string[] {
-  // Model bodies have their own custody lifetime. Their compact receipts and
-  // idempotency keys survive it, and must not consume Agent history capacity.
+  // Model and image bodies have their own custody lifetimes. Their compact
+  // receipts and idempotency keys survive them, and must not consume Agent history capacity.
   // Delivery commands retain their existing age/cap policy.
   const terminal = records
     .filter(
-      (record) => !isModelOperation(record.params) && !["running", "queued"].includes(record.state),
+      (record) =>
+        !isModelOperation(record.params) &&
+        !isImageOperation(record.params) &&
+        !["running", "queued"].includes(record.state),
     )
     .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
   const pruned = new Set<string>();
@@ -96,7 +104,7 @@ export function prunableCommandIds(
   // Byte budget over the PRODUCT commands that survive the age/cap rule,
   // oldest first. Only the records the rule can reach are counted: a
   // needs-decision run is exempt, a delivery command is outside the rule
-  // (model receipts never enter `terminal`), so their params must not push
+  // (model and image receipts never enter `terminal`), so their params must not push
   // every reachable command out — the budget bounds exactly what it may prune.
   let bytes = 0;
   const sizes = new Map<string, number>();

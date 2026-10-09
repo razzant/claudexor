@@ -11,13 +11,22 @@ changing Claudexor.
 | Surface | Current role | Stability |
 |---|---|---|
 | CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
-| Daemon and control API | Local durable queue, Agent runs, caller-owned model operations, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
+| Daemon and control API | Local durable queue, Agent runs, caller-owned model and image operations, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
 | Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Experimental file layout (regenerate with `claudexor plugin repair all`). Installs owned local files/config only; host enablement can still require reload/manual action. |
 | Engine runtime closure | Node-free release artifact containing reviewed daemon and CLI entrypoints for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested full Node toolchain and verifies archive plus `--probe` identity. |
 
 ## Caller-Owned Model Operations
+
+Image generation has its own `/v2/image-operations` family, advertised by
+`GET /v2/operations`. Clients use a stable Idempotency-Key on create, poll the
+durable handle, read the private JSON result (with `data[].b64_json`) and retain
+**each image** before acknowledging that image's sha256. An image-specific
+429 is returned with its reset evidence; it does not imply that the account's
+text allowance is spent. A lost create or read response calls for rejoining
+the **same** operation, not another generation. The operation contract and
+limits are mapped in [ARCHITECTURE](ARCHITECTURE.md#caller-owned-model-operations).
 
 The model capability uses the same negotiated, authenticated control API and
 managed accounts as Agents. Codex is the current raw-model source; other harness

@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 export { parseCodexRateLimitsResponse } from "./quota.js";
 export { CodexRpcError, parseCodexRpcError, codexRpcErrorDetail } from "./rpc-error.js";
 export { createCodexModelAdapter } from "./model.js";
+export * from "./images.js";
 export { describeCodexClientVersion } from "./http-client-version.js";
 import { withCodexVendorFailure } from "./vendor-failure.js";
 import { resolveSecret } from "@claudexor/secrets";
@@ -642,7 +643,6 @@ async function* runCodex(
   let key: string | undefined;
   let tempCodexHome: string | null = null;
   let authRoute: "subscription" | "api_key" | null;
-
   let outputSchemaPath: string | null = null;
   let tempSchemaDir: string | null = null;
   try {

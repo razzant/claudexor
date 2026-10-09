@@ -1,0 +1,19 @@
+{
+  "$ref": "#/definitions/ControlImageOperationAckRequest",
+  "definitions": {
+    "ControlImageOperationAckRequest": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^(?:sha256:)?[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

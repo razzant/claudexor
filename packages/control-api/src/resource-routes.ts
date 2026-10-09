@@ -24,7 +24,7 @@ export interface ResourceRouteServices {
 
 export interface ResourceRouteContext {
   services?: Partial<ResourceRouteServices>;
-  readBody(req: IncomingMessage): Promise<unknown>;
+  readBody(req: IncomingMessage, maxBytes?: number): Promise<unknown>;
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
 }

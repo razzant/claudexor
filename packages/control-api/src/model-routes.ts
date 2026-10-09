@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+export { IMAGE_OPERATION_DRAFTS } from "./image-routes.js";
 import {
   ControlModelSourcesResponse,
   ControlModelSourcesAccountsResponse,

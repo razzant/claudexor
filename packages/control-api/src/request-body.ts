@@ -3,13 +3,15 @@ import type { IncomingMessage } from "node:http";
 const MAX_CONTROL_BODY_BYTES = 10 * 1024 * 1024;
 
 /** Reads a bounded JSON request body with strict UTF-8 decoding. */
-export async function readControlRequestBody(req: IncomingMessage): Promise<unknown> {
+export async function readControlRequestBody(
+  req: IncomingMessage,
+  maxBytes = MAX_CONTROL_BODY_BYTES,
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > MAX_CONTROL_BODY_BYTES)
-      throw Object.assign(new Error("request body too large"), { status: 413 });
+    if (size > maxBytes) throw Object.assign(new Error("request body too large"), { status: 413 });
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};

@@ -1,0 +1,191 @@
+{
+  "$ref": "#/definitions/ImageCallResult",
+  "definitions": {
+    "ImageCallResult": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "route": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            "credentialProfileId": {
+              "$ref": "#/definitions/ImageCallResult/properties/route/properties/source"
+            },
+            "accountFingerprint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "source",
+            "credentialProfileId",
+            "accountFingerprint",
+            "model"
+          ],
+          "additionalProperties": false,
+          "description": "Selected route at dispatch; a result records the actually observed model, or null."
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "b64_json": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "description": "User-supplied string that must contain visible content, not just whitespace."
+                  },
+                  "generation_id": {
+                    "type": "string"
+                  },
+                  "size": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "b64_json"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "input_tokens": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "output_tokens": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "additionalProperties": false,
+              "description": "Provider-reported counters for one image generation; missing counters remain null."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Provider-reported counters for one image generation; missing counters remain null."
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "message": {
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                },
+                "fieldErrors": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "default": {}
+                },
+                "requiredActions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "default": []
+                },
+                "evidenceRefs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "default": []
+                },
+                "context": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "default": {},
+                  "description": "Typed route-specific recovery context; never a duplicate error message."
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "retryable"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "outcome",
+        "route",
+        "data",
+        "usage",
+        "problem"
+      ],
+      "additionalProperties": false,
+      "description": "One provider image outcome. data is null unless the provider returned decodable images; base64 payloads live only in the image-purpose result resource."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1841,6 +1841,38 @@ remain identified as manifest data.
 
 ### Caller-owned model operations
 
+Image generation is a separate caller-owned operation family, not a chat turn
+or Agent Run. `POST /v2/image-operations` accepts the image request and
+optional edit inputs with a required Idempotency-Key; `GET /:id` observes its
+durable command, `GET /:id/result` serves private digest-bound JSON bytes,
+and `POST /:id/ack` acknowledges **each image's** sha256 after the caller has
+retained it. The image result is released only after all images are acknowledged
+(or the unacknowledged retention expires); the compact command record never
+contains base64 or credentials. `GET /v2/operations` advertises the family by
+its actual routes, so older engines yield a detectable capability absence.
+Image-purpose resources and their reconciliation are disjoint from the
+model-purpose store's resource enumeration: neither cleanup owner may collect
+the other's live request or result. The same daemon command journal, idempotency
+binding, cancellation and scheduler own both families; an attempted physical
+image dispatch is recorded before its one provider POST. An unknown outcome
+cannot trigger another generation on that command.
+
+The Codex image adapter obtains the same managed subscription authorization
+and account identity as the text route, but it does **not** require the image
+model to appear in `/codex/models`, a catalog of text inference, nor route an
+image-specific 429 into the account-wide text cooldown. Image entitlement is
+established by the provider response, not the installed client or a Plus/Pro
+label. Image requests never follow a redirect carrying credentials. Only image create
+widens the shared strict-UTF-8 control-body reader from 10 MiB to the same
+144 MiB request ceiling enforced by image command admission; ordinary control
+routes keep 10 MiB. A lost final image ACK may replay its known digest against
+the compact acknowledged receipt without restoring released bytes. Every
+request/result has explicit byte and media-format limits. Current readiness
+is backed by an offline Codex HTTP fixture, not by a live subscription image
+call: originator/UA acceptance and the available quota on a particular account
+remain external observations. Recognition of image input in text-model turns
+is a separate capability, not claimed by this family.
+
 Live model enumeration is qualified by the adapter's declared credential routes.
 A declared producer is used only on a known supported route; otherwise existing
 manifest truth applies. Codex account enumeration is native-session-specific,
@@ -2144,6 +2176,7 @@ The protocol handshake remains unchanged. No memory thresholds affect admission.
 - `GET /v2/harnesses`
 - `POST /v2/harnesses/:id/auth-readiness`
 - `GET /v2/harnesses/:id/models`
+- `POST /v2/image-operations`
 - `POST /v2/maintenance/gc`
 - `POST /v2/model-operations`
 - `GET /v2/model-operations/:id`

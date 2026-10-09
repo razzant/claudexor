@@ -1,0 +1,358 @@
+{
+  "$ref": "#/definitions/ControlImageOperationDetail",
+  "definitions": {
+    "ControlImageOperationDetail": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "description": "Run lifecycle: queued, running, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks, review, delivery) is orthogonal."
+        },
+        "createdAt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ISO-8601 timestamp string."
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlImageOperationDetail/properties/createdAt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "ISO-8601 timestamp string."
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlImageOperationDetail/properties/createdAt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "ISO-8601 timestamp string."
+        },
+        "dispatch": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "enum": [
+                "not_started",
+                "started",
+                "response_received",
+                "unknown"
+              ]
+            },
+            "startedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlImageOperationDetail/properties/createdAt"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO-8601 timestamp string."
+            },
+            "route": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "$ref": "#/definitions/ControlImageOperationDetail/properties/id"
+                    },
+                    "credentialProfileId": {
+                      "$ref": "#/definitions/ControlImageOperationDetail/properties/id"
+                    },
+                    "accountFingerprint": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "credentialProfileId",
+                    "accountFingerprint",
+                    "model"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Selected route at dispatch; a result records the actually observed model, or null."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Selected route at dispatch; a result records the actually observed model, or null."
+            }
+          },
+          "required": [
+            "state",
+            "startedAt",
+            "route"
+          ],
+          "additionalProperties": false,
+          "description": "Started means the physical send may have begun, not proof the upstream accepted it. A terminal not_started may refine that attempted send only with typed proof no complete inference request was delivered; startedAt and route retain the attempt."
+        },
+        "response": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "absent"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "ready"
+                },
+                "ref": {
+                  "type": "object",
+                  "properties": {
+                    "resourceId": {
+                      "$ref": "#/definitions/ControlImageOperationDetail/properties/id"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "resourceId",
+                    "sha256",
+                    "sizeBytes"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Digest-bound image-purpose resource; never an Agent attachment."
+                },
+                "readyAt": {
+                  "$ref": "#/definitions/ControlImageOperationDetail/properties/createdAt"
+                },
+                "expiresAt": {
+                  "$ref": "#/definitions/ControlImageOperationDetail/properties/createdAt"
+                },
+                "images": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "minItems": 1
+                },
+                "acknowledged": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/ControlImageOperationDetail/properties/response/anyOf/1/properties/images/items"
+                  }
+                }
+              },
+              "required": [
+                "state",
+                "ref",
+                "readyAt",
+                "expiresAt",
+                "images",
+                "acknowledged"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "acknowledged"
+                },
+                "ref": {
+                  "$ref": "#/definitions/ControlImageOperationDetail/properties/response/anyOf/1/properties/ref"
+                },
+                "images": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/ControlImageOperationDetail/properties/response/anyOf/1/properties/images/items"
+                  },
+                  "minItems": 1
+                },
+                "releasedAt": {
+                  "$ref": "#/definitions/ControlImageOperationDetail/properties/createdAt"
+                }
+              },
+              "required": [
+                "state",
+                "ref",
+                "images",
+                "releasedAt"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "expired"
+                },
+                "ref": {
+                  "$ref": "#/definitions/ControlImageOperationDetail/properties/response/anyOf/1/properties/ref"
+                },
+                "releasedAt": {
+                  "$ref": "#/definitions/ControlImageOperationDetail/properties/createdAt"
+                }
+              },
+              "required": [
+                "state",
+                "ref",
+                "releasedAt"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "Result GET does not acknowledge delivery. Each retained image is acknowledged by its own content digest; the response resource is released only after every image digest is acknowledged, or on expiry. Acknowledged/expired bytes never cause another generation."
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "input_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "output_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "additionalProperties": false,
+          "description": "Provider-reported counters for one image generation; missing counters remain null."
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "message": {
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                },
+                "fieldErrors": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "default": {}
+                },
+                "requiredActions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "default": []
+                },
+                "evidenceRefs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "default": []
+                },
+                "context": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "default": {},
+                  "description": "Typed route-specific recovery context; never a duplicate error message."
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "retryable"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "createdAt",
+        "startedAt",
+        "finishedAt",
+        "dispatch",
+        "response",
+        "usage",
+        "problem"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

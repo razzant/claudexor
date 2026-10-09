@@ -6,8 +6,11 @@
       "properties": {
         "purpose": {
           "type": "string",
-          "const": "model",
-          "description": "Model-operation payload, never an Agent attachment; absent preserves attachment semantics."
+          "enum": [
+            "model",
+            "image"
+          ],
+          "description": "Model-operation payload, or image-purpose request/result bytes written by the daemon's image custody (callers inline image edit inputs in the image-operation request instead); never an Agent attachment; absent preserves attachment semantics."
         },
         "kind": {
           "type": "string",

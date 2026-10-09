@@ -1,0 +1,132 @@
+{
+  "$ref": "#/definitions/ControlImageOperationCreateRequest",
+  "definitions": {
+    "ControlImageOperationCreateRequest": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "User-supplied string that must contain visible content, not just whitespace."
+            },
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "maxLength": 32000,
+              "description": "User-supplied string that must contain visible content, not just whitespace."
+            },
+            "n": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "quality": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            "size": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "maxLength": 32,
+              "description": "User-supplied string that must contain visible content, not just whitespace."
+            },
+            "background": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "opaque",
+                "transparent"
+              ]
+            }
+          },
+          "required": [
+            "model",
+            "prompt",
+            "n",
+            "quality",
+            "size",
+            "background"
+          ],
+          "additionalProperties": false
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "dataUrl": {
+                "type": "string",
+                "maxLength": 47185920,
+                "pattern": "^data:image\\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$"
+              }
+            },
+            "required": [
+              "dataUrl"
+            ],
+            "additionalProperties": false,
+            "description": "Caller-owned edit image bytes; never an Agent attachment resource."
+          },
+          "minItems": 1,
+          "maxItems": 5
+        },
+        "account": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "const": "auto"
+                },
+                "preferredProfileId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Non-empty identifier string."
+                }
+              },
+              "required": [
+                "mode"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "const": "pin"
+                },
+                "profileId": {
+                  "$ref": "#/definitions/ControlImageOperationCreateRequest/properties/account/anyOf/0/properties/preferredProfileId"
+                }
+              },
+              "required": [
+                "mode",
+                "profileId"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "Auto keeps a usable prior account; pin never selects another account."
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "additionalProperties": false,
+      "description": "One image generation request. The POST body is this request itself; it is persisted as an image-purpose resource and never rides the command journal."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

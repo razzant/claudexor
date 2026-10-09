@@ -95,6 +95,7 @@ import { handleDaemonStatusRoute } from "./daemon-status-routes.js";
 import { handleMaintenanceRoute, type MaintenanceRouteServices } from "./maintenance-routes.js";
 import { handleResourceRoute, type ResourceRouteServices } from "./resource-routes.js";
 import { handleModelRoute, type ModelRouteServices } from "./model-routes.js";
+import { handleImageRoute, type ImageRouteServices } from "./image-routes.js";
 import {
   handleArtifactServeRoute,
   listArtifacts,
@@ -241,7 +242,7 @@ export interface DaemonControlApiOptions {
   servingMode?: () => ControlServingMode;
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: DeliveryCommandServices &
-    Partial<ModelRouteServices> &
+    Partial<ModelRouteServices & ImageRouteServices> &
     Partial<ResourceRouteServices> &
     Partial<MaintenanceRouteServices> &
     Partial<ProjectRouteServices> & {
@@ -669,9 +670,7 @@ export class DaemonControlApiServer {
     );
   }
 
-  private readBody(req: IncomingMessage): Promise<unknown> {
-    return readControlRequestBody(req);
-  }
+  private readBody = readControlRequestBody;
 
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
     const tracked: Promise<void> = this.handle(req, res)
@@ -741,7 +740,7 @@ export class DaemonControlApiServer {
     const dataRoutes = {
       daemon: this.opts.daemon,
       services: this.opts.services,
-      readBody: (request: IncomingMessage) => this.readBody(request),
+      readBody: (request: IncomingMessage, maxBytes?: number) => this.readBody(request, maxBytes),
       json: (response: ServerResponse, status: number, body: unknown) =>
         this.json(response, status, body),
       requestError: (response: ServerResponse, error: unknown, fallback?: 400 | 500) =>
@@ -750,6 +749,7 @@ export class DaemonControlApiServer {
     for (const route of [
       handleResourceRoute,
       handleModelRoute,
+      handleImageRoute,
       handleMaintenanceRoute,
       handleDaemonStatusRoute,
     ]) {
