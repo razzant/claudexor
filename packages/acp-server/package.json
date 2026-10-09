@@ -16,7 +16,7 @@
     "dist"
   ],
   "dependencies": {
-    "@agentclientprotocol/sdk": "1.5.1",
+    "@agentclientprotocol/sdk": "1.7.0",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
   },
