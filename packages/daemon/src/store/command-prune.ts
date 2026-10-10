@@ -1,5 +1,5 @@
 import { retainedEnvelopeOfRun } from "@claudexor/workspace";
-import { deleteUnownedInlineInTx, type BlobFiles } from "./blob-files.js";
+import type { BlobFiles } from "./blob-files.js";
 import { deleteTargetIdempotencyInTx } from "./idempotency.js";
 import { requireTransaction, runMutation, type SqlWriteContext } from "./mutation.js";
 import {
@@ -20,7 +20,8 @@ type PruneRow = {
 };
 
 /** Remove decisions and their bindings/events atomically; conversation turns
- * remain retained and therefore keep their independent turn bindings. */
+ * remain retained and therefore keep their independent turn bindings. Return
+ * released digests for the caller's final, pre-COMMIT owner cleanup. */
 export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly PruneRow[]): string[] {
   requireTransaction(sql);
   const released: string[] = [];
@@ -54,16 +55,7 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
     if (row.scope_root)
       sql.prepare("INSERT OR IGNORE INTO pruned_root(root) VALUES(?)").run(row.scope_root);
   }
-  deleteUnownedInlineBodiesInTx(sql, released);
   return released;
-}
-
-export function deleteUnownedInlineBodiesInTx(
-  sql: SqlWriteContext,
-  digests: readonly string[],
-): void {
-  requireTransaction(sql);
-  for (const digest of new Set(digests)) deleteUnownedInlineInTx(sql, digest);
 }
 
 /** At most one batch per admission/terminal, over the global live command set.
@@ -157,7 +149,6 @@ export class SqlCommandPruner {
           .get(row.pid, row.seq) as { payload_sha: string | null } | undefined;
         if (deleted?.payload_sha) digests.push(deleted.payload_sha);
       }
-      deleteUnownedInlineBodiesInTx(tx, digests);
       tx.changes.blobChanged(...digests);
       const last = rows[rows.length - 1]!;
       tx.changes.afterCommit(() => {

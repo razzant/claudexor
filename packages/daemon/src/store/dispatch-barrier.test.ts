@@ -28,7 +28,7 @@ async function fixture() {
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),
-    flusherHooks: { manualTick: true },
+    flusherHooks: { manualTick: true, allowExit: true },
     now: () => new Date(NOW),
   });
   cleanup.push(() => store.close());
@@ -131,7 +131,7 @@ describe("Q2 model dispatch", () => {
         harness_id: "codex",
         display_name: "Fixture",
         credential_kind: "config_dir_login",
-        isolation_locator: join(f.root, "profile"),
+        isolation_locator: join(process.env.CLAUDEXOR_CONFIG_DIR!, "profiles", "fixture"),
       });
       const operations = new ModelOperations({
         commands: {
@@ -188,7 +188,7 @@ describe("Q2 model dispatch", () => {
         route: { model: "fixture-model", credentialProfileId: "fixture" },
       });
       if (mode === "success") await pass(f.store);
-      else f.store.flusherControl.requestExit();
+      else f.store.flusherControl.requestExit(17);
       const receipt = await executing;
       f.commands.update(detail.id, { state: receipt.lifecycle, result: receipt, finishedAt: NOW });
       operations.onCommandTerminal(f.commands.get(detail.id)!);
@@ -252,7 +252,7 @@ describe("Q2 account reset", () => {
       await vi.waitFor(() => expect(f.store.facts().flusher.pending_waiters).toBe(1));
       expect(consume).not.toHaveBeenCalled();
       if (mode === "success") await pass(f.store);
-      else f.store.flusherControl.requestExit();
+      else f.store.flusherControl.requestExit(17);
       const receipt = await executing;
       expect(receipt.state).toBe("completed");
       if (mode === "success") {

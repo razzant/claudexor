@@ -97,6 +97,7 @@ describe("legacy command boundary", () => {
       prune: global.prune.bind(global),
       prunedScopeRoots: global.prunedScopeRoots.bind(global),
       recoverDurableTerminal: global.recoverDurableTerminal.bind(global),
+      flushed: global.flushed.bind(global),
     };
     const active = vi.fn(() => (global.get("known-model") ? [global.get("known-model")!] : []));
     const commands: CommandBackend = {

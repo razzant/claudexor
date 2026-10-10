@@ -29,11 +29,32 @@ import { createPartition, currentGeneration } from "./partitions.js";
 import { SqlRunEventStore, storedTerminal } from "./run-events.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
+import { settleJobError } from "../job-settlement.js";
+import { applyTerminalInTx } from "./run-events.js";
+import { applyCommandInTx, commandRow, prepareCommandRow } from "./command-rows.js";
+import { runMutation } from "./mutation.js";
+
+const syncSpies = vi.hoisted(() => ({ fsyncSync: vi.fn(), fdatasyncSync: vi.fn() }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const patched = {
+    fsyncSync: (...args: Parameters<typeof actual.fsyncSync>) => {
+      syncSpies.fsyncSync(...args);
+      return actual.fsyncSync(...args);
+    },
+    fdatasyncSync: (...args: Parameters<typeof actual.fdatasyncSync>) => {
+      syncSpies.fdatasyncSync(...args);
+      return actual.fdatasyncSync(...args);
+    },
+  };
+  return { ...actual, ...patched, default: { ...actual, ...patched } };
+});
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  for (const spy of Object.values(syncSpies)) spy.mockClear();
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 function facts() {
@@ -221,6 +242,8 @@ describe("SQL terminal transaction and real EventLog", () => {
     await pass(f.store);
     expect(f.obligations.get("terminal_files", "run")).toBeUndefined();
     expect(readEvents(f.runDir).filter((row) => row.type === "run.failed")).toHaveLength(1);
+    expect(syncSpies.fsyncSync).not.toHaveBeenCalled();
+    expect(syncSpies.fdatasyncSync).not.toHaveBeenCalled();
   });
 
   it.each(["run_facts.yaml", "telemetry.yaml", "events.jsonl"])(
@@ -254,22 +277,147 @@ describe("SQL terminal transaction and real EventLog", () => {
     },
   );
 
-  it("a terminal event INSERT fault rolls command/result/obligation/sequence back before files", async () => {
+  it.each([
+    ["blob", "INSERT", ""],
+    ["command", "UPDATE", ""],
+    ["run_terminal", "INSERT", ""],
+    ["effect_obligation", "INSERT", ""],
+    ["event", "INSERT", "WHEN NEW.type='run.event'"],
+  ])(
+    "a terminal %s fault rolls every row and generation back before files",
+    async (table, operation, condition) => {
+      const f = await fixture();
+      const before = f.store.prepare("SELECT next_seq FROM partition").get();
+      const original = f.commands.get("job");
+      const generation = f.store.facts().flusher.generation;
+      f.store.transaction(() =>
+        f.store.exec(
+          `CREATE TRIGGER fail_terminal_event BEFORE ${operation} ON ${table} ${condition} BEGIN SELECT RAISE(ABORT,'terminal event fault'); END`,
+        ),
+      );
+      expect(() => f.log.emit("run.failed", terminal().payload)).toThrow(/terminal event fault/);
+      expect(f.commands.get("job")?.state).toBe("running");
+      expect(f.commands.get("job")).toEqual(original);
+      expect(storedTerminal(f.store, "run")).toBeUndefined();
+      expect(f.obligations.open()).toEqual([]);
+      expect(f.store.prepare("SELECT next_seq FROM partition").get()).toEqual(before);
+      expect(f.writes).toEqual([]);
+      expect(f.store.facts().flusher.generation).toBe(generation);
+      f.store.transaction(() => f.store.exec("DROP TRIGGER fail_terminal_event"));
+      expect(f.log.emit("run.failed", terminal().payload).seq).toBe(2);
+    },
+  );
+
+  it("post-COMMIT notification failure keeps terminal custody instead of rolling prepared files back", async () => {
     const f = await fixture();
-    const before = f.store.prepare("SELECT next_seq FROM partition").get();
-    f.store.transaction(() =>
-      f.store.exec(
-        "CREATE TRIGGER fail_terminal_event BEFORE INSERT ON event WHEN NEW.type='run.event' BEGIN SELECT RAISE(ABORT,'terminal event fault'); END",
-      ),
+    f.commands.update("job", { result: { temporary: "x".repeat(80000) } });
+    const prepare = f.store.prepare.bind(f.store);
+    const fault = vi.spyOn(f.store, "prepare").mockImplementation((sql) => {
+      if (!f.store.inTransaction && sql.startsWith("SELECT 1 FROM blob WHERE"))
+        throw new Error("post-commit cleanup read failed");
+      return prepare(sql);
+    });
+    expect(() => f.log.emit("run.failed", terminal().payload)).toThrow(
+      expect.objectContaining({ code: "terminal_recovery_required" }),
     );
-    expect(() => f.log.emit("run.failed", terminal().payload)).toThrow(/terminal event fault/);
-    expect(f.commands.get("job")?.state).toBe("running");
-    expect(storedTerminal(f.store, "run")).toBeUndefined();
-    expect(f.obligations.open()).toEqual([]);
-    expect(f.store.prepare("SELECT next_seq FROM partition").get()).toEqual(before);
-    expect(f.writes).toEqual([]);
-    f.store.transaction(() => f.store.exec("DROP TRIGGER fail_terminal_event"));
-    expect(f.log.emit("run.failed", terminal().payload).seq).toBe(2);
+    fault.mockRestore();
+    expect(f.rollback).not.toHaveBeenCalled();
+    expect(f.commands.get("job")?.state).toBe("failed");
+    expect(f.files.pending("run")).toBe(true);
+    expect(f.commands.recoverDurableTerminal("job")?.state).toBe("failed");
+    expect(readEvents(f.runDir).map((row) => row.type)).toEqual(["run.created", "run.failed"]);
+  });
+
+  it("settlement repairs an already terminal command and preserves canonical outcome through another EIO", async () => {
+    const f = await fixture();
+    const running = f.commands.get("job")!;
+    f.setFault("telemetry.yaml");
+    let thrown: unknown;
+    try {
+      f.log.emit("run.failed", terminal().payload);
+    } catch (error) {
+      thrown = error;
+    }
+    const settle = () =>
+      settleJobError({
+        thrown,
+        record: running,
+        aborted: true,
+        commands: { findById: () => f.commands },
+        update: (record, patch) => f.commands.update(record.id, patch),
+      });
+    expect(settle()).toMatchObject({ state: "failed", errorCode: "terminal_recovery_required" });
+    expect(f.files.pending("run")).toBe(true);
+    f.setFault(null);
+    const repaired = settle();
+    expect(repaired.state).toBe("failed");
+    expect(repaired.errorCode).toBeUndefined();
+    expect(f.files.pending("run")).toBe(false);
+    expect(f.store.prepare("SELECT count(*) AS n FROM run_terminal").get()).toEqual({ n: 1 });
+  });
+
+  it("the shared row mapper retains needs-decision across runtime terminal and legacy recovery", async () => {
+    const f = await fixture();
+    const outcome = makeOutcomeFacts("succeeded", { reason: "review_blocked", review: "blocked" });
+    const blockedFacts = validateRunFactsInvariants({
+      ...facts(),
+      outcome,
+      deliverable: {
+        present: true,
+        kind: "patch",
+        path: "final/patch.diff",
+        producer_attempt_id: "a01",
+      },
+      participants: {
+        planners: 0,
+        attempts: [
+          {
+            attempt_id: "a01",
+            harness_id: "fake",
+            role: "candidate",
+            deliverable_present: true,
+            status: "success",
+          },
+        ],
+      },
+      review: { state: "blocked", blocker_ids: ["blocker"], blockers: 1 },
+      required_actions: requiredActionsFor(outcome, false),
+    });
+    const blocked = RunEvent.parse({
+      ...terminal(),
+      type: "run.blocked",
+      payload: {
+        lifecycle: "succeeded",
+        facts: outcome,
+        reason: outcome.reason,
+        run_facts: blockedFacts,
+      },
+    });
+    const direct = await fixture();
+    expect(direct.commands.persistTerminal("job", blocked, null)).toEqual({
+      state: "materialized",
+    });
+    expect(direct.store.prepare("SELECT needs_decision FROM command WHERE id='job'").get()).toEqual(
+      { needs_decision: 1 },
+    );
+    const record = f.commands.get("job")!;
+    // Legacy import may have terminal authority before command.updated.
+    runMutation(f.store, (tx) => applyTerminalInTx(tx, f.generation.pid, blocked));
+    expect(f.commands.recoverDurableTerminal("job")?.state).toBe("succeeded");
+    expect(f.store.prepare("SELECT needs_decision FROM command WHERE id='job'").get()).toEqual({
+      needs_decision: 1,
+    });
+    const previous = commandRow(f.store, "job")!;
+    const imported = prepareCommandRow(
+      { ...record, state: "interrupted", errorCode: "terminal_recovery_required" },
+      { pid: f.generation.pid, live: true, operation: "legacy", clientId: null, previous },
+      (bytes) => f.blobs.prepareBody(bytes),
+    );
+    runMutation(f.store, (tx) => applyCommandInTx(tx, imported, "update"));
+    expect(f.commands.recoverDurableTerminal("job")?.state).toBe("succeeded");
+    expect(f.store.prepare("SELECT needs_decision FROM command WHERE id='job'").get()).toEqual({
+      needs_decision: 1,
+    });
   });
 
   it("T-TRM-3: SIGKILL after SQL commit leaves an obligation that a fresh process state repairs", async () => {
@@ -347,7 +495,6 @@ describe("T-TRM-2 real SSE pending obligation", () => {
           },
           end() {
             this.ended = true;
-            this.emit("close");
           },
         });
       let wake: ((event: { run_id?: string }) => void) | undefined;

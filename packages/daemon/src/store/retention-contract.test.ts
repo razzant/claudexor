@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BlobFiles } from "./blob-files.js";
-import { SqlCommandPruner } from "./command-prune.js";
+import { applyCommandPruneInTx, SqlCommandPruner } from "./command-prune.js";
 import { applyCommandInTx, prepareCommandRow } from "./command-rows.js";
 import { SqlEventLedger } from "./event-store.js";
 import { bindIdempotencyInTx } from "./idempotency.js";
@@ -41,6 +41,39 @@ async function fixture() {
 }
 
 describe("SQL command retention contract", () => {
+  it("last-owner inline cleanup waits for every writer in the composed transaction", async () => {
+    const f = await fixture(),
+      pid = f.generations[0]!.pid;
+    const row = prepareCommandRow(
+      {
+        id: "victim",
+        params: { prompt: "keep exact bytes" },
+        state: "succeeded",
+        createdAt: OLD,
+        finishedAt: OLD,
+      },
+      { pid, live: true, operation: "legacy", clientId: null },
+      (bytes) => f.blobs.prepareBody(bytes),
+    );
+    runMutation(f.store, (tx) => {
+      applyCommandInTx(tx, row, "accept");
+      tx.changes.blobChanged(row.row.params_sha);
+    });
+    const before = f.blobs.read(row.row.params_sha);
+    runMutation(f.store, (tx) => {
+      tx.changes.blobChanged(...applyCommandPruneInTx(tx, [row.row]));
+      tx.prepare(
+        "INSERT INTO turn(id,pid,thread_id,ordinal,created_at,prompt_sha,body) VALUES('turn',?,'thread',1,?,?,x'7b7d')",
+      ).run(pid, OLD, row.row.params_sha);
+    });
+    expect(f.blobs.read(row.row.params_sha)).toEqual(before);
+    expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 0 });
+    runMutation(f.store, (tx) => {
+      tx.prepare("DELETE FROM turn WHERE id='turn'").run();
+      tx.changes.blobChanged(row.row.params_sha);
+    });
+    expect(f.store.prepare("SELECT count(*) AS n FROM blob").get()).toEqual({ n: 0 });
+  });
   it("T-RET-1: one global cap, at most 100 per pass, without params/result hydration", async () => {
     const f = await fixture();
     const prepared = Array.from({ length: 800 }, (_, i) =>

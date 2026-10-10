@@ -19,7 +19,7 @@ import {
 import { SqlCommandPruner } from "./command-prune.js";
 import { collectReleasedBodies, SqlEventLedger } from "./event-store.js";
 import { bindIdempotencyInTx, lookupIdempotency } from "./idempotency.js";
-import { runMutation } from "./mutation.js";
+import { MutationPostCommitError, runMutation } from "./mutation.js";
 import type { Obligations } from "./obligations.js";
 import type { PartitionGeneration } from "./partitions.js";
 import type { EngineStore } from "./store.js";
@@ -168,21 +168,32 @@ export class SqlCommandStore implements CommandStorePort {
     const { params: _params, ...record } = next;
     const updated = this.events.prepare("command.updated", { record });
     const run = this.events.prepare("run.event", journaledRunEventCopy(event));
-    runMutation(this.store, (tx) => {
-      applyCommandInTx(tx, prepared, "update");
-      applyTerminalInTx(tx, this.generation.pid, event);
-      this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {
-        telemetry,
+    try {
+      runMutation(this.store, (tx) => {
+        applyCommandInTx(tx, prepared, "update");
+        applyTerminalInTx(tx, this.generation.pid, event);
+        this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {
+          telemetry,
+        });
+        this.events.appendInTx(tx, updated);
+        this.events.appendInTx(tx, run);
+        tx.changes.blobChanged(
+          row.params_sha,
+          row.result_sha,
+          prepared.row.params_sha,
+          prepared.row.result_sha,
+        );
+        if (row.result_sha && row.result_sha !== prepared.row.result_sha)
+          tx.changes.afterCommit(() =>
+            collectReleasedBodies(this.store, this.blobs, [row.result_sha!]),
+          );
       });
-      this.events.appendInTx(tx, updated);
-      this.events.appendInTx(tx, run);
-      tx.changes.blobChanged(
-        row.params_sha,
-        row.result_sha,
-        prepared.row.params_sha,
-        prepared.row.result_sha,
-      );
-    });
+    } catch (error) {
+      // Notification failure cannot authorize EventLog's pre-COMMIT rollback.
+      // The terminal and its pending file obligation are already durable rows.
+      if (error instanceof MutationPostCommitError) return { state: "pending", error };
+      throw error;
+    }
     try {
       this.options.terminalFiles.materialize(event.run_id);
     } catch {
@@ -214,7 +225,7 @@ export class SqlCommandStore implements CommandStorePort {
     const { facts } = recoveredTerminalFacts(current, terminal);
     const active = current.state === "queued" || current.state === "running";
     let recovered = current;
-    if (active) {
+    if (active || current.errorCode === "terminal_recovery_required") {
       const row = commandRow(this.store, id, this.generation.pid)!;
       recovered = this.writeUpdate(
         row,
@@ -222,6 +233,15 @@ export class SqlCommandStore implements CommandStorePort {
           ...current,
           state: facts.outcome.lifecycle,
           result: terminalCommandResult(current, facts),
+          error:
+            facts.outcome.lifecycle === "failed" || facts.outcome.lifecycle === "interrupted"
+              ? `recovered durable ${facts.outcome.lifecycle} terminal after daemon restart`
+              : undefined,
+          errorCode: undefined,
+          errorStatus: undefined,
+          errorRetryable: undefined,
+          errorRequiredActions: undefined,
+          errorContext: undefined,
           finishedAt: terminal.ts,
         },
         this.options.terminalFiles.prepareRecoveryTelemetry(current.runDir!, facts),

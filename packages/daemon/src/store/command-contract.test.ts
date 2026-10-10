@@ -2,21 +2,33 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
-import type { CommandListQuery } from "@claudexor/schema";
+import { RunEvent, type CommandListQuery } from "@claudexor/schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BlobFiles } from "./blob-files.js";
+import { BlobFiles, deleteUnownedInlineInTx } from "./blob-files.js";
 import { SqlCommandStore } from "./commands.js";
-import { SqlCommandPruner } from "./command-prune.js";
+import { applyCommandPruneInTx, SqlCommandPruner } from "./command-prune.js";
 import { SqlCommandQueries, MODEL_RETAINS_RESOURCE_SQL } from "./command-queries.js";
 import { SqlEventLedger } from "./event-store.js";
-import { SqlInteractionStore } from "./interactions.js";
-import { SqlOperatorDecisionStore } from "./operator-decisions.js";
+import { applyInteractionInTx, SqlInteractionStore } from "./interactions.js";
+import { applyDecisionInTx, SqlOperatorDecisionStore } from "./operator-decisions.js";
 import { Obligations } from "./obligations.js";
 import { createPartition, currentGeneration } from "./partitions.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
 import { legacyOracle } from "./test-support/legacy-oracle.js";
-import { maintenanceCommandSummary } from "./command-rows.js";
+import {
+  applyCommandInTx,
+  commandRow,
+  maintenanceCommandSummary,
+  prepareCommandRow,
+  type CommandRow,
+} from "./command-rows.js";
+import { readLogicalFixture } from "./test-support/fixture-loader.js";
+import { bindIdempotencyInTx } from "./idempotency.js";
+import { insertEventInTx, restoreEventSequenceInTx } from "./retention.js";
+import { applyTerminalInTx, storedTerminal } from "./run-events.js";
+import { parseDecisionMutation } from "../operator-decisions.js";
+import type { JobRecord } from "../job-record.js";
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -75,6 +87,144 @@ const request = (id: string, params: unknown = { mode: "ask", prompt: "hello" })
 });
 
 describe("SQL command authority", () => {
+  it.each(["blob", "command", "idempotency"])(
+    "accept rolls back a fault in %s before exposing any authority",
+    async (table) => {
+      const f = await fixture();
+      const generation = f.store.facts().flusher.generation;
+      f.store.transaction(() =>
+        f.store.exec(
+          `CREATE TRIGGER accept_fault BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT,'accept fault'); END`,
+        ),
+      );
+      expect(() => f.commands.accept(request("failed"))).toThrow(/accept fault/);
+      for (const name of ["blob", "command", "idempotency", "event"])
+        expect(f.store.prepare(`SELECT count(*) AS n FROM ${name}`).get()).toEqual({ n: 0 });
+      expect(f.store.prepare("SELECT next_seq FROM partition").get()).toEqual({ next_seq: 1 });
+      expect(f.store.facts().flusher.generation).toBe(generation);
+      f.store.transaction(() => f.store.exec("DROP TRIGGER accept_fault"));
+      expect(f.commands.accept(request("failed")).reused).toBe(false);
+      expect(f.commands.find(request("failed"))?.id).toBe("failed");
+    },
+  );
+  it("pure import reducers reproduce the frozen logical fixture without runtime mutations", async () => {
+    const f = await fixture();
+    const source = readLogicalFixture(
+      resolve(import.meta.dirname, "test-support/fixtures/global.json"),
+    ) as ReturnType<typeof readLogicalFixture> & {
+      lookups: {
+        command: Parameters<typeof f.commands.find>[0];
+        decision: { key: string; client: string; request: unknown };
+      };
+    };
+    f.journal.appendBatch(source.records);
+    const legacy = new legacyOracle.daemonCommandStore.CommandStore(f.journal);
+    const oldInteractions = new legacyOracle.daemonInteractions.InteractionStore(f.journal);
+    const oldDecisions = new legacyOracle.daemonOperatorDecisions.OperatorDecisionStore(f.journal);
+    const pid = f.generation.pid;
+    for (const entry of f.journal.records()) {
+      const payload = entry.payload as {
+        record?: JobRecord;
+        keyDigest?: string;
+        requestDigest?: string;
+        ids?: string[];
+        roots?: string[];
+      };
+      const prior = payload.record ? commandRow(f.store, payload.record.id, pid) : undefined;
+      const record =
+        payload.record && (entry.type === "command.accepted" || entry.type === "command.updated")
+          ? {
+              ...payload.record,
+              params: Object.hasOwn(payload.record, "params")
+                ? payload.record.params
+                : f.commands.get(payload.record.id)!.params,
+            }
+          : undefined;
+      const prepared = record
+        ? prepareCommandRow(
+            record,
+            { pid, live: true, operation: "legacy", clientId: null, previous: prior },
+            (bytes) => f.blobs.prepareBody(bytes),
+          )
+        : undefined;
+      f.store.transaction(() => {
+        const released: string[] = [];
+        if (prepared)
+          applyCommandInTx(
+            f.store,
+            prepared,
+            entry.type === "command.accepted" ? "accept" : "update",
+          );
+        if (prior?.result_sha && prior.result_sha !== prepared?.row.result_sha)
+          released.push(prior.result_sha);
+        if (entry.type === "command.accepted")
+          bindIdempotencyInTx(f.store, {
+            owner: "command",
+            pid,
+            keyDigest: payload.keyDigest!,
+            requestDigest: payload.requestDigest!,
+            targetId: payload.record!.id,
+            operation: "legacy",
+            createdAt: payload.record!.createdAt,
+          });
+        if (entry.type === "command.pruned") {
+          released.push(
+            ...applyCommandPruneInTx(
+              f.store,
+              payload
+                .ids!.map((id) => commandRow(f.store, id, pid))
+                .filter((row): row is CommandRow => row !== undefined),
+            ),
+          );
+          for (const root of payload.roots ?? [])
+            f.store.prepare("INSERT OR IGNORE INTO pruned_root(root) VALUES(?)").run(root);
+        }
+        if (entry.type === "interaction.requested" || entry.type === "interaction.resolved")
+          applyInteractionInTx(f.store, pid, entry.type, entry.payload);
+        if (entry.type === "operator.decision_recorded")
+          applyDecisionInTx(f.store, pid, parseDecisionMutation(entry.payload));
+        if (entry.type === "run.event") {
+          const event = RunEvent.parse(entry.payload);
+          if (["run.completed", "run.failed", "run.blocked"].includes(event.type))
+            applyTerminalInTx(f.store, pid, event);
+        }
+        released.push(...insertEventInTx(f.store, pid, entry).releasedDigests);
+        for (const digest of new Set(released)) deleteUnownedInlineInTx(f.store, digest);
+      });
+    }
+    f.store.transaction(() =>
+      restoreEventSequenceInTx(f.store, pid, f.journal.currentSequence() + 1),
+    );
+    const imported = (
+      f.store.prepare("SELECT id FROM command ORDER BY rowid").all() as Array<{ id: string }>
+    ).map(({ id }) => f.commands.get(id));
+    expect(imported).toEqual(legacy.records());
+    expect(f.commands.find(source.lookups.command)).toEqual(legacy.find(source.lookups.command));
+    expect(f.commands.prunedScopeRoots()).toEqual(legacy.prunedScopeRoots());
+    const interactions = new SqlInteractionStore(f.store, f.events),
+      decisions = new SqlOperatorDecisionStore(f.store, f.events);
+    for (const id of ["question-closed", "question-open"])
+      expect(interactions.status("run-success", id)).toBe(
+        oldInteractions.status("run-success", id),
+      );
+    expect(interactions.pendingForRun("run-success")).toEqual(
+      oldInteractions.pendingForRun("run-success"),
+    );
+    expect(decisions.findByIdempotency("run-success", source.lookups.decision)).toEqual(
+      oldDecisions.findByIdempotency("run-success", source.lookups.decision),
+    );
+    expect(storedTerminal(f.store, "run-success")).toEqual(
+      legacyOracle.daemonRunEventTerminalIndex
+        .durableTerminalRunEvents(f.journal)
+        .get("run-success"),
+    );
+    expect(f.store.prepare("SELECT next_seq FROM partition").get()).toEqual({
+      next_seq: source.records.length + 1,
+    });
+    expect(f.store.prepare("SELECT DISTINCT operation,client_id FROM command").all()).toEqual([
+      { operation: "legacy", client_id: null },
+    ]);
+  });
   it("maintenance inventory reads bounded canonical evidence by harness without body reads", async () => {
     const f = await fixture();
     const evidence = {
