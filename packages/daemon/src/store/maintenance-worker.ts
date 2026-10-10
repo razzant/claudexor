@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isMainThread, parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { BLOB_OWNER_PREDICATE } from "./blob-files.js";
-import { sqlitePrimaryCode } from "./errors.js";
+import { mapStoreError, sqlitePrimaryCode, StoreCorruptError } from "./errors.js";
 import { STORE_WORKER_DATA_KEY } from "./flusher-protocol.js";
 import { loadEngineRuntime } from "./runtime.js";
 import { runLegacyImport } from "./importer.js";
@@ -140,10 +140,12 @@ export async function runMaintenanceWorker(
           break;
       }
     } catch (error) {
+      const mapped = mapStoreError(error, "maintenance worker");
       response = {
         id: request.id,
         ok: false,
         error: error instanceof Error ? error.message : String(error),
+        ...(mapped instanceof StoreCorruptError ? { code: "store_corrupt" as const } : {}),
       };
     }
     port.postMessage(response);

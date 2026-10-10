@@ -1,7 +1,7 @@
 import { unlinkSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { BlobFiles } from "./blob-files.js";
-import { StoreError } from "./errors.js";
+import { StoreCorruptError, StoreError } from "./errors.js";
 import { STORE_WORKER_DATA_KEY, resolveStoreWorkerEntry } from "./flusher-protocol.js";
 import type { EngineStore } from "./store.js";
 import { cleanupUploadPart } from "./uploads.js";
@@ -65,7 +65,7 @@ export interface SweepReport extends Omit<SweepCandidates, "candidates"> {
 
 export type MaintenanceResponse =
   | { id: number; ok: true; result: IntegrityReport | ExportReport | SweepCandidates }
-  | { id: number; ok: false; error: string };
+  | { id: number; ok: false; error: string; code?: "store_corrupt" };
 
 export interface MaintenanceControllerOptions {
   workerEntry?: string;
@@ -115,7 +115,7 @@ export class MaintenanceController {
   /** `PRAGMA integrity_check` on the worker; the verdict becomes the `integrity` fact. */
   async integrityCheck(): Promise<IntegrityReport> {
     const report = await this.run<IntegrityReport>({ id: 0, kind: "integrity_check" });
-    this.store.recordIntegrity(report.ok ? "ok" : "failed");
+    this.store.recordIntegrity(report.ok ? "ok" : "failed", report.problems.join("; "));
     return report;
   }
 
@@ -229,10 +229,22 @@ export class MaintenanceController {
       if (!current || current.request.id !== response.id) return;
       this.inFlight = null;
       if (response.ok) current.resolve(response.result as never);
-      else current.reject(new StoreError("store_maintenance_failed", 503, true, response.error));
+      else {
+        const error =
+          response.code === "store_corrupt"
+            ? new StoreCorruptError(response.error)
+            : new StoreError("store_maintenance_failed", 503, true, response.error);
+        current.reject(this.store.failure(error, "maintenance worker") as Error);
+      }
       this.pump();
     });
     worker.on("error", (error) => {
+      if (this.worker !== worker || this.closing) return;
+      const failure = this.store.failure(error, "maintenance worker");
+      if (failure instanceof StoreCorruptError) {
+        this.inFlight?.reject(failure);
+        this.inFlight = null;
+      }
       this.options.log?.(`store maintenance worker error: ${error.message}`);
     });
     worker.on("exit", (code) => {

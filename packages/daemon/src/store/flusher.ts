@@ -43,6 +43,8 @@ export interface FlusherControllerOptions {
   hooks?: FlusherHooks;
   log?: (line: string) => void;
   onSynced?: (generation: number, report: FlusherPassReport) => void;
+  /** Native Worker error transport retains SQLite's code/errcode. */
+  onError?: (error: Error) => void;
 }
 
 interface Waiter {
@@ -245,6 +247,8 @@ export class FlusherController {
       if (event.type === "synced") this.onSynced(event.report);
     });
     worker.on("error", (error) => {
+      if (this.worker !== worker || this.closing) return;
+      this.options.onError?.(error);
       this.options.log?.(`store flusher worker error: ${error.message}`);
     });
     worker.on("exit", (code) => {
