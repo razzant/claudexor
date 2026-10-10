@@ -17,13 +17,13 @@ export interface RecordedOperatorDecision {
 
 const RECORDED = "operator.decision_recorded";
 
-interface DecisionBinding {
+export interface DecisionBinding {
   keyDigest: string;
   requestDigest: string;
   runId: string;
 }
 
-interface DecisionMutation {
+export interface DecisionMutation {
   decision: OperatorDecisionRecord;
   idempotency?: DecisionBinding;
 }
@@ -36,7 +36,7 @@ export class OperatorDecisionStore {
   constructor(private readonly journal: DurableJournal) {
     for (const entry of journal.records(0, [RECORDED])) {
       if (entry.type !== RECORDED) continue;
-      const mutation = parseMutation(entry.payload);
+      const mutation = parseDecisionMutation(entry.payload);
       this.apply(mutation);
     }
   }
@@ -50,7 +50,7 @@ export class OperatorDecisionStore {
     runId: string,
     idempotency: { key: string; client: string; request: unknown },
   ): OperatorDecisionRecord | null {
-    const binding = decisionBinding(this.journal.options.partition, runId, idempotency);
+    const binding = operatorDecisionBinding(this.journal.options.partition, runId, idempotency);
     if (!binding) return null;
     const prior = this.byKey.get(binding.keyDigest);
     if (!prior) return null;
@@ -64,8 +64,12 @@ export class OperatorDecisionStore {
     input: OperatorDecisionRecord,
     idempotency?: { key: string; client: string; request: unknown },
   ): RecordedOperatorDecision {
-    const decision = parseDecision(input);
-    const binding = decisionBinding(this.journal.options.partition, decision.runId, idempotency);
+    const decision = parseOperatorDecision(input);
+    const binding = operatorDecisionBinding(
+      this.journal.options.partition,
+      decision.runId,
+      idempotency,
+    );
     if (binding) {
       const existing = this.findByIdempotency(decision.runId, idempotency!);
       if (existing) return { record: existing, reused: true };
@@ -77,7 +81,7 @@ export class OperatorDecisionStore {
   }
 
   validateProjection(): void {
-    for (const decision of this.byRun.values()) parseDecision(decision);
+    for (const decision of this.byRun.values()) parseOperatorDecision(decision);
     for (const binding of this.byKey.values()) {
       if (!this.byRun.has(binding.runId))
         throw new Error("operator decision idempotency index is dangling");
@@ -105,7 +109,7 @@ export function operatorDecisionProjection() {
   };
 }
 
-function parseDecision(value: unknown): OperatorDecisionRecord {
+export function parseOperatorDecision(value: unknown): OperatorDecisionRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid operator decision record");
   }
@@ -126,13 +130,13 @@ function parseDecision(value: unknown): OperatorDecisionRecord {
   return structuredClone(input as unknown as OperatorDecisionRecord);
 }
 
-function parseMutation(value: unknown): DecisionMutation {
+export function parseDecisionMutation(value: unknown): DecisionMutation {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid operator decision mutation");
   }
   const input = value as Record<string, unknown>;
   // Accept the pre-idempotency v2 record shape while the release candidate is local-only.
-  if (!("decision" in input)) return { decision: parseDecision(value) };
+  if (!("decision" in input)) return { decision: parseOperatorDecision(value) };
   const idempotency = input["idempotency"];
   if (
     idempotency !== undefined &&
@@ -146,12 +150,12 @@ function parseMutation(value: unknown): DecisionMutation {
     throw new Error("invalid operator decision idempotency binding");
   }
   return {
-    decision: parseDecision(input["decision"]),
+    decision: parseOperatorDecision(input["decision"]),
     ...(idempotency ? { idempotency: { ...(idempotency as DecisionBinding) } } : {}),
   };
 }
 
-function decisionBinding(
+export function operatorDecisionBinding(
   partition: string,
   runId: string,
   input: { key: string; client: string; request: unknown } | undefined,

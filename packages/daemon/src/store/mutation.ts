@@ -1,5 +1,7 @@
 import type { EngineStore } from "./store.js";
 import type { OwnerKey } from "./owner-generations.js";
+import { deleteUnownedInlineInTx } from "./blob-files.js";
+import { mapStoreError } from "./errors.js";
 
 /** Row reducers need only a statement owner and an already open transaction.
  * An importer can supply this over its single connection without an EngineStore. */
@@ -39,6 +41,13 @@ export class MutationDelta {
     this.callbacks.push(callback);
   }
 
+  /** Run once after all row writers, before COMMIT. A later writer in the same
+   * mutation may still acquire a reference, so cleanup must not run earlier. */
+  clearUnownedInline(sql: SqlWriteContext): void {
+    for (const key of this.owners)
+      if (key.startsWith("blob:")) deleteUnownedInlineInTx(sql, key.slice(5));
+  }
+
   /** Used by runMutation only, after EngineStore.transaction returned. */
   publish(store: EngineStore): void {
     for (const key of this.owners) store.owners.noteChange(key);
@@ -67,7 +76,16 @@ export function runMutation<T>(store: EngineStore, body: (tx: MutationContext) =
     changes,
     now: store.now,
   };
-  const result = store.transaction(() => body(tx));
+  let result: T;
+  try {
+    result = store.transaction(() => {
+      const value = body(tx);
+      changes.clearUnownedInline(tx);
+      return value;
+    });
+  } catch (error) {
+    throw mapStoreError(error, "mutating engine rows");
+  }
   changes.publish(store);
   return result;
 }

@@ -25,7 +25,7 @@ export interface InteractionContext {
 export type InteractionAnswerStatus = "delivered" | "not_found" | "already_resolved" | "rejected";
 export type InteractionTerminal = "answered" | "timeout" | "run_terminal" | "interrupted";
 
-interface InteractionResolution {
+export interface InteractionResolution {
   runId: string;
   interactionIds: string[];
   terminal: InteractionTerminal;
@@ -49,16 +49,7 @@ export class InteractionStore {
   }
 
   request(ctx: InteractionContext): ControlPendingInteraction {
-    const value = PendingInteractionSchema.parse({
-      interactionId: ctx.request.interaction_id,
-      runId: ctx.runId,
-      attemptId: ctx.attemptId,
-      harnessId: ctx.harnessId,
-      sourceTool: ctx.request.source_tool,
-      questions: ctx.request.questions,
-      requestedAt: ctx.requestedAt,
-      timeoutAt: ctx.timeoutAt,
-    });
+    const value = pendingInteraction(ctx);
     const key = interactionKey(value.runId, value.interactionId);
     if (this.pending.has(key) || this.resolved.has(key)) {
       throw new Error(`duplicate interaction '${value.interactionId}' for run '${value.runId}'`);
@@ -116,7 +107,7 @@ export class InteractionStore {
         }
         this.pending.set(key, value);
       } else if (record.type === RESOLVED) {
-        this.applyResolution(parseResolution(record.payload));
+        this.applyResolution(parseInteractionResolution(record.payload));
       }
     }
     this.validateProjection();
@@ -135,7 +126,7 @@ export class InteractionStore {
   }
 
   private commitResolution(value: InteractionResolution): void {
-    const parsed = parseResolution(value);
+    const parsed = parseInteractionResolution(value);
     this.journal.append(RESOLVED, parsed);
     this.applyResolution(parsed);
   }
@@ -257,11 +248,11 @@ export function interactionProjection() {
   };
 }
 
-function interactionKey(runId: string, interactionId: string): string {
+export function interactionKey(runId: string, interactionId: string): string {
   return `${runId}\u0000${interactionId}`;
 }
 
-function parseResolution(value: unknown): InteractionResolution {
+export function parseInteractionResolution(value: unknown): InteractionResolution {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("invalid interaction resolution");
   const input = value as Partial<InteractionResolution>;
@@ -284,4 +275,17 @@ function parseResolution(value: unknown): InteractionResolution {
 
 function missingMessage(runId: string, interactionId: string): string {
   return `no pending interaction '${interactionId}' for run '${runId}'`;
+}
+
+export function pendingInteraction(ctx: InteractionContext): ControlPendingInteraction {
+  return PendingInteractionSchema.parse({
+    interactionId: ctx.request.interaction_id,
+    runId: ctx.runId,
+    attemptId: ctx.attemptId,
+    harnessId: ctx.harnessId,
+    sourceTool: ctx.request.source_tool,
+    questions: ctx.request.questions,
+    requestedAt: ctx.requestedAt,
+    timeoutAt: ctx.timeoutAt,
+  });
 }

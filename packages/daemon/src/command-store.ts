@@ -10,10 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { TextDecoder } from "node:util";
 import type { DurableJournal } from "@claudexor/journal";
 import {
-  RunEvent as RunEventSchema,
   RunTelemetry,
   validateRunFactsInvariants,
   type RunEvent,
@@ -23,11 +21,12 @@ import { fsyncDirectory, hashJson } from "@claudexor/util";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { commandScopeRoots } from "./command-scope-roots.js";
 import { idempotencyWireProjection } from "./idempotency-wire-projection.js";
-import { POST_TERMINAL_AUDIT_EVENT_TYPES } from "./journaled-run-events.js";
 import { durableTerminalRunEvents } from "./run-event-terminal-index.js";
 import { JOB_STATES, type JobRecord } from "./server.js";
 import {
   lstatOrNull,
+  normalizedTerminalEvents,
+  terminalResultMatches,
   recoveredTerminalFacts,
   terminalCommandResult,
 } from "./terminal-authority.js";
@@ -76,8 +75,8 @@ export class CommandStore {
     operation?: string;
     idempotencyParams?: unknown;
   }): { record: JobRecord; reused: boolean } {
-    validateKey(input.idempotencyKey);
-    const { requestDigest, keyDigest } = digests(this.journal.options.partition, input);
+    validateCommandKey(input.idempotencyKey);
+    const { requestDigest, keyDigest } = commandDigests(this.journal.options.partition, input);
     const prior = this.idByKeyDigest.get(keyDigest);
     if (prior) {
       if (prior.requestDigest !== requestDigest) throw conflict();
@@ -108,8 +107,8 @@ export class CommandStore {
     operation?: string;
     idempotencyParams?: unknown;
   }): JobRecord | null {
-    validateKey(input.idempotencyKey);
-    const { requestDigest, keyDigest } = digests(this.journal.options.partition, input);
+    validateCommandKey(input.idempotencyKey);
+    const { requestDigest, keyDigest } = commandDigests(this.journal.options.partition, input);
     const prior = this.idByKeyDigest.get(keyDigest);
     if (!prior) return null;
     if (prior.requestDigest !== requestDigest) throw conflict();
@@ -118,6 +117,11 @@ export class CommandStore {
 
   get(id: string): JobRecord | undefined {
     return this.recordsById.get(id);
+  }
+
+  /** Journal mutations already completed their storage barrier before returning. */
+  flushed(): Promise<void> {
+    return Promise.resolve();
   }
 
   get count(): number {
@@ -164,7 +168,7 @@ export class CommandStore {
   }
 
   validateProjection(): void {
-    for (const record of this.recordsById.values()) validateRecord(record);
+    for (const record of this.recordsById.values()) validateCommandRecord(record);
     for (const entry of this.idByKeyDigest.values()) {
       if (!this.recordsById.has(entry.id)) throw new Error("command idempotency index is dangling");
     }
@@ -174,7 +178,7 @@ export class CommandStore {
     for (const entry of this.journal.records(0, [ACCEPTED, UPDATED, PRUNED])) {
       if (entry.type === ACCEPTED) {
         const payload = entry.payload as AcceptedCommand;
-        validateRecord(payload.record);
+        validateCommandRecord(payload.record);
         if (!payload.keyDigest || !payload.requestDigest)
           throw new Error("invalid accepted command");
         const prior = this.idByKeyDigest.get(payload.keyDigest);
@@ -191,7 +195,7 @@ export class CommandStore {
         });
       } else if (entry.type === UPDATED) {
         const journaled = (entry.payload as CommandUpdate).record;
-        validateRecord(journaled);
+        validateCommandRecord(journaled);
         const current = this.recordsById.get(journaled.id);
         if (!current) throw new Error("command update precedes acceptance");
         const record: JobRecord =
@@ -386,67 +390,7 @@ export class CommandStore {
       }
       eventsBytes = readFileSync(eventsPath);
     }
-    const normalizedLines: string[] = [];
-    let terminalOccurrences = 0;
-    let previousSeq = 0;
-    const rawLines = splitLines(eventsBytes);
-    const finalNonEmptyIndex = rawLines.findLastIndex((line) => !isAsciiWhitespace(line));
-    const canonicalTerminalLine = JSON.stringify(terminal);
-    const canonicalTerminalBytes = Buffer.from(canonicalTerminalLine, "utf8");
-    const endsWithNewline = eventsBytes.at(-1) === 0x0a;
-    const utf8 = new TextDecoder("utf-8", { fatal: true });
-    for (const [index, lineBytes] of rawLines.entries()) {
-      if (isAsciiWhitespace(lineBytes)) continue;
-      let event: RunEvent;
-      try {
-        const line = utf8.decode(lineBytes);
-        event = RunEventSchema.parse(JSON.parse(line));
-      } catch {
-        const tornFinalLine =
-          index === finalNonEmptyIndex &&
-          !endsWithNewline &&
-          terminalOccurrences === 0 &&
-          isBufferPrefix(canonicalTerminalBytes, lineBytes);
-        if (tornFinalLine) break;
-        throw new Error("per-run event log contains malformed committed evidence");
-      }
-      if (event.run_id !== terminal.run_id || event.task_id !== terminal.task_id) {
-        throw new Error("per-run event identity conflicts with durable terminal authority");
-      }
-      if (typeof event.seq !== "number" || !Number.isSafeInteger(event.seq) || event.seq <= 0) {
-        throw new Error("per-run event has no valid sequence");
-      }
-      const eventSeq = event.seq;
-      if (eventSeq <= previousSeq) {
-        throw new Error("per-run event sequence is duplicate or non-monotonic");
-      }
-      const sameEvent = hashJson(event) === hashJson(terminal);
-      if (terminalOccurrences === 0 && !sameEvent && eventSeq >= terminalSeq) {
-        throw new Error("per-run event sequence conflicts with durable terminal authority");
-      }
-      if (terminalOccurrences > 0 && !sameEvent && !isPostTerminalControlAudit(event.type)) {
-        throw new Error("per-run event appears after terminal authority");
-      }
-      const eventIsTerminal =
-        event.type === "run.completed" ||
-        event.type === "run.failed" ||
-        event.type === "run.blocked";
-      if (eventIsTerminal) {
-        if (!sameEvent) {
-          throw new Error("per-run terminal event conflicts with durable journal authority");
-        }
-        terminalOccurrences += 1;
-        if (terminalOccurrences > 1) {
-          throw new Error("per-run event log contains multiple terminal events");
-        }
-      }
-      previousSeq = eventSeq;
-      normalizedLines.push(JSON.stringify(event));
-    }
-    if (terminalOccurrences === 0) {
-      normalizedLines.push(JSON.stringify(terminal));
-    }
-    const normalizedEvents = normalizedLines.length > 0 ? `${normalizedLines.join("\n")}\n` : "";
+    const normalizedEvents = normalizedTerminalEvents(eventsBytes, terminal, terminalSeq);
     if (!Buffer.from(normalizedEvents, "utf8").equals(eventsBytes)) {
       replaceFileDurably(eventsPath, normalizedEvents);
     }
@@ -460,56 +404,6 @@ export class CommandStore {
       if (removed.has(entry.id)) this.idByKeyDigest.delete(digest);
     }
   }
-}
-
-function splitLines(bytes: Buffer): Buffer[] {
-  const lines: Buffer[] = [];
-  let start = 0;
-  for (let index = 0; index < bytes.length; index += 1) {
-    if (bytes[index] !== 0x0a) continue;
-    lines.push(bytes.subarray(start, index));
-    start = index + 1;
-  }
-  lines.push(bytes.subarray(start));
-  return lines;
-}
-
-function isAsciiWhitespace(bytes: Buffer): boolean {
-  for (const byte of bytes) {
-    if (byte !== 0x09 && byte !== 0x0b && byte !== 0x0c && byte !== 0x0d && byte !== 0x20) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function isBufferPrefix(whole: Buffer, prefix: Buffer): boolean {
-  return prefix.length <= whole.length && whole.subarray(0, prefix.length).equals(prefix);
-}
-
-function isPostTerminalControlAudit(type: string): boolean {
-  return POST_TERMINAL_AUDIT_EVENT_TYPES.has(type);
-}
-
-function terminalResultMatches(
-  result: unknown,
-  expected: {
-    lifecycle: RunFacts["outcome"]["lifecycle"];
-    facts: RunFacts["outcome"];
-    runId: string;
-    taskId: string;
-    runDir: string;
-  },
-): boolean {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
-  const value = result as Record<string, unknown>;
-  return (
-    value["lifecycle"] === expected.lifecycle &&
-    value["runId"] === expected.runId &&
-    value["taskId"] === expected.taskId &&
-    value["runDir"] === expected.runDir &&
-    hashJson(value["facts"]) === hashJson(expected.facts)
-  );
 }
 
 function replaceFileDurably(path: string, text: string): void {
@@ -551,7 +445,7 @@ function persisted(record: JobRecord): JobRecord {
   return structuredClone(record);
 }
 
-function validateRecord(record: Omit<JobRecord, "params">): void {
+export function validateCommandRecord(record: Omit<JobRecord, "params">): void {
   if (!record || typeof record !== "object" || !record.id || !record.createdAt) {
     throw new Error("invalid command record");
   }
@@ -560,7 +454,7 @@ function validateRecord(record: Omit<JobRecord, "params">): void {
   if (!states.includes(record.state)) throw new Error(`invalid command state '${record.state}'`);
 }
 
-function validateKey(key: string): void {
+export function validateCommandKey(key: string): void {
   if (!key || key.length > 256) {
     throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
       code: "invalid_idempotency_key",
@@ -569,7 +463,7 @@ function validateKey(key: string): void {
   }
 }
 
-function digests(
+export function commandDigests(
   partition: string,
   input: {
     params: unknown;

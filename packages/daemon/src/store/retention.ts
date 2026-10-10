@@ -31,6 +31,11 @@ export interface AppendedEvent {
 export function sqlEventVerdict(record: FoldRecord): FoldVerdict {
   if (record.type === "thread.entities_upserted") return { drop: true };
   const verdict = journalFoldPolicy.verdict(record) ?? {};
+  if (record.type === "operator.decision_recorded") {
+    const value = record.payload as { runId?: unknown; decision?: { runId?: unknown } } | null;
+    const runId = value?.decision?.runId ?? value?.runId;
+    if (typeof runId === "string" && runId.length > 0) return { ...verdict, group: `d:${runId}` };
+  }
   if (record.type === "setup.job.saved") {
     const jobId = (record.payload as { job?: { jobId?: unknown } } | null)?.job?.jobId;
     if (typeof jobId === "string" && jobId.length > 0) {

@@ -19,10 +19,12 @@ import { errorCode, redactSecrets } from "@claudexor/util";
 import {
   commandStoreForId,
   commandStores,
+  type CommandAuthority,
   type LegacyCommandAuthority,
 } from "./command-authority.js";
 import { findAcceptedCommand } from "./command-rpc.js";
 import type { JobRecord, RunContext } from "./server.js";
+import type { ModelResourceQueries } from "./store/command-queries.js";
 
 export const MODEL_OPERATION_ID = "model.operation.create";
 const RESPONSE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -35,8 +37,7 @@ export interface ModelPayloadStore {
   listModelResources(): Array<ModelPayloadRef & { createdAt: string }>;
 }
 
-export interface ModelOperationDependencies {
-  commands: LegacyCommandAuthority;
+interface ModelOperationServices {
   resources: () => ModelPayloadStore;
   enqueue(envelope: {
     request: ModelOperationParams;
@@ -56,6 +57,14 @@ export interface ModelOperationDependencies {
   now?: () => Date;
   warn?: (message: string) => void;
 }
+
+/** A SQL authority must supply addressed custody queries. Only the explicit
+ * legacy branch retains its enumerable journal projection. */
+export type ModelOperationDependencies = ModelOperationServices &
+  (
+    | { commands: LegacyCommandAuthority; resourceQueries?: undefined }
+    | { commands: CommandAuthority; resourceQueries: ModelResourceQueries }
+  );
 
 type Evidence = Omit<ModelOperationReceipt, "lifecycle">;
 
@@ -146,6 +155,8 @@ export class ModelOperations {
   async execute(raw: unknown, ctx: RunContext): Promise<ModelOperationReceipt> {
     const params = ModelOperationParams.parse(raw);
     let evidence = emptyEvidence();
+    let dispatchAttempted = false;
+    let barrierProblem: ControlProblem | null = null;
     try {
       const request = this.readRequest(params.request);
       ctx.signal.throwIfAborted();
@@ -158,12 +169,13 @@ export class ModelOperations {
           ...(params.captureFailureEvidence ? { captureFailureEvidence: true } : {}),
           onDispatch: async (route) => {
             ctx.signal.throwIfAborted();
-            if (evidence.dispatch.state !== "not_started") {
+            if (dispatchAttempted) {
               throw operationError(
                 "duplicate_model_dispatch",
                 "A model operation may send inference only once",
               );
             }
+            dispatchAttempted = true;
             const dispatch: ModelDispatch = {
               state: "started",
               startedAt: this.now().toISOString(),
@@ -173,9 +185,34 @@ export class ModelOperations {
             // The adapter cannot POST until this callback returns. A rejected
             // journal write therefore never becomes evidence of a response.
             evidence.dispatch = dispatch;
+            try {
+              await commandStoreForId(this.deps.commands, ctx.jobId)!.flushed();
+            } catch (error) {
+              barrierProblem = ControlProblem.parse({
+                code: "store_flush_unavailable",
+                retryable: true,
+                message: redactSecrets(error instanceof Error ? error.message : String(error)),
+              });
+              evidence = {
+                ...evidence,
+                dispatch: { ...dispatch, state: "not_started" },
+                problem: barrierProblem,
+              };
+              this.update(ctx.jobId, evidence);
+              throw Object.assign(new Error(barrierProblem.message), { problem: barrierProblem });
+            }
+            ctx.signal.throwIfAborted();
           },
         }),
       );
+      // An adapter may translate the callback rejection into its normal failed
+      // response. The durable no-dispatch proof still owns this failure.
+      if (barrierProblem)
+        return ModelOperationReceipt.parse({
+          lifecycle: "failed",
+          ...evidence,
+          problem: barrierProblem,
+        });
       evidence.usage = result.usage;
       evidence.cost = result.cost;
       evidence.problem = result.problem;
@@ -224,7 +261,7 @@ export class ModelOperations {
       return ModelOperationReceipt.parse({ lifecycle, ...evidence });
     } catch (error) {
       const sent = evidence.dispatch.state !== "not_started";
-      evidence.problem = problemFrom(error);
+      evidence.problem = barrierProblem ?? problemFrom(error);
       if (sent && evidence.dispatch.state !== "response_received") {
         evidence.dispatch = { ...evidence.dispatch, state: "unknown" };
       }
@@ -319,7 +356,10 @@ export class ModelOperations {
   reconcileResources(dryRun = false): { released: string[]; errors: string[] } {
     const report = { released: [] as string[], errors: [] as string[] };
     const now = this.now().getTime();
-    const records = this.records();
+    const queries = this.deps.resourceQueries;
+    const records = queries
+      ? queries.expiredResponses(new Date(now).toISOString()).map((id) => this.record(id))
+      : this.records();
     const terminalRefs = new Set<string>();
     for (const record of records) {
       if (!isTerminalLifecycle(record.state)) continue;
@@ -338,12 +378,16 @@ export class ModelOperations {
         );
       }
     }
-    const liveRefs = this.retainedResources(now, records);
+    const liveRefs = queries
+      ? { has: (id: string) => queries.retainsResourceBytes(id, new Date(now).toISOString()) }
+      : this.retainedResources(now, records);
     for (const ref of this.deps.resources().listModelResources()) {
       if (liveRefs.has(ref.resourceId)) continue;
       // A newly finalized input may still be on its way to create. Unbound
       // resources from before this daemon's birth are crash residue.
-      const boundTerminal = terminalRefs.has(ref.resourceId);
+      const boundTerminal = queries
+        ? queries.hasTerminalResourceReceipt(ref.resourceId)
+        : terminalRefs.has(ref.resourceId);
       if (!boundTerminal && Date.parse(ref.createdAt) >= this.startedAt) continue;
       report.released.push(ref.resourceId);
       if (!dryRun) {
@@ -394,6 +438,7 @@ export class ModelOperations {
   }
 
   private records(): JobRecord[] {
+    if (this.deps.resourceQueries) throw new Error("SQL model custody must use addressed queries");
     return commandStores(this.deps.commands)
       .flatMap((store) => store.records())
       .filter((record) => isModelOperation(record.params));
@@ -457,7 +502,10 @@ export class ModelOperations {
   }
 
   private releaseIfUnused(ref: ModelPayloadRef): void {
-    if (this.retainedResources(this.now().getTime()).has(ref.resourceId)) return;
+    const retained = this.deps.resourceQueries
+      ? this.deps.resourceQueries.retainsResourceBytes(ref.resourceId, this.now().toISOString())
+      : this.retainedResources(this.now().getTime()).has(ref.resourceId);
+    if (retained) return;
     try {
       this.deps.resources().releaseModel(ref);
     } catch (error) {
@@ -468,14 +516,20 @@ export class ModelOperations {
   private armExpiry(): void {
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     if (this.closed) return;
-    const due = this.records()
-      .map((record) => this.evidence(record).response)
-      .filter(
-        (response): response is Extract<ModelResponseCustody, { state: "ready" }> =>
-          response.state === "ready",
-      )
-      .map((response) => Date.parse(response.expiresAt))
-      .filter(Number.isFinite);
+    const nextSql = this.deps.resourceQueries?.nextResponseExpiry();
+    const due = (
+      this.deps.resourceQueries
+        ? nextSql
+          ? [Date.parse(nextSql)]
+          : []
+        : this.records()
+            .map((record) => this.evidence(record).response)
+            .filter(
+              (response): response is Extract<ModelResponseCustody, { state: "ready" }> =>
+                response.state === "ready",
+            )
+            .map((response) => Date.parse(response.expiresAt))
+    ).filter(Number.isFinite);
     if (!due.length) return;
     const next = due.reduce((earliest, value) => Math.min(earliest, value), Infinity);
     const delay = Math.max(1, Math.min(2_147_483_647, next - this.now().getTime()));

@@ -1,5 +1,6 @@
 import type { EngineStore } from "./store.js";
 import { requireTransaction, runMutation, type MutationContext } from "./mutation.js";
+import { deleteUnownedInlineInTx } from "./blob-files.js";
 
 /** `effect_obligation.kind` values (SYNTHESIS_R5 §4.6). Data, not enum-in-logic:
  * stores register a completion handler per kind at startup. */
@@ -175,6 +176,15 @@ export class Obligations {
     ).map(fromRow);
   }
 
+  get(kind: ObligationKind, key: string): ObligationRow | undefined {
+    const row = this.store
+      .prepare(
+        "SELECT kind,key,pid,created_at,payload,state,materialized_g FROM effect_obligation WHERE kind=? AND key=?",
+      )
+      .get(kind, key) as StoredObligation | undefined;
+    return row ? fromRow(row) : undefined;
+  }
+
   /** Stores register one idempotent completion handler per kind at startup. */
   registerHandler(kind: ObligationKind, handler: ObligationHandler): void {
     if (this.handlers.has(kind))
@@ -257,6 +267,11 @@ export class Obligations {
         const removed: ObligationRow[] = [];
         for (const [kind, key] of clearable) {
           removed.push(...(remove.all(kind, key, generation) as StoredObligation[]).map(fromRow));
+        }
+        for (const row of removed) {
+          const sha =
+            row.kind === "publish_blob" ? (row.payload as { sha?: unknown } | null)?.sha : null;
+          if (typeof sha === "string") deleteUnownedInlineInTx(this.store, sha);
         }
         return removed;
       });

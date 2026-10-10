@@ -11,7 +11,14 @@ import type { JournalManager } from "./journal-manager.js";
 
 export type CommandStorePort = Pick<
   CommandStore,
-  "accept" | "find" | "get" | "update" | "prune" | "prunedScopeRoots" | "recoverDurableTerminal"
+  | "accept"
+  | "find"
+  | "get"
+  | "update"
+  | "prune"
+  | "prunedScopeRoots"
+  | "recoverDurableTerminal"
+  | "flushed"
 >;
 /** Enumeration belongs only to the still-serving legacy graph. */
 export type LegacyCommandStorePort = CommandStorePort & Pick<CommandStore, "records" | "count">;

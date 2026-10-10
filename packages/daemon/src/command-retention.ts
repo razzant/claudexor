@@ -32,7 +32,7 @@ function isDeliveryCommand(record: JobRecord): boolean {
  * same operator obligation the old coarse `blocked` job state did, so they must
  * survive age/cap pruning (otherwise the operator loses the run they need to
  * accept-risk / rerun before its evidence is gone). */
-function isNeedsDecision(record: JobRecord): boolean {
+export function isNeedsDecision(record: JobRecord): boolean {
   const result = record.result as { facts?: { review?: unknown; checks?: unknown } } | null;
   const facts = result && typeof result === "object" ? result.facts : undefined;
   if (!facts || typeof facts !== "object") return false;

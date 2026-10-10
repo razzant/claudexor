@@ -6,6 +6,23 @@ import type { PartitionGeneration } from "./partitions.js";
 import { appendEvent, deleteEventKeysInTx, type AppendedEvent } from "./retention.js";
 import type { EngineStore } from "./store.js";
 
+/** File-mode bodies outlive the SQL deletion until the shared C10 barrier.
+ * Inline rows are removed atomically by runMutation before COMMIT. */
+export function collectReleasedBodies(
+  store: EngineStore,
+  blobs: BlobFiles,
+  digests: readonly string[],
+  log: (message: string) => void = console.warn,
+): void {
+  for (const digest of new Set(digests)) {
+    if (!store.prepare("SELECT 1 FROM blob WHERE sha256=? AND inline IS NULL").get(digest))
+      continue;
+    void blobs.gc(digest).catch((error: unknown) => {
+      if (!store.isClosed) log(`Body cleanup remains pending: ${String(error)}`);
+    });
+  }
+}
+
 export interface PreparedEvent<T = unknown> {
   type: string;
   time: string;
@@ -81,6 +98,10 @@ export class SqlEventLedger implements EventLedger {
 
   appendInTx<T>(tx: MutationContext, prepared: PreparedEvent<T>): StoreEvent<T> {
     const result = appendPreparedEventInTx(tx, this.blobs, this.generation.pid, prepared);
+    if (result.releasedDigests.length)
+      tx.changes.afterCommit(() =>
+        collectReleasedBodies(this.store, this.blobs, result.releasedDigests),
+      );
     return {
       partition: this.generation.name,
       epoch: this.generation.epoch,
