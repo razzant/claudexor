@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { writeExternalFile } from "./external-files.js";
 import type { FlusherPassReport } from "./flusher-protocol.js";
-import { Obligations } from "./obligations.js";
+import { Obligations, type ObligationRow } from "./obligations.js";
+import { runMutation } from "./mutation.js";
 import { EngineStore } from "./store.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
@@ -149,14 +150,12 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
     store.transaction(() =>
       obligations.create("publish_blob", "upl-1", 0, { sha: "a".repeat(64) }),
     );
-    obligations.registerEffect("publish_blob", "upl-1", root);
-    store.transaction(() => {
-      store
-        .prepare(
-          "INSERT INTO upload(id, state, received_bytes, body) VALUES('upl-1','published',1,x'00')",
-        )
-        .run();
-      obligations.materialize("publish_blob", "upl-1");
+    const generation = obligations.registerEffect("publish_blob", "upl-1", root);
+    runMutation(store, (tx) => {
+      tx.prepare(
+        "INSERT INTO upload(id, state, received_bytes, body) VALUES('upl-1','published',1,x'00')",
+      ).run();
+      obligations.materializeInTx(tx, "publish_blob", "upl-1", generation);
     });
     expect(stateOf(store, "publish_blob", "upl-1")?.state).toBe("materialized");
     await pass(store);
@@ -254,7 +253,7 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
     expect(() => second.registerHandler("archive_fs", () => undefined)).toThrow(
       /already registered/,
     );
-    const receipt = second.completeOpen();
+    const receipt = await second.completeOpen();
     expect(receipt).toEqual({
       completed: [
         { kind: "terminal_files", key: "run-3" },
@@ -275,5 +274,164 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
         .sort(),
     ).toEqual(["part-1:pending", "proj-1:pending"]);
     expect(openCount(store)).toBe(2);
+  });
+
+  it("a rolled-back create cannot replace tracking for an already materialized obligation", async () => {
+    const store = await openStore();
+    const obligations = new Obligations(store);
+    store.transaction(() => obligations.create("terminal_files", "original", 1, {}));
+    obligations.materialize("terminal_files", "original");
+    expect(() =>
+      store.transaction(() => {
+        store.prepare("DELETE FROM effect_obligation WHERE key='original'").run();
+        obligations.create("terminal_files", "original", 1, { replacement: true });
+        throw new Error("rollback replacement");
+      }),
+    ).toThrow(/rollback replacement/);
+    expect(obligations.open()[0]).toMatchObject({ payload: {}, state: "materialized" });
+    // Before M1, create() reset tracked inside the transaction and this row
+    // stayed open forever even though its original materialization committed.
+    await pass(store);
+    expect(openCount(store)).toBe(0);
+  });
+
+  it("materializeInTx rollback leaves upload, obligation and live tracking unchanged", async () => {
+    const store = await openStore();
+    const obligations = new Obligations(store);
+    store.transaction(() => {
+      obligations.create("publish_blob", "upl-rollback", 0, { sha: "d".repeat(64) });
+      store
+        .prepare(
+          "INSERT INTO upload(id,state,received_bytes,body) VALUES('upl-rollback','finalizing',1,x'00')",
+        )
+        .run();
+    });
+    const generation = obligations.registerEffect("publish_blob", "upl-rollback", root);
+    expect(() =>
+      runMutation(store, (tx) => {
+        tx.prepare("UPDATE upload SET state='published' WHERE id='upl-rollback'").run();
+        obligations.materializeInTx(tx, "publish_blob", "upl-rollback", generation);
+        throw new Error("rollback materialization");
+      }),
+    ).toThrow(/rollback materialization/);
+    expect(store.prepare("SELECT state FROM upload WHERE id='upl-rollback'").get()).toEqual({
+      state: "finalizing",
+    });
+    expect(stateOf(store, "publish_blob", "upl-rollback")).toEqual({
+      state: "pending",
+      materialized_g: null,
+    });
+    await pass(store);
+    expect(openCount(store)).toBe(1);
+    expect(store.owners.generationOf(`blob:${"d".repeat(64)}`)).toBeUndefined();
+    runMutation(store, (tx) => {
+      tx.prepare("UPDATE upload SET state='published' WHERE id='upl-rollback'").run();
+      tx.changes.uploadChanged("upl-rollback");
+      obligations.materializeInTx(tx, "publish_blob", "upl-rollback", generation);
+    });
+    expect(store.prepare("SELECT state FROM upload WHERE id='upl-rollback'").get()).toEqual({
+      state: "published",
+    });
+    expect(stateOf(store, "publish_blob", "upl-rollback")?.state).toBe("materialized");
+    await pass(store);
+    expect(openCount(store)).toBe(0);
+  });
+
+  it("awaits filesystem completion outside SQL; a failed retry after reopen is pending with fresh evidence required", async () => {
+    const firstStore = await openStore();
+    const first = new Obligations(firstStore);
+    firstStore.transaction(() => {
+      first.create("purge_fs", "thread-1", 1, { path: root });
+      first.create("archive_fs", "unhandled", 1, {});
+    });
+    first.materialize("purge_fs", "thread-1");
+    first.materialize("archive_fs", "unhandled");
+    first.close();
+    await firstStore.close();
+    const store = await openStore();
+    const second = new Obligations(store);
+    let finish!: () => void;
+    const allowed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let fail = true;
+    second.registerHandler("purge_fs", async (_row, effects) => {
+      expect(store.inTransaction).toBe(false);
+      await allowed;
+      expect(store.inTransaction).toBe(false);
+      effects.register(root);
+      if (fail) throw new Error("EIO retry");
+    });
+    const completing = second.completeOpen();
+    expect(
+      second.open().every((row) => row.state === "pending" && row.materializedGeneration === null),
+    ).toBe(true);
+    await pass(store);
+    expect(openCount(store)).toBe(2);
+    finish();
+    expect(await completing).toMatchObject({
+      completed: [],
+      failed: [{ key: "thread-1", error: "EIO retry" }],
+      unhandled: [{ key: "unhandled" }],
+    });
+    await pass(store);
+    expect(stateOf(store, "purge_fs", "thread-1")?.state).toBe("pending");
+    fail = false;
+    expect(await second.completeOpen()).toMatchObject({
+      completed: [{ key: "thread-1" }],
+      failed: [],
+    });
+    expect(stateOf(store, "purge_fs", "thread-1")?.state).toBe("materialized");
+    await pass(store);
+    expect(second.open().map((row) => [row.key, row.state])).toEqual([["unhandled", "pending"]]);
+  });
+
+  it("post-clear sees only committed removed rows and the new shared owner generation, even if notification fails", async () => {
+    const store = await openStore();
+    const lines: string[] = [];
+    const cleared: ObligationRow[][] = [];
+    const digest = "e".repeat(64);
+    const obligations = new Obligations(store, {
+      log: (line) => lines.push(line),
+      onCleared: (rows) => {
+        expect(store.inTransaction).toBe(false);
+        expect(openCount(store)).toBe(0);
+        expect(store.owners.generationOf(`blob:${digest}`)).toBeGreaterThan(
+          store.acknowledgedGeneration,
+        );
+        cleared.push([...rows]);
+        throw new Error("notification EIO");
+      },
+    });
+    store.transaction(() =>
+      obligations.create("publish_blob", "notify", 0, { sha: digest, resource_id: "res-1" }),
+    );
+    obligations.materialize("publish_blob", "notify");
+    store.db.exec("PRAGMA query_only=1");
+    await pass(store);
+    expect(cleared).toEqual([]);
+    expect(store.owners.generationOf(`blob:${digest}`)).toBeUndefined();
+    expect(openCount(store)).toBe(1);
+    store.db.exec("PRAGMA query_only=0");
+    await pass(store);
+    expect(cleared).toEqual([
+      [
+        expect.objectContaining({
+          kind: "publish_blob",
+          key: "notify",
+          pid: 0,
+          payload: { sha: digest, resource_id: "res-1" },
+          state: "materialized",
+        }),
+      ],
+    ]);
+    expect(lines).toEqual([
+      expect.stringMatching(/clear deferred/),
+      expect.stringMatching(/rows cleared and committed; notification failed: notification EIO/),
+    ]);
+    const after = store.owners.generationOf(`blob:${digest}`);
+    await pass(store);
+    expect(cleared).toHaveLength(1);
+    expect(store.owners.generationOf(`blob:${digest}`)).toBe(after);
   });
 });

@@ -1,6 +1,7 @@
 import type { FoldRecord, FoldVerdict } from "@claudexor/journal";
 import { isHarnessMaintenanceOperation, isModelOperation } from "@claudexor/schema";
 import { journalFoldPolicy } from "../journal-fold-policy.js";
+import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 import type { EngineStore } from "./store.js";
 
 export interface EventInput {
@@ -9,6 +10,9 @@ export interface EventInput {
   time?: string;
   /** Bare hex digest when the payload body lives in `blob` (collection reads never select it). */
   payloadSha?: string | null;
+  /** Serialized before the transaction by the runtime body preparer. Import
+   * reducers may pass the original JSON bytes from their decoded frame. */
+  encodedPayload?: Uint8Array;
 }
 
 export interface AppendedEvent {
@@ -21,6 +25,97 @@ export interface AppendedEvent {
   releasedDigests: string[];
 }
 
+/** SQL keeps the existing fold semantics with the two approved storage changes:
+ * entity snapshots consume sequence but have no stream row; setup saves have a
+ * stable address without replacing earlier saves or sharing the log's lifetime. */
+export function sqlEventVerdict(record: FoldRecord): FoldVerdict {
+  if (record.type === "thread.entities_upserted") return { drop: true };
+  const verdict = journalFoldPolicy.verdict(record) ?? {};
+  if (record.type === "setup.job.saved") {
+    const jobId = (record.payload as { job?: { jobId?: unknown } } | null)?.job?.jobId;
+    if (typeof jobId === "string" && jobId.length > 0) {
+      return { ...verdict, group: `s:${jobId}:saved` };
+    }
+  }
+  return verdict;
+}
+
+/** Retire addressed slots/groups and return every released body reference. */
+export function deleteEventKeysInTx(
+  sql: SqlWriteContext,
+  pid: number,
+  keys: readonly string[],
+): string[] {
+  requireTransaction(sql);
+  const released: string[] = [];
+  const remove = sql.prepare(
+    "DELETE FROM event WHERE pid = ? AND (slot_key = ? OR group_key = ?) RETURNING payload_sha",
+  );
+  for (const key of new Set(keys)) {
+    released.push(...releasedPayloadDigests(remove.all(pid, key, key)));
+  }
+  return released;
+}
+
+function releasedPayloadDigests(rows: unknown[]): string[] {
+  return (rows as Array<{ payload_sha: string | null }>).flatMap((row) =>
+    typeof row.payload_sha === "string" ? [row.payload_sha] : [],
+  );
+}
+
+/** Import seam: apply the fold to the full logical payload using its ORIGINAL
+ * seq/time. This neither allocates sequence nor advances partition.next_seq;
+ * the importer restores the frame header's nextSeq, including a folded tail. */
+export function insertEventInTx(
+  sql: SqlWriteContext,
+  pid: number,
+  input: EventInput & { seq: number; time: string },
+  verdictOf: (record: FoldRecord) => FoldVerdict = sqlEventVerdict,
+): AppendedEvent {
+  requireTransaction(sql);
+  const bytes = input.encodedPayload ?? Buffer.from(JSON.stringify(input.payload ?? null));
+  const verdict =
+    verdictOf({
+      seq: input.seq,
+      type: input.type,
+      time: input.time,
+      payload: input.payload,
+      byteLength: bytes.byteLength,
+    }) ?? {};
+  const releasedDigests = deleteEventKeysInTx(sql, pid, verdict.retire ?? []);
+  if (verdict.slot !== undefined) {
+    releasedDigests.push(
+      ...releasedPayloadDigests(
+        sql
+          .prepare("DELETE FROM event WHERE pid = ? AND slot_key = ? RETURNING payload_sha")
+          .all(pid, verdict.slot),
+      ),
+    );
+  }
+  if (!verdict.drop) {
+    sql
+      .prepare(
+        "INSERT INTO event(pid, seq, time, type, payload, payload_sha, slot_key, group_key) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        pid,
+        input.seq,
+        input.time,
+        input.type,
+        input.payloadSha == null ? bytes : Buffer.from("null"),
+        input.payloadSha ?? null,
+        verdict.slot ?? null,
+        verdict.group ?? null,
+      );
+  }
+  return { seq: input.seq, verdict, stored: !verdict.drop, releasedDigests };
+}
+
+export function restoreEventSequenceInTx(sql: SqlWriteContext, pid: number, nextSeq: number): void {
+  requireTransaction(sql);
+  sql.prepare("UPDATE partition SET next_seq = ? WHERE id = ?").run(nextSeq, pid);
+}
+
 /**
  * Append one `event` row under the journal fold's verdict (SYNTHESIS_R5 §6.6),
  * inside the caller's transaction. `retire` deletes every retained row under
@@ -29,61 +124,24 @@ export interface AppendedEvent {
  * even for dropped records, exactly like a frame the fold forgets on disk.
  */
 export function appendEvent(
-  store: EngineStore,
+  store: SqlWriteContext & Pick<EngineStore, "now">,
   pid: number,
   input: EventInput,
-  verdictOf: (record: FoldRecord) => FoldVerdict = journalFoldPolicy.verdict,
+  verdictOf: (record: FoldRecord) => FoldVerdict = sqlEventVerdict,
 ): AppendedEvent {
   if (!store.inTransaction) throw new Error("events are appended inside the owner's transaction");
   const current = store.prepare("SELECT next_seq FROM partition WHERE id = ?").get(pid) as
     { next_seq: number | bigint } | undefined;
   if (!current) throw new Error(`no partition generation ${pid}`);
   const seq = Number(current.next_seq);
-  const time = input.time ?? store.now().toISOString();
-  const bytes = Buffer.from(JSON.stringify(input.payload ?? null));
-  const verdict =
-    verdictOf({
-      seq,
-      type: input.type,
-      time,
-      payload: input.payload,
-      byteLength: bytes.byteLength,
-    }) ?? {};
-  const releasedDigests: string[] = [];
-  const collect = (rows: unknown[]): void => {
-    for (const row of rows as Array<{ payload_sha: string | null }>) {
-      if (typeof row.payload_sha === "string") releasedDigests.push(row.payload_sha);
-    }
-  };
-  const retire = store.prepare(
-    "DELETE FROM event WHERE pid = ? AND (slot_key = ? OR group_key = ?) RETURNING payload_sha",
+  const result = insertEventInTx(
+    store,
+    pid,
+    { ...input, seq, time: input.time ?? store.now().toISOString() },
+    verdictOf,
   );
-  for (const name of verdict.retire ?? []) collect(retire.all(pid, name, name));
-  if (verdict.slot !== undefined) {
-    collect(
-      store
-        .prepare("DELETE FROM event WHERE pid = ? AND slot_key = ? RETURNING payload_sha")
-        .all(pid, verdict.slot),
-    );
-  }
-  if (!verdict.drop) {
-    store
-      .prepare(
-        "INSERT INTO event(pid, seq, time, type, payload, payload_sha, slot_key, group_key) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(
-        pid,
-        seq,
-        time,
-        input.type,
-        bytes,
-        input.payloadSha ?? null,
-        verdict.slot ?? null,
-        verdict.group ?? null,
-      );
-  }
   store.prepare("UPDATE partition SET next_seq = ? WHERE id = ?").run(seq + 1, pid);
-  return { seq, verdict, stored: !verdict.drop, releasedDigests };
+  return result;
 }
 
 /** `command.kind` (R5_AMENDMENTS A1): set once at accept, the single source of
