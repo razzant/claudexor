@@ -62,6 +62,27 @@ type SetupJournalPayload = {
 };
 const MAX_LOG_RECORD_BYTES = 16 * 1024;
 
+/** Setup's operational interface, without a concrete journal or private maps. */
+export type SetupJobStorePort = Pick<
+  SetupJobStore,
+  | "rootDir"
+  | "artifactsDir"
+  | "paths"
+  | "recoveryState"
+  | "validateProjection"
+  | "create"
+  | "resolveCreate"
+  | "bindCreate"
+  | "update"
+  | "resolveExtend"
+  | "status"
+  | "list"
+  | "some"
+  | "snapshot"
+  | "events"
+  | "appendLog"
+>;
+
 /**
  * Setup lifecycle projection over the daemon's global durable journal.
  *

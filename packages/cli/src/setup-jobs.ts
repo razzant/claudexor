@@ -79,7 +79,7 @@ const LOGIN_EXTENSION_MS = 15 * 60_000;
 type NativeLoginSpec = NativeLogin.NativeLoginSpec;
 export interface SetupJobManagerOptions {
   rootDir?: string;
-  store?: SetupJobStore;
+  store?: import("./setup-job-store.js").SetupJobStorePort;
   probeAuthSource?: (
     harness: string,
     source: "native_session",

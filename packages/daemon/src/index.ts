@@ -23,6 +23,8 @@ export * from "./command-store.js";
 export * from "./command-scope-roots.js";
 export * from "./runless-turn-recovery.js";
 export * from "./command-authority.js";
+export * from "./store-contracts.js";
+export { legacyCommandBackend } from "./store/legacy-read-adapter.js";
 export * from "./resource-store.js";
 export * from "./quota-registry.js";
 export * from "./quota-projection.js";

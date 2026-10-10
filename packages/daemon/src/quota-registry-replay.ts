@@ -1,4 +1,4 @@
-import type { DurableJournal } from "@claudexor/journal";
+import type { EventLedger } from "./store-contracts.js";
 import { hashJson } from "@claudexor/util";
 import {
   AccountResourcesInvalidated,
@@ -32,7 +32,7 @@ const REPLAY_TYPES = [
 
 /** Replay is part of QuotaRegistry's existing journal projection, not another store. */
 export function replayQuotaJournal(
-  journal: DurableJournal,
+  journal: EventLedger,
   owner: {
     apply: (snapshot: QuotaSnapshot) => void;
     applyWindowSupersession: (value: QuotaWindowSupersession) => void;

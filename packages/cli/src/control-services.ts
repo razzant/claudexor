@@ -2,12 +2,12 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import {
   type OperatorDecisionRecord,
-  JournalManager,
+  PartitionControlPort,
   InteractionRegistry,
   LiveInputRegistry,
-  ProjectPartitions,
-  ProjectStore,
-  ResourceStore,
+  ProjectControlPort,
+  ProjectStorePort,
+  ResourceStorePort,
   QuotaRegistry,
 } from "@claudexor/daemon";
 import { loadConfig } from "@claudexor/config";
@@ -48,7 +48,7 @@ import {
   type CredentialMutationSubject,
 } from "./credential-status-invalidation.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { SetupJobStore } from "./setup-job-store.js";
+import type { SetupJobStorePort } from "./setup-job-store.js";
 import { activeProfileLoginJob } from "./setup-job-support.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
@@ -62,7 +62,10 @@ import { threadTurnServices } from "./thread-turn-services.js";
 import { threadPurgeOwner } from "./thread-purge.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
-type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
+type SetupBinding = Pick<
+  SetupLifecycleBinding<SetupJobStorePort, SetupJobManager>,
+  "current" | "isBoundToCurrentGeneration" | "replaceAfter"
+>;
 /**
  * The project ROOT a non-terminal job runs against (project-remove active-run
  * fence), or null when it holds no project. Parsed via the typed `RunScope`
@@ -87,14 +90,14 @@ function activeRunProjectRoot(job: { runId?: string; params?: unknown }): string
 export function controlServices(
   interactions: InteractionRegistry,
   liveInputs: LiveInputRegistry,
-  projects: () => ProjectStore,
-  threads: ProjectPartitions,
+  projects: () => ProjectStorePort,
+  threads: ProjectControlPort,
   setupBinding: SetupBinding,
-  journalManager: JournalManager,
+  journalManager: PartitionControlPort,
   authReadiness: AuthReadinessService,
   /** Lazy accessor (C5b): the store mkdirs on construction and only product
    * routes touch it, so the recovery plane must never materialize it. */
-  resources: () => ResourceStore,
+  resources: () => ResourceStorePort,
   quotaRegistry: () => QuotaRegistry,
   daemonJobs: () => Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>,
   effectiveConcurrencyCaps?: RuntimeConcurrencyCaps,
@@ -117,7 +120,7 @@ export function controlServices(
   });
   const bustStatusCaches = (subject?: CredentialMutationSubject) =>
     bustCredentialStatusCaches(quotaRegistry, subject);
-  const journalPartition = (partition: string): JournalManager =>
+  const journalPartition = (partition: string): PartitionControlPort =>
     partition === "global" ? journalManager : threads.journal(partition);
   const setupJobs = (): SetupJobManager => {
     try {
@@ -136,7 +139,7 @@ export function controlServices(
     }
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
-  const lazyResources: Pick<ResourceStore, "resolve"> = {
+  const lazyResources: Pick<ResourceStorePort, "resolve"> = {
     resolve: (refs) => resources().resolve(refs),
   };
   const runStartRequiresGit = (request: ControlRunStartRequest): boolean => {
@@ -192,7 +195,7 @@ export function controlServices(
     // QA-067: filesystem routes are a remote-runtime-only surface — the local
     // daemon never serves them (the routes answer 501 without these services).
     ...remoteFilesystemServices(projects),
-    registerProject: async (input: Parameters<ProjectStore["register"]>[0]) => {
+    registerProject: async (input: Parameters<ProjectStorePort["register"]>[0]) => {
       const { project, created } = threads.registerProject(input);
       return { ...project, nesting: projects().nestingFor(project.id), created };
     },
@@ -202,7 +205,7 @@ export function controlServices(
     },
     // QA-049 minimal project remove: retire the durable registry entry + archive
     // the journal partition, fenced against non-purged threads and live/queued
-    // runs. The thread fence lives in ProjectPartitions; the active-run set is
+    // runs. The thread fence lives in ProjectControlPort; the active-run set is
     // read in process with no await before removal (project-scoped, non-terminal runs),
     // canonicalized to match the store's realpath'd roots.
     removeProject: async (id: string) => {
@@ -220,7 +223,7 @@ export function controlServices(
       return threads.removeProject(id, activeRunRoots);
     },
     createThread: async (input: unknown) => {
-      const request = (input ?? {}) as Parameters<ProjectPartitions["createThread"]>[0];
+      const request = (input ?? {}) as Parameters<ProjectControlPort["createThread"]>[0];
       assertCredentialProfileCompatibility(
         request.credentialProfileId,
         request.primaryHarness,
@@ -342,7 +345,7 @@ export function controlServices(
     recoveryExportPartition: async (partition: string) =>
       journalPartition(partition).exportRecovery(),
     recoveryQuarantinePartition: async (partition: string, input: unknown) => {
-      const request = input as Parameters<JournalManager["quarantineAndStartFresh"]>[0];
+      const request = input as Parameters<PartitionControlPort["quarantineAndStartFresh"]>[0];
       if (partition !== "global") {
         return journalPartition(partition).quarantineAndStartFresh(request);
       }

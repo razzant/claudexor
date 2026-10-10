@@ -3183,6 +3183,17 @@ gate on every platform).
 
 ### Engine store core (not yet wired)
 
+The serving graph crosses structural store ports (`store-contracts.ts`), not
+the private fields of journal-backed classes. `CommandBackend` supplies addressed
+queries and the global pruning operation; `store/legacy-read-adapter.ts` explicitly
+implements them with the existing journal stores. The scheduler, in-process facade
+and runner continuation reads use that boundary. SQL composition will supply its
+own backend and never inherit the adapter's history scans. Quota reducers consume
+logical `EventLedger` records; setup and product recovery expose their existing
+operations without requiring journal files or startup preparation methods. These
+boundaries do not select a storage mode: production still constructs the legacy
+graph, and the importer will own the one switch to the complete SQL graph.
+
 `packages/daemon/src/store/` holds the SQLite store core that the 4.0 train
 replaces `packages/journal` with. In this tree no store uses it yet: the
 daemon still serves every partition from the checksummed journal, and the

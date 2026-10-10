@@ -19,7 +19,7 @@ import { MAX_DELEGATED_CHILDREN } from "@claudexor/schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
 import { CommandStore } from "./command-store.js";
-import type { CommandAuthority } from "./command-authority.js";
+import type { LegacyCommandAuthority } from "./command-authority.js";
 import { DaemonServer, type JobRecord } from "./server.js";
 
 const TOKEN = "addressed-read-token";
@@ -61,7 +61,7 @@ function child(id: string, parentRunId: string, createdAtMs: number): JobRecord 
 
 /** Command authority over a fixed record set — the projection path under test
  * is the daemon's, not the store's, and this keeps large rosters cheap. */
-function staticAuthority(records: readonly JobRecord[]): CommandAuthority {
+function staticAuthority(records: readonly JobRecord[]): LegacyCommandAuthority {
   const store = {
     records: () => [...records],
     get: (id: string) => records.find((entry) => entry.id === id),
@@ -72,7 +72,7 @@ function staticAuthority(records: readonly JobRecord[]): CommandAuthority {
 
 async function withDaemon(
   name: string,
-  commands: CommandAuthority,
+  commands: LegacyCommandAuthority,
   fn: (ctx: { socketPath: string; client: DaemonClient }) => Promise<void>,
 ): Promise<void> {
   const socketPath = join(tempDir(name), "daemon.sock");

@@ -56,6 +56,7 @@ function runnerFixture(ingest = vi.fn(), publish = vi.fn()) {
     delegationBudgetAuthority: {} as unknown as DelegationBudgetAuthority,
     quotaStore: () => ({ ingest }) as unknown as QuotaRegistry,
     threads,
+    commands: { getByRunId: () => undefined },
     interactions: { register: () => {} } as unknown as InteractionRegistry,
     liveInputs: { register: () => ({ release: () => {} }) } as never,
     resources: () => ({ resolve: () => [] }) as unknown as ResourceStore,

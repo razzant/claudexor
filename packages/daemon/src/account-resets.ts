@@ -5,7 +5,7 @@ import {
   type AccountTarget,
   type ControlAccountResourcesResponse,
 } from "@claudexor/schema";
-import type { CommandStore } from "./command-store.js";
+import type { CommandStorePort } from "./store-contracts.js";
 import type { JobRecord } from "./server.js";
 
 /** Host-private immutable target, stored before dispatch. No bearer material. */
@@ -23,7 +23,7 @@ type AcceptedReset = {
   binding: AccountResetBinding;
 };
 export interface AccountResetDependencies {
-  commands: () => CommandStore;
+  commands: () => CommandStorePort;
   resolve: (request: ControlAccountResetRequest) => Promise<AccountResetBinding>;
   verify: (binding: AccountResetBinding, target: AccountTarget) => Promise<void>;
   consume: (

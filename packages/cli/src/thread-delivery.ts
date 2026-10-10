@@ -1,4 +1,4 @@
-import type { ProjectPartitions } from "@claudexor/daemon";
+import type { ProjectThreadPort } from "@claudexor/daemon";
 import { PR_SECRET_LIKE_REFUSAL, verifyAndDeliver } from "@claudexor/delivery";
 import {
   advanceThreadWorktree,
@@ -17,7 +17,7 @@ export interface ThreadApplyOptions {
 
 /** Deliver an isolated thread and advance its persistent branch/watermark. */
 export async function applyThreadDiff(
-  threads: ProjectPartitions,
+  threads: ProjectThreadPort,
   id: string,
   opts: ThreadApplyOptions,
 ): Promise<{

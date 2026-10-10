@@ -1,8 +1,8 @@
 import { newId, nowIso, safeProblemMessage } from "@claudexor/util";
-import type { CommandStore } from "./command-store.js";
+import type { CommandStorePort } from "./store-contracts.js";
 
 export function beginDeliveryCommand(
-  store: CommandStore,
+  store: CommandStorePort,
   params: unknown,
   input: { key: string; client: string; operation: string; request: unknown },
 ) {
@@ -21,7 +21,7 @@ export function beginDeliveryCommand(
 }
 
 export function completeDeliveryCommand(
-  store: CommandStore | undefined,
+  store: CommandStorePort | undefined,
   id: string,
   result: unknown,
 ): void {
@@ -30,7 +30,7 @@ export function completeDeliveryCommand(
 }
 
 export function failDeliveryCommand(
-  store: CommandStore | undefined,
+  store: CommandStorePort | undefined,
   id: string,
   error: unknown,
 ): void {

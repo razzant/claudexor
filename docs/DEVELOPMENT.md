@@ -94,9 +94,10 @@ There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
 Prettier formatting when a formatting pass is relevant. Note on Node versions:
 `.node-version` pins the DEV toolchain (24.16.0, matching CI); the root
 `engines.node >= 20.19.0` is the published-package compatibility floor — the
-split is intentional, do not "reconcile" them. CI runs the full Node battery
-on both 20.19.0 and 24.16.0; publication repeats a clean installed-package CLI
-smoke on both versions before the GitHub Release becomes public.
+split is intentional. CI runs positive store coverage on 24.15.0 and 24.16.0
+and separately proves the typed store refusal on Node 20.19.0. Publication
+still repeats a clean installed-package CLI smoke on the published floor and
+pin before the GitHub Release becomes public.
 
 macOS app checks:
 

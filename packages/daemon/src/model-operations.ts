@@ -16,7 +16,11 @@ import {
   type ModelResponseCustody,
 } from "@claudexor/schema";
 import { errorCode, redactSecrets } from "@claudexor/util";
-import { commandStoreForId, commandStores, type CommandAuthority } from "./command-authority.js";
+import {
+  commandStoreForId,
+  commandStores,
+  type LegacyCommandAuthority,
+} from "./command-authority.js";
 import { findAcceptedCommand } from "./command-rpc.js";
 import type { JobRecord, RunContext } from "./server.js";
 
@@ -32,7 +36,7 @@ export interface ModelPayloadStore {
 }
 
 export interface ModelOperationDependencies {
-  commands: CommandAuthority;
+  commands: LegacyCommandAuthority;
   resources: () => ModelPayloadStore;
   enqueue(envelope: {
     request: ModelOperationParams;

@@ -48,7 +48,13 @@ import {
   resolveSetupLoginRunnerPath,
 } from "./setup-job-support.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { SetupJobStore } from "./setup-job-store.js";
+import { SetupJobStore, type SetupJobStorePort } from "./setup-job-store.js";
+
+/** These shutdown tests inspect the actual legacy backing file, not a store port. */
+function legacyJournal(store: SetupJobStorePort) {
+  if (!(store instanceof SetupJobStore)) throw new Error("fixture must own the legacy store");
+  return store.journal;
+}
 import * as CredentialWindow from "./setup-credential-window.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
@@ -656,11 +662,11 @@ describe("setup jobs", () => {
     // the detached runner keeps waiting and the successor daemon adopts it.
     expect(manager.status({ jobId: job.jobId }).state).toBe("waiting_for_input");
 
-    manager._store.journal.close();
-    const journalAtShutdown = readFileSync(manager._store.journal.path);
+    legacyJournal(manager._store).close();
+    const journalAtShutdown = readFileSync(legacyJournal(manager._store).path);
     expect(() => opener.emit("error", new Error("late LaunchServices failure"))).not.toThrow();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(readFileSync(manager._store.journal.path)).toEqual(journalAtShutdown);
+    expect(readFileSync(legacyJournal(manager._store).path)).toEqual(journalAtShutdown);
   });
 
   it("reaches a fully drained supervisor with an active login present (no termination on shutdown)", async () => {
@@ -677,11 +683,11 @@ describe("setup jobs", () => {
     // "cancelling" persistence step); it must resolve cleanly and drain.
     await manager.shutdown();
     expect(manager._supervisorHealth()).toMatchObject({ state: "stopped", activeTasks: 0 });
-    manager._store.journal.close();
-    const journalAtShutdown = readFileSync(manager._store.journal.path);
+    legacyJournal(manager._store).close();
+    const journalAtShutdown = readFileSync(legacyJournal(manager._store).path);
     expect(() => opener.emit("error", new Error("late opener failure"))).not.toThrow();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(readFileSync(manager._store.journal.path)).toEqual(journalAtShutdown);
+    expect(readFileSync(legacyJournal(manager._store).path)).toEqual(journalAtShutdown);
   });
 
   it("moves a launched runner to awaiting_user and enforces the launcher watchdog", async () => {
@@ -1056,7 +1062,7 @@ describe("setup jobs", () => {
     expect(await waitForTerminal(first, job.jobId)).toBe("failed");
     expect(firstInvalidations).toEqual(["codex", "codex"]); // window entry + close
     await first.shutdown();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
 
     const restartedInvalidations: string[] = [];
     const restarted = createSetupJobManager({
@@ -1132,11 +1138,11 @@ describe("setup jobs", () => {
       outcome: { reason: "interrupted_unknown", exitCode: 0, signal: null },
       authCapability: { state: "interrupted_unknown" },
     });
-    first._store.journal.close();
-    const journalAtShutdown = readFileSync(first._store.journal.path);
+    legacyJournal(first._store).close();
+    const journalAtShutdown = readFileSync(legacyJournal(first._store).path);
     releaseCapability();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(readFileSync(first._store.journal.path)).toEqual(journalAtShutdown);
+    expect(readFileSync(legacyJournal(first._store).path)).toEqual(journalAtShutdown);
 
     const replacement = capabilityVerifier();
     const restarted = createSetupJobManager({
@@ -1189,7 +1195,7 @@ describe("setup jobs", () => {
     expect(() => first.create(LOGIN_REQUEST)).toThrow(/setup supervisor is unavailable/);
     await first.shutdown();
     expect(first.status({ jobId: job.jobId }).state).toBe("succeeded");
-    first._store.journal.close();
+    legacyJournal(first._store).close();
 
     const replacement = capabilityVerifier();
     const restarted = createSetupJobManager({
@@ -1564,7 +1570,7 @@ describe("setup jobs", () => {
       setup: binding,
       daemon: { stop: async () => void stopped.push("daemon") },
       control: () => ({ stop: async () => void stopped.push("control") }),
-      journal: { close: () => manager._store.journal.close() },
+      journal: { close: () => legacyJournal(manager._store).close() },
       forceExit: () => undefined,
     });
     const expectReplacementBusy = () => {
@@ -1783,7 +1789,7 @@ describe("setup jobs", () => {
     // Deliberate crash fixture: no supervisor was started, so close the sole
     // journal writer without running graceful lifecycle reconciliation.
     first.beginDrain();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
     const restarted = createSetupJobManager(opts);
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId })).toMatchObject({
@@ -1838,7 +1844,7 @@ describe("setup jobs", () => {
     // delivered. The successor must honor the expired journal deadline rather
     // than replaying that authorization into the relative runner window.
     first.beginDrain();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
     nowMs = Date.parse(job.deadlineAt!) + 1;
 
     const restarted = createSetupJobManager(opts);
@@ -1874,7 +1880,7 @@ describe("setup jobs", () => {
     await waitForPhase(first, job.jobId, "awaiting_user");
     // Crash BEFORE the sidecar exists; the durable journal already says awaiting_user.
     first.beginDrain();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
     const restarted = createSetupJobManager(opts);
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId }).phase).toBe("awaiting_user");
@@ -1916,7 +1922,7 @@ describe("setup jobs", () => {
       exitCode: null,
     });
     first.beginDrain();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
     const restarted = createSetupJobManager({
       rootDir: join(root, "interrupted"),
       platform: "darwin",
@@ -1950,7 +1956,7 @@ describe("setup jobs", () => {
     await waitForPhase(first, job.jobId, "awaiting_user");
     await first.shutdown();
     expect(group.signals).toEqual([]);
-    first._store.journal.close();
+    legacyJournal(first._store).close();
     const restarted = createSetupJobManager(opts);
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId })).toMatchObject({
@@ -2025,7 +2031,7 @@ describe("setup jobs", () => {
       });
     group.setAlive(false); // group empty by the time the successor probes
     firstManager.beginDrain();
-    firstManager._store.journal.close();
+    legacyJournal(firstManager._store).close();
     armed = true;
     const restarted = createSetupJobManager({ ...baseOpts, processGroups: rigged });
     await restarted.start();
@@ -2050,7 +2056,7 @@ describe("setup jobs", () => {
     writeRunnerStateV2(first, job.jobId, group.leader);
     group.setAlive(false); // the runner died while no daemon was watching
     first.beginDrain();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
     const restarted = createSetupJobManager(opts);
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId })).toMatchObject({
@@ -2084,7 +2090,7 @@ describe("setup jobs", () => {
             : { status: "unknown", pid: 51, platform: "darwin", reason: "permission_denied" },
       );
       first.beginDrain();
-      first._store.journal.close();
+      legacyJournal(first._store).close();
       const restarted = createSetupJobManager({
         rootDir: storeRoot,
         platform: "darwin",
@@ -2453,7 +2459,7 @@ describe("setup jobs", () => {
     group.setAlive(false);
     writeRunnerResultV2(first, job.jobId);
     first.beginDrain();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
 
     const capability = capabilityVerifier();
     const restarted = createSetupJobManager({
@@ -2494,7 +2500,7 @@ describe("setup jobs", () => {
       message: "Stopping codex login (cancelled_by_user).",
     });
     first.beginDrain();
-    first._store.journal.close();
+    legacyJournal(first._store).close();
 
     const restarted = createSetupJobManager(opts);
     await restarted.start();
@@ -2850,7 +2856,7 @@ describe("D-17 codex device-code login", () => {
     expect(JSON.stringify(snapshot.job)).not.toContain("SECRET-CODE-42");
 
     // The one-time code must never appear anywhere in the durable journal.
-    const journalDump = [...manager._store.journal.records()]
+    const journalDump = [...legacyJournal(manager._store).records()]
       .map((record) => JSON.stringify(record))
       .join("\n");
     expect(journalDump).not.toContain("SECRET-CODE-42");
@@ -3174,7 +3180,7 @@ describe("setup credential-mutation window (#363)", () => {
       reason: "permission_denied",
     });
     await first.manager.shutdown();
-    first.manager._store.journal.close();
+    legacyJournal(first.manager._store).close();
     const successor = windowedManager(storeRoot, group);
     await successor.manager.start();
     expect(successor.manager.status({ jobId: job.jobId }).outcome?.reason).toBe(

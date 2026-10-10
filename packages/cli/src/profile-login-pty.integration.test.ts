@@ -1,3 +1,4 @@
+import type { SetupJobStore } from "./setup-job-store.js";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
@@ -198,7 +199,7 @@ setInterval(() => {
     await until("fixture login drain", () => manager.list({ active: true }).length === 0);
     await Promise.all(clients.map((client) => client.stop()));
     await manager.shutdown();
-    manager._store.journal.close();
+    (manager._store as SetupJobStore).journal.close();
     await server.stop();
     await new Promise<void>((resolve) => health.close(() => resolve()));
     for (const key of keys) {

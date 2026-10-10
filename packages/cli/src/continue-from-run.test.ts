@@ -29,8 +29,10 @@ function initRepo(): string {
   return dir;
 }
 
-const commandsWith = (records: unknown[]) => ({
-  all: () => [{ records: () => records as never }],
+const commandsWith = (
+  records: Array<{ runId?: string; runDir?: string; state: string; params: unknown }>,
+) => ({
+  getByRunId: (id: string) => records.find((record) => record.runId === id),
 });
 
 describe("continuationForRun (daemon runner)", () => {

@@ -1,6 +1,6 @@
 import { loadConfig } from "@claudexor/config";
 import type { AdapterRegistry } from "@claudexor/core";
-import type { ResourceStore } from "@claudexor/daemon";
+import type { ResourceStorePort } from "@claudexor/daemon";
 import type { HarnessStatus } from "@claudexor/gateway";
 import { RequestRequirementsResolver } from "@claudexor/orchestrator";
 import {
@@ -74,7 +74,7 @@ export async function preflightRunGitRequirement(
 
 /** Refuse requests that no selected lane can satisfy before a run or turn is created. */
 export function createRunRequirementsPreflight(
-  resources: Pick<ResourceStore, "resolve">,
+  resources: Pick<ResourceStorePort, "resolve">,
   noProjectRoot: string,
   dependencies: RunRequirementsPreflightDependencies = {},
   policy: RunRequirementsPreflightPolicy = {},

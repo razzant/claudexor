@@ -1,3 +1,4 @@
+import type { SetupJobStore } from "./setup-job-store.js";
 import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
@@ -192,7 +193,7 @@ async function withDaemon<T>(
       // Logins survive an ordinary daemon stop (v3.0.3 S5).
       bound = null;
       await manager.shutdown();
-      manager._store.journal.close();
+      (manager._store as SetupJobStore).journal.close();
       await beforeStart?.();
       manager = build();
       await manager.start();
@@ -205,7 +206,7 @@ async function withDaemon<T>(
     bindCredentialMutationWindow(null);
     for (const job of manager.list({ active: true })) await manager.cancel({ jobId: job.jobId });
     await manager.shutdown();
-    manager._store.journal.close();
+    (manager._store as SetupJobStore).journal.close();
     await server.stop();
   }
 }

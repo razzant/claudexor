@@ -28,6 +28,7 @@ import {
   logPath,
   socketAlive,
   LiveInputRegistry,
+  legacyCommandBackend,
 } from "@claudexor/daemon";
 import { DaemonControlApiServer } from "@claudexor/control-api";
 import {
@@ -166,13 +167,11 @@ export async function main(): Promise<void> {
       forRequest: (params) => threads.interactionsForRequest(params),
       all: () => threads.interactionStores(),
     });
-    // Live-input targets (POST /v2/runs/:id/messages): in-process only, fed by
-    // the agent runner per attempt; a pending question blocks a send (INV-048).
+    // A pending owner question blocks live input (INV-048).
     const liveInputs = new LiveInputRegistry({
       pendingForRun: (runId) => interactions.pendingForRun(runId),
     });
-    // C5b: construction mkdirs under the daemon dir and the recovery plane
-    // serves no resources — the store materializes on first product use.
+    // Resource files materialize only on product use, never on the recovery plane.
     let resourceStore: ResourceStore | null = null;
     const resources = (): ResourceStore =>
       (resourceStore ??= new ResourceStore(join(daemonDir(), "resource-store")));
@@ -186,10 +185,12 @@ export async function main(): Promise<void> {
       warn: (message) => logLine(logPath(), message),
     });
     const maintenance = daemonHarnessMaintenance(threads, selfClient, () => authReadiness);
+    const commands = legacyCommandBackend(threads);
     const agentRunner = createDaemonAgentRunner({
       delegationBudgetAuthority,
       quotaStore: () => quotaStoreSlot.current(),
       threads,
+      commands: commands.queries,
       interactions,
       liveInputs,
       resources,
@@ -200,7 +201,7 @@ export async function main(): Promise<void> {
     const server = new DaemonServer({
       socketPath,
       token,
-      commands: threads,
+      commands,
       runtimeConcurrencyCaps: startupConcurrencyCaps,
       servingMode: admission.snapshot,
       delegationAuthority: delegationBudgetAuthority,
@@ -248,8 +249,7 @@ export async function main(): Promise<void> {
           bustLoginCredentialState(() => quotaStoreSlot.current(), authReadiness, harness),
       }),
     );
-    // #363: every process-local credential observer reads the login window from
-    // the durable setup lifecycle; an unbound or recovering generation reads open.
+    // Credential observers use the bound setup window; unknown stays open (#363).
     bindCredentialMutationWindow((harness) =>
       setupBinding.current().credentialMutationOpen(harness),
     );

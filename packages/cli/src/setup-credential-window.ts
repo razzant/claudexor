@@ -20,7 +20,7 @@
  * anything a fenced observer saw during it, is void after it.
  */
 import type { ControlHarnessSetupHarness, ControlSetupJob } from "@claudexor/schema";
-import { ACTIVE_SETUP_STATES, type SetupJobStore } from "./setup-job-store.js";
+import { ACTIVE_SETUP_STATES, type SetupJobStorePort } from "./setup-job-store.js";
 import { hasUnconfirmedSetupTermination } from "./setup-job-reducer.js";
 
 type WindowFacts = Pick<
@@ -39,7 +39,7 @@ export function credentialMutationWindowOpenFor(job: WindowFacts): boolean {
 /** The daemon's projection for `credentialMutationWindowOpen` (core): any job of
  * `harness` (every harness when undefined) with an open window. The store scan
  * throws while the setup journal requires recovery. */
-export function open(store: Pick<SetupJobStore, "some">, harness?: string): boolean {
+export function open(store: Pick<SetupJobStorePort, "some">, harness?: string): boolean {
   return store.some(
     (job) =>
       (harness === undefined || job.harness === harness) && credentialMutationWindowOpenFor(job),
@@ -54,10 +54,10 @@ export function open(store: Pick<SetupJobStore, "some">, harness?: string): bool
  * journal, so the fenced observers keep refusing while it is open.
  */
 export function observedUpdate(
-  store: Pick<SetupJobStore, "status" | "update">,
+  store: Pick<SetupJobStorePort, "status" | "update">,
   options: { onCredentialStateMayHaveChanged?: (harness: ControlHarnessSetupHarness) => void },
   log: (jobId: string, line: string) => void,
-): SetupJobStore["update"] {
+): SetupJobStorePort["update"] {
   return (jobId, patch, idempotency) => {
     const before = store.status(jobId);
     const after = store.update(jobId, patch, idempotency);

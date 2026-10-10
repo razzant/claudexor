@@ -743,7 +743,7 @@ describe("continueFrom through an unadopted head", () => {
             scope: { kind: "project", root: f.root },
             execution: { isolation: "live" },
           }),
-          { all: () => [{ records: () => records }] },
+          { getByRunId: (id) => records.find((record) => record.runId === id) },
         );
       if (newCorrection) {
         const next = await runOnce(f, {
@@ -839,7 +839,7 @@ describe("continueFrom through an unadopted head", () => {
               ? { execution: { isolation: "live", workspaceRoot: held.envelope.worktree_path } }
               : {}),
           }),
-          { all: () => [{ records: () => records }] },
+          { getByRunId: (id) => records.find((record) => record.runId === id) },
         );
       f.phase.current = "successor";
       const b = await runOnce(f, {
@@ -983,7 +983,7 @@ describe("continueFrom: an ancestor's steering without delivery proof", () => {
           scope: { kind: "project", root: f.root },
           execution: { isolation: "live" },
         }),
-        { all: () => [{ records: () => records }] },
+        { getByRunId: (id) => records.find((record) => record.runId === id) },
       ),
     });
     expect(next.result.lifecycle, next.result.summary).toBe("succeeded");
@@ -1030,7 +1030,7 @@ describe("continueFrom: an ancestor's steering without delivery proof", () => {
           scope: { kind: "project", root: f.root },
           execution: { isolation: "live" },
         }),
-        { all: () => [{ records: () => records }] },
+        { getByRunId: (id) => records.find((record) => record.runId === id) },
       ),
     });
     expect(next.result.lifecycle, next.result.summary).toBe("succeeded");
@@ -1135,18 +1135,15 @@ describe("continueFrom root and completed-work notices", () => {
         execution: { isolation: "live" },
       }),
       {
-        all: () => [
-          {
-            records: () => [
-              {
+        getByRunId: (id) =>
+          id === a.result.runId
+            ? {
                 runId: a.result.runId,
                 runDir: a.result.runDir,
                 state: a.result.lifecycle,
                 params: { prompt: WORK_ORDER, scope: { kind: "project", root: f.root } },
-              },
-            ],
-          },
-        ],
+              }
+            : undefined,
       },
     );
     f.phase.current = "successor";

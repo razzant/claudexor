@@ -1,4 +1,5 @@
 import type { DurableJournal } from "@claudexor/journal";
+import type { InteractionStorePort } from "./store-contracts.js";
 import type {
   ControlPendingInteraction,
   InteractionAnswerSet,
@@ -149,7 +150,7 @@ export class InteractionStore {
 }
 
 interface LiveEntry {
-  store: InteractionStore;
+  store: InteractionStorePort;
   resolve: (result: InteractionAnswerSet | InteractionHandlerRelease) => void;
   expiresAtMs: number | null;
 }
@@ -160,8 +161,8 @@ export class InteractionRegistry {
 
   constructor(
     private readonly stores: {
-      forRequest(params: unknown): InteractionStore;
-      all(): InteractionStore[];
+      forRequest(params: unknown): InteractionStorePort;
+      all(): InteractionStorePort[];
     },
   ) {}
 

@@ -18,19 +18,19 @@ import { assertNoInlineSecretValues, newId, nowIso, pathExists } from "@claudexo
 import {
   commandStoreForId,
   commandStoreForRequest,
-  commandStores,
-  type CommandAuthority,
+  type CommandBackend,
+  type LegacyCommandAuthority,
 } from "./command-authority.js";
 import {
   commandAcceptanceReceipt,
+  admitCommandRequest,
   findAcceptedCommand,
   publicAcceptedCommand,
 } from "./command-rpc.js";
-import { prunableCommandIds } from "./command-retention.js";
-import { publicCommandList } from "./command-list-projection.js";
+import { parseCommandListQuery } from "./command-list-select.js";
+import { legacyCommandBackend } from "./store/legacy-read-adapter.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import {
-  admitDelegatedRequest,
   isDelegatedChildRecord,
   type DelegationAdmissionAuthority,
 } from "./delegation-admission.js";
@@ -43,7 +43,6 @@ import {
   type JobRecord,
 } from "./job-record.js";
 import { settleJobError } from "./job-settlement.js";
-import { admitContinuationRequest } from "./continuation-admission.js";
 import {
   daemonTokenMatches,
   recoveryOnlyRefusal,
@@ -70,7 +69,7 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   maxConcurrent?: number;
   /** Startup-frozen strategy caps; absent embedders retain historical defaults. */
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
-  commands: CommandAuthority;
+  commands: LegacyCommandAuthority | CommandBackend;
   delegationAuthority?: DelegationAdmissionAuthority;
   maxHistory?: number;
   idempotencyRetentionMs?: number;
@@ -107,6 +106,7 @@ export class DaemonServer {
   private readonly controllers = new Map<string, AbortController>();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
+  private readonly commands: CommandBackend;
   private active = 0;
   private readonly startedAt = Date.now();
   private stopping = false;
@@ -119,6 +119,8 @@ export class DaemonServer {
 
   constructor(private readonly opts: DaemonOptions) {
     this.maxConcurrent = daemonConcurrencyLimit(opts);
+    this.commands =
+      "queries" in opts.commands ? opts.commands : legacyCommandBackend(opts.commands);
   }
 
   async start(): Promise<void> {
@@ -269,7 +271,7 @@ export class DaemonServer {
       method,
       params,
       this.queue.length + this.active + this.activeTasks.size,
-      () => this.allRecords(),
+      () => this.commands.queries.active(),
       this.opts.onShutdownRequested ?? (() => this.stop()),
       this.opts.onRuntimeReplacementRequested,
       this.opts.runtimeIdentity,
@@ -282,9 +284,7 @@ export class DaemonServer {
         this.startedAt,
         this.queue.length,
         this.active,
-        servingMode === "normal"
-          ? commandStores(this.opts.commands).reduce((n, s) => n + s.count, 0)
-          : 0,
+        servingMode === "normal" ? this.commands.queries.count() : 0,
         this.stopping,
         servingMode,
         this.maxConcurrent,
@@ -318,14 +318,14 @@ export class DaemonServer {
         // must keep returning its durable job even after the parent is fenced
         // or its monotonic eight-child allowance is full. A different request
         // under the same key still conflicts inside find().
-        const replay = findAcceptedCommand(this.opts.commands, envelope);
+        const replay = findAcceptedCommand(this.commands, envelope);
         if (replay) return commandAcceptanceReceipt(replay, true);
         // Journal-owned belt admission spans retries/processes; ordinary
         // parentRunId alone never establishes delegated lineage.
-        const request = admitDelegatedRequest(
-          admitContinuationRequest(rawRequest, this.allRecords()),
+        const request = admitCommandRequest(
+          this.commands,
+          rawRequest,
           operation,
-          this.allRecords(),
           this.opts.delegationAuthority,
         );
         const delegatedFrom = delegatedParentOf(request);
@@ -349,16 +349,16 @@ export class DaemonServer {
         return publicJobRecord(rec);
       }
       case "claudexor.findAccepted": {
-        return publicAcceptedCommand(this.opts.commands, params);
+        return publicAcceptedCommand(this.commands, params);
       }
       case "claudexor.list":
-        return publicCommandList(this.allRecords(), params?.query);
+        return this.commands.queries.publicList(parseCommandListQuery(params?.query));
       case "claudexor.cancel": {
         return this.cancelJob(String(params?.id), normalizeCancelReasonCode(params?.reason_code));
       }
       case "claudexor.delegationFence": {
         const runId = String(params?.runId ?? "");
-        const rec = this.allRecords().find((record) => record.runId === runId);
+        const rec = this.commands.queries.getByRunId(runId);
         if (!rec || rec.state !== "running") {
           throw Object.assign(new Error(`no running Delegate parent run ${runId}`), {
             code: "delegation_parent_invalid",
@@ -406,15 +406,11 @@ export class DaemonServer {
 
   /** Age/cap and params-byte command retention: at normal admission and after every terminal. */
   pruneHistory(): void {
-    const removed = prunableCommandIds(
-      this.allRecords(),
+    const removed = this.commands.pruneHistory(
       this.opts.maxHistory ?? 500,
       this.opts.idempotencyRetentionMs ?? 30 * 24 * 60 * 60 * 1_000,
       (this.opts.now ?? (() => new Date()))().getTime(),
     );
-    for (const store of commandStores(this.opts.commands)) {
-      store.prune(removed.filter((id) => store.get(id)));
-    }
     for (const id of removed) this.cancelled.delete(id);
   }
 
@@ -425,7 +421,7 @@ export class DaemonServer {
     idempotencyParams?: unknown,
     operation?: string,
   ) {
-    const store = commandStoreForRequest(this.opts.commands, params);
+    const store = commandStoreForRequest(this.commands, params);
     const parsed = ControlRunStartRequest.safeParse(params);
     const acceptedParams =
       parsed.success && parsed.data.mode === "agent"
@@ -442,16 +438,12 @@ export class DaemonServer {
     });
   }
 
-  private allRecords(): JobRecord[] {
-    return commandStores(this.opts.commands).flatMap((store) => store.records());
-  }
-
   private getRecord(id: string): JobRecord | undefined {
-    return commandStoreForId(this.opts.commands, id)?.get(id);
+    return commandStoreForId(this.commands, id)?.get(id);
   }
 
   private updateRecord(record: JobRecord, patch: Partial<JobRecord>): JobRecord {
-    const store = commandStoreForId(this.opts.commands, record.id);
+    const store = commandStoreForId(this.commands, record.id);
     if (!store) throw new Error(`command authority lost job ${record.id}`);
     const next = store.update(record.id, patch);
     if (isTerminalLifecycle(next.state) && !isTerminalLifecycle(record.state)) {
@@ -479,7 +471,7 @@ export class DaemonServer {
   private drain(): void {
     if (this.stopping) return;
     while (this.queue.length > 0) {
-      const records = this.allRecords();
+      const records = this.commands.queries.active();
       const running = records.filter((record) => record.state === "running");
       const busyThreads = new Set(
         running.map((r) => this.threadIdOf(r)).filter((t): t is string => !!t),
@@ -558,7 +550,7 @@ export class DaemonServer {
         thrown,
         record: rec,
         aborted: controller.signal.aborted,
-        commands: this.opts.commands,
+        commands: this.commands,
         update: (record, patch) => this.updateRecord(record, patch),
       });
     } finally {

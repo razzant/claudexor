@@ -11,7 +11,7 @@ import {
   PROJECTION_UPDATED,
   WINDOW_SUPERSEDED,
 } from "./quota-registry-replay.js";
-import type { DurableJournal } from "@claudexor/journal";
+import type { EventLedger } from "./store-contracts.js";
 import {
   ControlQuotaResponse,
   AccountResourceSnapshot,
@@ -92,7 +92,7 @@ export class QuotaRegistry {
   private recoveryMarkerPending = false;
 
   constructor(
-    private readonly journal: DurableJournal,
+    private readonly journal: EventLedger,
     refreshers: readonly (QuotaRefresher | QuotaVendorRefresher)[] = [],
     private readonly now: () => Date = () => new Date(),
     private readonly subjects?: QuotaSubjectUniverse,

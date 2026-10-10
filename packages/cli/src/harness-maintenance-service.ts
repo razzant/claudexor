@@ -21,7 +21,7 @@ import {
   commandStoreForId,
   commandStoreForRequest,
   commandStores,
-  type CommandAuthority,
+  type LegacyCommandAuthority,
   type DaemonClient,
   type JobRecord,
   type RunContext,
@@ -62,7 +62,7 @@ export function claudexorCliEntry(moduleUrl = import.meta.url, exists = existsSy
 }
 
 export interface HarnessMaintenanceDependencies {
-  commands: CommandAuthority;
+  commands: LegacyCommandAuthority;
   client: Pick<DaemonClient, "enqueue" | "cancel">;
   readiness?: () => Pick<AuthReadinessService, "invalidate">;
   /** Test seams; production runs `<node> <cli entry>` through spawnProcess. */
@@ -524,7 +524,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
 
 /** The daemon's composition (claudexord.ts); readiness is bound lazily. */
 export function daemonHarnessMaintenance(
-  commands: CommandAuthority,
+  commands: LegacyCommandAuthority,
   client: Pick<DaemonClient, "enqueue" | "cancel">,
   readiness: () => Pick<AuthReadinessService, "invalidate">,
 ) {
