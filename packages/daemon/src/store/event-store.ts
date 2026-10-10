@@ -123,13 +123,36 @@ export class SqlEventLedger implements EventLedger {
   }
 
   records<T = unknown>(afterSeq: number, types: readonly string[]): StoreEvent<T>[] {
+    return this.readRows(afterSeq, types);
+  }
+
+  /** Addressed setup history uses the stable saved group, never the log group
+   * that terminal saves retire. Both readers hydrate through the same decoder. */
+  recordsInGroup<T = unknown>(
+    groupKey: string,
+    afterSeq: number,
+    types: readonly string[],
+  ): StoreEvent<T>[] {
+    return this.readRows(afterSeq, types, groupKey);
+  }
+
+  private readRows<T>(
+    afterSeq: number,
+    types: readonly string[],
+    groupKey?: string,
+  ): StoreEvent<T>[] {
     if (types.length === 0) return [];
     const rows = this.store
       .prepare(
-        `SELECT seq, time, type, payload, payload_sha FROM event
-         WHERE pid = ? AND seq > ? AND type IN (${types.map(() => "?").join(",")}) ORDER BY seq`,
+        `SELECT seq, time, type, payload, payload_sha FROM event${groupKey === undefined ? "" : " INDEXED BY event_group"}
+         WHERE pid = ? AND seq > ? AND type IN (${types.map(() => "?").join(",")})${groupKey === undefined ? "" : " AND group_key = ?"} ORDER BY seq`,
       )
-      .all(this.generation.pid, afterSeq, ...types) as Array<{
+      .all(
+        this.generation.pid,
+        afterSeq,
+        ...types,
+        ...(groupKey === undefined ? [] : [groupKey]),
+      ) as Array<{
       seq: number | bigint;
       time: string;
       type: string;

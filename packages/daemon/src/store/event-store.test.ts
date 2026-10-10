@@ -41,6 +41,36 @@ async function fixture() {
 }
 
 describe("SQL EventLedger body and fold contract", () => {
+  it("addresses group, sequence and type before hydrating setup bodies", async () => {
+    const { store, blobs, ledger, partition } = await fixture();
+    const wanted = ledger.append("setup.job.saved", {
+      job: { jobId: "one", state: "running" },
+      text: "a".repeat(80000),
+    });
+    ledger.append("setup.job.saved", {
+      job: { jobId: "two", state: "running" },
+      text: "b".repeat(80000),
+    });
+    ledger.append("setup.job.log", { jobId: "one", line: "log" });
+    const read = vi.spyOn(blobs, "read");
+    const prepare = vi.spyOn(store, "prepare");
+    expect(ledger.recordsInGroup("s:one:saved", 0, ["setup.job.saved"])).toEqual([wanted]);
+    const query = prepare.mock.calls.find(([sql]) => sql.includes("SELECT seq, time, type"))![0];
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(ledger.recordsInGroup("s:one:saved", wanted.seq, ["setup.job.saved"])).toEqual([]);
+    expect(ledger.recordsInGroup("s:one:saved", 0, ["setup.job.log"])).toEqual([]);
+    expect(ledger.recordsInGroup("s:two:saved", 0, [])).toEqual([]);
+    expect(read).toHaveBeenCalledTimes(1);
+    const plan = (
+      store
+        .prepare(`EXPLAIN QUERY PLAN ${query}`)
+        .all(partition.pid, 0, "setup.job.saved", "s:one:saved") as Array<{ detail: string }>
+    )
+      .map((row) => row.detail)
+      .join("\n");
+    expect(plan).toContain("event_group");
+    expect(plan).not.toMatch(/SCAN event|TEMP B-TREE/);
+  });
   it("stores exactly 64 KiB inline and a larger UTF-8 payload once, with hydrated reducer and SSE reads", async () => {
     const { store, blobs, ledger, partition } = await fixture();
     const inline = "x".repeat(INLINE_BODY_MAX_BYTES - 2); // JSON quotes occupy two bytes.
