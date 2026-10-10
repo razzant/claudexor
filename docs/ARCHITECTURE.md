@@ -3251,11 +3251,14 @@ registry and its generations together; uploads keep their independent pid0
 scope. Logical recovery exports a consistent SQL snapshot with its referenced
 external bodies. Physical corruption instead uses the existing `engine-state`
 recovery target: its raw database/WAL/SHM export is diagnostic evidence, not a
-complete restorable backup. Explicit whole-store quarantine closes storage,
-preserves the physical files and its idempotent recovery receipt, and creates a
-fresh store without reimporting legacy journals. Pending accepted recovery intent
-is resumed before ordinary startup selection. Do not replace newer work from a
-legacy source or older runtime automatically; this migration is forward-fix only.
+complete restorable backup. Explicit whole-store quarantine closes storage and
+archives the database files with `resource-store/` (bodies, uploads and legacy
+keys) under the same recovery artifact before creating a fresh store. The new
+store's GC cannot delete archived bodies; its empty resource directory inherits
+no old upload replay authority. Accounts, runs and `journal-legacy/` stay in
+place. The same idempotent recovery operation resumes before ordinary startup
+selection; it never reimports legacy state or replaces newer work automatically.
+This migration is forward-fix only.
 
 ### Interactive runs (waiting_on_user)
 

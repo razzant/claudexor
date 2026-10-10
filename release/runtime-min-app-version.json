@@ -1,4 +1,4 @@
 {
   "minAppVersion": "4.0.0",
-  "rationale": "Engine 4.0 represents concurrency limits as positive integers or unlimited and separates model and long-session admission. Claudexor.app 4.0 provides the corresponding decoder and settings UI. The existing appUpdateRequired path preserves the previous working engine until the application is updated; this floor does not install a desktop app for externally managed hosts."
+  "rationale": "Engine 4.0 represents concurrency limits as positive integers or unlimited and separates model and long-session admission. Claudexor.app 4.0 reads the updated concurrency contract. The existing appUpdateRequired path preserves the previous working engine until the application is updated; this floor does not install a desktop app for externally managed hosts."
 }
