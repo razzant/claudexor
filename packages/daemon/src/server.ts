@@ -22,7 +22,6 @@ import {
   commandStoreForId,
   commandStoreForRequest,
   type CommandBackend,
-  type LegacyCommandAuthority,
 } from "./command-authority.js";
 import {
   commandAcceptanceReceipt,
@@ -31,7 +30,6 @@ import {
   publicAcceptedCommand,
 } from "./command-rpc.js";
 import { parseCommandListQuery } from "./command-list-select.js";
-import { legacyCommandBackend } from "./store/legacy-read-adapter.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
 import {
@@ -77,7 +75,7 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   /** Startup-frozen admission and strategy caps; omission has no finite admission ceiling. */
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
   storeFacts?: () => DaemonStoreFacts;
-  commands: LegacyCommandAuthority | CommandBackend;
+  commands: CommandBackend;
   delegationAuthority?: DelegationAdmissionAuthority;
   maxHistory?: number;
   idempotencyRetentionMs?: number;
@@ -130,8 +128,7 @@ export class DaemonServer {
 
   constructor(private readonly opts: DaemonOptions) {
     this.concurrency = daemonConcurrencyCaps(opts);
-    this.commands =
-      "queries" in opts.commands ? opts.commands : legacyCommandBackend(opts.commands);
+    this.commands = opts.commands;
   }
 
   async start(): Promise<void> {
