@@ -39,6 +39,14 @@ export { JournalRecoveryRequiredError, JournalAppendUncertainError };
 export type { JournalRecoveryLocation, JournalRecoveryState } from "./journal-recovery-state.js";
 export type { FoldRecord, FoldVerdict, JournalFold } from "./journal-fold.js";
 export { keepEverything } from "./journal-fold.js";
+// The one-time SQL importer shares the existing read-only framing and intent
+// semantics. It never activates a DurableJournal writer.
+export { readFrames, type FrameReadResult } from "./frame-reader.js";
+export {
+  inspectPreparedJournal,
+  fingerprintPreparedJournal,
+  type PreparedJournalInspection,
+} from "./read-only-preparation.js";
 export type {
   JournalCompactionDeclined,
   JournalCompactionOutcome,
