@@ -3148,6 +3148,107 @@ on exotic filesystems is tolerated at startup (the win32 named pipe is not a
 filesystem entry, so no chmod applies there; the bearer token remains the auth
 gate on every platform).
 
+### Engine store core (not yet wired)
+
+`packages/daemon/src/store/` holds the SQLite store core that the 4.0 train
+replaces `packages/journal` with. In this tree no store uses it yet: the
+daemon still serves every partition from the checksummed journal, and the
+core is exercised only by its own tests, the bundle smoke and the load harness
+`scripts/store-load-bench.mjs`. Stores move onto it, the importer and the
+startup path arrive, and the journal package is removed in later changes of
+the same train; the invariant rewrites (INV-034, INV-014, INV-064, INV-035)
+and the new store-durability invariant land with that switch.
+
+What the core is:
+
+- One database `engine.sqlite` per daemon data root, opened through the
+  `EngineStore` adapter: `node:sqlite` is imported lazily — on the request
+  thread when a store opens and inside each worker when it starts — so the
+  daemon package itself loads on a Node without that module, and the open
+  proves the bundled SQLite is at least 3.51.3 (the WAL-reset corruption fix)
+  or refuses typed (`engine_runtime_unsupported`) before any root is touched;
+  the file's
+  application id and schema version are checked before any write
+  (`store_schema_unsupported`); the connection pragmas are applied and read
+  back. The request thread is the single row writer: a mutation is a
+  synchronous transaction (BEGIN IMMEDIATE … COMMIT, ROLLBACK in `finally`,
+  asynchronous bodies refused), so "returned" still means "committed and
+  crash-durable", and "durable before effect" stays the next line of code.
+  Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
+  content-addressed files under the resource store, written in the same tick
+  as the owning transaction.
+- The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
+  directory registered since the previous pass, reads `data_version`, runs a
+  PASSIVE checkpoint for space, and — whenever anything was committed since
+  its last proven barrier — issues one explicit fsync of the WAL file (an
+  F_FULLFSYNC on macOS, also a device-wide barrier for `O_DSYNC` file data
+  handed to the drive before it). The barrier is never derived from a
+  checkpoint result, and a freshly started or restarted worker treats its
+  first pass as dirty. Every connection that can checkpoint — the writer and
+  the flusher; the maintenance connection is read-only and never checkpoints
+  — sets `checkpoint_fullfsync`, so the checkpoint that completes a backfill
+  syncs WAL → database → reuse in order and database pages become durable
+  there, not through the WAL fsync;
+  the writer's `wal_autocheckpoint` of 4000 pages (about 16 MiB) is the
+  trigger threshold of that checkpoint, not a physical bound: under a pinned
+  reader (a maintenance integrity check or export, a long statement) or a
+  large transaction the WAL keeps growing and resets once the reader
+  releases, after which `journal_size_limit` truncates the file; the first
+  such checkpoint after a long pinned read copies the accumulated backlog in
+  one longer stop on the request thread. The request thread itself calls no
+  Node storage-sync primitive: external files are written through an
+  `O_DSYNC` temp and renamed, and the directory is handed to the flusher via
+  `registerExternal`. Registrations and `flushed()` waiters carry monotonic
+  generations; a pass acknowledges every generation it received before it
+  started, a dead worker rejects its earlier waiters typed
+  (`store_flush_unavailable`, retryable) and is restarted with its
+  unacknowledged registrations replayed.
+- Obligations (`effect_obligation`) are rows created in the same transaction
+  as the decision whose file effects they protect (terminal files, blob
+  publication, archive/purge/quarantine steps). The row stays `pending` until
+  the owner has performed every effect and materializes it, recording the
+  generation of the last registration in `materialized_g`; only a barrier
+  covering that generation deletes it. Startup replays every open row through
+  an idempotent per-kind handler, so their count is unfinished work, never
+  history.
+- Blob files are collected through that same rule: only after the barrier of
+  the latest transaction that changed a reference to the digest, by a
+  single-flight per-digest handler that re-checks newer changes and every
+  reverse index in one synchronous section before unlinking and deleting the
+  file-mode `blob` row. The maintenance worker — its own
+  read-only connection, never the flusher's thread — runs the integrity check
+  after admission and on request, exports a consistent snapshot copy, and
+  enumerates orphan candidates (blob files, temp files and upload parts older
+  than the process start that no row in its snapshot owns); every removal is
+  decided on the request thread by one rule: the main thread records the
+  generation of every committed change to a file's owner rows, the unlink
+  waits for the barrier covering the latest one and, in a single synchronous
+  section, retries if the owner moved, keeps if an owner exists, else unlinks.
+  `EngineStore` owns this generation map; blob helpers, obligation completion
+  and maintenance share it automatically, including when constructed separately.
+- Retention: each `event` row is written under the daemon's journal fold
+  verdict as SQL (retire, slot, group, drop), so the retained set equals the
+  folded journal's. Command rows carry a `kind` set once at accept
+  (`commandKind`) and a `live` flag for the served generations; the bounded
+  prune selects at most one batch of the oldest expired terminal commands by
+  keyset paging over a partial index, with needs-decision rows outside the
+  index and continuation exemptions probed once per candidate. Journal
+  cursors keep their encoding and map onto the current partition generation;
+  a stale epoch or an ahead sequence is refused with the same 409
+  `journal_cursor_invalid` and `resnapshot` as today.
+- Facts for the daemon status (measurements, never verdicts): `flush_lag_ms`,
+  the last barrier time, `wal_bytes`, flusher state and counters,
+  `busy_waits`, `obligations_open`, the integrity verdict, and a migration
+  placeholder the importer fills.
+
+Typed refusals of the core: `engine_runtime_unsupported`,
+`store_schema_unsupported`, `store_flush_unavailable`, `store_full` (ENOSPC
+or SQLITE_FULL), `store_corrupt`, `store_busy` (the busy timeout is a fuse;
+hitting it is the `busy_waits` fact). The store workers travel inside the
+single-file daemon bundle: the bundle is their worker entry and the embedded
+worker modules self-start on `workerData`, while the daemon's direct-entry
+check ignores worker threads.
+
 ### Interactive runs (waiting_on_user)
 
 Harnesses with the `interactive` capability (Claude Code via its bidirectional

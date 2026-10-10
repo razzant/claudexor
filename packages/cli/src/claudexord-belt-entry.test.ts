@@ -142,6 +142,28 @@ describe("claudexord belt self-entry", () => {
     expect(calls).toBe(1);
   });
 
+  it("never treats a worker thread as the direct entry, whatever argv says", () => {
+    const root = mkdtempSync(join(realpathSync("/tmp"), "cx-entry-worker-"));
+    reapDirs.push(root);
+    const entryPath = join(root, "claudexord.bundle.cjs");
+    writeFileSync(entryPath, "// entry\n");
+    let calls = 0;
+    runIfDirectEntry(
+      pathToFileURL(entryPath).href,
+      () => void (calls += 1),
+      [process.execPath, entryPath],
+      false,
+    );
+    expect(calls).toBe(0);
+    runIfDirectEntry(
+      pathToFileURL(entryPath).href,
+      () => void (calls += 1),
+      [process.execPath, entryPath],
+      true,
+    );
+    expect(calls).toBe(1);
+  });
+
   it("serves from the built entry and roundtrips its packaged parent daemon", () => {
     const daemonEntry = resolve(import.meta.dirname, "../dist/claudexord.js");
     expect(

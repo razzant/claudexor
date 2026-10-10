@@ -36,3 +36,8 @@ export * from "./model-operations.js";
 export * from "./command-activity.js";
 export * from "./memory-facts.js";
 export { AccountResets, type AccountResetBinding } from "./account-resets.js";
+// The engine store workers travel inside every bundle of this package: the
+// single-file daemon bundle is their worker entry and they self-start on
+// `workerData` (see store/flusher-protocol.ts). Inert on the main thread.
+import "./store/flusher-worker.js";
+import "./store/maintenance-worker.js";

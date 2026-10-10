@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainThread } from "node:worker_threads";
 import { daemonHeapLaunch, engineBuildIdentity } from "@claudexor/util";
 import { setupAttachCommand } from "./setup-attach-command.js";
 
@@ -76,14 +77,21 @@ export async function dispatchClaudexordEntry(
   }
 }
 
-/** Preserve import-side-effect freedom while supporting direct `node dist/claudexord.js`. */
+/**
+ * Preserve import-side-effect freedom while supporting direct `node dist/claudexord.js`.
+ * A worker thread inherits the parent's `process.argv`, so the single-file
+ * daemon bundle loaded as a store worker entry would otherwise match itself
+ * and start a second daemon inside the thread; a worker is never the direct entry.
+ */
 export function runIfDirectEntry(
   moduleUrl: string,
   entry: () => void,
   argv: readonly string[] = process.argv,
+  mainThread: boolean = isMainThread,
 ): void {
   try {
     if (
+      mainThread &&
       typeof argv[1] === "string" &&
       realpathSync.native(resolve(argv[1])) === realpathSync.native(fileURLToPath(moduleUrl))
     ) {
