@@ -9,7 +9,7 @@ export interface RuntimeSetupParticipant {
 }
 
 export interface RuntimeJournalParticipant {
-  close(): void;
+  close(): void | Promise<void>;
 }
 
 export interface DaemonRuntimeShutdownOptions {
@@ -126,7 +126,7 @@ export class DaemonRuntimeShutdown {
     start(() => this.options.daemon.stop());
     start(() => this.options.setup.shutdown());
 
-    void Promise.allSettled(operations).then((results) => {
+    void Promise.allSettled(operations).then(async (results) => {
       for (const result of results) {
         if (result.status === "rejected") failures.push(result.reason);
       }
@@ -135,7 +135,7 @@ export class DaemonRuntimeShutdown {
         return;
       }
       try {
-        this.options.journal.close();
+        await this.options.journal.close();
       } catch (error) {
         this.settleFailure(error);
         return;
