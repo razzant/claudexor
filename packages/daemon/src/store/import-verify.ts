@@ -124,7 +124,7 @@ function verifyThreadRows(sql: ImportContext, source: ImportSource, pid: number)
         key === "checkpoints"
           ? `${value.thread_id}\0${value.harness_id}\0${value.profile_id ?? ""}`
           : value.id;
-      if (hashJson(expected.get(id)) !== hashJson(value))
+      if (!expected.has(id) || hashJson(expected.get(id)) !== hashJson(value))
         throw importError("store_import_equivalence_mismatch", `${table} mismatch ${id}`);
       compared++;
     }

@@ -7,6 +7,8 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +27,7 @@ import { ImportContext } from "./import-context.js";
 import { commandRow, hydrateCommand } from "./command-rows.js";
 import { readImportSource } from "./import-source.js";
 import { verifyImportedPartition } from "./import-verify.js";
+import { encodeFrame } from "./test-support/fixtures/legacy/journal/frame-codec.js";
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const roots: string[] = [];
@@ -81,6 +84,101 @@ const accepted = (id: string, prompt = "fixture") => ({
 });
 
 describe("single-connection legacy import", () => {
+  it("the source fingerprint detects valid changed bytes with unchanged size and mtime", async () => {
+    const f = fixture();
+    f.append("global", [accepted("job", "before")]);
+    const path = join(f.options.partitions[0]!.directory, "journal.bin");
+    const header = {
+      partition: "global",
+      epoch: "epoch-global",
+      seq: 1,
+      previousFrameHash: "0".repeat(64),
+      time: TIME,
+      type: "command.accepted",
+    };
+    const replace = (prompt: string) => {
+      writeFileSync(
+        path,
+        encodeFrame(header, Buffer.from(JSON.stringify(accepted("job", prompt).payload))),
+      );
+      utimesSync(path, new Date(TIME), new Date(TIME));
+    };
+    replace("before");
+    const before = statSync(path, { bigint: true }),
+      first = await runLegacyImport(f.options);
+    replace("after!");
+    const after = statSync(path, { bigint: true });
+    expect([after.size, after.mtimeNs]).toEqual([before.size, before.mtimeNs]);
+    const second = await runLegacyImport(f.options);
+    expect(second.partitions[0]?.reused).toBe(false);
+    expect(second.partitions[0]?.fingerprint).not.toBe(first.partitions[0]?.fingerprint);
+    const db = new DatabaseSync(f.options.databasePath);
+    try {
+      const sql = new ImportContext(db, join(f.options.resourceStoreDir, "blobs"));
+      expect(hydrateCommand(commandRow(sql, "job")!, sql).params).toMatchObject({
+        prompt: "after!",
+      });
+    } finally {
+      db.close();
+    }
+  });
+  it("binds project registrations and global head revisions after project state, then respects unregister on resume", async () => {
+    const f = fixture(["global", "project:prj-fixture"]);
+    const source = readLogicalFixture(
+      resolve(import.meta.dirname, "test-support/fixtures/global.json"),
+    );
+    const project = (
+      source.records.find((row) => row.type === "project.registered")!.payload as {
+        project: { id: string };
+      }
+    ).project;
+    const entities = source.records.filter((row) => row.type === "thread.entities_upserted");
+    const head = source.records.find((row) => row.type === "thread.head.updated")!;
+    const registration = {
+      keyDigest: "original-project-key",
+      requestDigest: "original-project-request",
+      projectId: project.id,
+    };
+    f.append("global", [{ type: "project.registered", payload: { project, registration } }, head]);
+    f.append("project:prj-fixture", [...entities, accepted("project-job", "x".repeat(80000))]);
+    const receipt = await runLegacyImport(f.options);
+    const projectPid = receipt.partitions.find((row) => row.name === "project:prj-fixture")!.pid;
+    let db = new DatabaseSync(f.options.databasePath);
+    try {
+      expect(db.prepare("SELECT current_pid FROM project").get()).toEqual({
+        current_pid: projectPid,
+      });
+      expect(db.prepare("SELECT live FROM command").get()).toEqual({ live: 1 });
+      expect(
+        db
+          .prepare(
+            "SELECT key_digest,request_digest,target_id FROM idempotency WHERE owner='project'",
+          )
+          .get(),
+      ).toEqual({
+        key_digest: registration.keyDigest,
+        request_digest: registration.requestDigest,
+        target_id: project.id,
+      });
+      expect(db.prepare("SELECT head_revision FROM thread").get()).toEqual({
+        head_revision: (head.payload as { revision: number }).revision,
+      });
+    } finally {
+      db.close();
+    }
+    f.append("global", [{ type: "project.unregistered", payload: { project } }]);
+    await runLegacyImport(f.options);
+    db = new DatabaseSync(f.options.databasePath);
+    try {
+      expect(db.prepare("SELECT status FROM project").get()).toEqual({ status: "archived" });
+      expect(db.prepare("SELECT live FROM command").get()).toEqual({ live: 0 });
+      expect(
+        db.prepare("SELECT count(*) AS n FROM idempotency WHERE owner='project'").get(),
+      ).toEqual({ n: 0 });
+    } finally {
+      db.close();
+    }
+  });
   it("imports the sealed portable corpus with exact rows/bindings/head and preserves every source byte", async () => {
     const path = root();
     const logical = readLogicalFixture(

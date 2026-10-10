@@ -119,6 +119,18 @@ export async function runLegacyImport(options: LegacyImportOptions): Promise<Leg
     );
     ensureSchema(db, now);
     const sql = new ImportContext(db, join(options.resourceStoreDir, "blobs"));
+    sql.transaction(() => {
+      sql.prepare("DELETE FROM meta WHERE key='migration'").run();
+      const names = new Set(ordered.map(({ source }) => source.name));
+      for (const row of sql.prepare("SELECT name,pid FROM import_partition").all() as Array<{
+        name: string;
+        pid: number;
+      }>) {
+        if (names.has(row.name)) continue;
+        clearImportedPartition(sql, row.pid);
+        sql.prepare("DELETE FROM import_partition WHERE name=?").run(row.name);
+      }
+    });
     const partitions: ImportedPartitionReceipt[] = [];
     let processedBytes = 0;
     for (const { source } of ordered) {
@@ -167,9 +179,8 @@ export async function runLegacyImport(options: LegacyImportOptions): Promise<Leg
       });
       processedBytes += input.size;
     }
-    const resources = sql.transaction(
-      prepareImportResources(options.resourceStoreDir).bind(null, sql),
-    );
+    const preparedResources = prepareImportResources(options.resourceStoreDir);
+    const resources = sql.transaction(() => preparedResources.apply(sql));
     sql.transaction(() => bindImportedRegistry(sql));
     let compared = 0;
     processedBytes = 0;
@@ -182,6 +193,7 @@ export async function runLegacyImport(options: LegacyImportOptions): Promise<Leg
       compared += verifyImportedPartition(sql, input, partition.pid);
       processedBytes += input.size;
     }
+    compared += preparedResources.verify(sql);
     receipt = {
       databasePath,
       partitions,
@@ -190,7 +202,18 @@ export async function runLegacyImport(options: LegacyImportOptions): Promise<Leg
       unclassified: Number(
         (sql.prepare("SELECT count(*) AS n FROM unclassified").get() as { n: number }).n,
       ),
-      externalDirectories: [...sql.externalDirectories].sort(),
+      // A resumed partition can reference files prepared by the previous worker.
+      // These fixed storage directories also need the final publication sync.
+      externalDirectories: [
+        ...new Set(
+          [
+            ...sql.externalDirectories,
+            sql.blobsDir,
+            options.resourceStoreDir,
+            dirname(options.resourceStoreDir),
+          ].filter((dir) => existsSync(dir)),
+        ),
+      ].sort(),
     };
     db.exec("PRAGMA synchronous=NORMAL");
     sql.transaction(() =>

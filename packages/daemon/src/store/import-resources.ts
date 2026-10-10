@@ -5,6 +5,7 @@ import {
   ControlUploadCreateRequest,
   ControlUploadStatus,
 } from "@claudexor/schema";
+import { hashJson } from "@claudexor/util";
 import { bindIdempotencyInTx } from "./idempotency.js";
 import {
   putResourceInTx,
@@ -26,9 +27,10 @@ export interface ImportResourceReceipt {
 
 /** Metadata enumeration is a one-time import. The large idempotency directory
  * is never enumerated; only a pending upload's exact recorded key is read. */
-export function prepareImportResources(
-  root: string,
-): (sql: ImportContext) => ImportResourceReceipt {
+export function prepareImportResources(root: string): {
+  apply(sql: ImportContext): ImportResourceReceipt;
+  verify(sql: ImportContext): number;
+} {
   const resources: ResourceRow[] = [],
     uploads: UploadRow[] = [],
     ignoredUploads: string[] = [];
@@ -101,8 +103,13 @@ export function prepareImportResources(
         }
         if (prior && prior.requestDigest !== finalization.requestDigest)
           throw new Error("conflicting finalization binding");
-        row.finalization = { keyDigest, requestDigest: finalization.requestDigest, result };
-        row.resourceId = result.resourceId;
+        const canonical = (prior?.result ?? result) as ControlResource;
+        row.finalization = {
+          keyDigest,
+          requestDigest: finalization.requestDigest,
+          result: canonical,
+        };
+        row.resourceId = canonical.resourceId;
         row.state = prior ? "published" : "finalizing";
         row.finalizeSha = prior ? null : resourceSha(result);
         if (prior) published.add(status.uploadId);
@@ -113,61 +120,141 @@ export function prepareImportResources(
     } // Exact legacy restore behavior, disclosed in receipt.
   }
   const legacyIdempotency = existsSync(join(root, "idempotency")) ? "present" : "absent";
-  return (sql) => {
-    sql.prepare("DELETE FROM effect_obligation WHERE kind='publish_blob' AND pid=0").run();
-    sql.prepare("DELETE FROM idempotency WHERE owner='upload' AND pid=0").run();
-    sql.prepare("DELETE FROM upload").run();
-    sql.prepare("DELETE FROM resource").run();
-    for (const row of resources) {
-      putResourceInTx(sql, row);
-      sql
-        .prepare("INSERT OR IGNORE INTO blob(sha256,size,inline) VALUES(?,?,NULL)")
-        .run(resourceSha(row.resource), row.resource.sizeBytes);
-    }
-    for (const row of uploads) {
-      putUploadInTx(sql, row);
-      if (!row.finalization) continue;
-      const { result, keyDigest, requestDigest } = row.finalization;
-      bindIdempotencyInTx(sql, {
-        owner: "upload",
-        pid: 0,
-        operation: "finalize",
-        keyDigest,
-        requestDigest,
-        targetId: row.status.uploadId,
-        result,
-        createdAt: result.createdAt,
+  const expected = new Map(resources.map((row) => [row.resource.resourceId, row]));
+  for (const row of uploads)
+    if (row.finalization && row.state === "finalizing")
+      expected.set(row.finalization.result.resourceId, {
+        resource: row.finalization.result,
+        state: "publishing",
+        expiresAt: null,
+        releasedAt: null,
       });
-      if (!published.has(row.status.uploadId)) {
-        putResourceInTx(sql, {
-          resource: result,
-          state: "publishing",
-          expiresAt: null,
-          releasedAt: null,
-        });
+  const fingerprint = metadataFingerprint(root);
+  return {
+    apply(sql) {
+      sql.prepare("DELETE FROM effect_obligation WHERE kind='publish_blob' AND pid=0").run();
+      sql.prepare("DELETE FROM idempotency WHERE owner='upload' AND pid=0").run();
+      sql.prepare("DELETE FROM upload").run();
+      sql.prepare("DELETE FROM resource").run();
+      for (const row of resources) {
+        putResourceInTx(sql, row);
         sql
-          .prepare(
-            "INSERT INTO effect_obligation(kind,key,pid,created_at,payload,state) VALUES('publish_blob',?,0,?,?,'pending')",
-          )
-          .run(
-            row.status.uploadId,
-            result.createdAt,
-            Buffer.from(
-              JSON.stringify({ sha: resourceSha(result), resource_id: result.resourceId }),
-            ),
+          .prepare("INSERT OR IGNORE INTO blob(sha256,size,inline) VALUES(?,?,NULL)")
+          .run(resourceSha(row.resource), row.resource.sizeBytes);
+      }
+      for (const row of uploads) {
+        putUploadInTx(sql, row);
+        if (!row.finalization) continue;
+        const { result, keyDigest, requestDigest } = row.finalization;
+        bindIdempotencyInTx(sql, {
+          owner: "upload",
+          pid: 0,
+          operation: "finalize",
+          keyDigest,
+          requestDigest,
+          targetId: row.status.uploadId,
+          result,
+          createdAt: result.createdAt,
+        });
+        if (!published.has(row.status.uploadId)) {
+          putResourceInTx(sql, {
+            resource: result,
+            state: "publishing",
+            expiresAt: null,
+            releasedAt: null,
+          });
+          sql
+            .prepare(
+              "INSERT INTO effect_obligation(kind,key,pid,created_at,payload,state) VALUES('publish_blob',?,0,?,?,'pending')",
+            )
+            .run(
+              row.status.uploadId,
+              result.createdAt,
+              Buffer.from(
+                JSON.stringify({ sha: resourceSha(result), resource_id: result.resourceId }),
+              ),
+            );
+        }
+      }
+      sql
+        .prepare(
+          "INSERT INTO meta(key,value) VALUES('legacy_idempotency_dir',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(legacyIdempotency);
+      return {
+        resources: expected.size,
+        uploads: uploads.length,
+        ignoredUploads,
+        legacyIdempotency,
+      };
+    },
+    verify(sql) {
+      if (metadataFingerprint(root) !== fingerprint)
+        throw importError("store_import_source_changed", "resource metadata changed during import");
+      const observed = sql
+        .prepare("SELECT state,expires_at,released_at,body FROM resource ORDER BY id")
+        .all() as Array<{
+        state: string;
+        expires_at: string | null;
+        released_at: string | null;
+        body: Uint8Array;
+      }>;
+      if (observed.length !== expected.size)
+        throw importError("store_import_equivalence_mismatch", "resource row count differs");
+      for (const row of observed) {
+        const resource = JSON.parse(Buffer.from(row.body).toString("utf8"));
+        if (
+          !expected.has(resource.resourceId) ||
+          hashJson(expected.get(resource.resourceId)) !==
+            hashJson({
+              resource,
+              state: row.state,
+              expiresAt: row.expires_at,
+              releasedAt: row.released_at,
+            })
+        )
+          throw importError(
+            "store_import_equivalence_mismatch",
+            `resource metadata differs: ${resource.resourceId}`,
           );
       }
-    }
-    sql
-      .prepare(
-        "INSERT INTO meta(key,value) VALUES('legacy_idempotency_dir',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      if (
+        Number((sql.prepare("SELECT count(*) AS n FROM upload").get() as { n: number }).n) !==
+        uploads.length
       )
-      .run(legacyIdempotency);
-    return {
-      resources: resources.length,
-      uploads: uploads.length,
-      ignoredUploads,
-      legacyIdempotency,
-    };
+        throw importError("store_import_equivalence_mismatch", "upload row count differs");
+      for (const row of uploads) {
+        const stored = sql
+          .prepare("SELECT state,finalize_sha,body FROM upload WHERE id=?")
+          .get(row.status.uploadId) as
+          { state: string; finalize_sha: string | null; body: Uint8Array } | undefined;
+        if (
+          !stored ||
+          hashJson({
+            ...JSON.parse(Buffer.from(stored.body).toString("utf8")),
+            state: stored.state,
+            finalizeSha: stored.finalize_sha,
+          }) !== hashJson(row)
+        )
+          throw importError(
+            "store_import_equivalence_mismatch",
+            `upload metadata differs: ${row.status.uploadId}`,
+          );
+      }
+      return expected.size + uploads.length;
+    },
   };
+}
+
+function metadataFingerprint(root: string): string {
+  const records: Array<[string, string, string]> = [];
+  for (const directory of ["resources", "uploads"]) {
+    const path = join(root, directory);
+    if (!existsSync(path)) continue;
+    for (const name of readdirSync(path)
+      .filter((name) => name.endsWith(".json"))
+      .sort())
+      records.push([directory, name, hashJson(readFileSync(join(path, name), "utf8"))]);
+  }
+  return hashJson(records);
 }
