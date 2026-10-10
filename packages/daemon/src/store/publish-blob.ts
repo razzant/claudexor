@@ -128,7 +128,20 @@ export class PublishBlob {
     if (!row)
       throw resourceError(`no such resource: ${resource.resourceId}`, 404, "resource_not_found");
     // Receipts survive byte release. Never link a released or expired resource again.
-    if (row.state === "released" || row.state === "expired") return resource;
+    if (row.state === "released" || row.state === "expired") {
+      // Complete custody without republishing bytes. The new barrier covers
+      // release before the post-clear hook can remove the remaining part.
+      const generation = this.store.mark();
+      upload.state = "published";
+      runMutation(this.store, (tx) => {
+        putUploadInTx(tx, upload);
+        if (!effects)
+          this.obligations.materializeInTx(tx, "publish_blob", upload.status.uploadId, generation);
+        tx.changes.uploadChanged(upload.status.uploadId);
+        tx.changes.blobChanged(upload.finalizeSha);
+      });
+      return resource;
+    }
     const sha = resourceSha(resource);
     const path = this.blobs.filePath(sha);
     const bytes = verifiedResourceBytes(

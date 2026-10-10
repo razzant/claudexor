@@ -128,6 +128,10 @@ export function putUploadInTx(sql: SqlWriteContext, row: UploadRow): void {
 export function resourceError(message: string, status = 400, code = "resource_error"): Error {
   return Object.assign(new Error(message), { status, code });
 }
+export function assertResourceId(id: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id))
+    throw resourceError("invalid resource id", 400, "invalid_resource_id");
+}
 export function resourceSha(resource: Pick<ControlResource, "sha256">): string {
   if (!/^sha256:[a-f0-9]{64}$/.test(resource.sha256))
     throw resourceError("invalid resource digest", 409, "resource_digest_mismatch");

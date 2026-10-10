@@ -6,13 +6,14 @@ import {
 } from "@claudexor/schema";
 import { newId, sensitiveResourcePolicy } from "@claudexor/util";
 import type { ResourceStorePort } from "../store-contracts.js";
-import { BlobFiles, sha256Hex } from "./blob-files.js";
+import { BlobFiles, deleteUnownedInlineInTx, sha256Hex } from "./blob-files.js";
 import { runMutation } from "./mutation.js";
 import { Obligations, type ObligationRow } from "./obligations.js";
 import { PublishBlob } from "./publish-blob.js";
 import {
   assertContentAllowed,
   assertModelRef,
+  assertResourceId,
   payloadRef,
   putResourceInTx,
   readResourceRow,
@@ -141,6 +142,7 @@ export class SqlResourceStore implements ResourceStorePort {
 
   private release(raw: ModelPayloadRef, state: "released" | "expired", expiredAt?: string): void {
     const ref = ModelPayloadRef.parse(raw);
+    assertResourceId(ref.resourceId);
     const row = readResourceRow(this.store, ref.resourceId);
     if (!row || row.state === "released" || row.state === "expired") return;
     assertModelRef(row.resource, ref);
@@ -152,13 +154,13 @@ export class SqlResourceStore implements ResourceStorePort {
         releasedAt: expiredAt ?? tx.now().toISOString(),
         expiresAt: expiredAt ?? row.expiresAt,
       });
+      deleteUnownedInlineInTx(tx, sha);
       tx.changes.blobChanged(sha);
     });
     this.defer(this.blobs.gc(sha));
   }
   private metadata(id: string): ControlResource {
-    if (!/^[a-zA-Z0-9_-]+$/.test(id))
-      throw resourceError("invalid resource id", 400, "invalid_resource_id");
+    assertResourceId(id);
     const row = readResourceRow(this.store, id);
     if (!row || row.state === "released" || row.state === "expired")
       throw resourceError(`no such resource: ${id}`, 404, "resource_not_found");

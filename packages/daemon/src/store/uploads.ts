@@ -2,7 +2,9 @@ import { closeSync, constants, ftruncateSync, openSync, writeSync } from "node:f
 import { join } from "node:path";
 import { ControlUploadCreateRequest, ControlUploadStatus } from "@claudexor/schema";
 import { hashJson, newId, sensitiveResourcePolicy } from "@claudexor/util";
-import { ensureDirectory, unlinkExternalFile } from "./external-files.js";
+import { ensureDirectory, externalWriteFlags, unlinkExternalFile } from "./external-files.js";
+import { mapStoreError } from "./errors.js";
+import { deleteUnownedInlineInTx } from "./blob-files.js";
 import { bindIdempotencyInTx } from "./idempotency.js";
 import { runMutation } from "./mutation.js";
 import {
@@ -44,6 +46,7 @@ export async function cleanupUploadPart(
       };
       if (row.finalize_sha !== null) {
         tx.prepare("UPDATE upload SET finalize_sha=NULL WHERE id=?").run(uploadId);
+        deleteUnownedInlineInTx(tx, row.finalize_sha);
         tx.changes.blobChanged(row.finalize_sha);
         tx.changes.uploadChanged(uploadId);
       }
@@ -91,12 +94,16 @@ export class SqlUploads {
     if (prior) return ControlUploadStatus.parse(prior.result);
     const uploadId = newId("upl");
     ensureDirectory(this.store, this.store.paths.uploads);
-    const fd = openSync(
-      this.partPath(uploadId),
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      0o600,
-    );
-    closeSync(fd);
+    try {
+      const fd = openSync(
+        this.partPath(uploadId),
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+        0o600,
+      );
+      closeSync(fd);
+    } catch (error) {
+      throw mapStoreError(error, "creating upload part");
+    }
     this.store.registerExternal(this.store.paths.uploads);
     const status = ControlUploadStatus.parse({
       uploadId,
@@ -145,7 +152,7 @@ export class SqlUploads {
       return this.finishWrite(row);
     } catch (error) {
       this.markCancelled(row);
-      throw error;
+      throw mapStoreError(error, "writing upload part");
     } finally {
       closeSync(fd);
       this.writing.delete(id);
@@ -162,7 +169,7 @@ export class SqlUploads {
       this.finishWrite(row);
     } catch (error) {
       this.markCancelled(row);
-      throw error;
+      throw mapStoreError(error, "writing model result part");
     } finally {
       closeSync(fd);
     }
@@ -183,6 +190,7 @@ export class SqlUploads {
     if (!row) return;
     runMutation(this.store, (tx) => {
       tx.prepare("DELETE FROM upload WHERE id=?").run(id);
+      if (row.finalizeSha) deleteUnownedInlineInTx(tx, row.finalizeSha);
       tx.changes.uploadChanged(id);
       tx.changes.blobChanged(row.finalizeSha);
     });
@@ -193,18 +201,16 @@ export class SqlUploads {
   }
 
   private beginWrite(row: UploadRow): number {
-    const fd = openSync(
-      this.partPath(row.status.uploadId),
-      constants.O_RDWR | constants.O_NOFOLLOW | constants.O_DSYNC,
-    );
+    let fd: number | undefined;
     try {
+      fd = openSync(this.partPath(row.status.uploadId), externalWriteFlags(constants.O_RDWR));
       ftruncateSync(fd, 0);
       row.status = { ...row.status, state: "uploading", receivedBytes: 0 };
       this.save(row);
       return fd;
     } catch (error) {
-      closeSync(fd);
-      throw error;
+      if (fd !== undefined) closeSync(fd);
+      throw mapStoreError(error, "opening upload part for writing");
     }
   }
   private writeChunk(row: UploadRow, fd: number, bytes: Uint8Array): void {
