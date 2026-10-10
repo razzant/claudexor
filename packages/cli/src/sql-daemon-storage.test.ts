@@ -132,13 +132,11 @@ it("isolates an unhealthy project while serving a healthy project and global com
     .accept({ id: "healthy-job", params, clientId: "test", idempotencyKey: "healthy" });
   expect(command.record.id).toBe("healthy-job");
   expect(
-    graph.commands
-      .current()
-      .accept({
-        id: "global-job",
-        params: { prompt: "global" },
-        clientId: "test",
-        idempotencyKey: "global",
-      }).record.id,
+    graph.commands.current().accept({
+      id: "global-job",
+      params: { prompt: "global" },
+      clientId: "test",
+      idempotencyKey: "global",
+    }).record.id,
   ).toBe("global-job");
 });
