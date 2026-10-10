@@ -32,6 +32,7 @@ import { engineBuildIdentity, noProjectRepoRoot, redactSecrets } from "@claudexo
 import { loadRuntimeConcurrencyCaps, sweepRetiredConfigKeysAtStartup } from "@claudexor/config";
 import { scheduleStartupRetention } from "./retention-service.js";
 import { controlServices } from "./control-services.js";
+import { recoveryControlServices } from "./recovery-control-services.js";
 import { AuthReadinessService } from "@claudexor/gateway";
 import { bindCredentialMutationWindow } from "@claudexor/core";
 import { buildGateway } from "./registry.js";
@@ -76,26 +77,19 @@ export async function main(): Promise<void> {
   let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
   let control: DaemonControlApiServer | null = null;
   let opening: Promise<void> | null = null;
-  let storage: SqlDaemonStorage | null = null;
+  let storage: SqlDaemonStorage;
   let setup: ReturnType<typeof setupFor> | null = null;
   let executors: ReturnType<typeof createSqlDaemonExecutors> | null = null;
   let server: DaemonServer;
   let listening = false;
   let admissionFlight: Promise<void> | null = null;
   let dutiesFor: Graph | null = null;
-  const graph = () => {
-    if (!storage) throw recoveryOnlyRefusal("engine store");
-    return storage.graph();
-  };
+  const graph = () => storage.graph();
   const quotaPoller = createDaemonQuotaPoller(() => {
     if (admission.snapshot() !== "normal") return;
-    try {
-      void graph()
-        .quota.pollStale()
-        .catch((error) => log(`quota poll: ${String(error)}`));
-    } catch (error) {
-      log(`quota poll: ${String(error)}`);
-    }
+    void Promise.resolve()
+      .then(() => graph().quota.pollStale())
+      .catch((error) => log(`quota poll: ${String(error)}`));
   });
   let readiness: AuthReadinessService;
   function setupFor(value: Graph) {
@@ -146,34 +140,20 @@ export async function main(): Promise<void> {
     };
     server = makeServer();
     const partition = (name: string) => storage!.partition(name);
-    const recoveryServices = () => ({
-      journalEvents: async (name: string, cursor?: string) => partition(name).events(cursor),
-      recoveryInspectPartition: async (name: string) => partition(name).inspect(),
-      recoveryValidatePartition: async (name: string) => {
-        const result = await partition(name).validate();
+    const recovery = recoveryControlServices({
+      partition,
+      setup: () => setup,
+      onValidated: (name, result) => {
         if (result.status === "recovery_required" && name === "global")
           admission.enterRecoveryOnly();
-        return result;
       },
-      recoveryExportPartition: async (name: string) => partition(name).exportRecovery(),
-      recoveryQuarantinePartition: async (name: string, input: unknown) => {
-        const target = partition(name);
-        const request = input as Parameters<typeof target.quarantineAndStartFresh>[0];
-        let receipt;
-        if (name === "global" && setup) {
-          const preflight = target.preflightQuarantine(request);
-          receipt =
-            preflight.disposition === "completed" && setup.isBoundToCurrentGeneration()
-              ? preflight.receipt
-              : await setup.replaceAfter(() => target.quarantineAndStartFresh(request));
-        } else receipt = await target.quarantineAndStartFresh(request);
+      afterQuarantine: async () => {
         try {
           await completeAdmission();
         } catch (error) {
           admission.enterRecoveryOnly();
           log(`recovery completed; reopening failed: ${String(error)}`);
         }
-        return receipt;
       },
     });
     const attach = (value: Graph) => {
@@ -218,7 +198,7 @@ export async function main(): Promise<void> {
           { current: () => value.commands.current() },
           { current: () => value.quota },
         ),
-        recoveryServices(),
+        recovery,
       );
     };
     storage = new SqlDaemonStorage({
@@ -253,7 +233,7 @@ export async function main(): Promise<void> {
         dutiesFor = null;
       },
     });
-    Object.assign(services, recoveryServices());
+    Object.assign(services, recovery);
     bindCredentialMutationWindow((harness) => {
       if (!setup) throw recoveryOnlyRefusal("setup");
       return setup.current().credentialMutationOpen(harness);

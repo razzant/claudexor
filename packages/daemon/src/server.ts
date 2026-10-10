@@ -163,9 +163,7 @@ export class DaemonServer {
     }
     await this.opts.startupBarrier?.("before_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled before listen");
-    // With product admission closed (issue #165 D5 stage 3) the command
-    // projections are not activated yet; the registry materializes (and its
-    // history is pruned) once normal admission opens — see pruneHistory().
+    // The recovery plane can listen before SQL opens; prune only after admission.
     if (servingModeOf(this.opts.servingMode) === "normal") this.pruneHistory();
     await this.opts.startupBarrier?.("after_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled after registry load");
@@ -491,17 +489,8 @@ export class DaemonServer {
     return p && typeof p.threadId === "string" ? p.threadId : undefined;
   }
 
-  /**
-   * Schedule queued jobs up to the concurrency limit (non-blocking), plus the
-   * single Delegate-child overflow lane documented below.
-   *
-   * One active run per thread: a thread is a linear conversation and an in-place
-   * turn mutates the live tree, so two concurrent turns on the same thread would
-   * race the same files. We pick the first queued job whose thread is idle rather
-   * than always taking the head; thread-less jobs (CLI/MCP) keep running in
-   * parallel as before. drain() re-runs on every completion, so a thread's next
-   * turn starts as soon as its previous one settles.
-   */
+  /** Admit eligible jobs with one runner per thread and the existing single
+   * Delegate overflow. Completion retries admission without head-of-line blocking. */
   private drain(): void {
     if (this.stopping || servingModeOf(this.opts.servingMode) !== "normal") return;
     while (this.queue.length > 0) {

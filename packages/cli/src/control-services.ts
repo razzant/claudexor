@@ -56,6 +56,7 @@ import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { threadRunStartRequiresGit } from "./thread-execution-workspace.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
 import { assertCredentialProfileCompatibility } from "./profile-compatibility.js";
+import { recoveryControlServices } from "./recovery-control-services.js";
 import { remoteFilesystemServices } from "./remote-filesystem.js";
 import { projectRunApplicability } from "./run-applicability.js";
 import { threadTurnServices } from "./thread-turn-services.js";
@@ -340,23 +341,7 @@ export function controlServices(
     runApplicability: async (input: { repoRoot: string }) =>
       projectRunApplicability(input.repoRoot),
     ...setupJobControlServices(setupJobs),
-    journalEvents: async (partition: string, afterCursor?: string) =>
-      journalPartition(partition).events(afterCursor),
-    recoveryInspectPartition: async (partition: string) => journalPartition(partition).inspect(),
-    recoveryValidatePartition: async (partition: string) => journalPartition(partition).validate(),
-    recoveryExportPartition: async (partition: string) =>
-      journalPartition(partition).exportRecovery(),
-    recoveryQuarantinePartition: async (partition: string, input: unknown) => {
-      const request = input as Parameters<PartitionControlPort["quarantineAndStartFresh"]>[0];
-      if (partition !== "global") {
-        return journalPartition(partition).quarantineAndStartFresh(request);
-      }
-      const preflight = journalManager.preflightQuarantine(request);
-      if (preflight.disposition === "completed" && setupBinding.isBoundToCurrentGeneration()) {
-        return preflight.receipt;
-      }
-      return setupBinding.replaceAfter(() => journalManager.quarantineAndStartFresh(request));
-    },
+    ...recoveryControlServices({ partition: journalPartition, setup: () => setupBinding }),
     ...settingsControlServices(NO_PROJECT_ROOT, effectiveConcurrencyCaps, bustStatusCaches),
     ...quotaControlServices(quotaRegistry),
     // INV-135: durable registry + live doctor projection, one probe per
