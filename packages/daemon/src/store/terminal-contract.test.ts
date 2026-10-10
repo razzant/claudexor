@@ -457,7 +457,8 @@ describe("SQL terminal transaction and real EventLog", () => {
       const store=await EngineStore.open({daemonDir:${JSON.stringify(join(root, "daemon"))},workerEntry:${JSON.stringify(resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"))},flusherHooks:{manualTick:true}});
       const generation=store.transaction(()=>createPartition(store,'global'));
       const blobs=new BlobFiles(store),obligations=new Obligations(store);
-      const files=new SqlTerminalFiles(store,obligations,{write(){process.kill(process.pid,'SIGKILL');throw new Error('kill did not occur');}});
+      const {writeSync}=await import('node:fs');
+      const files=new SqlTerminalFiles(store,obligations,{write(){writeSync(1,'terminal-kill-point');process.kill(process.pid,'SIGKILL');throw new Error('kill did not occur');}});
       const commands=new SqlCommandStore(store,blobs,generation,{isLive:()=>true,obligations,terminalFiles:files,pruner:new SqlCommandPruner(store,blobs)});
       commands.accept({id:'job',params:{mode:'agent'},idempotencyKey:'kill-key',clientId:'fixture'});
       commands.update('job',{state:'running',runId:'run',taskId:'task',runDir:${JSON.stringify(runDir)}});
@@ -468,7 +469,9 @@ describe("SQL terminal transaction and real EventLog", () => {
       encoding: "utf8",
       timeout: 15000,
     });
-    expect(killed.signal, killed.stderr).toBe("SIGKILL");
+    expect(killed.stdout).toContain("terminal-kill-point");
+    if (process.platform === "win32") expect(killed.status, killed.stderr).toBe(1);
+    else expect(killed.signal, killed.stderr).toBe("SIGKILL");
     const f = await runtime(root);
     expect(f.commands.get("job")?.state).toBe("failed");
     expect(f.obligations.get("terminal_files", "run")?.state).toBe("pending");
