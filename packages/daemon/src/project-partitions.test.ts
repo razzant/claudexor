@@ -157,7 +157,7 @@ describe("ProjectPartitions", () => {
     const f = fixture(request);
     const projectRoot = join(f.root, "project");
     mkdirSync(projectRoot);
-    const project = f.partitions.registerProject({
+    const { project } = f.partitions.registerProject({
       root: projectRoot,
       idempotencyKey: "new",
       clientId: "test",
@@ -254,12 +254,12 @@ describe("ProjectPartitions", () => {
     mkdirSync(projectA);
     mkdirSync(projectB);
     mkdirSync(projectB2);
-    const a = f.partitions.registerProject({
+    const { project: a } = f.partitions.registerProject({
       root: projectA,
       idempotencyKey: "register-a",
       clientId: "test",
     });
-    const b = f.partitions.registerProject({
+    const { project: b } = f.partitions.registerProject({
       root: projectB,
       idempotencyKey: "register-b",
       clientId: "test",
@@ -478,17 +478,17 @@ describe("ProjectPartitions", () => {
     try {
       // Register all three BEFORE the owned-root env is set, so the register
       // guard (default owned root ~/.claudexor/v3) admits them.
-      const survivorProj = f.partitions.registerProject({
+      const { project: survivorProj } = f.partitions.registerProject({
         root: survivor,
         idempotencyKey: "s",
         clientId: "t",
       });
-      const ghostProj = f.partitions.registerProject({
+      const { project: ghostProj } = f.partitions.registerProject({
         root: ghostRoot,
         idempotencyKey: "g",
         clientId: "t",
       });
-      const missingProj = f.partitions.registerProject({
+      const { project: missingProj } = f.partitions.registerProject({
         root: missing,
         idempotencyKey: "m",
         clientId: "t",
@@ -564,7 +564,7 @@ describe("ProjectPartitions", () => {
     const f = fixture();
     const root = join(f.root, "removable");
     mkdirSync(root);
-    const project = f.partitions.registerProject({
+    const { project } = f.partitions.registerProject({
       root,
       idempotencyKey: "register-removable",
       clientId: "test",
@@ -593,7 +593,7 @@ describe("ProjectPartitions", () => {
     const f = fixture();
     const root = join(f.root, "archive-fails");
     mkdirSync(root);
-    const project = f.partitions.registerProject({
+    const { project } = f.partitions.registerProject({
       root,
       idempotencyKey: "register-archive-fails",
       clientId: "test",
@@ -625,7 +625,7 @@ describe("ProjectPartitions", () => {
     const f = fixture();
     const root = join(f.root, "unreg-fails");
     mkdirSync(root);
-    const project = f.partitions.registerProject({
+    const { project } = f.partitions.registerProject({
       root,
       idempotencyKey: "register-unreg-fails",
       clientId: "test",
@@ -653,7 +653,7 @@ describe("ProjectPartitions", () => {
     const f = fixture();
     const root = join(f.root, "rollback-fails");
     mkdirSync(root);
-    const project = f.partitions.registerProject({
+    const { project } = f.partitions.registerProject({
       root,
       idempotencyKey: "register-rollback-fails",
       clientId: "test",
@@ -707,7 +707,7 @@ describe("ProjectPartitions", () => {
     const f = fixture();
     const root = join(f.root, "referenced");
     mkdirSync(root);
-    const project = f.partitions.registerProject({
+    const { project } = f.partitions.registerProject({
       root,
       idempotencyKey: "register-referenced",
       clientId: "test",
@@ -724,7 +724,7 @@ describe("ProjectPartitions", () => {
     const f = fixture();
     const root = join(f.root, "busy");
     mkdirSync(root);
-    const project = f.partitions.registerProject({
+    const { project } = f.partitions.registerProject({
       root,
       idempotencyKey: "register-busy",
       clientId: "test",

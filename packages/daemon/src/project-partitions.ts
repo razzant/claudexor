@@ -19,7 +19,7 @@ import {
   type RecordedOperatorDecision,
 } from "./operator-decisions.js";
 import type { RunEventStore } from "./run-events.js";
-import type { ProjectStore } from "./projects.js";
+import type { ProjectRegistration, ProjectStore } from "./projects.js";
 import {
   type CreateThreadInput,
   type CreateTurnInput,
@@ -224,10 +224,10 @@ export class ProjectPartitions implements CommandAuthority {
     failDeliveryCommand(this.findById(id), id, error);
   }
 
-  registerProject(input: Parameters<ProjectStore["register"]>[0]): Project {
-    const project = this.projects.current().register(input);
-    this.partitions.ensure(project.id);
-    return project;
+  registerProject(input: Parameters<ProjectStore["register"]>[0]): ProjectRegistration {
+    const registration = this.projects.current().register(input);
+    this.partitions.ensure(registration.project.id);
+    return registration;
   }
 
   /**

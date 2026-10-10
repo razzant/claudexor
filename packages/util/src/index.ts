@@ -195,9 +195,23 @@ export function writeJson(path: string, value: unknown): void {
   writeText(path, JSON.stringify(value, null, 2) + "\n");
 }
 
+/**
+ * Append one line (newline added when missing), synchronously and in call
+ * order. `encoding: "utf8"` selects Node's single-call UTF-8 write; options
+ * without it take the open/Buffer/write/close path. The parent directory is
+ * created only when the append proves it missing, so steady-state appends
+ * make one write and no mkdir.
+ */
 export function appendLine(path: string, line: string): void {
-  ensureDir(dirname(path));
-  writeFileSync(path, line.endsWith("\n") ? line : line + "\n", { flag: "a", mode: 0o600 });
+  const text = line.endsWith("\n") ? line : line + "\n";
+  const options = { flag: "a", mode: 0o600, encoding: "utf8" } as const;
+  try {
+    writeFileSync(path, text, options);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    ensureDir(dirname(path));
+    writeFileSync(path, text, options);
+  }
 }
 
 /** Read a text file; null on ANY error. BY DESIGN missing and unreadable/

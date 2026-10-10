@@ -1,6 +1,6 @@
 import type { AdapterRegistry, ModelAdapter } from "@claudexor/core";
 import { credentialProfilePolicyState } from "@claudexor/core";
-import { loadConfig } from "@claudexor/config";
+import { loadConfigCached } from "@claudexor/config";
 import {
   ModelOperations,
   ModelSubstitutionLedger,
@@ -71,7 +71,7 @@ export function createModelServices(deps: Dependencies) {
     { adapter: createCodexModelAdapter(), label: "Codex", credentialHarness: "codex" },
   ];
   const registry = deps.registry ?? buildRegistry({ includeFakes: false });
-  const config = deps.config ?? (() => loadConfig(noProjectRepoRoot()).global);
+  const config = deps.config ?? (() => loadConfigCached(noProjectRepoRoot()).global);
   const unusable = deps.unusable ?? credentialUnusableLedger;
   const substitutions = deps.substitutions ?? modelSubstitutionLedger;
   const quotaEvidence = () => ({ ...deps.quota().read(), honored: unusable.honored() });

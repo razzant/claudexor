@@ -47,6 +47,18 @@ export const ControlProject = z
   .describe("Control API projection of a registered project.");
 export type ControlProject = z.infer<typeof ControlProject>;
 
+/** `POST /v2/projects` answer: the project plus whether THIS registration made it. */
+export const ControlProjectRegisterResponse = ControlProject.extend({
+  created: z
+    .boolean()
+    .describe(
+      "True when this registration created the project; false when the root was already registered. An Idempotency-Key replay repeats its original answer.",
+    ),
+})
+  .strict()
+  .describe("A registered project and whether this registration created it.");
+export type ControlProjectRegisterResponse = z.infer<typeof ControlProjectRegisterResponse>;
+
 export const ControlProjectListResponse = z.object({ projects: z.array(ControlProject) }).strict();
 export type ControlProjectListResponse = z.infer<typeof ControlProjectListResponse>;
 

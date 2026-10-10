@@ -150,7 +150,7 @@
       "path": "/v2/daemon/status",
       "mutating": false,
       "applicability": "global",
-      "summary": "Read daemon activity, capacity and current/admission memory facts.",
+      "summary": "Read daemon activity, capacity, current/admission memory and event-loop window facts.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [],
@@ -606,7 +606,7 @@
       "auth": "loopback_bearer",
       "request_schema": "ControlProjectRegisterRequest",
       "parameters": [],
-      "response_schema": "ControlProject",
+      "response_schema": "ControlProjectRegisterResponse",
       "error_schema": "ControlProblem"
     },
     {

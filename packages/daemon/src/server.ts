@@ -234,9 +234,7 @@ export class DaemonServer {
   }
 
   private onConnection(sock: Socket): void {
-    this.followers.attach(sock, (line) => {
-      void this.handle(line, sock);
-    });
+    this.followers.attach(sock, (line) => void this.handle(line, sock));
   }
 
   private send(sock: Socket, obj: unknown): void {
@@ -264,7 +262,9 @@ export class DaemonServer {
     }
   }
 
-  private async dispatch(method: string, params: any): Promise<unknown> {
+  /** The one RPC dispatcher: the token-checked socket handler and the daemon's
+   * in-process `DaemonLocalClient` both enter here with JSON wire values. */
+  async dispatch(method: string, params: any): Promise<unknown> {
     const shutdown = dispatchShutdownRpc(
       method,
       params,

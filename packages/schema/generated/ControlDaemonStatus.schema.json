@@ -129,6 +129,110 @@
             "sampledAt"
           ],
           "additionalProperties": false
+        },
+        "loop": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "windowMs": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "How long the window lasted. Windows roll every ten seconds; a stalled loop rolls late, so a longer window is itself evidence of a stall."
+                },
+                "windowEndedAt": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                },
+                "delay": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "resolutionMs": {
+                          "type": "number",
+                          "minimum": 0,
+                          "description": "Sampling interval. Each sample is the time between two sampling ticks, so an idle loop's p50 sits near this value, not near zero."
+                        },
+                        "samples": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "p50Ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "p99Ms": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                        },
+                        "maxMs": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                        }
+                      },
+                      "required": [
+                        "resolutionMs",
+                        "samples",
+                        "p50Ms",
+                        "p99Ms",
+                        "maxMs"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Event-loop delay percentiles over the window (perf_hooks.monitorEventLoopDelay, reset each window); null when the window recorded no sample."
+                },
+                "utilization": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Share of the window the loop spent busy (performance.eventLoopUtilization delta); null for a window too short to measure."
+                },
+                "gc": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "totalMs": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                    },
+                    "maxMs": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "totalMs",
+                    "maxMs"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Garbage-collection pauses observed in the window: count, summed and longest."
+                }
+              },
+              "required": [
+                "windowMs",
+                "windowEndedAt",
+                "delay",
+                "utilization",
+                "gc"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last completed event-loop window; null until the first window completes."
         }
       },
       "required": [
@@ -141,7 +245,8 @@
         "stopping",
         "servingMode",
         "capacity",
-        "memory"
+        "memory",
+        "loop"
       ],
       "additionalProperties": false
     }

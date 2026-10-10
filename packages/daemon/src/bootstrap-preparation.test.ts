@@ -89,12 +89,12 @@ function seedProjects(root: string): Array<{ id: string; root: string }> {
   const manager = new JournalManager(root);
   const projects = manager.registerProjection(projectProjection());
   manager.start();
-  const first = projects.current().register({
+  const { project: first } = projects.current().register({
     root: firstRoot,
     idempotencyKey: "register-a",
     clientId: "test",
   });
-  const second = projects.current().register({
+  const { project: second } = projects.current().register({
     root: secondRoot,
     idempotencyKey: "register-b",
     clientId: "test",
