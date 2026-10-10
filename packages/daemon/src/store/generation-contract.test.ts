@@ -235,7 +235,20 @@ describe("served partition generations", () => {
           `INSERT INTO command(id,pid,operation,state,turn_id,created_at,summary,params_sha,kind,error)
       VALUES('interrupted',?,'run.create','interrupted',?,'2000',x'7b7d','absent-body','product',?)`,
         )
-        .run(pid, turn.id, Buffer.from(JSON.stringify("restarted"))),
+        .run(
+          pid,
+          turn.id,
+          Buffer.from(JSON.stringify({ error: "restarted", errorCode: "daemon_restart" })),
+        ),
+    );
+    // The legacy command projection replays acceptance order, not wall time.
+    store.transaction(() =>
+      store
+        .prepare(
+          `INSERT INTO command(id,pid,operation,state,turn_id,created_at,summary,params_sha,kind,error)
+      VALUES('later-acceptance',?,'run.create','interrupted',?,'1999',x'7b7d','also-absent','product',?)`,
+        )
+        .run(pid, turn.id, Buffer.from(JSON.stringify({ error: "later refusal" }))),
     );
     expect(router.recoverRunlessTurns()).toBe(1);
     expect(router.getTurn(turn.id)?.enqueue_error).toMatchObject({

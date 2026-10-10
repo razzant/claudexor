@@ -1,7 +1,7 @@
 import type { LaneCheckpoint, Session, Thread, ThreadTurn } from "@claudexor/schema";
 import { parseMutation, type ThreadMutation } from "../thread-store-support.js";
 import type { BlobFiles, BodyRef } from "./blob-files.js";
-import { BLOB_OWNER_SQL } from "./blob-files.js";
+import { deleteUnownedInlineInTx } from "./blob-files.js";
 import { bindIdempotencyInTx } from "./idempotency.js";
 import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 
@@ -98,11 +98,7 @@ export function applyThreadMutation(
     if (saved.targetId !== binding.targetId)
       throw new Error("conflicting thread idempotency history");
   }
-  for (const sha of changed) {
-    const owned = sql.prepare(BLOB_OWNER_SQL).get(sha) as { owned: number };
-    if (!owned.owned)
-      sql.prepare("DELETE FROM blob WHERE sha256=? AND inline IS NOT NULL").run(sha);
-  }
+  for (const sha of changed) deleteUnownedInlineInTx(sql, sha);
   return [...changed];
 }
 

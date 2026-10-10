@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { setGlobalGenerationInTx } from "./generations.js";
 import { Obligations } from "./obligations.js";
+import { runMutation } from "./mutation.js";
 import { createPartition } from "./partitions.js";
 import { readJournalEvents } from "./cursors.js";
 import { EngineStore } from "./store.js";
@@ -352,5 +353,35 @@ describe("SQL conversation parity with frozen 820e849cd", () => {
         .all(turn.id, sql.generation.pid) as Array<{ detail: string }>;
       expect(plans.some((p) => p.detail.includes("SEARCH turn USING INDEX"))).toBe(true);
     }
+  });
+
+  it("releases the last inline prompt with its row and restores both on rollback", () => {
+    const thread = sql.createThread({});
+    const first = sql.createTurn(thread.id, "shared");
+    const second = sql.createTurn(thread.id, "shared");
+    const old = (
+      store.prepare("SELECT prompt_sha FROM turn WHERE id=?").get(first.id) as {
+        prompt_sha: string;
+      }
+    ).prompt_sha;
+    const replace = (turn: typeof first, prompt: string) => {
+      const prepared = sql.prepare({ turns: [{ ...turn, prompt }] });
+      runMutation(store, (tx) => sql.applyInTx(tx, prepared));
+    };
+    replace(first, "new-first");
+    expect(sql.blobs.read(old).toString("utf8")).toBe("shared");
+    store
+      .prepare(
+        "CREATE TEMP TRIGGER fail_replacement BEFORE INSERT ON event WHEN new.type='thread.head.updated' BEGIN SELECT RAISE(ABORT,'replacement fault'); END",
+      )
+      .run();
+    expect(() => replace(second, "new-second")).toThrow("replacement fault");
+    expect(sql.getTurn(second.id)?.prompt).toBe("shared");
+    expect(sql.blobs.read(old).toString("utf8")).toBe("shared");
+    store.prepare("DROP TRIGGER fail_replacement").run();
+    replace(second, "new-second");
+    expect(store.prepare("SELECT 1 FROM blob WHERE sha256=?").get(old)).toBeUndefined();
+    expect(sql.getTurn(first.id)?.prompt).toBe("new-first");
+    expect(sql.getTurn(second.id)?.prompt).toBe("new-second");
   });
 });

@@ -46,14 +46,15 @@ describe("thread creation replay before mutable root admission", () => {
       alias = join(root, "alias");
     mkdirSync(target);
     mkdirSync(alternate);
-    symlinkSync(target, alias, "dir");
+    const linkKind = process.platform === "win32" ? "junction" : "dir";
+    symlinkSync(target, alias, linkKind);
     const input = {
       repoRoot: alias,
       idempotency: { key: "creation", client: "test", request: { repoRoot: alias } },
     };
     const thread = router.createThread(input);
     rmSync(alias);
-    symlinkSync(alternate, alias, "dir");
+    symlinkSync(alternate, alias, linkKind);
     expect(router.findThreadCreation(input)).toEqual(thread);
     rmSync(target, { recursive: true });
     rmSync(alias);

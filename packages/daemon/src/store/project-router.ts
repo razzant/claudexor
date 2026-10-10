@@ -321,20 +321,18 @@ export class SqlProjectRouter {
   recoverRunlessTurns(): number {
     const rows = this.store
       .prepare(
-        `SELECT c.turn_id,c.error FROM turn t JOIN command c ON c.turn_id=t.id
+        `SELECT c.turn_id,json_extract(CAST(c.error AS TEXT),'$.error') AS error FROM turn t JOIN command c ON c.turn_id=t.id
       WHERE t.pid IN (${SERVED_PIDS_SQL}) AND t.run_id IS NULL AND c.pid=t.pid AND c.live=1
         AND c.state='interrupted' AND c.run_id IS NULL
-        AND json_extract(CAST(t.body AS TEXT),'$.enqueue_error') IS NULL ORDER BY c.created_at,c.id`,
+        AND json_extract(CAST(t.body AS TEXT),'$.enqueue_error') IS NULL ORDER BY c.rowid`,
       )
-      .all() as Array<{ turn_id: string; error: Uint8Array | null }>;
+      .all() as Array<{ turn_id: string; error: string | null }>;
     return recordInterruptedRunlessTurns(
       this,
       rows.map((row) => ({
         state: "interrupted",
         params: { turnId: row.turn_id },
-        ...(row.error
-          ? { error: JSON.parse(Buffer.from(row.error).toString("utf8")) as string }
-          : {}),
+        ...(row.error !== null ? { error: row.error } : {}),
       })),
     );
   }
