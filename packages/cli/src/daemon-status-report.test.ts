@@ -28,3 +28,42 @@ describe("daemon status event-loop line", () => {
     );
   });
 });
+
+describe("daemon status SQL facts", () => {
+  it("prints exact migration work and unknown unopened metrics", async () => {
+    const { daemonStoreLine } = await import("./daemon-status-report.js");
+    const store = {
+      flusher: null,
+      flush_lag_ms: null,
+      last_barrier_at: null,
+      interval_ms: null,
+      wal_bytes: null,
+      busy_waits: null,
+      obligations_open: null,
+      integrity: null,
+      migration: null,
+    };
+    expect(daemonStoreLine({ store })).toContain(
+      "integrity not open; flusher not open; flush lag unknown; WAL unknown; obligations unknown",
+    );
+    expect(
+      daemonStoreLine({
+        store: {
+          ...store,
+          migration: {
+            phase: "importing",
+            completedPartitions: 2,
+            totalPartitions: 10,
+            currentPartition: "global",
+            processedBytes: 1234,
+            totalBytes: 5000,
+          },
+        },
+      }),
+    ).toBe("engine store: importing, 2/10 partitions, 1234/5000 bytes (global)");
+    expect(daemonStoreLine({})).toBe("engine store: not reported by this daemon");
+    expect(daemonStoreLine({ store: { integrity: "imagined" } })).toBe(
+      "engine store: unreadable facts",
+    );
+  });
+});

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   DaemonLocalClient,
   DaemonServer,
@@ -93,9 +95,7 @@ export async function main(): Promise<void> {
       log(`quota poll: ${String(error)}`);
     }
   });
-  const readiness = new AuthReadinessService(buildGateway({ includeFakes: false }), {
-    cwd: noProjectRepoRoot(),
-  });
+  let readiness: AuthReadinessService;
   function setupFor(value: Graph) {
     return new SetupLifecycleBinding(new SqlSetupLifecycleSlot(daemonDir(), value), (store) =>
       createSetupJobManager({
@@ -107,6 +107,9 @@ export async function main(): Promise<void> {
     );
   }
   try {
+    readiness = new AuthReadinessService(buildGateway({ includeFakes: false }), {
+      cwd: noProjectRepoRoot(),
+    });
     const token = ensureToken();
     const caps = loadRuntimeConcurrencyCaps(noProjectRepoRoot());
     if (await socketAlive(socketPath))
@@ -231,6 +234,9 @@ export async function main(): Promise<void> {
         admission.enterRecoveryOnly();
         quotaPoller.stop();
         log(`engine store recovery required: ${error.message}`);
+        void ensureRecoveryControl().catch((problem) =>
+          log(`recovery transport unavailable: ${String(problem)}`),
+        );
       },
       beforeClose: async () => {
         admission.enterRecoveryOnly();
@@ -249,19 +255,39 @@ export async function main(): Promise<void> {
       if (!setup) throw recoveryOnlyRefusal("setup");
       return setup.current().credentialMutationOpen(harness);
     });
-    // Storage is unresolved until after proof/import. The existing recovery
-    // plane must be reachable even when ordinary control serving is disabled.
-    if (process.env.CLAUDEXOR_NO_CONTROL_API === "1")
-      log("unresolved SQL startup overrides CLAUDEXOR_NO_CONTROL_API=1 for recovery access");
-    control = new DaemonControlApiServer({
-      token,
-      daemon: selfClient,
-      port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
-      servingMode: admission.snapshot,
-      bus,
-      services,
-      terminalFilesPending: (id) => graph().terminalFiles.pending(id),
-    });
+    let address: { host: string; port: number } | null = null;
+    let controlStarting: Promise<void> | null = null;
+    const makeControl = () =>
+      new DaemonControlApiServer({
+        token,
+        daemon: selfClient,
+        port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
+        servingMode: admission.snapshot,
+        bus,
+        services,
+        terminalFilesPending: (id) => graph().terminalFiles.pending(id),
+      });
+    async function ensureRecoveryControl(): Promise<void> {
+      if (shutdown?.requested()) return;
+      if (controlStarting) return controlStarting;
+      if (control) return;
+      control = makeControl();
+      log("recovery-required SQL state overrides CLAUDEXOR_NO_CONTROL_API=1 for recovery access");
+      controlStarting = bindRecoveryTransport({
+        server,
+        control,
+        requested: () => shutdown!.requested(),
+        daemonDir: daemonDir(),
+        logPath: logPath(),
+        socketPath,
+      }).then((value) => {
+        address = value;
+      });
+      await controlStarting;
+    }
+    const importing =
+      !existsSync(join(daemonDir(), "engine.sqlite")) && existsSync(join(daemonDir(), "journal"));
+    if (process.env.CLAUDEXOR_NO_CONTROL_API !== "1" || importing) control = makeControl();
     shutdown = new DaemonRuntimeShutdown({
       daemon: {
         stop: async () => {
@@ -296,7 +322,7 @@ export async function main(): Promise<void> {
       ...(diagnostics.diagnostics ? { diagnostics: diagnostics.diagnostics } : {}),
       beginShutdown: (reason) => shutdown!.beginShutdown(reason),
     });
-    const address = await bindRecoveryTransport({
+    address = await bindRecoveryTransport({
       server,
       control,
       requested: () => shutdown!.requested(),
@@ -307,12 +333,13 @@ export async function main(): Promise<void> {
     listening = !shutdown.requested();
     async function completeAdmission(): Promise<void> {
       if (admissionFlight) return admissionFlight;
-      if (shutdown!.requested()) return;
+      if (shutdown!.requested() || admission.snapshot() === "normal") return;
       const value = graph();
       const blocked = storage!.blockedPartitions();
       if (blocked.length) {
         admission.enterRecoveryOnly();
         log(`recovery required: ${blocked.join(", ")}`);
+        await ensureRecoveryControl();
         return;
       }
       const work = async () => {
@@ -375,6 +402,7 @@ export async function main(): Promise<void> {
         admission.enterRecoveryOnly();
         log(`SQL startup remains recovery-only: ${redactSecrets(String(error))}`);
         diagnostics.recordFailure("SQL startup remains recovery-only", error);
+        if (!shutdown.requested()) await ensureRecoveryControl();
       }
     }
     await shutdown.wait();
