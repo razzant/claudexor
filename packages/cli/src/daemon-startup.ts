@@ -29,6 +29,9 @@ import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
 export class DaemonStartupAdmission {
   private mode: DaemonServingMode = "recovery_only";
   readonly snapshot = (): DaemonServingMode => this.mode;
+  enterRecoveryOnly(): void {
+    this.mode = "recovery_only";
+  }
   openNormal(): void {
     this.mode = "normal";
   }

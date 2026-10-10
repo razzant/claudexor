@@ -1,6 +1,6 @@
 /** `claudexor daemon status`: one human line for the daemon's event-loop facts
  * (the last completed window the daemon measured). Facts only, no verdict. */
-import { DaemonLoopFacts } from "@claudexor/schema";
+import { DaemonLoopFacts, DaemonStoreFacts } from "@claudexor/schema";
 
 const msText = (value: number) => `${value.toFixed(1)} ms`;
 
@@ -20,5 +20,26 @@ export function daemonLoopLine(health: unknown): string {
   return (
     `event loop, last ${(windowMs / 1_000).toFixed(1)} s: ${delayText}; busy ${busy}; ` +
     `gc ${gc.count} pause(s), ${msText(gc.totalMs)} total, max ${msText(gc.maxMs)}`
+  );
+}
+
+/** Storage facts share the daemon health response with loop/admission facts. */
+export function daemonStoreLine(health: unknown): string {
+  const value =
+    health && typeof health === "object" ? (health as { store?: unknown }).store : undefined;
+  if (value === undefined) return "engine store: not reported by this daemon";
+  const parsed = DaemonStoreFacts.safeParse(value);
+  if (!parsed.success) return "engine store: unreadable facts";
+  const store = parsed.data,
+    migration = store.migration;
+  if (migration)
+    return (
+      `engine store: ${migration.phase}, ${migration.completedPartitions}/${migration.totalPartitions} partitions, ${migration.processedBytes}/${migration.totalBytes} bytes` +
+      (migration.currentPartition ? ` (${migration.currentPartition})` : "")
+    );
+  return (
+    `engine store: integrity ${store.integrity ?? "not open"}; flusher ${store.flusher?.state ?? "not open"}; ` +
+    `flush lag ${store.flush_lag_ms === null ? "unknown" : msText(store.flush_lag_ms)}; ` +
+    `WAL ${store.wal_bytes === null ? "unknown" : `${store.wal_bytes} bytes`}; obligations ${store.obligations_open ?? "unknown"}`
   );
 }

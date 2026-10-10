@@ -18,6 +18,7 @@ export async function openSqlStoreAfterTransport(input: {
   signal?: AbortSignal;
   progress?: (progress: StoreMigrationProgress) => void;
   log?: (message: string) => void;
+  onCorrupt?: (error: Error) => void;
   importWorkerEntry?: string;
   flusherWorkerEntry?: string;
 }): Promise<EngineStore> {
@@ -68,6 +69,7 @@ export async function openSqlStoreAfterTransport(input: {
     daemonDir: input.daemonDir,
     workerEntry: input.flusherWorkerEntry,
     log: input.log,
+    onCorrupt: input.onCorrupt,
   });
   try {
     input.signal?.throwIfAborted();

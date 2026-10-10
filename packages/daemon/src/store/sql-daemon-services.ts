@@ -126,9 +126,12 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
       await maintenance.stop();
       try {
         await store.flushed();
-        await resources.drainCleanup();
       } finally {
-        obligations.close();
+        try {
+          await resources.drainCleanup();
+        } finally {
+          obligations.close();
+        }
       }
     },
   };

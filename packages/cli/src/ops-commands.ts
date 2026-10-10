@@ -36,7 +36,7 @@ import { CliError, controlProblemError, renderCliFailure, usageError } from "./c
 import { accountsCommand, profilesCommand, secretsCommand } from "./credential-commands.js";
 import { CLI_DAEMON_LAUNCH_SOURCES, launchDetachedDaemon } from "./daemon-launch.js";
 import { reportDaemonStartReady } from "./daemon-start-report.js";
-import { daemonLoopLine } from "./daemon-status-report.js";
+import { daemonLoopLine, daemonStoreLine } from "./daemon-status-report.js";
 import {
   authSourceAvailability,
   checksSummary,
@@ -210,7 +210,10 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     if (sub === "status") {
       const health = await client.health();
       if (json) printJson(health);
-      else print(`claudexord: ${JSON.stringify(health)}\n${daemonLoopLine(health)}`);
+      else
+        print(
+          `claudexord: ${JSON.stringify(health)}\n${daemonLoopLine(health)}\n${daemonStoreLine(health)}`,
+        );
       return 0;
     }
     if (sub === "stop") {

@@ -185,7 +185,15 @@ export class DaemonServer {
     return this.stopPromise;
   }
 
-  private async stopOnce(): Promise<void> {
+  /** Physical store recovery may settle storage-only terminal failures once
+   * every runner has exited; process/runner failures still refuse replacement. */
+  stopForStoreRecovery(): Promise<void> {
+    this.stopping = true;
+    this.stopPromise ??= this.stopOnce(true);
+    return this.stopPromise;
+  }
+
+  private async stopOnce(recoverStore = false): Promise<void> {
     for (const controller of this.controllers.values()) {
       try {
         controller.abort("host_cancelled" satisfies CancelReasonCode);
@@ -198,7 +206,11 @@ export class DaemonServer {
     const rejected = settled.filter(
       (entry): entry is PromiseRejectedResult => entry.status === "rejected",
     );
-    if (rejected.length > 0 || this.taskFailures.length > 0 || this.active !== 0) {
+    const failures = [...rejected.map((entry) => entry.reason), ...this.taskFailures];
+    if (
+      this.active !== 0 ||
+      failures.some((error) => !recoverStore || !storageOnlyFailure(error))
+    ) {
       const first =
         rejected[0]?.reason ??
         this.taskFailures[0] ??
@@ -495,7 +507,7 @@ export class DaemonServer {
    * turn starts as soon as its previous one settles.
    */
   private drain(): void {
-    if (this.stopping) return;
+    if (this.stopping || servingModeOf(this.opts.servingMode) !== "normal") return;
     while (this.queue.length > 0) {
       // Existing child precedence and one overflow remain; a blocked ordinary
       // class never prevents the next eligible job of another class from running.
@@ -597,4 +609,12 @@ export class DaemonServer {
       if (!this.stopping) this.drain();
     }
   }
+}
+
+function storageOnlyFailure(error: unknown): boolean {
+  if (error instanceof AggregateError)
+    return error.errors.length > 0 && error.errors.every(storageOnlyFailure);
+  return ["store_corrupt", "store_flush_unavailable"].includes(
+    (error as { code?: string })?.code ?? "",
+  );
 }
