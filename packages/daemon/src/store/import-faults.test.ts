@@ -197,13 +197,18 @@ describe("import connection and publication boundary", () => {
     // First a full run prepares a large body; interruption on the next run may
     // reuse that marker without rewriting the file's directory entry.
     await runLegacyImport(f.options);
-    const source = `const {runLegacyImport}=await import(${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../../dist/store/importer.js")).href)});
-      await runLegacyImport({...${JSON.stringify(f.options)},onProgress(p){if(p.phase==='reading'&&p.completedPartitions===1)process.kill(process.pid,'SIGKILL')}}); process.exit(19);`;
+    const source = `const {writeSync}=await import('node:fs');
+      const {runLegacyImport}=await import(${JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../../dist/store/importer.js")).href)});
+      await runLegacyImport({...${JSON.stringify(f.options)},onProgress(p){if(p.phase==='reading'&&p.completedPartitions===1){writeSync(1,'import-kill-point');process.kill(process.pid,'SIGKILL')}}}); process.exit(19);`;
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
       encoding: "utf8",
       timeout: 15000,
     });
-    expect(child.signal, child.stderr).toBe("SIGKILL");
+    expect(child.stdout, child.stderr).toBe("import-kill-point");
+    // libuv's Windows self-kill uses TerminateProcess(...,1); it cannot set
+    // the parent's exit_signal (unlike parent-initiated uv_process_kill).
+    if (process.platform === "win32") expect(child.status, child.stderr).toBe(1);
+    else expect(child.signal, child.stderr).toBe("SIGKILL");
     const receipt = await runLegacyImport(f.options);
     expect(receipt.partitions.every((row) => row.reused)).toBe(true);
     expect(receipt.externalDirectories).toContain(join(f.options.resourceStoreDir, "blobs"));
