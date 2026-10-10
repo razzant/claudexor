@@ -7,6 +7,7 @@ import {
   type CredentialUnusableLedger,
   type DaemonClient,
   type ModelOperationDependencies,
+  type ModelOperationPersistence,
   type QuotaRegistry,
 } from "@claudexor/daemon";
 import { createCodexModelAdapter, describeCodexClientVersion } from "@claudexor/harness-codex";
@@ -49,16 +50,17 @@ interface ModelSource {
   credentialHarness: string;
 }
 
-interface Dependencies extends Pick<ModelOperationDependencies, "commands" | "resources" | "warn"> {
-  client: Pick<DaemonClient, "enqueue" | "cancel">;
-  quota: () => QuotaRegistry;
-  config?: () => GlobalConfig;
-  registry?: AdapterRegistry;
-  sources?: readonly ModelSource[];
-  unusable?: CredentialUnusableLedger;
-  substitutions?: ModelSubstitutionLedger;
-  migrationGate?: typeof accountsMigrationGate;
-}
+type Dependencies = ModelOperationPersistence &
+  Pick<ModelOperationDependencies, "resources" | "warn"> & {
+    client: Pick<DaemonClient, "enqueue" | "cancel">;
+    quota: () => QuotaRegistry;
+    config?: () => GlobalConfig;
+    registry?: AdapterRegistry;
+    sources?: readonly ModelSource[];
+    unusable?: CredentialUnusableLedger;
+    substitutions?: ModelSubstitutionLedger;
+    migrationGate?: typeof accountsMigrationGate;
+  };
 
 function modelError(code: string, message: string, status = 409): Error {
   return Object.assign(new Error(message), { code, status, retryable: false });
@@ -341,7 +343,9 @@ export function createModelServices(deps: Dependencies) {
   };
 
   const operations = new ModelOperations({
-    commands: deps.commands,
+    ...(deps.resourceQueries
+      ? { commands: deps.commands, resourceQueries: deps.resourceQueries }
+      : { commands: deps.commands, resourceQueries: undefined }),
     resources: deps.resources,
     warn: deps.warn,
     enqueue: ({ request, ...options }) => deps.client.enqueue(request, options),

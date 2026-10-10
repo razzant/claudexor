@@ -22,6 +22,9 @@ import {
   commandStoreForRequest,
   commandStores,
   type LegacyCommandAuthority,
+  type CommandAuthority,
+  maintenanceCommandSummary,
+  type MaintenanceCommandSummary,
   type DaemonClient,
   type JobRecord,
   type RunContext,
@@ -61,8 +64,7 @@ export function claudexorCliEntry(moduleUrl = import.meta.url, exists = existsSy
   return exists(bundled) ? bundled : resolve(directory, "cli.js");
 }
 
-export interface HarnessMaintenanceDependencies {
-  commands: LegacyCommandAuthority;
+interface HarnessMaintenanceServices {
   client: Pick<DaemonClient, "enqueue" | "cancel">;
   readiness?: () => Pick<AuthReadinessService, "invalidate">;
   /** Test seams; production runs `<node> <cli entry>` through spawnProcess. */
@@ -71,6 +73,15 @@ export interface HarnessMaintenanceDependencies {
   cancelKillDelayMs?: number;
   now?: () => Date;
 }
+
+export type HarnessMaintenanceDependencies = HarnessMaintenanceServices &
+  (
+    | { commands: LegacyCommandAuthority; maintenanceQueries?: undefined }
+    | {
+        commands: CommandAuthority;
+        maintenanceQueries: { maintenanceForHarness(harness: string): MaintenanceCommandSummary[] };
+      }
+  );
 
 function problem(code: string, message: string, retryable = false): ControlProblem {
   return ControlProblem.parse({ code, message: redactSecrets(message), retryable });
@@ -93,7 +104,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
   const byHarness = (): Map<string, string[]> => {
     if (index) return index;
     index = new Map();
-    const records = commandStores(deps.commands)
+    const records = (deps.maintenanceQueries ? [] : commandStores(deps.commands))
       .flatMap((store) => store.records())
       .filter((record) => isHarnessMaintenanceOperation(record.params))
       .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
@@ -106,7 +117,8 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
     if (!ids.includes(id)) index!.set(harness, [...ids, id]);
   };
   /** Newest first; ids pruned by ordinary retention drop out of the index. */
-  const operationsOf = (harness: string): JobRecord[] => {
+  const operationsOf = (harness: string): MaintenanceCommandSummary[] => {
+    if (deps.maintenanceQueries) return deps.maintenanceQueries.maintenanceForHarness(harness);
     const ids = byHarness().get(harness) ?? [];
     const live = ids.flatMap((id) => commandStoreForId(deps.commands, id)?.get(id) ?? []);
     if (live.length !== ids.length)
@@ -114,7 +126,10 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
         harness,
         live.map((record) => record.id),
       );
-    return live.reverse();
+    return live.reverse().flatMap((record) => {
+      const summary = maintenanceCommandSummary(record);
+      return summary ? [summary] : [];
+    });
   };
   const evidenceOf = (record: JobRecord): Evidence | null => {
     const { lifecycle: _lifecycle, ...result } = (record.result ?? {}) as Record<string, unknown>;
@@ -125,7 +140,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
    * could have replaced it. Unknown or pruned stays unknown. */
   const previousOf = (harness: string): { version: string; operationId: string } | null => {
     for (const record of operationsOf(harness)) {
-      const evidence = evidenceOf(record);
+      const evidence = record.evidence;
       if (evidence?.before?.proved && evidence.before.version && evidence.mutation !== "none")
         return { version: evidence.before.version, operationId: record.id };
     }
@@ -377,7 +392,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
         harnesses: rows.map((row) => {
           const seen = latestSeen.get(row.harness);
           const [current] = operationsOf(row.harness);
-          const evidence = current ? evidenceOf(current) : null;
+          const evidence = current?.evidence ?? null;
           return {
             ...row,
             available: row.available ?? seen?.available ?? null,
@@ -462,8 +477,10 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
           ...envelope,
           idempotencyRequest: request,
         });
-        byHarness();
-        remember(id, harness);
+        if (!deps.maintenanceQueries) {
+          byHarness();
+          remember(id, harness);
+        }
         return detail(id);
       } finally {
         creating.delete(harness);
@@ -488,7 +505,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
         harnesses: value.harnesses.map((row) => {
           const [current] = operationsOf(String(row.id));
           if (!current || isTerminalLifecycle(current.state)) return row;
-          const target = evidenceOf(current)?.target.version;
+          const target = current.evidence?.target.version;
           const detailText = `Claudexor is maintaining ${String(row.id)}${target ? ` (installing ${target})` : ""}; new native starts may fail until operation ${current.id} finishes`;
           return {
             ...row,

@@ -243,6 +243,8 @@ export interface DaemonControlApiOptions {
   /** Issue #165 D5 admission snapshot; absent embedders always serve normal. */
   servingMode?: () => ControlServingMode;
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
+  /** Internal storage fact; a committed terminal may still need its file effects. */
+  terminalFilesPending?: (runIdOrCommandId: string) => boolean;
   services?: DeliveryCommandServices &
     Partial<ModelRouteServices> &
     Partial<ResourceRouteServices> &

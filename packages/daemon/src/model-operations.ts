@@ -60,11 +60,10 @@ interface ModelOperationServices {
 
 /** A SQL authority must supply addressed custody queries. Only the explicit
  * legacy branch retains its enumerable journal projection. */
-export type ModelOperationDependencies = ModelOperationServices &
-  (
-    | { commands: LegacyCommandAuthority; resourceQueries?: undefined }
-    | { commands: CommandAuthority; resourceQueries: ModelResourceQueries }
-  );
+export type ModelOperationPersistence =
+  | { commands: LegacyCommandAuthority; resourceQueries?: undefined }
+  | { commands: CommandAuthority; resourceQueries: ModelResourceQueries };
+export type ModelOperationDependencies = ModelOperationServices & ModelOperationPersistence;
 
 type Evidence = Omit<ModelOperationReceipt, "lifecycle">;
 

@@ -59,7 +59,7 @@ import { assertCredentialProfileCompatibility } from "./profile-compatibility.js
 import { remoteFilesystemServices } from "./remote-filesystem.js";
 import { projectRunApplicability } from "./run-applicability.js";
 import { threadTurnServices } from "./thread-turn-services.js";
-import { threadPurgeOwner } from "./thread-purge.js";
+import { threadPurgeOwner, type ThreadPurgeDurability } from "./thread-purge.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = Pick<
@@ -101,6 +101,7 @@ export function controlServices(
   quotaRegistry: () => QuotaRegistry,
   daemonJobs: () => Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>,
   effectiveConcurrencyCaps?: RuntimeConcurrencyCaps,
+  purgeDurability?: ThreadPurgeDurability,
 ) {
   const secretStore = new SecretStore();
   const listHarnesses = async (input?: HarnessListInput) => {
@@ -162,9 +163,12 @@ export function controlServices(
     { requiresGit: runStartRequiresGit },
     { git: "durable_job" },
   );
-  // The ONE owner of thread byte deletion, shared by the purge route and the
-  // retention pass (expired trash, and purges whose cleanup failed).
-  const { purgeThread, hasPurgeLeftovers } = threadPurgeOwner(threads, NO_PROJECT_ROOT);
+  // Routes and retention share one thread purge and durability owner.
+  const { purgeThread, hasPurgeLeftovers } = threadPurgeOwner(
+    threads,
+    NO_PROJECT_ROOT,
+    purgeDurability,
+  );
   return {
     preflightRunRequirements,
     preflightThreadRunRequirements,
@@ -189,11 +193,9 @@ export function controlServices(
       purgeThread,
       hasPurgeLeftovers,
     }),
-    // F3 nested-project disclosure: each project carries its recomputed
-    // nesting relations — surfaces disclose "nested inside <root>", never refuse.
+    // Nested projects are disclosed, never refused.
     listProjects: async () => ({ projects: projects().listWithNesting() as unknown[] }),
-    // QA-067: filesystem routes are a remote-runtime-only surface — the local
-    // daemon never serves them (the routes answer 501 without these services).
+    // Filesystem routes are available only on the remote runtime.
     ...remoteFilesystemServices(projects),
     registerProject: async (input: Parameters<ProjectStorePort["register"]>[0]) => {
       const { project, created } = threads.registerProject(input);

@@ -153,8 +153,10 @@ export class InteractionRegistry {
   constructor(
     private readonly stores: {
       forRequest(params: unknown): InteractionStorePort;
-      all(): InteractionStorePort[];
-    },
+    } & (
+      | { forRun(runId: string): InteractionStorePort | undefined; all?: never }
+      | { all(): InteractionStorePort[]; forRun?: undefined }
+    ),
   ) {}
 
   register(
@@ -186,9 +188,9 @@ export class InteractionRegistry {
     if (!parsed.success) {
       return { status: "rejected", message: parsed.error.issues[0]?.message ?? "invalid answers" };
     }
-    const store = this.stores
-      .all()
-      .find((candidate) => candidate.status(runId, interactionId) !== "missing");
+    const store = this.storesForRun(runId).find(
+      (candidate) => candidate.status(runId, interactionId) !== "missing",
+    );
     if (!store) return { status: "not_found", message: missingMessage(runId, interactionId) };
     const status = store.resolve(runId, interactionId, "answered");
     if (status !== "resolved") {
@@ -205,7 +207,7 @@ export class InteractionRegistry {
   }
 
   dropForRun(runId: string): void {
-    for (const store of this.stores.all()) store.resolveRun(runId, "run_terminal");
+    for (const store of this.storesForRun(runId)) store.resolveRun(runId, "run_terminal");
     for (const [key, entry] of this.live) {
       if (!key.startsWith(`${runId}\u0000`)) continue;
       this.live.delete(key);
@@ -215,7 +217,13 @@ export class InteractionRegistry {
 
   pendingForRun(runId: string): ControlPendingInteraction[] {
     this.prune();
-    return this.stores.all().flatMap((store) => store.pendingForRun(runId));
+    return this.storesForRun(runId).flatMap((store) => store.pendingForRun(runId));
+  }
+
+  private storesForRun(runId: string): InteractionStorePort[] {
+    if (!this.stores.forRun) return this.stores.all();
+    const store = this.stores.forRun(runId);
+    return store ? [store] : [];
   }
 
   private prune(): void {

@@ -43,6 +43,11 @@ export function createDaemonAgentRunner(deps: {
   resources: () => ResourceStorePort;
   bus: RunEventBus;
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
+  terminalPersistence?: (
+    jobId: string,
+  ) => NonNullable<
+    Parameters<ReturnType<typeof buildRunOrchestrator>["run"]>[0]["onTerminalPersist"]
+  >;
 }): RunnerFn {
   const {
     delegationBudgetAuthority,
@@ -178,6 +183,7 @@ export function createDaemonAgentRunner(deps: {
     const delegationBelt = delegationBeltForRun(p.delegate === true, p.paidBudget);
     return orchestrator
       .run({
+        onTerminalPersist: deps.terminalPersistence?.(ctx.jobId),
         onEventPersist: (event) => {
           // The owning journal partition is the durable terminal
           // authority. EventLog runs this before committing RunFacts.

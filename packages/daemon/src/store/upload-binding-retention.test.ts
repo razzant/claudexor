@@ -9,7 +9,7 @@ import {
   UPLOAD_BINDING_RETENTION_MS,
   uploadKeyDigest,
 } from "./upload-binding-retention.js";
-import { ResourceStore as FrozenResourceStore } from "./test-support/legacy/daemon/resource-store.js";
+import { ResourceStore as FrozenResourceStore } from "./test-support/fixtures/legacy/daemon/resource-store.js";
 import {
   chunks,
   resourceFixture,
