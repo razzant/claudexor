@@ -15,7 +15,7 @@ interface RegistrationBinding {
   projectId: string;
 }
 
-interface ProjectMutation {
+export interface ProjectMutation {
   project: Project;
   registration?: RegistrationBinding;
 }
@@ -223,7 +223,7 @@ export function projectProjection() {
   };
 }
 
-function canonicalRoot(input: string): string {
+export function canonicalRoot(input: string): string {
   if (!isAbsolute(input))
     throw Object.assign(new Error("project root must be absolute"), { status: 400 });
   let root: string;
@@ -243,7 +243,7 @@ function canonicalRoot(input: string): string {
  * envelope worktrees) is daemon runtime state, never a user project — refuse it at
  * registration/relink with a typed error so an envelope cwd can never become a
  * durable ghost whose root later vanishes. */
-function assertNotClaudexorOwned(root: string): void {
+export function assertNotClaudexorOwned(root: string): void {
   if (isClaudexorOwnedRuntimePath(root)) {
     throw Object.assign(
       new Error(
@@ -305,7 +305,7 @@ export function projectNesting(
   return relations;
 }
 
-function parseMutation(value: unknown): ProjectMutation {
+export function parseMutation(value: unknown): ProjectMutation {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid project mutation");
   }
@@ -326,7 +326,7 @@ function parseMutation(value: unknown): ProjectMutation {
   };
 }
 
-function validateKey(key: string): void {
+export function validateKey(key: string): void {
   if (!key || key.length > 256) {
     throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
       code: "invalid_idempotency_key",
