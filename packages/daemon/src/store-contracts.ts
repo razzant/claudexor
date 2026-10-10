@@ -53,6 +53,7 @@ export type ResourceStorePort = Pick<
   | "readModel"
   | "publishModel"
   | "releaseModel"
+  | "expireModel"
   | "listModelResources"
 >;
 export type InteractionStorePort = Pick<

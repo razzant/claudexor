@@ -99,7 +99,12 @@ describe("legacy command boundary", () => {
       recoverDurableTerminal: global.recoverDurableTerminal.bind(global),
       flushed: global.flushed.bind(global),
     };
-    const active = vi.fn(() => (global.get("known-model") ? [global.get("known-model")!] : []));
+    const active = vi.fn(() => {
+      throw new Error("admission history read forbidden");
+    });
+    vi.spyOn(global, "records").mockImplementation(() => {
+      throw new Error("legacy scan forbidden");
+    });
     const commands: CommandBackend = {
       forRequest: () => port,
       findById: () => port,
@@ -125,6 +130,7 @@ describe("legacy command boundary", () => {
       token: "fixture",
       commands,
       runner,
+      maxConcurrent: 1,
     });
     const client = new DaemonLocalClient(() => server);
     try {
@@ -133,19 +139,25 @@ describe("legacy command boundary", () => {
         { idempotencyKey: "one", clientId: "test" },
       );
       expect(runner).toHaveBeenCalledOnce();
-      expect(active).toHaveBeenCalled();
+      const queued = await client.enqueue(
+        { mode: "ask", prompt: "second request" },
+        { idempotencyKey: "two", clientId: "test" },
+      );
+      expect(runner).toHaveBeenCalledOnce();
+      expect(await client.status(queued.id)).toMatchObject({ state: "queued" });
+      expect(active).not.toHaveBeenCalled();
       expect(await client.status(accepted.id)).toMatchObject({ state: "running" });
       expect(await client.list({ activeOnly: true })).toEqual([]);
       expect(commands.queries.publicList).toHaveBeenCalledWith({ activeOnly: true });
       expect(await server.dispatch("claudexor.health", {})).toMatchObject({ jobs: 37, active: 1 });
       expect(port).not.toHaveProperty("records");
-      // A legacy store's enumeration becoming unavailable cannot infect this backend.
-      vi.spyOn(global, "records").mockImplementation(() => {
-        throw new Error("legacy scan forbidden");
-      });
       expect(await client.status(accepted.id)).toMatchObject({ state: "running" });
       await expect(client.list({ activeOnly: true })).resolves.toEqual([]);
       expect(() => legacy.queries.active()).toThrow("legacy scan forbidden");
+      release();
+      await vi.waitFor(() => expect(global.get(queued.id)?.state).toBe("succeeded"));
+      expect(runner).toHaveBeenCalledTimes(2);
+      expect(active).not.toHaveBeenCalled();
     } finally {
       release();
       await server.stop();

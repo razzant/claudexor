@@ -164,8 +164,8 @@ describe("model-purpose resources", () => {
     const ordinaryUpload = await upload(store, bytes, "shared-attachment", false);
     const ordinary = store.finalize(ordinaryUpload.uploadId, digest(bytes), "final-shared");
     const blob = join(root, "blobs", first.sha256.slice(7));
-    store.releaseModel(first);
-    store.releaseModel(first);
+    store.expireModel(first, "2026-01-31T00:00:00.000Z");
+    store.expireModel(first, "2026-01-31T00:00:00.000Z");
     expect(store.readModel(second)).toEqual(bytes);
     store.releaseModel(second);
     expect(fs.existsSync(blob)).toBe(true);

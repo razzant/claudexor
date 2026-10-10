@@ -352,6 +352,11 @@ export class ResourceStore {
     fsyncDirectory(this.resourcesDir);
   }
 
+  /** The legacy file store has no release timestamps; keep its exact cleanup owner. */
+  expireModel(raw: ModelPayloadRef, _expiredAt: string): void {
+    this.releaseModel(raw);
+  }
+
   listModelResources(): Array<ModelPayloadRef & { createdAt: string }> {
     return readdirSync(this.resourcesDir)
       .filter((name) => name.endsWith(".json"))

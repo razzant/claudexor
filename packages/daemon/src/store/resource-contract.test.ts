@@ -146,7 +146,9 @@ describe("SQL ResourceStore contract", () => {
   it("matches the frozen oracle's exact replies, replay conflicts, digest checks and public status", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-10T10:00:00Z"));
-    async function scenario(store: ResourceStorePort) {
+    async function scenario(
+      store: Pick<ResourceStorePort, "create" | "write" | "status" | "finalize" | "resolve">,
+    ) {
       const request = { kind: "file", mime: "text/plain", name: "note.txt", sizeBytes: 4 };
       const create = store.create(request, "create");
       await store.write(create.uploadId, chunks("te", "st"));

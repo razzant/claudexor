@@ -34,6 +34,7 @@ export interface ModelPayloadStore {
   readModel(ref: ModelPayloadRef): Buffer;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(ref: ModelPayloadRef): void;
+  expireModel(ref: ModelPayloadRef, expiredAt: string): void;
   listModelResources(): Array<ModelPayloadRef & { createdAt: string }>;
 }
 
@@ -200,7 +201,12 @@ export class ModelOperations {
               this.update(ctx.jobId, evidence);
               throw Object.assign(new Error(barrierProblem.message), { problem: barrierProblem });
             }
-            ctx.signal.throwIfAborted();
+            if (ctx.signal.aborted) {
+              // The adapter is still waiting inside this callback: no POST occurred.
+              evidence.dispatch = { ...dispatch, state: "not_started" };
+              this.update(ctx.jobId, evidence);
+              ctx.signal.throwIfAborted();
+            }
           },
         }),
       );
@@ -392,7 +398,7 @@ export class ModelOperations {
       if (!dryRun) {
         try {
           const { createdAt: _createdAt, ...payload } = ref;
-          this.deps.resources().releaseModel(payload);
+          this.releasePayload(payload, records);
         } catch (error) {
           report.errors.push(redactSecrets(String(error)));
         }
@@ -506,10 +512,32 @@ export class ModelOperations {
       : this.retainedResources(this.now().getTime()).has(ref.resourceId);
     if (retained) return;
     try {
-      this.deps.resources().releaseModel(ref);
+      this.releasePayload(ref);
     } catch (error) {
       this.deps.warn?.(`Model payload cleanup remains pending: ${redactSecrets(String(error))}`);
     }
+  }
+
+  private releasePayload(ref: ModelPayloadRef, records?: JobRecord[]): void {
+    const now = this.now().getTime();
+    const responses = (
+      this.deps.resourceQueries?.responsesForResource(ref.resourceId) ??
+      records ??
+      this.records()
+    )
+      .map((record) => this.responseAt(this.evidence(record).response, now))
+      .filter(
+        (response) => response.state !== "absent" && response.ref.resourceId === ref.resourceId,
+      );
+    // A recorded expiry remains the release instant after a failed cleanup or
+    // restart. Shared response owners must all expire; an ACK uses ordinary release.
+    const expiries = responses.flatMap((response) =>
+      response.state === "expired" ? [response.releasedAt] : [],
+    );
+    if (expiries.length && expiries.length === responses.length) {
+      const latest = expiries.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
+      this.deps.resources().expireModel(ref, latest);
+    } else this.deps.resources().releaseModel(ref);
   }
 
   private armExpiry(): void {

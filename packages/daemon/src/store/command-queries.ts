@@ -26,6 +26,7 @@ export interface ModelResourceQueries {
   nextResponseExpiry(): string | null;
   retainsResourceBytes(resourceId: string, now: string): boolean;
   hasTerminalResourceReceipt(resourceId: string): boolean;
+  responsesForResource(resourceId: string): JobRecord[];
 }
 
 export const MODEL_RETAINS_RESOURCE_SQL = `SELECT (
@@ -134,6 +135,17 @@ export class SqlCommandQueries implements CommandQueries, ModelResourceQueries {
           .bound,
       ) === 1
     );
+  }
+
+  /** Address only this resource's receipts, including persisted expiry after cleanup failed. */
+  responsesForResource(resourceId: string): JobRecord[] {
+    const rows = this.store
+      .prepare(
+        `SELECT id FROM command INDEXED BY command_response_resource
+      WHERE response_resource_id=? AND kind='model' AND live=1 AND state NOT IN ('queued','running')`,
+      )
+      .all(resourceId) as Array<{ id: string }>;
+    return rows.map((row) => this.detail(row.id));
   }
 
   private detail(id: string): JobRecord {

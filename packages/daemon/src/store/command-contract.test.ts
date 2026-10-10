@@ -473,7 +473,33 @@ describe("SQL command authority", () => {
       .join("\n");
     expect(plan).toContain("command_request_resource");
     expect(plan).toContain("command_response_resource");
+    f.commands.update("model", {
+      result: {
+        response: {
+          state: "expired",
+          ref: { resourceId: "response" },
+          releasedAt: "2026-11-10T00:00:00.000Z",
+        },
+      },
+    });
+    f.commands.accept(request("unrelated", { kind: "model", request: { resourceId: "other" } }));
+    const read = vi.spyOn(f.blobs, "read");
+    const prepare = vi.spyOn(f.store, "prepare");
+    expect(f.queries.responsesForResource("response").map((row) => row.id)).toEqual(["model"]);
+    expect(read).toHaveBeenCalledTimes(2); // this receipt's params and result only
+    const addressedSql = prepare.mock.calls.find(([sql]) =>
+      sql.includes("SELECT id FROM command INDEXED BY command_response_resource"),
+    )![0];
+    const addressedPlan = f.store
+      .prepare(`EXPLAIN QUERY PLAN ${addressedSql}`)
+      .all("response") as Array<{ detail: string }>;
+    expect(addressedPlan.map((row) => row.detail).join("\n")).toContain(
+      "SEARCH command USING INDEX command_response_resource",
+    );
+    expect(f.queries.responsesForResource("missing")).toEqual([]);
+    expect(read).toHaveBeenCalledTimes(2);
     f.store.transaction(() => f.store.prepare("UPDATE command SET live=0 WHERE id='model'").run());
+    expect(f.queries.responsesForResource("response")).toEqual([]);
     expect(f.queries.hasTerminalResourceReceipt("request")).toBe(false);
     expect(f.queries.nextResponseExpiry()).toBeNull();
   });
