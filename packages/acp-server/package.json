@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/acp-server",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Official-SDK ACP projection over daemon-owned Claudexor threads and runs.",
   "type": "module",
@@ -34,7 +34,7 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"

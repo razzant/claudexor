@@ -31,7 +31,7 @@ with a vendor usage source (Antigravity, Claude, and Codex); Cursor has none
 yet. Everything runs on your machine, files are the source of truth, and there
 is no telemetry.
 
-Current status: **v3.25.1**. See "Stability at 2.0" below for what is a stable
+Current status: **v4.0.0**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
 with the new spelling instead of silently aliasing.
 
@@ -87,7 +87,7 @@ composer](docs/assets/app-agent-run.jpg)
 
 ## Prerequisites
 
-- Node.js >= 20.19 (the daemon, CLI, and every surface run on Node)
+- Node.js >= 24.15 (the daemon, CLI, and every surface run on Node)
 - pnpm (via corepack: `corepack enable pnpm`)
 - Git for Git-backed worktrees, candidate envelopes, and source-control delivery.
   Explicit directory execution supports direct work and selected-input copies

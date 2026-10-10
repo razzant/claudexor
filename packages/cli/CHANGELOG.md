@@ -1,5 +1,39 @@
 # @claudexor/cli
 
+## 4.0.0
+
+### Minor Changes
+
+- 2fbf7c9: Keep the daemon responsive under load without changing any on-disk format. The control API, model operations and harness maintenance reach the daemon's dispatcher in process (`DaemonLocalClient`), so a slow event loop no longer turns their calls into ten-second `daemon_busy` failures; problem fields are unchanged and socket clients keep their transport bound. `ControlDaemonStatus.loop` reports the last ten-second event-loop window (delay p50/p99/max, busy share, GC pauses) as facts, and `claudexor daemon status` prints it. `POST /v2/projects` answers `created`, which `claudexor project register` prints. Run detail reads `lastSeq` from the live writer or the log tail, the project list computes nesting in one pass, `appendLine` takes Node's UTF-8 write without a mkdir per line, Codex rate limits are read incrementally, pid snapshots are written asynchronously on change only, per-request config reads reuse the parse until a source changes, and the control API sets explicit HTTP keep-alive, header and request timeouts.
+
+### Patch Changes
+
+- Updated dependencies [2fbf7c9]
+- Updated dependencies
+  - @claudexor/schema@4.0.0
+  - @claudexor/daemon@4.0.0
+  - @claudexor/control-api@4.0.0
+  - @claudexor/util@4.0.0
+  - @claudexor/config@4.0.0
+  - @claudexor/harness-codex@4.0.0
+  - @claudexor/acp-server@4.0.0
+  - @claudexor/core@4.0.0
+  - @claudexor/delivery@4.0.0
+  - @claudexor/gateway@4.0.0
+  - @claudexor/harness-acp@4.0.0
+  - @claudexor/harness-agy@4.0.0
+  - @claudexor/harness-claude@4.0.0
+  - @claudexor/harness-cursor@4.0.0
+  - @claudexor/harness-fake@4.0.0
+  - @claudexor/harness-opencode@4.0.0
+  - @claudexor/harness-raw-api@4.0.0
+  - @claudexor/mcp-server@4.0.0
+  - @claudexor/orchestrator@4.0.0
+  - @claudexor/review@4.0.0
+  - @claudexor/workspace@4.0.0
+  - @claudexor/artifact-store@4.0.0
+  - @claudexor/secrets@4.0.0
+
 ## 3.25.1
 
 ### Patch Changes

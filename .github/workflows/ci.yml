@@ -287,12 +287,12 @@ jobs:
 
       # The Windows-shaped surfaces, and only suites whose fixtures are
       # portable: the absolute-path contract, win32 process identity and
-      # termination, and the journal walker whose separator bug reproduces
+      # termination, and the legacy reader whose separator bug reproduces
       # ONLY here. Suites built on POSIX mode bits, symlinks or `#!/bin/sh`
       # fixtures stay on the Linux/macOS legs; their win32 branches are
       # proven by injected-platform unit tests instead. The CLI exit tail runs
       # here because only Windows libuv aborts a forced exit after fetch().
-      - name: Test (platform auth, agy print, ConPTY, setup transport, store, journal, CLI exit)
+      - name: Test (platform auth, agy print, ConPTY, setup transport, SQL recovery, CLI exit)
         run: >
           pnpm vitest run packages/schema/src/schema.test.ts
           packages/schema/src/platform-auth-policy.test.ts
@@ -328,11 +328,17 @@ jobs:
           packages/daemon/src/store/cursors.test.ts
           packages/daemon/src/store/main-thread-sync.test.ts
           packages/cli/src/store-worker-bundle.test.ts
-          packages/journal/src/index.test.ts
-          packages/journal/src/background-compaction.test.ts
-          packages/journal/src/background-capacity.test.ts
-          packages/daemon/src/journal-maintenance.test.ts
-          packages/control-api/src/journal-background.test.ts
+          packages/daemon/src/store/legacy-journal/frame-reader.test.ts
+          packages/daemon/src/store/legacy-journal/frame-reader-shrink.test.ts
+          packages/daemon/src/store/command-contract.test.ts
+          packages/daemon/src/store/terminal-contract.test.ts
+          packages/daemon/src/store/import-faults.test.ts
+          packages/daemon/src/store/engine-state-recovery.test.ts
+          packages/daemon/src/store/sql-recovery.test.ts
+          packages/daemon/src/store/store-close.test.ts
+          packages/daemon/src/store/statement-observer.test.ts
+          packages/cli/src/sql-startup-storage.test.ts
+          packages/cli/src/sql-daemon-storage.test.ts
           packages/harness-codex/src/model-auth.test.ts
           packages/harness-codex/src/model.test.ts
           packages/harness-codex/src/responses.test.ts

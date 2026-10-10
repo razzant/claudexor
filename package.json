@@ -1,12 +1,12 @@
 {
   "name": "claudexor-monorepo",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.34.5",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=24.15.0"
   },
   "scripts": {
     "build": "turbo run build",

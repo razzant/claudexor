@@ -469,7 +469,7 @@ for (const [label, mutated] of [
   [
     "authority Node floor drift",
     release.replace(
-      "          node-version: 20.19.0\n\n      - name: Initialize pinned x64 MSVC environment",
+      "          node-version: 24.15.0\n\n      - name: Initialize pinned x64 MSVC environment",
       "          node-version: 24.16.0\n\n      - name: Initialize pinned x64 MSVC environment",
     ),
   ],
@@ -1056,8 +1056,8 @@ function windowsConptyCustodyFindings(workflow) {
     authority,
   );
   requirePattern(
-    "Windows ConPTY authority must use the Node 20.19 compatibility floor",
-    /node-version:\s*20\.19\.0/,
+    "Windows ConPTY authority must use the Node 24.15 compatibility floor",
+    /node-version:\s*24\.15\.0/,
     authority,
   );
   requirePattern(
