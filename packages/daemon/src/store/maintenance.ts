@@ -4,6 +4,7 @@ import { BlobFiles } from "./blob-files.js";
 import { StoreError } from "./errors.js";
 import { STORE_WORKER_DATA_KEY, resolveStoreWorkerEntry } from "./flusher-protocol.js";
 import type { EngineStore } from "./store.js";
+import { cleanupUploadPart } from "./uploads.js";
 // Static import: the worker module must be part of this module graph so the
 // single-file daemon bundle embeds it (its self-start is inert on the main thread).
 import "./maintenance-worker.js";
@@ -169,8 +170,8 @@ export class MaintenanceController {
         (outcome === "removed" ? report.removedBlobs : report.keptBlobs).push(candidate.sha);
         continue;
       }
-      const decision = await this.decidePart(candidate.uploadId, candidate.path);
-      (decision === "remove" ? report.removedParts : report.keptParts).push(candidate.path);
+      const decision = await cleanupUploadPart(this.store, candidate.uploadId, candidate.path);
+      (decision === "removed" ? report.removedParts : report.keptParts).push(candidate.path);
     }
     if (report.removedTemps.length > 0 || report.removedParts.length > 0) {
       this.store.registerExternal(this.store.paths.uploads);
@@ -189,33 +190,6 @@ export class MaintenanceController {
     const worker = this.worker;
     this.worker = null;
     if (worker) await worker.terminate();
-  }
-
-  /** C2/C10 part decision on main: live or obligated uploads keep their part,
-   * a published unobligated upload loses it at once, and a rowless part goes
-   * through the one owner-generation unlink rule (the `upload` row is its owner). */
-  private async decidePart(uploadId: string, path: string): Promise<"keep" | "remove"> {
-    const observe = (): "keep" | "remove" | "unknown" => {
-      const row = this.store.prepare("SELECT state FROM upload WHERE id = ?").get(uploadId) as
-        { state: string } | undefined;
-      if (!row) return "unknown";
-      if (row.state !== "published") return "keep";
-      const obligated = this.store
-        .prepare("SELECT 1 AS one FROM effect_obligation WHERE kind = 'publish_blob' AND key = ?")
-        .get(uploadId);
-      return obligated ? "keep" : "remove";
-    };
-    const first = observe();
-    if (first === "keep") return "keep";
-    if (first === "remove") {
-      unlinkTolerant(path);
-      return "remove";
-    }
-    const outcome = await this.blobs.owners.unlinkWhenUnowned(`upload:${uploadId}`, {
-      path,
-      owners: () => observe() !== "unknown",
-    });
-    return outcome === "removed" ? "remove" : "keep";
   }
 
   private run<T>(request: MaintenanceRequest): Promise<T> {
