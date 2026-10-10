@@ -278,6 +278,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "yes",
     "harness install: confirm the disclosed installer without the interactive prompt",
   ),
+  valueFlag(
+    "host-binding-json",
+    "<json>",
+    "Plugin install/repair: preserve an explicit external host runtime and daemon owner",
+  ),
   booleanFlag(
     "force",
     "Reapply verified Claudexor-owned plugin drift; never overwrites unowned files",

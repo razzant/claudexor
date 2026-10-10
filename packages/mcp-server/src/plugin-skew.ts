@@ -1,5 +1,6 @@
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { defaultUserConfigDir, engineBuildIdentity } from "@claudexor/util";
+import { HOST_BINDING_VERSION } from "@claudexor/schema";
 
 /** Pre-handshake refusal for stale host-plugin artifacts. Hosts observe a
  * spawn failure (stable redacted stderr + nonzero exit), not a typed MCP
@@ -29,6 +30,30 @@ class PluginArtifactSkewError extends Error {
  * CLAUDEXOR_PLUGIN_VERSION: dev, tests, manual `mcp serve`) are untouched.
  */
 export function assertNoPluginArtifactSkew(serverVersion: string | undefined): void {
+  const bindingVersion = process.env["CLAUDEXOR_HOST_BINDING_VERSION"];
+  if (bindingVersion) {
+    if (bindingVersion !== String(HOST_BINDING_VERSION))
+      throw Object.assign(
+        new Error(
+          "host_binding_unsupported: regenerate this integration with a supported host binding format",
+        ),
+        { code: "host_binding_unsupported" },
+      );
+    if (
+      process.env["CLAUDEXOR_DAEMON_OWNER"] !== "external" ||
+      process.env["CLAUDEXOR_ROOT_MODE"] !== "explicit" ||
+      !isAbsolute(process.env["CLAUDEXOR_CONFIG_DIR"] ?? "")
+    )
+      throw Object.assign(
+        new Error(
+          "host_binding_invalid: the dynamic host binding requires an explicit external daemon root",
+        ),
+        { code: "host_binding_invalid" },
+      );
+    // The host locator selects the current runtime. Artifact generation version
+    // stays in the manifest; it is not a claim about this selected runtime.
+    return;
+  }
   const pluginVersion = process.env["CLAUDEXOR_PLUGIN_VERSION"];
   if (!pluginVersion) return;
   // The env value is environment-sourced: never echo arbitrary content to

@@ -2,10 +2,13 @@ import { chmodSync, cpSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { journalFoldPolicy } from "@claudexor/daemon";
-import { DurableJournal, journalPartitionDirectory } from "@claudexor/journal";
+import {
+  DurableJournal,
+  journalPartitionDirectory,
+} from "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js";
 import type { ControlSetupJob } from "@claudexor/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SetupJobStore } from "./setup-job-store.js";
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 
 let root: string;
 let plainRoot: string;

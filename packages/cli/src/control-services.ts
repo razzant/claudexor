@@ -48,7 +48,7 @@ import {
   type CredentialMutationSubject,
 } from "./credential-status-invalidation.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import type { SetupJobStorePort } from "./setup-job-store.js";
+import type { SetupJobStorePort } from "./setup-job-projection.js";
 import { activeProfileLoginJob } from "./setup-job-support.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
@@ -56,10 +56,11 @@ import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { threadRunStartRequiresGit } from "./thread-execution-workspace.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
 import { assertCredentialProfileCompatibility } from "./profile-compatibility.js";
+import { recoveryControlServices } from "./recovery-control-services.js";
 import { remoteFilesystemServices } from "./remote-filesystem.js";
 import { projectRunApplicability } from "./run-applicability.js";
 import { threadTurnServices } from "./thread-turn-services.js";
-import { threadPurgeOwner } from "./thread-purge.js";
+import { threadPurgeOwner, type ThreadPurgeDurability } from "./thread-purge.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = Pick<
@@ -101,6 +102,7 @@ export function controlServices(
   quotaRegistry: () => QuotaRegistry,
   daemonJobs: () => Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>,
   effectiveConcurrencyCaps?: RuntimeConcurrencyCaps,
+  purgeDurability?: ThreadPurgeDurability,
 ) {
   const secretStore = new SecretStore();
   const listHarnesses = async (input?: HarnessListInput) => {
@@ -162,9 +164,12 @@ export function controlServices(
     { requiresGit: runStartRequiresGit },
     { git: "durable_job" },
   );
-  // The ONE owner of thread byte deletion, shared by the purge route and the
-  // retention pass (expired trash, and purges whose cleanup failed).
-  const { purgeThread, hasPurgeLeftovers } = threadPurgeOwner(threads, NO_PROJECT_ROOT);
+  // Routes and retention share one thread purge and durability owner.
+  const { purgeThread, hasPurgeLeftovers } = threadPurgeOwner(
+    threads,
+    NO_PROJECT_ROOT,
+    purgeDurability,
+  );
   return {
     preflightRunRequirements,
     preflightThreadRunRequirements,
@@ -189,11 +194,9 @@ export function controlServices(
       purgeThread,
       hasPurgeLeftovers,
     }),
-    // F3 nested-project disclosure: each project carries its recomputed
-    // nesting relations — surfaces disclose "nested inside <root>", never refuse.
+    // Nested projects are disclosed, never refused.
     listProjects: async () => ({ projects: projects().listWithNesting() as unknown[] }),
-    // QA-067: filesystem routes are a remote-runtime-only surface — the local
-    // daemon never serves them (the routes answer 501 without these services).
+    // Filesystem routes are available only on the remote runtime.
     ...remoteFilesystemServices(projects),
     registerProject: async (input: Parameters<ProjectStorePort["register"]>[0]) => {
       const { project, created } = threads.registerProject(input);
@@ -338,23 +341,7 @@ export function controlServices(
     runApplicability: async (input: { repoRoot: string }) =>
       projectRunApplicability(input.repoRoot),
     ...setupJobControlServices(setupJobs),
-    journalEvents: async (partition: string, afterCursor?: string) =>
-      journalPartition(partition).events(afterCursor),
-    recoveryInspectPartition: async (partition: string) => journalPartition(partition).inspect(),
-    recoveryValidatePartition: async (partition: string) => journalPartition(partition).validate(),
-    recoveryExportPartition: async (partition: string) =>
-      journalPartition(partition).exportRecovery(),
-    recoveryQuarantinePartition: async (partition: string, input: unknown) => {
-      const request = input as Parameters<PartitionControlPort["quarantineAndStartFresh"]>[0];
-      if (partition !== "global") {
-        return journalPartition(partition).quarantineAndStartFresh(request);
-      }
-      const preflight = journalManager.preflightQuarantine(request);
-      if (preflight.disposition === "completed" && setupBinding.isBoundToCurrentGeneration()) {
-        return preflight.receipt;
-      }
-      return setupBinding.replaceAfter(() => journalManager.quarantineAndStartFresh(request));
-    },
+    ...recoveryControlServices({ partition: journalPartition, setup: () => setupBinding }),
     ...settingsControlServices(NO_PROJECT_ROOT, effectiveConcurrencyCaps, bustStatusCaches),
     ...quotaControlServices(quotaRegistry),
     // INV-135: durable registry + live doctor projection, one probe per

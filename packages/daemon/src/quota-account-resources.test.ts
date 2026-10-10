@@ -1,11 +1,12 @@
+import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import { journalFoldPolicy } from "./journal-fold-policy.js";
 import { AccountResets } from "./account-resets.js";
-import { CommandStore } from "./command-store.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import {
   observedResourceFacet,
   type AccountResourceObservation,
@@ -251,7 +252,7 @@ describe("account resources inside quota owner", () => {
     registry.upsert(snapshot(target));
     const store = new CommandStore(j);
     const operations = new AccountResets({
-      commands: () => store,
+      commands: () => legacyCommandFixture({ current: () => store }).forRequest!({}),
       resolve: async () => ({
         harness: "codex",
         locator: "/fixture",

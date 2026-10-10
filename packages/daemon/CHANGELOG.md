@@ -1,5 +1,23 @@
 # @claudexor/daemon
 
+## 4.0.0
+
+### Major Changes
+
+- Move engine state to one SQLite store with addressed reads, resumable legacy import, generation-scoped recovery and explicit durability barriers. Require Node 24.15 or newer. Remove the implicit shared admission ceiling, preserve explicit global caps, and allow separate model and long-session caps in the existing queue. Preserve managed host bindings across plugin repair. Engine 4.0 requires desktop application 4.0; the updater keeps an older working engine until the app is updated. Legacy journals, run artifacts and accounts remain intact; the migrated format supports forward recovery, not downgrade to 3.x.
+
+### Minor Changes
+
+- 2fbf7c9: Keep the daemon responsive under load without changing any on-disk format. The control API, model operations and harness maintenance reach the daemon's dispatcher in process (`DaemonLocalClient`), so a slow event loop no longer turns their calls into ten-second `daemon_busy` failures; problem fields are unchanged and socket clients keep their transport bound. `ControlDaemonStatus.loop` reports the last ten-second event-loop window (delay p50/p99/max, busy share, GC pauses) as facts, and `claudexor daemon status` prints it. `POST /v2/projects` answers `created`, which `claudexor project register` prints. Run detail reads `lastSeq` from the live writer or the log tail, the project list computes nesting in one pass, `appendLine` takes Node's UTF-8 write without a mkdir per line, Codex rate limits are read incrementally, pid snapshots are written asynchronously on change only, per-request config reads reuse the parse until a source changes, and the control API sets explicit HTTP keep-alive, header and request timeouts.
+
+### Patch Changes
+
+- Updated dependencies [2fbf7c9]
+  - @claudexor/schema@4.0.0
+  - @claudexor/util@4.0.0
+  - @claudexor/core@4.0.0
+  - @claudexor/workspace@4.0.0
+
 ## 3.25.1
 
 ### Patch Changes

@@ -1,7 +1,10 @@
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DurableJournal, JournalCursorError as LegacyCursorError } from "@claudexor/journal";
+import {
+  DurableJournal,
+  JournalCursorError as LegacyCursorError,
+} from "./test-support/fixtures/legacy/journal/index.js";
 import { ControlJournalEvent } from "@claudexor/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {

@@ -2,7 +2,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import type { QuotaAbsence, QuotaSnapshot, QuotaSource, QuotaSubject } from "@claudexor/schema";
 import { QuotaRegistry } from "./quota-registry.js";
 import type { QuotaRefreshCycle, QuotaRefreshResult } from "./quota-poll-lanes.js";

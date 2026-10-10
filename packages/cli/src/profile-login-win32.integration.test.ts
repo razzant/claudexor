@@ -1,4 +1,4 @@
-import type { SetupJobStore } from "./setup-job-store.js";
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
@@ -155,6 +155,7 @@ async function withFixture(
   const cursor = createCursorAdapter();
   const token = ensureToken();
   const manager = createSetupJobManager({
+    store: new SetupJobStore(daemonDir()),
     rootDir: daemonDir(),
     runnerPath: RUNNER,
     monitorPollMs: 50,

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { mcpSelfTest } from "./plugin-mcp.js";
 import {
   copyFileSync,
   existsSync,
@@ -7,22 +7,32 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { hostFallbackExamples, recoveryVerbs } from "./command-registry.js";
 import { manageClaudeStatusline } from "./claude-statusline.js";
 import {
   CLAUDEXOR_VERSION,
-  defaultUserConfigDir,
   ensureDir,
   sha256,
   userConfigDir,
   userHomeDir,
   writeJson,
 } from "@claudexor/util";
+
+import type { ExternalHostBinding } from "@claudexor/schema";
+import {
+  HOST_PLUGIN_MARKER,
+  bindingFromMcpEntry,
+  generatedMcpEnv,
+  launchCommand,
+  launchShellCommand,
+  parseHostBinding,
+  runtimePaths,
+  type RuntimePaths,
+} from "./plugin-runtime.js";
+import { CliError } from "./cli-error.js";
 
 export type PluginHost = "cursor" | "claude" | "codex" | "opencode";
 export type PluginTarget = PluginHost | "all";
@@ -35,22 +45,14 @@ export const PLUGIN_TARGETS: PluginTarget[] = [...PLUGIN_HOSTS, "all"];
 export const PLUGIN_VERBS: PluginVerb[] = ["install", "status", "doctor", "repair", "uninstall"];
 
 const STATE_VERSION = 1;
-const MARKER = "claudexor:managed host-plugin-lifecycle";
+const MARKER = HOST_PLUGIN_MARKER;
 const MCP_NAME = "claudexor";
 
 interface Artifact {
   path: string;
   content: string;
   description: string;
-}
-
-interface RuntimePaths {
-  home: string;
-  configDir: string;
-  nodePath: string;
-  cliPath: string;
-  backupStamp: string;
-  warnings: string[];
+  mcp?: true;
 }
 
 interface HostDefinition {
@@ -88,6 +90,7 @@ interface StateConfigEntry {
 }
 
 interface HostState {
+  binding?: ExternalHostBinding;
   artifacts: Record<string, StateArtifact>;
   configEntries: Record<string, StateConfigEntry>;
   updatedAt: string;
@@ -130,6 +133,7 @@ export interface PluginCommandErrorResult {
 }
 
 export interface PluginCommandOptions {
+  hostBinding?: ExternalHostBinding;
   dryRun?: boolean;
   force?: boolean;
   json?: boolean;
@@ -145,31 +149,13 @@ function jsonText(value: unknown): string {
   return JSON.stringify(value, null, 2) + "\n";
 }
 
-function generatedMcpEnv(runtime: RuntimePaths): Record<string, string> {
-  const env: Record<string, string> = {
-    CLAUDEXOR_MANAGED: MARKER,
-    CLAUDEXOR_PLUGIN_VERSION: CLAUDEXOR_VERSION,
-  };
-  // A DEFAULT-root install serializes NO config root: every generation of the
-  // CLI self-selects its own versioned default at serve time, so a stale
-  // artifact can never freeze a newer runtime onto an older data root
-  // (2026-07-21 incident: a 1.0.0 artifact drove 3.0.2 code against the v1
-  // root). An EXPLICIT operator override stays serialized WITH a provenance
-  // marker so the serve-time skew check can tell an intentional override from
-  // a legacy frozen root.
-  if (resolve(runtime.configDir) !== resolve(defaultUserConfigDir())) {
-    env.CLAUDEXOR_CONFIG_DIR = runtime.configDir;
-    env.CLAUDEXOR_ROOT_MODE = "explicit";
-  }
-  return env;
-}
-
 function mcpServers(runtime: RuntimePaths): Record<string, unknown> {
+  const [command, ...args] = launchCommand(runtime);
   return {
     mcpServers: {
       [MCP_NAME]: {
-        command: runtime.nodePath,
-        args: [runtime.cliPath, "mcp", "serve"],
+        command,
+        args: [...args, "mcp", "serve"],
         env: generatedMcpEnv(runtime),
       },
     },
@@ -179,7 +165,7 @@ function mcpServers(runtime: RuntimePaths): Record<string, unknown> {
 function opencodeMcpEntry(runtime: RuntimePaths): Record<string, unknown> {
   return {
     type: "local",
-    command: [runtime.nodePath, runtime.cliPath, "mcp", "serve"],
+    command: [...launchCommand(runtime), "mcp", "serve"],
     environment: generatedMcpEnv(runtime),
     enabled: true,
     timeout: 5000,
@@ -197,20 +183,11 @@ function recoveryVerbLine(): string {
     : (parts[0] ?? "");
 }
 
-/** POSIX single-quote shell quoting for safely copied runtime paths. */
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-/** QA-029B: validated bundled Node + CLI prefix, never a PATH-dependent bare command. */
-function absoluteCliPrefix(runtime: RuntimePaths): string {
-  return `${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)}`;
-}
-
-/** Make registry fallback templates executable with the validated absolute CLI prefix. */
+/** CLI fallbacks share the MCP launch binding, including root and lifecycle. */
 function hostFallbackCommands(runtime: RuntimePaths): string[] {
-  const prefix = absoluteCliPrefix(runtime);
-  return hostFallbackExamples().map((example) => example.replace(/^claudexor\b/, () => prefix));
+  return hostFallbackExamples().map((example) =>
+    launchShellCommand(runtime, example.replace(/^claudexor\s+/, "")),
+  );
 }
 
 /** Exact Claude plugin skill invocation; plain `/claudexor` is not an alias (QA-029A). */
@@ -250,6 +227,7 @@ function skillText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     "When the host cannot call MCP tools, ask the user to run the local CLI explicitly (these are the exact executable commands for this install — not a bare `claudexor`, which may not be on the terminal PATH):",
     "",
+    ...(process.platform === "win32" ? ["Run these commands in PowerShell:"] : []),
     ...hostFallbackCommands(runtime).map((command) => `\`${command}\``),
     "",
     MCP_RUN_HANDLE_GUIDANCE,
@@ -296,6 +274,7 @@ function commandText(host: PluginHost, runtime: RuntimePaths): string {
     "",
     "First prefer the available MCP tools named `claudexor_*`. If MCP tools are unavailable, tell the user the exact executable local CLI command to run (absolute paths for this install — never a bare `claudexor`, which may not be on the terminal PATH), such as:",
     "",
+    ...(process.platform === "win32" ? ["Run these commands in PowerShell:"] : []),
     ...hostFallbackCommands(runtime).map(
       (command) => `- \`${command.replace('"..."', '"$ARGUMENTS"')}\``,
     ),
@@ -404,7 +383,7 @@ function manifest(kind: "claude" | "codex" | "cursor"): string {
 function opencodePluginText(runtime: RuntimePaths): string {
   const hint =
     "Use Claudexor MCP tools or run `claudexor plan/agent/best-of` when cross-harness orchestration, review, or evidence-backed execution is useful.";
-  return `${managedComment("js")}export const ClaudexorPlugin = async () => {\n  const hint = ${JSON.stringify(hint)};\n  return {\n    \"experimental.chat.system.transform\": async (_input, output) => {\n      if (!output || typeof output !== \"object\") return;\n      const current = typeof output.system === \"string\" ? output.system : typeof output.prompt === \"string\" ? output.prompt : \"\";\n      if (current.includes(\"Claudexor\")) return;\n      if (typeof output.system === \"string\") output.system = output.system + \"\\n\\n\" + hint;\n      else if (typeof output.prompt === \"string\") output.prompt = output.prompt + \"\\n\\n\" + hint;\n    },\n  };\n};\n\nexport default ClaudexorPlugin;\n\n// OpenCode hook note: uses experimental.chat.system.transform because OpenCode does not expose tui.prompt.append as a plugin hook.\n// MCP command: ${runtime.nodePath} ${runtime.cliPath} mcp serve\n`;
+  return `${managedComment("js")}export const ClaudexorPlugin = async () => {\n  const hint = ${JSON.stringify(hint)};\n  return {\n    \"experimental.chat.system.transform\": async (_input, output) => {\n      if (!output || typeof output !== \"object\") return;\n      const current = typeof output.system === \"string\" ? output.system : typeof output.prompt === \"string\" ? output.prompt : \"\";\n      if (current.includes(\"Claudexor\")) return;\n      if (typeof output.system === \"string\") output.system = output.system + \"\\n\\n\" + hint;\n      else if (typeof output.prompt === \"string\") output.prompt = output.prompt + \"\\n\\n\" + hint;\n    },\n  };\n};\n\nexport default ClaudexorPlugin;\n\n// OpenCode hook note: uses experimental.chat.system.transform because OpenCode does not expose tui.prompt.append as a plugin hook.\n// MCP command: ${launchShellCommand(runtime, "mcp serve")}\n`;
 }
 
 const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
@@ -433,6 +412,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, ".mcp.json"),
+          mcp: true,
           content: jsonText(mcpServers(runtime)),
           description: "Claude MCP config",
         },
@@ -474,6 +454,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, ".mcp.json"),
+          mcp: true,
           content: jsonText(mcpServers(runtime)),
           description: "Codex MCP config",
         },
@@ -521,6 +502,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, "mcp.json"),
+          mcp: true,
           content: jsonText(mcpServers(runtime)),
           description: "Cursor MCP config",
         },
@@ -581,35 +563,6 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
   },
 };
 
-function runtimePaths(): RuntimePaths {
-  const home = userHomeDir();
-  const configDir = userConfigDir();
-  const warnings: string[] = [];
-  const allowTestOverrides = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
-  const envNode = allowTestOverrides ? process.env.CLAUDEXOR_NODE_PATH?.trim() : undefined;
-  const bundledNode = join(home, ".claudexor", "node", "bin", "node");
-  const nodePath = envNode || (existsSync(bundledNode) ? bundledNode : process.execPath);
-  if (!isAbsolute(nodePath) || !existsSync(nodePath) || !statSync(nodePath).isFile()) {
-    throw new Error(`unable to resolve a safe Node executable for plugin MCP config: ${nodePath}`);
-  }
-  if (!envNode && nodePath !== bundledNode)
-    warnings.push(`using current node instead of ${bundledNode}`);
-  if (!allowTestOverrides && process.env.CLAUDEXOR_NODE_PATH?.trim())
-    warnings.push("ignored CLAUDEXOR_NODE_PATH outside tests");
-
-  const envCli = allowTestOverrides ? process.env.CLAUDEXOR_CLI_PATH?.trim() : undefined;
-  const distCli = join(dirname(fileURLToPath(import.meta.url)), "cli.js");
-  const argvCli =
-    process.argv[1] && existsSync(resolve(process.argv[1])) ? resolve(process.argv[1]) : "";
-  const cliPath = envCli || (existsSync(distCli) ? distCli : argvCli);
-  if (!cliPath || !isAbsolute(cliPath) || !existsSync(cliPath) || !statSync(cliPath).isFile()) {
-    throw new Error("unable to resolve a safe absolute claudexor CLI entrypoint");
-  }
-  if (!allowTestOverrides && process.env.CLAUDEXOR_CLI_PATH?.trim())
-    warnings.push("ignored CLAUDEXOR_CLI_PATH outside tests");
-  return { home, configDir, nodePath, cliPath, backupStamp: safeTimestamp(), warnings };
-}
-
 function stateFilePath(configDir = userConfigDir()): string {
   return join(configDir, "plugins", "state.json");
 }
@@ -639,6 +592,9 @@ function loadState(configDir = userConfigDir()): PluginStateFile {
   }
   const state = parsed as PluginStateFile;
   state.hosts ??= {};
+  for (const entry of Object.values(state.hosts)) {
+    if (entry?.binding !== undefined) entry.binding = parseHostBinding(entry.binding);
+  }
   return state;
 }
 
@@ -965,10 +921,6 @@ function isLegacyOwned(target: LegacyTarget): boolean {
 
 function backupRoot(def: HostDefinition, runtime: RuntimePaths): string {
   return join(def.root(runtime.home), ".claudexor-backups", runtime.backupStamp);
-}
-
-function safeTimestamp(): string {
-  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 function backupFile(def: HostDefinition, runtime: RuntimePaths, path: string): string {
@@ -1598,128 +1550,6 @@ function removeVerifiedLegacy(
   return true;
 }
 
-async function mcpSelfTest(runtime: RuntimePaths): Promise<string | null> {
-  return await new Promise((resolve) => {
-    const child = spawn(runtime.nodePath, [runtime.cliPath, "mcp", "serve"], {
-      cwd: process.cwd(),
-      env: mcpSelfTestEnv(runtime),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let pending = "";
-    const lines: unknown[] = [];
-    let stderr = "";
-    let sentToolsList = false;
-    let settled = false;
-    const timer = setTimeout(() => {
-      settled = true;
-      child.kill("SIGKILL");
-      resolve("MCP self-test timed out");
-    }, 5000);
-    child.stdout.on("data", (d) => {
-      if (settled) return;
-      const chunk = String(d);
-      stdout += chunk;
-      pending += chunk;
-      const frames = pending.split("\n");
-      pending = frames.pop() ?? "";
-      try {
-        for (const frame of frames.filter(Boolean)) lines.push(JSON.parse(frame));
-        const init = lines.find(
-          (line) => line && typeof line === "object" && (line as { id?: unknown }).id === 1,
-        ) as { result?: { serverInfo?: { name?: string } } } | undefined;
-        if (init?.result?.serverInfo?.name && !sentToolsList) {
-          sentToolsList = true;
-          child.stdin.write(
-            JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) +
-              "\n",
-          );
-          child.stdin.write(
-            JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\n",
-          );
-        }
-        const tools = lines.find(
-          (line) => line && typeof line === "object" && (line as { id?: unknown }).id === 2,
-        ) as { result?: { tools?: unknown } } | undefined;
-        if (tools && !settled) {
-          settled = true;
-          const listed = tools.result?.tools;
-          clearTimeout(timer);
-          child.kill("SIGTERM");
-          if (
-            Array.isArray(listed) &&
-            listed.some((t: { name?: string }) => t.name === "claudexor_status")
-          ) {
-            resolve(null);
-          } else {
-            resolve("MCP self-test returned an unexpected tools-list response");
-          }
-        }
-      } catch (err) {
-        if (!settled && stdout.includes("\n")) {
-          settled = true;
-          clearTimeout(timer);
-          child.kill("SIGTERM");
-          resolve(
-            `MCP self-test response parse failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
-    });
-    child.stderr.on("data", (d) => {
-      stderr += String(d);
-    });
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(`MCP self-test failed to start: ${err.message}`);
-    });
-    child.on("exit", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (!stdout)
-        resolve(`MCP self-test exited before response (${code ?? "signal"}): ${stderr.trim()}`);
-      else
-        resolve(
-          `MCP self-test exited before tools-list completed (${code ?? "signal"}): ${stderr.trim()}`,
-        );
-    });
-    child.stdin.write(
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: "2025-06-18",
-          capabilities: {},
-          clientInfo: { name: "claudexor-plugin-doctor", version: CLAUDEXOR_VERSION },
-        },
-      }) + "\n",
-    );
-  });
-}
-
-function mcpSelfTestEnv(runtime: RuntimePaths): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of [
-    "HOME",
-    "PATH",
-    "CLAUDEXOR_CONFIG_DIR",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "LANG",
-    "LC_ALL",
-  ]) {
-    const value = process.env[key];
-    if (value) env[key] = value;
-  }
-  Object.assign(env, generatedMcpEnv(runtime));
-  return env;
-}
-
 function verbNote(def: HostDefinition, verb: PluginVerb): string {
   if (verb === "uninstall")
     return `${def.displayName} integration removed from managed Claudexor files/config; restart the host to unload cached plugin state.`;
@@ -1878,14 +1708,83 @@ export async function runPluginCommand(
   if (!PLUGIN_VERBS.includes(verb)) throw new Error(`unknown plugin command '${verb}'`);
   if (!PLUGIN_TARGETS.includes(target))
     throw new Error(`unknown plugin target '${target}' (expected ${PLUGIN_TARGETS.join("|")})`);
-  const runtime = runtimePaths();
-  const state = loadState(runtime.configDir);
+  if (options.hostBinding && verb !== "install" && verb !== "repair")
+    throw new CliError("usage", "--host-binding-json is supported by plugin install and repair", {
+      code: "invalid_argument",
+    });
+  const explicit =
+    options.hostBinding === undefined ? undefined : parseHostBinding(options.hostBinding);
+  const runtime = runtimePaths(explicit);
+  const states = new Map<string, PluginStateFile>();
+  const stateAt = (root: string): PluginStateFile => {
+    let state = states.get(root);
+    if (!state) {
+      state = loadState(root);
+      states.set(root, state);
+    }
+    return state;
+  };
   const results: PluginHostResult[] = [];
   for (const host of targets(target)) {
-    results.push(await runHost(HOST_DEFINITIONS[host], verb, options, state, runtime));
+    const def = HOST_DEFINITIONS[host];
+    try {
+      const artifacts = def.artifacts(runtime.home, runtime);
+      const path =
+        def.config === "opencode-mcp"
+          ? chooseOpenCodeConfigPath()
+          : artifacts.find((artifact) => artifact.mcp)?.path;
+      let source: Record<string, any> | undefined;
+      try {
+        source = path ? (readJsonFile(path) as Record<string, any> | undefined) : undefined;
+      } catch (error) {
+        // Existing artifact ownership can repair damaged JSON, but an unrelated
+        // invocation cannot infer a lost external root from malformed bytes.
+        if (!explicit && !stateAt(runtime.configDir).hosts[host]) throw error;
+      }
+      let installed: ExternalHostBinding | undefined;
+      try {
+        installed = bindingFromMcpEntry(
+          def.config === "opencode-mcp" ? source?.mcp?.[MCP_NAME] : source?.mcpServers?.[MCP_NAME],
+        );
+      } catch (error) {
+        if (!explicit) throw error;
+      }
+      const priorState = stateAt(installed?.configDir ?? runtime.configDir);
+      const recorded = priorState.hosts[host]?.binding;
+      const binding = explicit ?? recorded ?? installed;
+      if (
+        !binding &&
+        artifacts.some((artifact) => {
+          const text = readText(artifact.path);
+          return text?.includes(MARKER) && text.includes("CLAUDEXOR_DAEMON_OWNER='external'");
+        })
+      )
+        throw new CliError(
+          "usage",
+          "external host binding is missing; register it with --host-binding-json",
+          { code: "host_binding_missing" },
+        );
+      const selected = binding ? runtimePaths(binding) : runtime;
+      if (installed && installed.configDir !== selected.configDir)
+        selected.previousConfigDir = installed.configDir;
+      const state = stateAt(selected.configDir);
+      if (state !== priorState && !state.hosts[host] && priorState.hosts[host])
+        state.hosts[host] = structuredClone(priorState.hosts[host]);
+      const res = await runHost(def, verb, options, state, selected);
+      if (installed && !recorded && !explicit)
+        res.notes.push("recovered external host binding from the installed MCP configuration");
+      if (!options.dryRun && (verb === "install" || verb === "repair") && res.ok && binding)
+        hostState(state, host).binding = binding;
+      results.push(res);
+      if (!options.dryRun && (verb === "install" || verb === "repair" || verb === "uninstall"))
+        saveState(state, selected.configDir);
+    } catch (error) {
+      const res = initialResult(def, verb, runtime);
+      res.state = "blocked";
+      res.errors.push(error instanceof Error ? error.message : String(error));
+      results.push(res);
+    }
   }
-  if (!options.dryRun && (verb === "install" || verb === "repair" || verb === "uninstall"))
-    saveState(state, runtime.configDir);
   const result = {
     verb,
     target,

@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/delivery",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Apply a WorkProduct patch: dry-run / apply / branch / commit / pr.",
   "type": "module",
@@ -37,7 +37,7 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"

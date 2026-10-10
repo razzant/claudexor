@@ -38,16 +38,36 @@
       "harnessInactivityTimeoutMs": 1200000,
       "concurrency": {
         "configured": {
-          "maxConcurrent": 48,
+          "maxConcurrent": "unlimited",
+          "maxConcurrentNonModelJobs": 48,
+          "maxConcurrentModelOperations": "unlimited",
           "maxParallelCandidates": 6,
           "maxDeepScanWidth": 16,
-          "maxCouncilMembers": 6
+          "maxCouncilMembers": 6,
+          "sources": {
+            "max_concurrent": "config",
+            "max_concurrent_non_model_jobs": "config",
+            "max_concurrent_model_operations": "default",
+            "max_parallel_candidates": "config",
+            "max_deep_scan_width": "config",
+            "max_council_members": "config"
+          }
         },
         "effective": {
           "maxConcurrent": 24,
+          "maxConcurrentNonModelJobs": "unlimited",
+          "maxConcurrentModelOperations": "unlimited",
           "maxParallelCandidates": 4,
           "maxDeepScanWidth": 8,
-          "maxCouncilMembers": 4
+          "maxCouncilMembers": 4,
+          "sources": {
+            "max_concurrent": "config",
+            "max_concurrent_non_model_jobs": "default",
+            "max_concurrent_model_operations": "default",
+            "max_parallel_candidates": "default",
+            "max_deep_scan_width": "default",
+            "max_council_members": "default"
+          }
         },
         "restartRequired": true
       },

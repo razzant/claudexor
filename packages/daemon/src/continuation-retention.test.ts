@@ -10,7 +10,7 @@ import {
   retainedEnvelopeOfRun,
 } from "@claudexor/workspace";
 import { discardRunResult } from "../../control-api/src/run-discard.js";
-import { prunableCommandIds } from "./command-retention.js";
+import { prunableCommandIds } from "./store/test-support/fixtures/legacy/daemon/command-retention.js";
 import type { JobRecord } from "./server.js";
 
 const dirs: string[] = [];

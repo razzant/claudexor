@@ -5,11 +5,7 @@ import {
   WorkspaceMode,
   effortJsonSchema,
 } from "@claudexor/schema";
-import {
-  safeProblemContext,
-  safeProblemMessage,
-  safeProblemRequiredActions,
-} from "@claudexor/util";
+import { mcpToolFailure } from "./tool-failure.js";
 import { formatRunResult } from "./run-result-format.js";
 import { inlineJsonSchemaRefs } from "./inline-json-schema-refs.js";
 import type { McpTool, McpToolOutput, RunnerFn } from "./index.js";
@@ -98,24 +94,7 @@ export function threadTools(runner: RunnerFn): McpTool[] {
         structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
       };
     } catch (error) {
-      const record = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
-      const message = safeProblemMessage(error);
-      const failure: Record<string, unknown> = { message };
-      if (typeof record["code"] === "string") failure["code"] = safeProblemMessage(record["code"]);
-      if (typeof record["retryable"] === "boolean") failure["retryable"] = record["retryable"];
-      const fieldErrors = safeProblemContext(record["fieldErrors"]);
-      if (Object.keys(fieldErrors).length > 0) failure["fieldErrors"] = fieldErrors;
-      const requiredActions = safeProblemRequiredActions(record["requiredActions"]);
-      if (requiredActions.length > 0) failure["requiredActions"] = requiredActions;
-      const details = safeProblemContext(record["details"]);
-      if (Object.keys(details).length > 0) failure["details"] = details;
-      const context = safeProblemContext(record["context"]);
-      if (Object.keys(context).length > 0) failure["context"] = context;
-      return {
-        text: typeof failure["code"] === "string" ? `${failure["code"]}: ${message}` : message,
-        structured: { status: "failed", failure },
-        isError: true,
-      };
+      return mcpToolFailure(error);
     }
   };
   return [

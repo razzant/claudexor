@@ -201,78 +201,19 @@ at every wire boundary.
 - `packages/artifact-store`, `packages/event-log`: run artifact tree and
   append-only event log writers.
 - `packages/control-api`: loopback HTTP/SSE facade over daemon and run artifacts.
-- `packages/journal`: the checksummed append-only journal primitive
-  (frame codec, fsync ACK discipline) that the daemon's durable state rides on.
-  The fsync-before-ACK discipline is kernel-proven on POSIX only: win32
-  directory-entry flushes are tolerated to fail (`fsyncDirectory`), so a Windows
-  crash can resurrect a completed append's intent file and recovery will then
-  discard that acknowledged frame (disclosed, loud in the journal record).
-  When a validated pending append needs truncation on Windows, recovery uses a
-  temporary non-append descriptor verified against the canonical writer's file
-  identity. It closes that descriptor after truncate/fsync and before removing
-  the intent; ordinary writes retain their append descriptor and ACK discipline.
-  Replay is a positional frame-at-a-time read over the descriptor with bounded
-  buffers: the journal file is never loaded whole, the read-only preparation
-  fingerprint streams the same bytes through its content hash, and memory is
-  proportional to the retained record set rather than the file. A caller may
-  supply a `fold` (`JournalFold`: per-record drop / single-holder slot /
-  multi-holder group / retire verdicts, applied in sequence order); the journal
-  stays generic and never decides what is dead. The fold runs at replay and at
-  background compaction, so `records()` is the retained set while epoch, next
-  sequence, and hash chain always come from the last frame on disk, even when
-  that frame was folded away. Compacted snapshots keep their gzip framing but
-  replay logical records one at a time; a snapshot may be a chain of several
-  `journal.compacted_snapshot` frames whose records carry their original `seq`
-  (`count <= logicalSpan`, chunks cut by logical bytes so each fits the frame
-  payload cap), and the legacy dense single-frame layout still decodes. Replay
-  bounds decompressed output per frame. A maintenance pass that cannot produce
-  a smaller file returns a typed decline (`aborted`, `below_threshold`, `empty`,
-  `capacity`, `no_reclaim`) and leaves the existing frames untouched, so a large
-  valid history remains readable and startup stays ready. Library constructor
-  and prepared-activation triggers remain synchronous by default; a journal
-  constructed with a fold never uses the lossless single-frame writer at all:
-  threshold compaction is skipped and an explicit `compact()` call is refused,
-  because that legacy snapshot would let an older engine read the folded set
-  as a complete history. A fold implies the deferred seq-preserving background
-  path. The daemon
-  opts into deferred maintenance and streams compaction after normal admission;
-  see the lifecycle section below. Projection reads select exact record types
-  before payload copying; every read sees the retained set, and sequence
-  numbers and cursors are the original ones.
-- `packages/daemon`: durable local queue (Unix socket on POSIX, named pipe on win32), the in-process facade client its own control API uses, and journal projections for commands, projects, and threads.
-  Project projections select their own record types; run-event history is validated
-  once per projection creation through its descriptor. Direct RunEventStore
-  construction still validates by default. Preparation and post-open activation
-  retain their content/path identity checks; required replay still performs
-  synchronous work proportional to the retained record set (the file is read
-  frame by frame, never whole), while automatic compaction runs separately
-  after admission. A command's params are immutable after
-  acceptance: only `command.accepted` carries them, every `command.updated`
-  frame omits them, and replay merges the accepted params back (legacy
-  full-record updates replay unchanged). Every partition replays and compacts
-  through the daemon's fold policy (`journal-fold-policy.ts`), which decides
-  what a partition may forget: a command keeps its acceptance and its latest
-  update; a prune tombstone forgets both, retires the pruned runs' journaled
-  events, and survives as the latest tombstone per root set so crash-GC keeps
-  those project roots (model-operation receipts are never pruned); a finished
-  run keeps only its terminal event; a resolved question forgets its request
-  and resolution together (answering an already-resolved question after a
-  restart reports `not_found` rather than `already_resolved` — both
-  non-delivery statuses; within one process life `already_resolved` is
-  unchanged); duplicate acceptance, terminal or request frames survive the
-  fold until their pair or prune tombstone retires the whole group, so replay
-  validation refuses them as loudly as on an unfolded journal; quota keeps the
-  latest projection marker and, per
-  subject, the latest scoped prepare and the latest upsert (adjacency on disk
-  still decides which pair commits; at most one stale prepare frame per subject
-  survives); thread pings keep the latest revision; setup saves are kept whole
-  and a terminal save forgets the job's log lines; everything else — and
-  anything the policy cannot classify — is kept. Startup memory therefore
-  follows the retained set, not the file.
+- `packages/daemon`: the durable local queue (Unix socket on POSIX, named pipe
+  on Windows), its in-process facade client, and one SQLite engine store for
+  commands, projects, threads and logical event ledgers. SQL state tables are
+  the projections; addressed queries hydrate only selected bodies. The existing
+  quota and setup reducers replay selected SQL event rows. The importer alone
+  uses the read-only frame/intent reader under `store/legacy-journal/`; writable
+  journal serving and compaction are retired. The frozen legacy implementation
+  remains test-only. See [SQLite engine store](#sqlite-engine-store) for commit,
+  retention, migration and recovery semantics.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
   (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
   skill/MCP artifacts and commands; portable distributions live under `plugins/`. Plugin
-  lifecycle state is user-level local setup state, not a schema/control-api
+  lifecycle state is user-level local setup state, not a control-api
   contract.
 - `packages/claudexor`: the bare-name npm bin wrapper — `claudexor` and
   `claudexord` bins that import `@claudexor/cli`'s explicit entry exports;
@@ -285,7 +226,8 @@ at every wire boundary.
   Tasks stabilize, MCP returns a durable run handle and exposes explicit
   status/result/cancel/interaction tools; it does not hold a tool call open or
   advertise Tasks. MCP persistent-thread create/turn pass an optional caller key
-  to the daemon's existing idempotent journal; read projects its thread detail
+  to the daemon's existing idempotent command authority; read projects its
+  thread detail
   without starting a run or a daemon. ACP uses the official TypeScript SDK at stable protocol v1;
   its session IDs are daemon thread IDs and list/load/resume/close/prompt/cancel
   all project the same `/v2` thread authority. ACP images and embedded resources
@@ -307,6 +249,17 @@ Host integrations are generated translational artifacts: Claude Code, Codex,
 Cursor, and OpenCode files point at the local CLI/MCP server and carry ownership
 markers for safe repair/uninstall. They do not route work or duplicate
 orchestration logic.
+
+The schema-owned `ExternalHostBinding` is optional local integration state in
+the existing plugin `HostState` ledger. `plugin-runtime.ts` projects one argv
+prefix and environment into MCP, shell fallbacks, doctor and Claude statusline.
+An installed canonical MCP source addresses its ledger even when repair runs
+from another CLI/root; host caches remain host-owned copies. `daemon-owner.ts`
+validates explicit lifecycle ownership, and `ensureDaemon` attaches before
+token/root creation when ownership is external. The same existing connection
+retains recovery-only mode. Delegate lineage is independent of this connection
+policy. Registration and compatibility are documented under
+[externally owned host integrations](INTEGRATIONS.md#externally-owned-host-integrations).
 
 ### External-orchestrator workspaces and native access
 
@@ -799,7 +752,7 @@ Codex owns one native
 `app-server --stdio` JSON-RPC child per Claudexor run. The adapter keeps the run
 active while a native turn, active goal continuation, or run-owned background
 terminal exists. Native thread/turn ids are control handles, not durable engine
-truth; the daemon journal remains authoritative. Stop pauses an active goal,
+truth; the engine store remains authoritative. Stop pauses an active goal,
 interrupts the exact stored turn id, terminates only background terminals whose
 item ids were observed in that run, verifies quiescence, then reaps app-server.
 Finality belongs to the ROOT thread (`app-server-threads.ts`): Codex may spawn
@@ -979,7 +932,7 @@ silently authenticate with a host login).
 
 Run params are validated before daemon enqueue. Inline `env`, `secrets`,
 `api_key`, `token`, `password`, or similar fields are rejected, so daemon
-run requests never turn the command journal into a secret store. Secret-setting
+run requests never turn the command store into a secret store. Secret-setting
 endpoints bypass command persistence and write only to the secret store.
 
 Scoped harness homes/config dirs live outside worktree `tree/`, so `git add -A`
@@ -1014,7 +967,7 @@ use those helpers and keep their own visible-terminal policy.
 ### Account resources and explicit resets
 
 `QuotaRegistry` also owns independently observed balances, spending, reset inventory
-and diagnostics. Versioned resource observations share the existing global journal;
+and diagnostics. Versioned resource observations share the global SQL event ledger;
 quota windows keep their strict schema and their existing admission/supersession owner.
 Resource facets carry a successful observation time, a separate last attempt, source,
 and freshness. A missing or failed facet preserves its last known value as stale;
@@ -1038,13 +991,15 @@ The internal observation's `resets_resolved_ids` names programs authoritatively 
 in that cycle, including explicit null from that program's reader. An omitted or
 malformed body is unresolved. Merge drops resolved-absent offers and retains unread
 ones without inventing an error; retaining any unread offer keeps the single facet
-clock stale. Coverage is not a public snapshot field. The journal stores the merged
+clock stale. Coverage is not a public snapshot field. The event ledger stores the merged
 complete row and replay installs it, while legacy partial rows still merge as deltas.
 
-`POST /v2/account-resets` is a direct control operation backed by `CommandStore`,
+`POST /v2/account-resets` is a direct control operation backed by the command store,
 independent of inference queue capacity. Its required Idempotency-Key binds the exact
 request, canonical native account fingerprint, selected grant/program and native request
-id before dispatch. Keep the original body and key through an HTTP timeout, even if no
+id before dispatch. The native reset starts only after `flushed()` covers that
+intent; an unavailable barrier returns the retained `unavailable` receipt without
+native I/O. Keep the original body and key through an HTTP timeout, even if no
 receipt id arrived. `GET /v2/account-resets/:id` reads the durable receipt. Outcome and
 resource readback are independent: confirmed reset survives failed readback. Codex
 same-key `already_redeemed` confirms its operation; Claude `already_used` does not.
@@ -1116,7 +1071,9 @@ downgrade window (the row is the authority; its Enabled PATCH updates the
 mirror). The supported downgrade path is the engine's own rollback —
 `POST /v2/accounts-migration/rollback` / `claudexor profiles
 rollback-migration` — run BEFORE installing an older engine whose
-canonicalizers refuse the native locator. `claudexor auth login <harness>` is
+canonicalizers refuse the native locator. That account-registration rollback
+cannot undo the SQL engine-store migration or lower its semantic floor.
+`claudexor auth login <harness>` is
 bootstrap sugar: it ensures the `<harness>-default` row (claude/codex on their
 native dirs; cursor on an isolated file-store dir) and signs into it; a
 cancelled or failed login keeps the cold row with its Sign-in affordance.
@@ -1257,7 +1214,7 @@ MIGRATED row additionally retires its legacy aliases — the null quota
 subject, the `<harness>-default` lane homes, and the migration record — in
 the same lifecycle operation, so deletion
 cannot leave a route that fails on the next turn or resurrect a session if the
-id is recreated. Dependent journal
+id is recreated. Dependent partition-state
 invalidation happens before registry removal; any unhealthy project partition
 returns typed 409/recovery-required, leaving the profile retryable.
 
@@ -1559,38 +1516,65 @@ owns that copy.
 Every public CLI mode (`ask`, `plan`, `agent`) and the
 interactive REPL enters through the managed daemon and `/v2`; the CLI starts it
 when needed and fails loudly if it cannot. There is no second in-process CLI
-run/thread authority. The daemon remains the single scheduler and journal
+run/thread authority. The daemon remains the single scheduler and SQL row
 writer while the mode pipelines below retain their distinct mutability.
-The daemon admits `runtime.max_concurrent` regular jobs per data root (default
-24). Agents and model operations share this pool; internal candidate and review
-processes are not additional daemon jobs. The same startup snapshot owns
-`runtime.max_parallel_candidates` (default 4 active best-of candidates or scouts),
-`runtime.max_deep_scan_width` (default 8 scouts), and `runtime.max_council_members`
-(default 4 distinct members, minimum 2). These settings accept safe integers
-without a product upper ceiling. They limit capacity, not the requested work:
-request widths and their defaults remain separate. Same-thread turns stay
-serialized; nested Delegate retains its eight-child, depth-one, single-overflow
-contracts. Raising regular capacity does not change those contracts or quotas.
+The existing queue distinguishes `model` operations from `non_model` jobs
+(Ask, Plan, Agent, maintenance and other commands). Admission has three axes:
+`runtime.max_concurrent` is a GLOBAL cap across both classes;
+`runtime.max_concurrent_non_model_jobs` and
+`runtime.max_concurrent_model_operations` constrain their respective classes.
+Each accepts a positive safe integer or `unlimited`. An absent key has no
+implicit finite ceiling, including for library embedders; `0`, negatives,
+fractions, unsafe integers and `null` are invalid. A previously saved finite
+`max_concurrent` or explicit embedder `maxConcurrent` keeps its global meaning.
+It is never silently converted to an Agent-only limit or discarded as an old default.
 
-Set the four keys under `runtime` in the user-global `config.yaml` (the selected
-`CLAUDEXOR_CONFIG_DIR`), or use the corresponding environment overrides in
+One queue and runner lifecycle remain. The scheduler selects the next eligible
+job when another class or thread is blocked, preserving ordinary eligible order
+and existing Delegate-child precedence. Same-thread turns stay serialized;
+Delegate retains its eight-child, depth-one, single-overflow contract under both
+class and global saturation. Compact queued/active identities carry only the id,
+class, thread and Delegate fact; admission never scans retained command history.
+Every runner, including a model's route preparation, dispatch and result
+settlement, remains in total activity and the shutdown/replacement drain.
+Cancelling a running operation does not release its permit before settlement.
+
+Strategy width remains independent: `runtime.max_parallel_candidates` defaults
+to 4 active best-of candidates or scouts, `runtime.max_deep_scan_width` to 8
+scouts, and `runtime.max_council_members` to 4 distinct members (minimum 2).
+These three settings remain finite positive safe integers. Removing an admission
+ceiling does not change requested strategy widths, account quotas or provider
+retry policy, and it is not a physical resource guarantee or an automatic governor.
+
+All six keys live in user-global `config.yaml` (the selected
+`CLAUDEXOR_CONFIG_DIR`); their environment overrides are listed in
 [INTEGRATIONS](INTEGRATIONS.md#environment-reference). Environment wins over YAML.
-Caps are read once at startup; changing the file never resizes or preempts live
-work. `GET /v2/settings` and `settings show` report `runtime.concurrency` with
-configured values resolved from YAML and the current process environment,
-startup-frozen effective values, and `restartRequired`. An older engine omits
-this block; clients must not substitute defaults. Daemon status health reports
-effective `capacity`. Runtime keys remain file/environment settings, not writable
-through `POST /v2/settings`. Use managed replacement after work drains to apply
-changes. An environment change outside the running process is visible only at
-its next launch.
+Caps and their source are captured once at startup. Config changes do not resize,
+preempt or cancel running work. Settings and CLI report `runtime.concurrency`
+configured/effective values, source (`default`, `config`, `environment`,
+`embedder`, or unknown when a reader lacks evidence), and `restartRequired`.
+`default` identifies absence; a saved or environment `unlimited` is explicit.
+An older engine's missing class/source fields remain unknown, never zero or 24.
+The independent strategy widths remain present even when admission is unlimited.
 
-Unrelated settings writes omit newly materialized concurrency defaults, while
-explicit YAML keys survive (including values equal to defaults). For rollback
-to an engine predating these keys, remove the explicit concurrency keys from
-YAML first; older strict parsers reject them. Environment-only overrides do not
-introduce unknown YAML keys. Library embedders omitting `DaemonServer` capacity
-retain the historical twelve-job fallback.
+Daemon status preserves total `active`, `queue` and `running`, adds class counts
+under `admission`, and reports effective `capacity`. A model operation's optional
+`admission` is a synchronous observation of that exact job: queued/active and
+known global-limit, class-limit, busy-thread or stopping blockers. It is not a
+provider-dispatch claim or a durable receipt. After runner settlement the live
+admission observation is null; older engines omit the field. The CLI control-service
+projection reads it alongside the current operation state without another poller.
+
+Runtime caps remain file/environment settings, not writable through
+`POST /v2/settings`. Unrelated settings writes preserve absent keys and every
+explicit value, including old 24 and explicit unlimited. Use managed replacement
+after work drains to adopt changed caps; external environment changes are visible
+only at next launch. The number-or-unlimited payload requires a compatible client;
+protocol major 3 alone does not make a finite-only decoder compatible. Updating
+first-party clients is coordinated with the engine release: engine 4.0 requires
+application 4.0. The existing `appUpdateRequired` path keeps the old working
+engine until the app is updated; no numeric sentinel hides unlimited from an
+old client.
 
 `claudexor doctor`, `models`, and `auth status` are also thin projections of the
 daemon's typed `/v2/harnesses` and `/v2/harnesses/:id/models` readiness services;
@@ -1681,7 +1665,7 @@ not to an unobserved whole source tree. Null preimages mean proven absence;
 `unknown` cannot authorize overwriting an existing target. Copied inputs remain
 available for fresh verification, and new outputs outside the initial selection
 are retained. The artifact endpoint streams exact manifest-referenced bytes;
-bounded previews are not delivery payloads. Apply uses the existing journal,
+bounded previews are not delivery payloads. Apply uses the existing command authority,
 target mutation lease, verifier and per-file preimage checks against the original
 source root. File contents, modes, directory entries and symlink targets retain
 their filesystem meaning; special entries or unsupported filesystem operations
@@ -1969,8 +1953,11 @@ caller rereads current authorization. Selection hands its exact-profile catalog
 to this operation's invocation, which rechecks the current account fingerprint;
 no catalog or credentials are cached across operations. Unknown fingerprints
 retain fresh discovery and cannot authorize native continuation reuse.
-Its single inference POST follows a durable dispatch receipt. Exact JSON bytes
-stream with Content-Length. `request-delivery.ts` observes public callbacks on
+Its single inference POST follows a committed dispatch receipt and a completed
+`flushed()` barrier. A barrier failure or cancellation while the adapter is still
+waiting inside that callback sends nothing and retains `not_started` with the
+attempt stamp and route. Once the callback returns, an uncertain outcome remains
+unknown. Exact JSON bytes stream with Content-Length. `request-delivery.ts` observes public callbacks on
 the existing dispatcher; its lazy `dispatcher-accessor.cts` preserves native
 cold initialization, proxy, TLS and pool ownership. Positive connector or
 incomplete-upload proof yields `transport_not_delivered`; full handoff or
@@ -2019,10 +2006,11 @@ named, so a turn another model answered is not replayed under the requested
 model either, and an unknown model leaves it unbound.
 
 `ModelOperations` uses the existing daemon command store, idempotency lookup,
-queue capacity, cancellation and terminal boundary. Models and Agents share the
-regular slots described in [Main Execution Paths](#6-main-execution-paths); a
-running model generation occupies one until it settles or is cancelled. Model commands do not appear
-as Agent Runs. The journal contains content hashes and resource references, not
+queue capacity, cancellation and terminal boundary. Model runners use their class
+limit and any explicit global limit described in [Main Execution Paths](#6-main-execution-paths).
+Their permit remains occupied until runner settlement, including cancellation;
+waiting for a client's result-digest ACK does not hold it. Model commands do not appear
+as Agent Runs. The command store contains content hashes and resource references, not
 the full conversation. A model-purpose upload uses `ResourceStore`'s atomic
 finalization; its contents are not filtered for secret-like text, and it cannot
 be resolved as an ordinary Agent attachment. Engine authorization never enters
@@ -2032,13 +2020,15 @@ Result GET returns exact digest-bound bytes without acknowledging them. A client
 accepts custody before ACK; a lost local reply is recovered using the same
 operation identity. Request bytes are released at terminal state, response bytes
 after ACK, and unacknowledged responses after 30 days from readiness. Existing
-maintenance reclaims crash residue. Redundant uploads on an idempotent create are
+maintenance reclaims crash residue. A recorded response expiry remains its
+release timestamp through delayed cleanup and restart; ordinary ACK uses its
+actual release time. Redundant uploads on an idempotent create are
 released without touching another live command's input. Compact model receipts
 and idempotency bindings are excluded from Agent history age/cap pruning, so an expired or
 acknowledged result cannot accidentally trigger another generation. A provider
 refusal, an operation that never dispatched and an unknown outcome after engine
 death are separate facts. A crash after response bytes are published but before
-the command's terminal journal commit retains an unknown outcome; uncommitted
+the command's terminal SQL commit retains an unknown outcome; uncommitted
 bytes cannot certify a completed response and are reclaimed as crash residue.
 
 Callers may request `captureEffortEvidence=true` on the existing model-operation
@@ -2064,7 +2054,7 @@ An absent response contributes zero body bytes. `bodyComplete` means observed
 reader EOF, independently of provider terminal framing; an unreceived suffix is
 never claimed captured. Successful completed results carry no duplicate wire.
 The evidence follows the existing result resource, GET, ACK and expiry; only
-compact structural diagnostics enter the problem, journal and status.
+compact structural diagnostics enter the problem, event ledger and status.
 For a failed or unknown stream, compact problem context also carries
 `timeToFirstChunkMs`, `lastChunkAfterResponseMs`, `silenceMs`, and
 `largestSilenceMs` when the reader saw bytes. `lastEventAfterResponseMs` and
@@ -2192,7 +2182,8 @@ The authenticated read-only `GET /v2/daemon/status` exposes daemon health and
 current memory facts (heap used/limit, RSS, external bytes, effective heap args),
 plus the first normal-admission snapshot. It is also available in recovery-only
 mode, where admission memory is null until normal admission has opened. Sampling
-does not force GC or traverse retained commands; job counts use store sizes.
+does not force GC or materialize retained commands; total job count comes from
+SQL and active/queued counts come from the existing live runner lifecycle.
 `loop` carries the last completed ten-second window of event-loop facts: delay
 p50/p99/max from `monitorEventLoopDelay` (sampled at 10 ms, so an idle loop's
 p50 sits near 10 ms, and reset every window), the `eventLoopUtilization` busy
@@ -2201,7 +2192,10 @@ It is null until the first window completes; a stalled loop rolls its window
 late, so `windowMs` grows with the stall. `claudexor daemon status` prints the
 same window as one line. The status route reaches the daemon in process, so it
 answers while the loop is merely slow. The protocol handshake remains unchanged.
-No memory or loop thresholds affect admission.
+The `store` facts report flusher state, interval, last barrier and lag, WAL bytes,
+open obligations, busy waits, integrity and current import progress. A field is
+null when its owner cannot observe it; pending integrity is not a successful check.
+No memory, loop or store measurements impose automatic admission thresholds.
 
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
 - `GET /healthz`
@@ -2407,7 +2401,7 @@ not retry automatically.
   workspaces, above). It also carries sticky routing — `primaryHarness` and
   `eligibleHarnesses` — that its turns inherit; `PATCH /v2/threads/:id` renames /
   archives a thread (title + open/closed state) and switches the sticky
-  routing. Its optional `folder` label is daemon-owned and journaled with the
+  routing. Its optional `folder` label is daemon-owned and persisted with the
   thread; the client derives folder sections from those labels rather than
   keeping a second local folder store. A PATCH that changes only `folder` is
   filing, not activity: it keeps the thread's `updatedAt`, so the list order
@@ -2451,7 +2445,7 @@ not retry automatically.
   Ask/Plan turn can run inside the lane home purge deletes; trash and restore
   delete nothing and never refuse a busy thread. What purge deletes and keeps
   is listed here once; DESIGN_SYSTEM (the Delete Now dialog) and the FEATURES
-  row refer to it. Purge journals the `purged` state first, which takes the
+  row refer to it. Purge commits the `purged` state first, which takes the
   thread out of every listing, then deletes the thread's own directories: the
   isolated worktree, with any changes never applied to the project, and its
   `claudexor/thread-*` branch, and every lane home (the per-thread HOME of its
@@ -2465,7 +2459,8 @@ not retry automatically.
   whose rows it could all decode; a repeated purge or the next disk-retention
   pass (below) finishes the cleanup, and nothing makes a partially deleted
   thread restorable again. Purge does not erase the
-  conversation: the thread and turn records stay in the journal, run trees
+  conversation: thread, turn, session and checkpoint rows and original prompt
+  bodies stay in the engine store, run trees
   follow the run retention below, native sessions that a route keeps outside
   the lane home stay in the agent's own storage (Agent turns, and Codex
   config-dir login profiles and Antigravity, which keep sessions in the
@@ -2499,15 +2494,9 @@ not retry automatically.
 - Run-level `POST /v2/runs/:id/retry` is Exact Retry for any settled run: it
   creates a new command/turn, links `retryOf`, reuses the immutable original
   request, and performs fresh normalization/preflight. Retained terminal
-  product commands are bounded twice — by the age/cap rule (the newest 500 and
-  anything younger than 30 days survive) and by a code constant on their
-  serialized params (256 MiB, pruned oldest first regardless of age;
-  needs-decision runs and model receipts are exempt, and delivery commands —
-  which carry a copy of the applied run's params — keep their own age/cap
-  policy and neither count against nor are pruned by the byte budget) —
-  applied at normal
-  admission and after every terminal, so on a heavy install Exact Retry of the
-  oldest, largest prompts can end before the 30-day window. `GET
+  product commands follow the global age/cap policy and continuation exemptions
+  in [SQLite engine store](#sqlite-engine-store). There is no separate prompt-byte
+  budget that shortens Exact Retry's retained-command lifetime. `GET
   /v2/runs/:id/run-again` instead returns an editable draft and explicitly
   lists server-owned fields omitted from that draft. The CLI projects these as
   `claudexor retry` and `claudexor run-again`. Durable idempotent replay is
@@ -2525,7 +2514,7 @@ not retry automatically.
   in the existing problem context, with the preflight error separately retained
   when that second lookup failed. Neither failure proves no prior acceptance.
   If no command was
-  accepted, a replay may reuse its one journaled runless turn only while that
+  accepted, a replay may reuse its one persisted runless turn only while that
   turn is still the conversation tail; the recovery boundary refuses a
   historical orphan before enqueue. Already accepted commands remain valid and
   bind in daemon command order even when later turn bubbles exist. If command
@@ -2565,11 +2554,12 @@ not retry automatically.
   `nextActions`, and the vendor's own typed failure, when the harness keeps one,
   rides `failure.vendorFailure` as opaque evidence that carries no remedy.
 - `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
-  `accept_risk` / `override_needs_human` append an auditable patch-hash-bound
-  record to the owning global/project journal before ACK. The run artifact
+  `accept_risk` / `override_needs_human` commit the auditable patch-hash-bound
+  decision and its idempotency binding in the owning partition generation before
+  ACK. The run artifact
   `arbitration/operator_decision.yaml` is only a compatibility projection for
-  artifact-only CLI reads; the apply gate reads journal authority. A same-key
-  replay reads that journal authority before the thread's current idle gate and
+  artifact-only CLI reads; the apply gate reads the stored decision. A same-key
+  replay reads that stored authority before the thread's current idle gate and
   repeats the lookup inside the serialized mutation to close a concurrent-record
   race;
   `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
@@ -2612,11 +2602,11 @@ not retry automatically.
   include their direct Delegate children for turn cards, even when the child
   has no thread id. A page crosses RPC
   with at most `limit+1` records; HTTP keeps its existing summary and cursor
-  contract. Reference/metadata scans remain O(N), separate from journal replay
-  memory. The transitive cancellation cascade stays uncapped; traversal runs
-  inside the daemon before serialization. Continuation preflight reads only the
-  predecessor and forward chain, while the authoritative synchronous enqueue
-  check still uses all records immediately before durable acceptance.
+  contract. SQL uses addressed indexes and bounded keyset pages before projection.
+  The transitive cancellation cascade stays uncapped; traversal runs inside the
+  daemon before serialization. Continuation preflight and synchronous enqueue
+  inspect the addressed predecessor and successor chain before acceptance,
+  without materializing retained command history.
 - `claudexor settings show|set` is a thin client of `GET|POST /v2/settings`.
   Validation, persistence, cache invalidation, and the returned effective
   `ControlSettingsSnapshot` come from the daemon; the CLI has no second config
@@ -2765,20 +2755,20 @@ In the daemon composition root, the lifecycle-significant events — `run.create
 (journaled with the prompt's sha256 digest and byte length in place of the
 prompt text), `interaction.requested`, `interaction.answered`,
 `interaction.timeout`, `output.ready` and the terminal
-`run.completed|run.failed|run.blocked` — are also appended to the run's owning
-global/project journal partition before live bus publication. Per-token
+`run.completed|run.failed|run.blocked` — also commit to the SQL event ledger of
+its global/project partition generation before live bus publication. Per-token
 `harness.event` deltas and every other progress event reach only the per-run
-`events.jsonl` and the in-process bus, so scoped journal streams replay the run
-LIFECYCLE after restart, never token-level progress. A journal sink failure for a
-journaled event fails the producer/run instead of being swallowed as a live-only
-gap; an event outside the journaled set is never a sink failure.
+`events.jsonl` and the in-process bus, so scoped event streams replay the run
+LIFECYCLE after restart, never token-level progress. Failure to commit a retained
+lifecycle event fails its producer/run instead of being swallowed as a live-only
+gap; progress outside that set does not enter the SQL sink.
 `GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
 already reflected in that snapshot, read from the live writer's in-memory counter
 or, for a finished run, from the log's last line (a full scan only when that line
 cannot decide) — so a client subscribes to
 `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
 no gaps and no duplicates. The per-run stream replays from the run's
-`events.jsonl` — the one complete per-run event record; the journal partition
+`events.jsonl` — the one complete per-run event record; the SQL event ledger
 holds only the lifecycle subset above, so it can restore a run's terminal tail
 but never rebuild the full stream — (old pre-seq fixture lines fall back to
 line-number ids) and is
@@ -2788,15 +2778,17 @@ fallback; `output.ready` is guaranteed to precede the terminal
 has applied the terminal event provably has the output. The EventLog's
 once-only terminal-preparation hook also builds and validates the immutable
 `RunFacts` receipt in memory and embeds that exact object in the terminal
-journal event. Terminal commit order is: owning partition journal, atomic
-telemetry/`final/run_facts.yaml` projection, per-run `events.jsonl`, then
-best-effort live publication. An observer that has seen the terminal event can
-therefore fetch the exact validated receipt rather than racing terminalization.
-A failure before journal acceptance leaves no terminal authority and may use
-the safety-net retry. A local failure after journal acceptance preserves the
-typed `terminal_recovery_required` signal; the daemon immediately (or on
-restart) validates the journal payload, repairs a missing/torn receipt and
-per-run terminal tail, and terminalizes the command from that same `RunFacts`.
+event. One SQL transaction commits the command result, immutable `run_terminal`
+event, scoped event copies and a `pending` terminal-files obligation. The file
+owner then materializes telemetry, `final/run_facts.yaml` and the per-run terminal
+line before best-effort live publication. A file error leaves the SQL terminal
+and its obligation intact; immediate reconciliation or startup retries those
+same file effects without another generation or a second terminal authority.
+The obligation becomes `materialized` only after every effect completed, then
+is removed after its registered generation passes the flusher barrier. Per-run
+SSE does not emit `end` while it is `pending`, even if a terminal line is already
+present in the file. An absent or materialized obligation permits the existing
+file/terminal end rule. There is no separate terminal-recovery flag.
 Once a terminal commits, EventLog refuses every later terminal or engine emit
 for that run; post-terminal control audit events continue the monotonic file
 sequence.
@@ -2834,19 +2826,23 @@ Cancellation wins only until the synchronous terminal commit starts. An abort
 observed before the terminal barrier replaces the prepared outcome with
 cancellation facts while retaining the independent checks/review/no-change/
 work-state evidence already established for the run. Once a terminal has
-committed to the owning journal, Cancel is a NO-OP: the committed terminal
+committed to the engine store, Cancel is a NO-OP: the committed terminal
 wins, a later abort cannot rewrite the durable result, EventLog refuses every
 later terminal emit, and the daemon keeps reporting the committed outcome.
 The `aborted -> cancelled` mapping survives only as the daemon's fail-closed
 fallback classification for a malformed runner result with no recognized
 lifecycle.
 
-`GET /v2/global/events` and `GET /v2/projects/:id/events` replay the durable
-global or project journal partition and then tail it. Their `Last-Event-ID`
-values are opaque, partition-scoped cursors: a cursor from another partition or
-epoch is rejected so the client can re-snapshot that scope. The API does not
-claim a total order across partitions. There is no live-only compatibility
-multiplex in v2.
+`GET /v2/global/events` and `GET /v2/projects/:id/events` read the retained SQL
+event rows for the current partition generation. Live delivery uses that same
+retained set: a row superseded before a poll is not delivered. The protocol-3
+`ControlJournalEvent` shape and opaque `{v,p,e,s}` cursor encoding are unchanged;
+import preserves original epochs and sparse sequences, including a folded-away
+last frame. A foreign partition/epoch or ahead sequence is rejected with 409 and
+`resnapshot`. The API claims no total order across partitions and has no separate
+live-only stream. `thread.entities_upserted` is state in tables, not a streamed
+event. Model/account-reset event copies expire after 30 days; their command
+receipts remain retained independently.
 
 The global partition additionally carries `thread.head.updated` — a
 content-free invalidation ping `{thread_id, project_id, revision}` emitted on
@@ -2866,35 +2862,19 @@ lost" when the stream ends without a terminal event.
 
 ### Daemon lifecycle (signals, orphans, crash GC)
 
-Directory terminal facts require a reader that supports the files-result
-contract. The new reader retains compatibility with earlier state and requests;
-the 3.10.5 reader cannot reopen a journal containing these terminal facts for
-normal service. Returning to an older binary after using the new feature is
-therefore not a supported rollback of that state. Keep journals and results
-intact and recover with a compatible newer reader. A pre-update backup must not
-automatically replace later work. This boundary uses the existing runtime version
-floor and recovery plane; it adds no alternate journal or compatibility shim.
-
-The folded journal is the same kind of boundary. Once this engine has served a
-root, its partitions may hold seq-preserving multi-frame snapshots
-(`count < logicalSpan`), `command.updated` frames without params, digest-only
-quota markers and replay-folded history. The 3.11.0 reader decodes a folded
-snapshot as a record-count mismatch and enters the recovery plane loudly, and
-it would replay a params-less update as a record without params; neither is a
-supported rollback of that state. The root-authority semantic floor is the
-enforcement: the first successful serve of the release that ships the fold
-advances the floor to that version, after which the older engine refuses the
-root typed (`root_authority_floor_regression`) — no second mechanism. A first
-start on a legacy (unfolded) journal folds at replay, so its startup memory
-already follows the retained set; the first background compaction rewrites the
-partition file at that start when the folded replay retired at least a
-threshold's worth of bytes, and otherwise after a threshold of new bytes.
+The engine-store migration is forward-fix only. Before publishing imported SQL
+state, startup advances the existing root-authority semantic floor to 4.0.0.
+Older engines then refuse that root with `root_authority_floor_regression`.
+Keep preserved journals, SQL evidence and run artifacts; an older backup must
+not automatically replace later work. Logical partition recovery and physical
+whole-store recovery are described under
+[Legacy import and recovery](#legacy-import-and-recovery).
 
 Every shutdown trigger — SIGTERM/SIGINT, the `claudexor.shutdown` socket RPC,
 a startup failure — enters ONE state machine (`DaemonRuntimeShutdown
-.beginShutdown(reason)`): abort in-flight runs, complete their journaled
-terminal transitions, close the journal, under a shared bounded escalation
-ladder (hung-stop deadline, then a post-stop leaked-handle sweep, every rung
+.beginShutdown(reason)`): abort in-flight runs, complete their committed
+terminal transitions, await storage/worker cleanup and close the SQL store under
+one shared bounded escalation ladder (hung-stop deadline, then a post-stop leaked-handle sweep, every rung
 disclosed in the log). Awaiting-user interactive login runners are the one
 exemption: the shutdown drain does NOT signal them (a detached Terminal login
 survives an ordinary daemon bounce and is reconciled on the next start;
@@ -2929,7 +2909,7 @@ contender cannot quarantine a live successor. Acquisition is the only
 quarantine mutator and tombstones have no automatic GC.
 
 Above the per-socket lease sits a PERSISTENT root authority for the shared
-data root. Before any journal work the daemon validates/installs a permanent
+data root. Before any store or import work the daemon validates/installs a permanent
 barrier at the canonical default writer address: the lease directory carries
 `root-authority-v2.json` and no top-level owner record, so a pre-fix claimant's
 owner parse fails closed forever (it can neither adopt nor quarantine the
@@ -2944,94 +2924,23 @@ and fail-closed: the writer protocol epoch (foreign epochs refused) and the
 semantic-version floor of the last runtime that PROVED it could serve
 (strictly lower versions refused; equal versions contend normally). The
 barrier survives clean shutdown and is never automatically removed. Startup
-itself is two-stage: after authority, the journal is prepared READ-ONLY (scan/
-verdict, no truncation), the socket + Control API come up serving
-`recovery_only` — health, handshake, shutdown, and the `/recovery/*` surface
-stay reachable while every product route/RPC is refused with a typed
-`daemon_recovery_only` 503 — and only after transport is provably up does the
-daemon revalidate every read-only preparation, and only on all-green advance
-the floor, run destructive recovery (activation truncation, crash GC,
-orphan/debris sweeps, retention), and open normal admission. A root
-with a recovery-needed partition keeps the floor unchanged and destructive
-work off, staying online recovery-only instead of dying dark — the control
-API binds for that plane even under `CLAUDEXOR_NO_CONTROL_API=1`, and a
-successful `/recovery/*` quarantine re-runs the admission completion in
-process, so the daemon transitions to normal serving without a restart. The handshake
-discloses `servingMode` (`normal`/`recovery_only`; absent means a pre-fix
-daemon, treated as normal); the macOS app maps `recovery_only` to its
-existing Connecting loop — no adoption, no hydration, no reconciliation, no
-fallback launch — until admission opens.
+first acquires that authority and binds/proves the real socket and
+Control API with product admission closed. Health, handshake, status, shutdown
+and recovery remain reachable in `recovery_only`; product operations receive
+`daemon_recovery_only`. Only then may the storage owner open or import SQL and
+complete recovery/admission duties. The current global generation must be ready;
+a logically damaged project generation stays isolated while healthy projects
+serve. Physical corruption closes product admission for the whole store.
+Recovery access overrides `CLAUDEXOR_NO_CONTROL_API=1` when needed. A successful
+explicit recovery rebinds the existing SQL/quota/setup owners and re-runs the
+same admission completion in process. The handshake retains `servingMode`;
+the app waits in its existing Connecting flow during import/recovery and does
+not launch a fallback daemon.
 
-Automatic journal compaction is cancellable maintenance after normal admission.
-Every daemon-owned JournalManager opts into `deferCompaction` and requests an
-attempt after its generation opens or recovers. A process-local pending set and
-one in-flight promise serialize global and project partitions and coalesce
-repeated requests — a request that arrives during a generation's own flight
-runs one more pass after it, and a failed or declined pass never condemns the
-generation; new partitions use the same callback. Maintenance is edge-triggered
-on GROWTH: a crossing is a threshold of bytes appended since the last completed
-pass over the data — an install moves that baseline to the installed size, a
-capacity or no-reclaim decline and a FAILED pass (an unwritable staging
-directory, an ENOSPC window) to the size they settled at, and an immediate
-below-threshold, empty or aborted decline moves nothing — so a partition whose
-retained set alone exceeds the threshold (model receipts kept forever, retained
-params up to the byte cap) is compacted once per threshold of new bytes, never
-on every append, and a partition that declined re-runs only after a threshold
-of new bytes. Under a fold the replay at open is itself the first completed
-pass — the baseline starts at the file size minus what the fold retired while
-replaying — so a restart on an already-compacted partition above the threshold
-does not rewrite it to reclaim nothing, while a legacy partition whose replay
-retires a threshold's worth is compacted on its first start. The journal's `onCompactionThreshold` hook fires at most once
-per crossing after an append and is re-armed when a pass completes — install,
-typed decline or a failed pass — so a long-lived daemon that dedupes in-flight
-requests hears
-about every new crossing (and never after the journal is closed). Every pass ends in one daemon-log line that also lands in the startup
-diagnostics record: `journal.records_retired` (`retainedCount`, `retiredCount`,
-`retiredBytes` beside the byte counts, plus the replay-time retirement the
-generation folded away at open) or `journal.compaction_declined` with its
-typed reason and bounds (`compressedBytes`, plus the `cap` that fired for a
-capacity decline). Both lines end with the process memory (`rssMb`,
-`heapUsedMb`, `externalMb`), as does the normal-admission line in the startup
-diagnostics, so the retained-set memory class is observable on every install.
-Below-threshold and empty passes stay silent, and no control-API field carries
-this yet. There is no maintenance job, persisted
-retry state, or manual upkeep requirement. The threshold value is unchanged;
-its meaning is growth since the last pass.
-
-`compactInBackground({stagingDir, signal?})` captures an immutable logical prefix,
-applies the journal's `fold` to it, streams the retained records through
-asynchronous gzip into a chain of seq-preserving snapshot frames, then re-encodes
-the acknowledged tail against the new physical hash chain with its original
-sequence numbers. The boundary it publishes against is disk state (next sequence,
-chain hash, file bytes), not the in-memory entry count, because a fold at replay
-makes the two differ. Preparation writes one private candidate under
-`daemon/journal-compaction/`, outside the partition directory. Appends continue
-through the existing intent/fsync-before-ACK writer. Publication catches up every
-acknowledged batch, validates the current writer/file identity and generation,
-and uses the same short close/rename/reopen installer as synchronous compaction.
-The retained working set, every sequence number and the current epoch survive
-this background rewrite, so live journal cursors keep their suffix without a
-compaction-induced resnapshot; records the supplied fold judged dead are gone
-from the file, and the receipt reports `retainedCount`, `retiredCount` and
-`retiredBytes` beside the byte counts.
-
-Rollback rule: a runtime from before seq-preserving snapshots decodes a folded
-snapshot (`count < logicalSpan`) as a record-count mismatch and enters the
-recovery plane loudly; it never reads a partial world. A snapshot whose chunks
-each hold exactly their span still decodes there, because the extra `seq`
-field is ignored and the tail frames chain by sequence. Returning to such a
-runtime after a fold has run is therefore not a supported rollback of that
-state; the root-authority version floor enforces it.
-
-The public `compact()` still returns a receipt or null immediately and creates a
-new epoch on success; default library construction/activation keeps that behavior.
-Explicit synchronous compaction cancels any background candidate before proceeding.
-Close, quarantine and generation replacement likewise prevent late publication.
-Shutdown fences and aborts maintenance at its synchronous start and drains candidate
-cleanup before journals close. Capacity/no-reclaim results are typed declines that
-preserve the original file, while uncertain installation follows the existing
-recovery-required path. Record serialization and the final filesystem metadata
-operations remain synchronous; this is not a hard realtime latency guarantee.
+SQLite checkpoints, retained-row pruning and the existing maintenance worker
+replace writable journal compaction; their ownership and durability are defined
+below. Startup memory/loop/store measurements remain observations, not an
+automatic resource governor.
 
 Termination, local and remote runtime replacement, and the real-harness
 battery consume the same strict owner classification. They recheck the exact
@@ -3045,30 +2954,32 @@ but cleanup succeeds only after the main lease is physically absent.
 Stdio bridges (`mcp serve`/`acp
 serve`) bound their life to their host's with a reparent watchdog — a dead
 host whose pipe stays open (inherited fds) no longer leaves an idle bridge.
-No-project command state, setup, and the project registry
-are frames in the checksummed global journal. Each registered project's commands,
-threads, turns, and vendor-session cache live in `project:<stable-project-id>`;
-one corrupt project partition does not make healthy projects unreadable. The
-socket returns an enqueue ACK only after append + `fsync`. Create idempotency is
-scoped by client, partition, operation, and key. A restart maps every accepted
-nonterminal command to `interrupted_unknown`; mutating commands are never
-auto-replayed.
+No-project command state, setup and the project registry use the current global
+SQL generation. Each registered project's commands, threads, turns and sessions
+use `project:<stable-project-id>` with its own generation. Enqueue commits before
+ACK; process-crash durability and the separate power-loss barrier are defined in
+[SQLite engine store](#sqlite-engine-store). Create keys keep their exact client,
+partition, operation and key digest, additionally scoped by owner and generation.
+Restart interrupts accepted nonterminal commands; it never automatically replays
+a mutating command or provider generation.
 The deliberately empty-on-v2-start registry is global. `GET/POST /v2/projects`
 list/register canonical local roots and
 `POST /v2/projects/:id/relink` moves an existing stable project id. A
 registration answer carries `created`: true only when that registration made the
 project, false when the root was already registered; an `Idempotency-Key` replay
-repeats its first answer, derived from journal order across restarts, so a
+repeats its retained answer across restart and import, so a
 caller can tell a project it created from one it merely found (`claudexor
 project register` prints `created` or `existing`). Each project
 discloses its nesting relations with other registered roots (`inside` /
 `contains`, never a refusal); the list computes them for the whole registry in
 one pass, each root checked only against its own registered ancestors.
 `DELETE /v2/projects/:id` retires a project — it removes the registry entry and
-ARCHIVES the project's journal partition (renamed out of the active journal
-tree, never deleted, the same non-destructive move the quarantine path uses),
-leaving run artifacts to normal GC and disclosing all of that in a typed
-receipt. It is refused with a typed `409` while any non-purged thread or
+archives its current partition generation through a SQL status/visibility
+transition, retaining its rows and leaving run artifacts to normal GC. The typed
+receipt's `archivedPartitionPath` is the logical locator
+`partition:<name>@<epoch>`, not a filesystem path. Registering the same root
+after archive creates a new project id and generation. Removal is refused with
+a typed `409` while any non-purged thread or
 live/queued run still references the project. The live/queued-run fence is a
 SNAPSHOT, disclosed as such in the receipt (`activeRunCheck: "snapshot"`): the
 active-run root set is read once through the in-process command activity
@@ -3105,9 +3016,9 @@ run candidates are judged, so the runs only it referenced become ordinary
 unreferenced candidates. A thread with a queued or running turn is kept for a
 later pass and disclosed in `errors[]`, as is a failed purge; a dry run purges
 nothing and previews those threads' runs as unreferenced. Before that, the
-pass FINISHES PURGES whose directory cleanup failed after the journal commit:
+pass FINISHES PURGES whose directory cleanup failed after the store commit:
 every purged thread whose isolated worktree or lane home is still on disk goes
-through the same owner again (it journals nothing new and deletes what is
+through the same owner again (it commits no new purge and deletes what is
 left); a cleanup that fails again is disclosed in `errors[]` and retried by the
 next pass, and a dry run only lists them. The receipt's `purged_threads` names
 the purged (or would-be-purged) expired trash and `purge_leftovers` the
@@ -3134,7 +3045,7 @@ spawn. Nothing removes a kept envelope automatically: a successor adopting it
 one. Discard releases the kept tree; a later accepted continuation starts from
 the project base. Command pruning also exempts retained holders and successor commands
 while their predecessor record remains in the kept set, preserving the
-continuation handle and its single-successor claim across journal compaction.
+continuation handle and its single-successor claim across retained-event pruning.
 After a predecessor is pruned, its successor becomes eligible on a later pass.
 The crash sweep never treats a kept envelope as an orphan (its auth is
 stripped again, and a missing holder pointer is rebuilt from authoritative
@@ -3181,43 +3092,33 @@ on exotic filesystems is tolerated at startup (the win32 named pipe is not a
 filesystem entry, so no chmod applies there; the bearer token remains the auth
 gate on every platform).
 
-### Engine store core (not yet wired)
+### SQLite engine store
 
-The serving graph crosses structural store ports (`store-contracts.ts`), not
-the private fields of journal-backed classes. `CommandBackend` supplies addressed
-queries and the global pruning operation; `store/legacy-read-adapter.ts` explicitly
-implements them with the existing journal stores. The scheduler, in-process facade
-and runner continuation reads use that boundary. SQL composition will supply its
-own backend and never inherit the adapter's history scans. Quota reducers consume
-logical `EventLedger` records; setup and product recovery expose their existing
-operations without requiring journal files or startup preparation methods. These
-boundaries do not select a storage mode: production still constructs the legacy
-graph, and the importer will own the one switch to the complete SQL graph.
-
-`packages/daemon/src/store/` holds the SQLite store core that the 4.0 train
-replaces `packages/journal` with. In this tree no store uses it yet: the
-daemon still serves every partition from the checksummed journal, and the
-core is exercised only by its own tests, the bundle smoke and the load harness
-`scripts/store-load-bench.mjs`. Stores move onto it, the importer and the
-startup path arrive, and the journal package is removed in later changes of
-the same train; the invariant rewrites (INV-034, INV-014, INV-064, INV-035)
-and the new store-durability invariant land with that switch.
-
-What the core is:
+`packages/daemon/src/store/` is the single production persistence owner for each
+daemon data root. `SqlDaemonStorage` opens it after transport proof and supplies
+the complete SQL graph. Structural store ports expose domain methods, addressed
+queries and global pruning; they do not select a storage mode. The existing
+scheduler, runner, cancellation and setup lifecycle use those ports. Quota and
+setup retain their established reducers over selected logical `EventLedger`
+rows. The old writable journal graph is retired, with the historical decoder
+kept only for cold import and an independent frozen copy kept for tests.
 
 - One database `engine.sqlite` per daemon data root, opened through the
   `EngineStore` adapter: `node:sqlite` is imported lazily — on the request
   thread when a store opens and inside each worker when it starts — so the
   daemon package itself loads on a Node without that module, and the open
   proves the bundled SQLite is at least 3.51.3 (the WAL-reset corruption fix)
-  or refuses typed (`engine_runtime_unsupported`) before any root is touched;
+  or refuses typed (`engine_runtime_unsupported`) before store bytes are touched;
   the file's
   application id and schema version are checked before any write
   (`store_schema_unsupported`); the connection pragmas are applied and read
   back. The request thread is the single row writer: a mutation is a
   synchronous transaction (BEGIN IMMEDIATE … COMMIT, ROLLBACK in `finally`,
-  asynchronous bodies refused), so "returned" still means "committed and
-  crash-durable", and "durable before effect" stays the next line of code.
+  asynchronous bodies refused) under WAL `synchronous=NORMAL`. Return/ACK means
+  committed and durable across an engine process crash or kill, not power loss
+  or kernel panic: recent commits can be lost until a completed flusher barrier.
+  Provider generation and native account-reset I/O await `flushed()` before the
+  external effect.
   Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
   content-addressed files under the resource store, written in the same tick
   as the owning transaction.
@@ -3229,8 +3130,8 @@ What the core is:
   handed to the drive before it). The barrier is never derived from a
   checkpoint result, and a freshly started or restarted worker treats its
   first pass as dirty. Every connection that can checkpoint — the writer and
-  the flusher; the maintenance connection is read-only and never checkpoints
-  — sets `checkpoint_fullfsync`, so the checkpoint that completes a backfill
+  the flusher; the serving maintenance connection is read-only and never
+  checkpoints — sets `checkpoint_fullfsync`, so the checkpoint that completes a backfill
   syncs WAL → database → reuse in order and database pages become durable
   there, not through the WAL fsync;
   the writer's `wal_autocheckpoint` of 4000 pages (about 16 MiB) is the
@@ -3271,20 +3172,30 @@ What the core is:
   section, retries if the owner moved, keeps if an owner exists, else unlinks.
   `EngineStore` owns this generation map; blob helpers, obligation completion
   and maintenance share it automatically, including when constructed separately.
-- Retention: each `event` row is written under the daemon's journal fold
-  verdict as SQL (retire, slot, group, drop), so the retained set equals the
-  folded journal's. Command rows carry a `kind` set once at accept
+- Retention applies the existing fold verdicts as SQL retire/slot/group/drop
+  operations. Thread/turn/session/checkpoint state is kept in tables and is never
+  age-pruned; thread-entity snapshots consume sequence but are not event rows.
+  Resolved interactions remain resolved across restart until command pruning.
+  Model/account-reset stream copies have a 30-day lifetime independently of
+  their retained command receipts. Command rows carry a `kind` set once at accept
   (`commandKind`) and a `live` flag for the served generations; the bounded
-  prune selects at most one batch of the oldest expired terminal commands by
-  keyset paging over a partial index, with needs-decision rows outside the
-  index and continuation exemptions probed once per candidate. Journal
+  prune uses one default global cap of 500 terminal product/delivery/maintenance
+  commands and admits victims only after 30 days. Exempt and younger commands
+  can keep the total above that cap. Each pass selects at most 100 oldest
+  eligible victims through keyset pages over a partial
+  index, with needs-decision rows outside the candidate index and continuation/
+  retained-envelope exemptions checked once per candidate. Remaining excess is
+  handled on later passes; model and account-reset receipts are exempt. No
+  separate 256 MiB prompt budget shortens this lifetime. Journal
   cursors keep their encoding and map onto the current partition generation;
   a stale epoch or an ahead sequence is refused with the same 409
   `journal_cursor_invalid` and `resnapshot` as today.
 - Facts for the daemon status (measurements, never verdicts): `flush_lag_ms`,
   the last barrier time, `wal_bytes`, flusher state and counters,
-  `busy_waits`, `obligations_open`, the integrity verdict, and a migration
-  placeholder the importer fills.
+  `busy_waits`, `obligations_open`, the integrity verdict, and the importer's
+  phase/current partition/partition and byte progress. CLI daemon status consumes
+  that progress; unavailable facts stay null and a pending integrity check is
+  not reported as passed.
 
 Typed refusals of the core: `engine_runtime_unsupported`,
 `store_schema_unsupported`, `store_flush_unavailable`, `store_full` (ENOSPC
@@ -3294,6 +3205,61 @@ single-file daemon bundle: the bundle is their worker entry and the embedded
 worker modules self-start on `workerData`, while the daemon's direct-entry
 check ignores worker threads.
 
+#### Legacy import and recovery
+
+The supported engine runtime is Node 24.15.0 or newer with bundled SQLite at
+least 3.51.3. Unsupported SQLite/module availability is refused before opening
+the data store. Protocol major remains 3; the application floor for engine 4.0
+is application 4.0 because older finite-only decoders cannot read unlimited
+capacity. The existing updater requests the app update and keeps the working
+older engine until then.
+
+On first startup without `engine.sqlite`, an existing `journal/` is imported by
+the maintenance worker into `engine.sqlite.import` while transports serve
+`recovery_only` with progress. That worker is the sole connection/writer of the
+temporary database; progress crosses worker messages, not a second reader.
+It uses the existing read-only frame/intent parser under `store/legacy-journal/`
+and the domain row reducers, preserves ids, exact idempotency digests, original
+epoch/sequence/time and disk chain state, and compares the imported retained
+records/state before publication. A valid pending append contributes only the
+validated prefix before its recorded intent; unexplained damage retains evidence and marks its logical
+partition recovery-required. Unknown records remain explicit `unclassified`
+evidence. Interrupted imports resume from verified partition receipts with source
+fingerprints and integrity checks; source journals are never repaired in place.
+
+Publication closes the sole writer, proves no import WAL remains, explicitly
+syncs the database, advances the semantic floor, renames the database and
+preserves `journal/` as `journal-legacy/` (a distinct archive name on collision),
+then syncs the parent directory before service. An existing `engine.sqlite`
+takes precedence over legacy import, including after a crash between these steps. A new
+empty root creates a fresh SQL store through the same transport/admission owner.
+The import can take minutes and materializes one legacy partition at a time;
+steady startup still replays retained quota/setup events, not all command history.
+
+Historical `resource-store/idempotency/<digest>.json` files remain authoritative
+for unreplayed upload keys. SQL probes only the requested digest on an enabled
+miss and adopts that binding in the same mutation; startup never scans this
+large directory. The persisted presence flag disables the fallback when absent.
+Bindings expire 30 days after a resource's known release/expiry, never from a
+guessed file timestamp. Manually removing the historical directory can turn a
+later replay into a missing result or a new upload. Retiring serving code does
+not delete legacy journals, account/credential stores or these key files.
+
+Logical archive/quarantine changes status and generation visibility without
+deleting the old rows. A global-generation replacement hides the old project
+registry and its generations together; uploads keep their independent pid0
+scope. Logical recovery exports a consistent SQL snapshot with its referenced
+external bodies. Physical corruption instead uses the existing `engine-state`
+recovery target: its raw database/WAL/SHM export is diagnostic evidence, not a
+complete restorable backup. Explicit whole-store quarantine closes storage and
+archives the database files with `resource-store/` (bodies, uploads and legacy
+keys) under the same recovery artifact before creating a fresh store. The new
+store's GC cannot delete archived bodies; its empty resource directory inherits
+no old upload replay authority. Accounts, runs and `journal-legacy/` stay in
+place. The same idempotent recovery operation resumes before ordinary startup
+selection; it never reimports legacy state or replaces newer work automatically.
+This migration is forward-fix only.
+
 ### Interactive runs (waiting_on_user)
 
 Harnesses with the `interactive` capability (Claude Code via its bidirectional
@@ -3301,11 +3267,11 @@ stream-json control protocol) can raise typed user questions mid-run; the
 orchestrator OFFERS the interaction channel only to routes whose manifest
 declares `interactive`. The
 engine emits `interaction.requested` (questions, options, nullable timeout deadline),
-parks ONLY that attempt, and the daemon journals the pending projection in the
-run's global or `project:<id>` partition before exposing it via
+parks ONLY that attempt, and the daemon commits the pending interaction and its
+event in the run's global or `project:<id>` partition generation before exposing it via
 `GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
 arrive via `POST /v2/runs/:id/interactions/:id/answer` and are delivered into the
-live session only after the resolution is journaled (`interaction.answered`).
+live session only after the resolution is committed (`interaction.answered`).
 TTY delivery uses the same exact choice grammar as plan questions; it never
 coerces a numeric prose prefix or multiple picks for a single-choice question.
 After daemon restart an unresolved question becomes interrupted rather than
@@ -3324,7 +3290,7 @@ summary may carry `waitingOnUser:true`, but it does not own the question body;
 the macOS client therefore performs a coalesced fresh child-detail read even
 when that child had been hydrated earlier, renders the answer against the child
 interaction's canonical `runId`, and exposes a truthful retry if the detail read
-fails. Answer delivery remains the same journal-first child endpoint above; no
+fails. Answer delivery remains the same commit-before-delivery child endpoint above; no
 parent-side proxy or app-local interaction state is introduced.
 
 `/v2/setup/jobs` (create / status / snapshot / events / cancel / reconcile / extend)
@@ -3344,7 +3310,7 @@ setup does not duplicate them as jobs. Jobs expose a required typed phase, coars
 `timed_out` and `interrupted_unknown`), deadline, and typed terminal outcome.
 `GET /v2/setup/jobs` accepts schema-validated `harness`, `action`, `active`, and
 `limit` filters. Setup SSE carries complete authoritative job snapshots from the
-global journal. Each event has an opaque cursor plus the exact request-relative
+global SQL event ledger. Each event has an opaque cursor plus the exact request-relative
 `previousCursor`; global sequence gaps are valid, while a broken cursor chain,
 duplicate/regressive frame, malformed payload, or EOF without terminal evidence
 requires a resnapshot.
@@ -3383,12 +3349,12 @@ tees output so the operator sees the URL/one-time code, and persists a bounded
 ANSI-stripped tail so the daemon can disclose the real failure cause (e.g. the
 ChatGPT "Allow device code login" toggle being off).
 
-**Transient login disclosure (journal-is-authority, INV-062):** the one-time
+**Transient login disclosure (event-store authority, INV-062):** the one-time
 `userCode` and every captured sign-in URL ride ONLY a transient
 `runner-devicecode.json` sidecar the runner writes and a read-time overlay on
 `ControlSetupJobSnapshot` / `ControlSetupJobEvent`; they are NEVER fields of
-the journaled `ControlSetupJob`, never logged, and never written to the durable
-result receipt (the journal records only THAT something was disclosed, via the
+the durable `ControlSetupJob`, never logged, and never written to the durable
+result receipt (the event ledger records only THAT something was disclosed, via the
 `awaiting_user` transition). The sidecar is removed on terminalization so the
 disclosure stops projecting. Snapshot/event schemas accept the overlay for any
 active login job in `awaiting_user` — codex app-server flows carry a
@@ -3398,7 +3364,7 @@ active login job in `awaiting_user` — codex app-server flows carry a
 `url_disclosure_with_input`, the user's pasted completion value arrives via
 `POST /v2/setup/jobs/:id/input`, rides a one-shot transient
 `runner-input.json` sidecar to the vendor CLI's stdin under the same
-never-journaled rule, and a second submission conflicts instead of replacing
+transient-only rule, and a second submission conflicts instead of replacing
 the first. Stateful UI clients replace the overlay from each authoritative frame,
 retain it only across a bounded same-job Extend/reconnect transition, and clear
 it on Cancel, detach, terminal/non-awaiting state, final stream loss, or poll
@@ -3437,7 +3403,7 @@ persists a vendor token or credential file. Apart from the bounded, ANSI-strippe
 FAILED codex login persists, vendor output is not copied into durable logs, and the Terminal fallback stays open on the result until the
 operator presses Return. The daemon fsyncs an immutable executable/argv
 authorization and one-use permit before the detached runner may spawn. The
-runner's hash-bound result is journaled before verification. For a
+runner's hash-bound result is committed as a setup event before verification. For a
 DEFAULT-store login, exit zero enters a fresh, source-targeted native probe
 followed by an isolated same-harness capability smoke over the normal adapter
 stream; only the exact `vendor_native` / `native_session` route may pass.
@@ -3461,10 +3427,10 @@ sixty-second paste window) has that shorter deadline published as fixed, and
 Extend refuses it with a typed 409 until a delivered code replaces it with the
 bounded exchange grace. For engine-owned deadlines Extend adds 15 minutes
 without a cumulative limit. For a deferred `client_pty` attach, the
-journaled job deadline remains the mutable authority across extensions; the
+persisted job deadline remains the mutable authority across extensions; the
 immutable manifest instead seals a 10-second permit window measured from the
 actual runner start, and the daemon refuses to issue that permit after the
-journaled deadline. Duplicate create for the SAME target store
+persisted deadline. Duplicate create for the SAME target store
 (default, or one profile) returns the same active action instead of launching
 a second Terminal; a create naming a DIFFERENT target while a login is active
 refuses with a typed 409, and a conflicting active mutating
@@ -3514,11 +3480,11 @@ becomes `interrupted_unknown` and is never auto-replayed. Terminal outcomes dist
 recorded group empty without a result; `cancelled_on_restart` describes that
 evidence during restart reconciliation.
 
-The checksummed, fsync-before-ACK global journal is the only setup lifecycle and
-event authority. Per-job `0700` directories under the daemon data root contain
+The global SQL event ledger is the only setup lifecycle and event authority;
+the existing setup reducer and lifecycle binding consume that generation. Per-job `0700` directories under the daemon data root contain
 only runner manifest/state/result/permit/launcher artifacts. There is no
 per-job `job.json`, `events.jsonl`, metadata snapshot, or imported v1 registry.
-Corrupt journal state fails closed; operational artifacts cannot reconstruct or
+Unreadable setup state fails closed; operational artifacts cannot reconstruct or
 override lifecycle truth.
 
 Every endpoint is loopback + bearer-token guarded. Apply endpoints read
@@ -3545,7 +3511,7 @@ are disclosed run evidence that never blocks the selected deliverable, while a
 winner missing its review evidence record blocks exactly like an escalated
 one. The human decision is a typed server action:
 `POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
-auditable, patch-hash-bound record in the owning journal. The single-owner
+auditable, patch-hash-bound record in the owning partition generation. The single-owner
 Control API apply gate reads that authority; the mirrored
 `arbitration/operator_decision.yaml` remains a compatibility projection for
 artifact readers. `accept_clean_patch` delivers through `verifyAndDeliver` and
@@ -3612,7 +3578,7 @@ decision before apply. Per-run approvals never narrow this list.
 Before a mutating turn starts, the daemon promotes an `in_place` project thread
 with configured project protected paths one-way into the existing persistent
 isolated-thread workspace. The promotion, worktree path/base, and invalidation
-of native sessions from the former live cwd are one durable journal mutation;
+of native sessions from the former live cwd are one engine-store mutation;
 the next lane receives the bounded continuation packet. The run can finish and
 produce a patch without changing the project tree, while the existing typed
 thread Apply decision remains the only delivery authority. A direct agent
@@ -3685,7 +3651,7 @@ key" — reuse the key to read the recorded verdict. Reasons come from adapter
 and registry state only, never from vendor prose (INV-049). The payload of
 every `message.*` row is `{message_id, attempt_id?, harness_id?, outcome?,
 reason?, live_input?, native_turn_id?, text_sha256, text_bytes, text, title}`;
-the journaled copy in the owning partition drops `text` (like the
+the retained SQL event copy in the owning partition drops `text` (like the
 `run.created` prompt digest), the per-run `events.jsonl` keeps it, and the
 timeline shows it as the row detail.
 
@@ -3822,7 +3788,7 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    the fresh verifier and any push (INV-062). Delivery reuses
    `verifyAndDeliver` with a fresh
    verifier and exact target preimage. Success advances the persistent thread
-   branch and watermark with journaled thread state.
+   branch and watermark with committed thread state.
 5. **Automatic git init** — a NON-GIT project folder is initialized before a
    Git-backed mutating run shape crosses its boundary (`git init`, deterministic
    baseline commit). This includes the first mutating isolated-thread turn and
@@ -4018,7 +3984,7 @@ Routing, pacing, and profile headroom consume that same applicability predicate,
 so a saturated Fable-only window cannot cool an explicit Opus run. Codex rollout
 `token_count.rate_limits` preserves every reported window as an independent
 constraint with usage, duration, reset, provenance, and freshness. The global
-journal is authority; an elapsed reset marks a snapshot stale and requests a
+event ledger is authority; an elapsed reset marks a snapshot stale and requests a
 refresh, never locally invents zero usage. Unknown usage remains `null`.
 One exhaustive schema-owned trait registry classifies every source along four
 independent axes: vendor-authenticated credential evidence, the primary harness
@@ -4045,7 +4011,7 @@ freshness of the resets facet its count was read from, and `unknown` under an
 unknown snapshot. Snapshot freshness remains the
 conservative aggregate. No usage, reset, observation time, or availability is
 rewritten, and an elapsed reset never implies refill. The read uses existing
-pruning rules without refresh or journal writes. The legacy GET, POST refresh
+pruning rules without refresh or event writes. The legacy GET, POST refresh
 (whose `view` remains `resources` only), Accounts responses, raw schemas, routing,
 and refresh demand retain their existing contract. Supporting engines reject empty,
 unknown, and repeated `view`; the catalog's `ControlQuotaQueryResponse` is a union
@@ -4091,17 +4057,17 @@ subject's existing exponential ladder. Foreground refresh respects these floors;
 `refresh_skipped.subject` names individual omissions. Old vendor-wide persisted
 floors remain in force until their recorded deadlines. A credential change clears
 soft demand backoff, not an existing rate-limit floor. Poll pacing is not inference
-quota and is never journaled as an exhausted window. Failed or suppressed refreshes remain explained alongside stale data:
+quota and is never stored as an exhausted window. Failed or suppressed refreshes remain explained alongside stale data:
 refresh-gap absences (`refresh_failed`, `rate_limited`,
 `probe_skipped_rate_limited`, `poll_paced`) are silenced only by a FRESH
 full-source snapshot under the existing coverage rule; a new incremental
 window cannot hide a failed full refresh. A paused subject lacking fresh
 cover and a stored absence is stated as a
-derived `poll_paced` row (a live projection, never journaled), so an
+derived `poll_paced` row (a live projection, never a stored event), so an
 exhaustion reader that skips stale snapshots stays fail-open instead of
 promoting a stale spent window into "window exhausted". A registry-owned
 credential generation fences a provider cycle after validation and before its
-first journal, memory, absence, marker, response, or cursor write. A foreground
+first event, memory, absence, marker, response, or cursor write. A foreground
 caller from a newer generation waits for obsolete work to retire, then all such
 callers coalesce into one current-generation cycle; an obsolete poll cannot
 restore removed evidence or satisfy a post-login refresh. Within one cycle the
@@ -4109,20 +4075,20 @@ selected refreshers run concurrently, validate every fulfilled snapshot and abse
 before the first write, then fold in declaration order so first-claim and marker
 semantics remain deterministic; each refresher's per-account vendor calls stay
 serial. Both `/v2/quota` and the atomic Accounts response decorate snapshots
-with the same server-owned model-aware availability projection. Raw journal
+with the same server-owned model-aware availability projection. Stored event
 records and projection signatures remain undecorated, and clients never promote
 a model-scoped exhausted window into an account-wide percentage or block.
-A refresh journals a subject's snapshot only when its evidence changed
+A refresh persists a subject's snapshot only when its evidence changed
 (everything except `observed_at`; a freshness flip counts): an unchanged
 re-observation keeps the fresh observation time in memory, and the projection
 marker still publishes it. After a restart a replayed snapshot therefore
-carries the observation time of its last journaled change until the first
+carries the observation time of its last persisted change until the first
 admission poll (immediate on arm, then every 60 s) re-observes it — it may read
 stale, or past the 24-hour window drop out of the projection, for up to one poll
 interval. The marker's `projection_signature` is the sha256 digest of the
 projection (snapshots plus absences), compared only for equality. A later recognized
 primary observation reconciles old reactive constraints at the registry write owner.
-The observation witness and changed reactive snapshots commit in one journal batch,
+The observation witness and changed reactive snapshots commit in one SQL event transaction,
 even for timestamp-only re-observation. Reversed arrival uses the same witness;
 a delayed old refusal cannot revive a retired block. Request-start timestamps keep
 an older in-flight poll from erasing a newer refusal. A generic unclassified block
@@ -4139,22 +4105,22 @@ singleton-window snapshots with independent observation time and freshness.
 sources, the stable vendor window identity, duration and applicability, including
 normalized model-prefix sets. Empty prefix sets preserve existing identities. Percent,
 reset instant and observation time do not change identity. Registry, budget cache
-and journal fold/replay share that key; control projections derive `snapshot_id`
+and event retention/replay share that key; control projections derive `snapshot_id`
 for Swift instead of making the UI duplicate source policy. Full-reader sources
 continue replacing their complete inventory. Incremental observations neither
 refresh siblings nor satisfy full-inventory demand; fresh applicable values keep
 the existing ranking/headroom meaning, and missing windows stay unknown.
 
-Incremental snapshots use `quota.window.observed` in the same global journal,
-with window slots grouped by subject for removal and compaction. Older readers
-ignore that record rather than consuming a fabricated primary/cooldown snapshot.
-The existing full-source rollback representation remains unchanged.
+Incremental snapshots use `quota.window.observed` in the global event ledger,
+with window slots grouped by subject for removal and retention. Historical
+records retain their original typed shape; the importer never fabricates a
+primary/cooldown snapshot to represent them.
 
 A newer authenticated full read can supersede an older incremental observation
 of the same measured window, duration, applicability, account and route. The
 registry writes its full witness and `quota.window.superseded` atomically in
-the existing journal, then removes that exact effective window. Its cutoff
-survives later full-inventory replacement, display aging and compaction, so an
+one SQL event transaction, then removes that exact effective window. Its cutoff
+survives later full-inventory replacement, display aging and event retention, so an
 old delayed event cannot resurrect a cleared limit. Newer partial evidence is
 admitted again; equal timestamps remain conservative. Missing or unmeasured
 windows do not supersede known limits. Subject removal clears observations
@@ -4165,15 +4131,16 @@ than turned into an account-wide restriction. An overage name does not identify
 an additional model family. Numeric source units are translated by each adapter:
 Claude stream utilization is a ratio; Codex `usedPercent` is a percentage.
 
-Runtime-update rollback remains backward-readable: a scoped snapshot — or one
+Historical quota payloads remain readable: a scoped snapshot — or one
 whose source postdates v3.2.0's strict enum (`cursor_rate_limit`) — is first
 prepared under a typed record that an older engine ignores, then committed by
 the established upsert using an explicit v3.2.0 field allowlist with the
-nearest v3.2.0 source label in the base. The journal
-appends that pair under one recovery intent and one fsync, so replay retains
-both records or neither. Current engines apply the exact scope and true source
-only when the
-matching base follows; v3.2.0 replays that base conservatively as account-wide.
+nearest v3.2.0 source label in the base. The imported journal pair retains its
+original adjacency, and new pairs commit
+in one SQL event transaction. Current reducers apply the exact scope and true
+source only when the matching base follows. This historical payload encoding
+does not permit an older engine to open a migrated SQL root; the semantic floor
+and forward-fix rule still apply.
 A background cycle uses the same vendor refresher sweep; an explicit foreground
 refresh runs all eligible subjects. Paused subjects return last-known data with
 `refresh_skipped` subject identity and deadline; only a legacy broad floor skips
@@ -4190,7 +4157,7 @@ projection.
 tie-breaker. Credential transport alone never proves a route free. Typed rate
 limits that reject or block a run create cooldowns. A Claude rejection whose
 typed `rateLimitType` proves an Opus or Sonnet family carries that same model
-scope into both the live ledger and durable journal; generic or unknown
+scope into both the live projection and persistent event ledger; generic or unknown
 rejections remain account-wide. Advisory Claude `allowed_warning` heartbeats do
 not create cooldowns. Unknown quota remains eligible and is never rendered as
 full headroom.
@@ -4369,7 +4336,7 @@ remains primary on success. The retained filename never participates in accepted
 plan/deliverable discovery. If storage fails, the original terminal cause stays
 in force and a best-effort status names the preservation failure. Control detail
 can reconstruct only the addressed interrupted run lacking a committed terminal
-from surviving events, without changing its lifecycle, journal or RunFacts. Lists
+from surviving events, without changing its lifecycle, command record or RunFacts. Lists
 and startup do not scan old logs; intentional retention remains authoritative.
 
 Cancelled Git candidates retain their patch and actual execution-tree effects
@@ -4703,9 +4670,10 @@ cross-axis contradictions before persistence: examples include a succeeded
 plan without a deliverable, merge/reviewer roles inflating the planner count,
 configured tests presented as both `not_configured` and passed, or required
 actions that disagree with the terminal outcome. The orchestrator sanitizes
-and validates this object once, embeds that exact value at
-`RunTelemetry.run_facts` as a compatibility copy, then writes the standalone
-file last as the canonical commit marker. `GET /v2/runs/:id` (`runFacts`),
+and validates this object once. The terminal event carries that exact value;
+the terminal-files owner projects it into `RunTelemetry.run_facts` and the
+standalone receipt through its obligation after the SQL terminal commit.
+`GET /v2/runs/:id` (`runFacts`),
 terminal CLI JSON/JSON-stream output, artifact-only `inspect --json`, MCP
 structured results, and ACP `_meta.claudexor` expose the same parsed object
 without a second redaction or independent projection. A missing receipt retains legacy-run compatibility; a receipt that
@@ -4772,7 +4740,7 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   `/v2/harnesses/:id/models`), root-scoped Git applicability
   (`/v2/run-applicability`), Accounts/quota (`/v2/credential-profiles`,
   `/v2/quota`), setup jobs (`/v2/setup/jobs`), settings and secrets
-  (`/v2/settings`, `/v2/secrets`), and journal recovery
+  (`/v2/settings`, `/v2/secrets`), and partition/engine-state recovery
   (`/v2/recovery/partitions/:id` and validate/export/quarantine actions). The
   plan lifecycle rides the normal thread/turn endpoints — a `plan` run surfaces
   typed open questions, and an Implement turn carries `planRunId`; there is no
@@ -4799,8 +4767,9 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   and the narrow `delegatedFromRunId` child link. The exact composer and run-row
   presentation is defined in [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md).
 - Attachments use a daemon-owned resource pipeline. `/v2/uploads` streams bytes
-  to an external temporary file; finalize fsyncs, hashes, deduplicates the blob,
-  atomically publishes it, and returns an immutable resource ID. `/v2/runs` and
+  to an external write-through temporary file; finalize binds the request,
+  hashes and publishes immutable digest-bound bytes through the engine store's
+  publication obligation, and returns the resource ID. `/v2/runs` and
   thread turns accept only resource IDs. Each adapter declares exact MIME classes,
   finite byte/count limits and a native transport in
   `capability_profile.attachment_inputs`; every explicitly selected lane must
@@ -5017,7 +4986,7 @@ overrides are identified, not silently replaced by a managed copy. Existing
 Windows recipe limits remain.
 
 `harness-maintenance-service.ts` exposes `/v2/maintenance/harnesses` and the
-maintenance operation routes through existing CommandStore admission, queue,
+maintenance operation routes through existing command admission, queue,
 idempotency, cancellation and retention. Blocking work runs in a custodied CLI
 child. Before-version and target evidence precede mutation; failures, interruption
 and unconfirmed termination retain their real effects without automatic replay or
@@ -5084,7 +5053,9 @@ resources the release gates smoke-tested while the archive itself needs no
 POSIX symlink semantics.
 `release/runtime-min-app-version.json` is the tracked `minAppVersion` floor
 (validated `<=` the release version by `scripts/verify-version-parity.mjs`), the
-app-vs-engine skew guard.
+app-vs-engine skew guard. Engine 4.0 requires application 4.0. An older app
+reports `appUpdateRequired` and keeps its current working engine; updating the
+app supplies the compatible decoder and Node before engine activation.
 
 **Host-owned embedding.** A non-app host reuses this SAME release archive; the
 existing signed manifest remains its upstream publication authority. There is
@@ -5101,8 +5072,9 @@ closure smoke; POSIX consumers using local harness install must provide both
 `<node-root>/lib/node_modules/npm/bin/npm-cli.js` (Windows: `node.exe` and its
 adjacent `node_modules\npm\bin\npm-cli.js`), with no ambient-PATH npm
 fallback. The root package's
-`engines.node >=20.19.0` promise covers the npm distribution and does not by
-itself prove a release-built `--target=node22` closure on Node 20. The pin also
+supported runtime floor is Node 24.15.0, and the store checks bundled SQLite
+3.51.3 or newer before opening data. A supported version declaration alone is
+not proof of a release-built closure; embedders retain exact-toolchain smoke evidence. The pin also
 carries protocol major 3, separate daemon and CLI entrypoints, expected archive
 size, and the accepted `{version,buildSha,sha256}`. The signed
 `runtime-manifest.json` is the
@@ -5191,7 +5163,7 @@ download the closure from the release CDN asset URL → sha256-verify against th
 signed manifest → FULL unpack to `versions/<version>/` → re-verify → strip
 `com.apple.quarantine` (after hash verification) → probe-start the unpacked
 daemon with the app-bundled Node via `claudexord --probe` (prints
-`{version,buildSha}` and exits without binding a socket or opening the journal) →
+`{version,buildSha}` and exits without binding a socket or opening the store) →
 require that exact pair to equal the signed manifest → claim one process-session
 lifecycle lease shared with steady daemon reconciliation before the first async
 install step → advisory idle probe (cheap early deferral) → daemon-atomic
@@ -5206,8 +5178,10 @@ check-then-swap critical section) → relaunch → handshake-verify the new engi
 identity against the signed manifest → rollback to `last-known-good.json` on
 activation failure while that reader remains compatible with the retained state,
 accepting recovery only when its exact identity returns. After a feature writes
-new terminal facts an older reader cannot understand, recovery retains that state
-and uses a compatible newer runtime, as described in the daemon lifecycle section.
+new terminal facts or publishes the SQL store an older reader cannot understand,
+recovery retains that state and uses a compatible newer runtime. A last-known-good
+pointer cannot bypass the data root's semantic floor, as described in the daemon
+lifecycle section.
 Rollback authority comes from the same launcher selection: current.json's exact
 `{version,engineSha}` for an installed closure or the app-signed bundled script's
 stamped probe. If that authority is unavailable, installation refuses before it
@@ -5344,7 +5318,7 @@ code touching one of these areas must honor it or change it explicitly here.
   `--json` exactly-one-object contract, and the retired `run` verb stays
   retired.
 - Vendor-owned quota snapshots and typed rejecting rate-limit cooldowns persist
-  in the checksummed global journal through `QuotaRegistry`; routing reads that
+  in the global SQL event ledger through `QuotaRegistry`; routing reads that
   cross-run authority rather than rediscovering pressure independently in each
   run. Codex uses its app-server. Claude subscription windows arrive from the
   `oauth/usage` endpoint as the PRIMARY source (since 2.1): the daemon's
@@ -5410,7 +5384,7 @@ code touching one of these areas must honor it or change it explicitly here.
   output with no parseable block is an `unverified` readiness. No shape fails
   the plan run.
 - Startup crash GC sweeps orphaned envelopes only under project roots recorded
-  in the daemon command journal; envelopes created by CLI/MCP/ACP runs
+  in the command store and retained root metadata; envelopes created by CLI/MCP/ACP runs
   in roots the daemon never saw are reclaimed only by their own process. For a
   caller-owned `execution.workspaceRoot` recorded by a delegated command (global
   or project partition), it disposes only Claudexor's envelope scratch under that
@@ -5435,7 +5409,7 @@ code touching one of these areas must honor it or change it explicitly here.
   The non-Git text diff is bounded to 200 kB, and the saved copy and its match
   counts are built from that bounded projection.
 - Isolated-thread worktrees are pinned by persistent `claudexor/thread-*`
-  branches. Journal SHA is a checked cache; successful apply advances the
+  branches. The stored SHA is a checked cache; successful apply advances the
   branch, and explicit trash/restore/purge owns its retention lifecycle.
 - Explicit reviewer panels accept only proven routes: an unprofiled/default
   entry requires doctor-OK readiness, while a profiled entry requires its exact
@@ -5471,7 +5445,7 @@ code touching one of these areas must honor it or change it explicitly here.
   `profiles login --json` refuses before preparing or starting a login.
   Codex retains its durable device-code flow; GUI/non-interactive login uses
   the existing setup API.
-- The setup journal owns the credential-mutation window from durable permit
+- The setup event ledger owns the credential-mutation window from durable permit
   through terminal verification. A hash-bound runner result or a positively
   empty recorded process group establishes the command's end. Fresh profile
   verification runs while the window remains open; terminalization closes it.
@@ -5492,7 +5466,7 @@ code touching one of these areas must honor it or change it explicitly here.
   they can show an intermediate observation until close. Model-operation substitution callbacks and default/API-key unusable callbacks
   also use the dispatch-bound managed generation. Descendants outliving a valid runner
   receipt remain outside the command-completion proof. An unreadable bound
-  journal reads open; restart alone proves no closure. The hold is per harness,
+  setup store reads open; restart alone proves no closure. The hold is per harness,
   not a blanket admission ban. A genuinely unconfirmed group still needs the
   existing proof-based reconciliation.
 - The Cursor CLI requests cancellation on Ctrl-C, SIGHUP and SIGTERM. A lost

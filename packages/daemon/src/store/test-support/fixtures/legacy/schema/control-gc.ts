@@ -1,0 +1,141 @@
+import { z } from "zod/v3";
+
+/**
+ * Disk-retention (GC) control operation (W3.6). The daemon owns the
+ * retention service; this is its schema-first contract: a typed request
+ * (dry-run first-class) and a typed receipt that discloses exactly what was
+ * deleted and WHY every survivor survived — silent deletion or silent
+ * retention are both bugs.
+ */
+
+/** Why a candidate run tree survived this GC pass. */
+export const GcKeepReason = z
+  .enum(["active", "recent", "young", "referenced", "actionable", "unknown_state"])
+  .describe(
+    "Why a run tree survived: active (nonterminal daemon record), recent (newest-N per project), young (inside the age window), referenced (a live thread points at it), actionable (undelivered/applyable/blocked work awaiting the operator), unknown_state (no terminal evidence — fail closed).",
+  );
+export type GcKeepReason = z.infer<typeof GcKeepReason>;
+
+export const ControlGcRequest = z
+  .object({
+    dry_run: z
+      .boolean()
+      .default(false)
+      .describe("Report what WOULD be deleted without touching disk."),
+    model_payload_report: z
+      .boolean()
+      .optional()
+      .describe(
+        "Include exact model-purpose resource cleanup outcomes. Cleanup itself always runs; opt-in keeps older strict receipt readers compatible.",
+      ),
+    data_root_report: z
+      .boolean()
+      .optional()
+      .describe(
+        "Opt in to the advisory data-root scan: when true, the receipt carries data_root_unrecognized. Capability negotiation for engine-version skew — a client omits this unless the serving daemon is the SAME engine version, so an older daemon never sees the unknown request key and an older client never receives the unknown receipt key.",
+      ),
+    trash_purge_report: z
+      .boolean()
+      .optional()
+      .describe(
+        "Opt in to the thread-purge disclosure: when true, the receipt carries purged_threads and purge_leftovers. The purges themselves always run; the same lockstep capability negotiation as data_root_report keeps older strict receipt readers compatible.",
+      ),
+  })
+  .strict()
+  .describe("Run one retention pass over engine-owned runtime artifacts.");
+export type ControlGcRequest = z.infer<typeof ControlGcRequest>;
+
+export const GcRunDeletion = z
+  .object({
+    run_id: z.string().describe("Deleted (or would-be-deleted) run id."),
+    project_root: z.string().describe("Canonical project root owning the run tree."),
+    freed_bytes: z.number().int().nonnegative().describe("Bytes the tree occupied."),
+  })
+  .strict();
+export type GcRunDeletion = z.infer<typeof GcRunDeletion>;
+
+export const GcKeepCounts = z
+  .object({
+    active: z.number().int().nonnegative().default(0),
+    recent: z.number().int().nonnegative().default(0),
+    young: z.number().int().nonnegative().default(0),
+    referenced: z.number().int().nonnegative().default(0),
+    actionable: z.number().int().nonnegative().default(0),
+    unknown_state: z.number().int().nonnegative().default(0),
+  })
+  .strict()
+  .describe("Survivor counts per keep reason.");
+export type GcKeepCounts = z.infer<typeof GcKeepCounts>;
+
+export const ControlGcReceipt = z
+  .object({
+    schema_version: z.literal(1).default(1),
+    dry_run: z.boolean().describe("Whether disk was left untouched."),
+    started_at: z.string().describe("Pass start (ISO 8601)."),
+    finished_at: z.string().describe("Pass end (ISO 8601)."),
+    policy: z
+      .object({
+        runs_max_age_days: z.number().int().positive(),
+        reviews_max_age_days: z.number().int().positive(),
+        keep_last_runs_per_project: z.number().int().nonnegative(),
+      })
+      .strict()
+      .describe("The effective retention policy this pass applied."),
+    examined_runs: z.number().int().nonnegative().describe("Run trees examined."),
+    deleted_runs: z
+      .array(GcRunDeletion)
+      .default([])
+      .describe("Run trees deleted (or would-be under dry_run), tombstones left behind."),
+    kept: GcKeepCounts.describe("Why every surviving candidate survived."),
+    deleted_reviews: z
+      .array(
+        z
+          .object({
+            path: z.string().describe("Deleted standalone diff-review tree."),
+            freed_bytes: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .default([])
+      .describe("Standalone diff-review trees deleted (or would-be under dry_run)."),
+    freed_bytes: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("Total bytes freed (or reclaimable under dry_run)."),
+    errors: z
+      .array(z.string())
+      .default([])
+      .describe("Non-fatal per-tree failures; the pass continues past them."),
+    data_root_unrecognized: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Names of top-level entries in the Claudexor-owned data root that the engine does not own and will never touch (advisory only — nothing here is ever deleted). The full sorted list. Present ONLY when the request opted in via data_root_report; ABSENT (not empty) when the request did not opt in, the scan failed, or the serving daemon predates the feature; a scan failure is disclosed in errors instead.",
+      ),
+    model_payloads: z
+      .object({
+        released: z.array(z.string()),
+        errors: z.array(z.string()),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Model resource identifiers released (or would be under dry_run), plus cleanup failures; present only when model_payload_report was requested.",
+      ),
+    purged_threads: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Ids of trashed threads whose purge_after had passed and that this pass purged (or would purge under dry_run). Present only when trash_purge_report was requested; a skipped (busy) or failed purge is disclosed in errors instead.",
+      ),
+    purge_leftovers: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Ids of already purged threads whose directory cleanup had failed after the purge was journaled (an isolated worktree or lane home still on disk) and that this pass finished (or would finish under dry_run). Present only when trash_purge_report was requested; a cleanup that fails again is disclosed in errors and retried by the next pass.",
+      ),
+  })
+  .strict()
+  .describe("Typed receipt of one retention pass.");
+export type ControlGcReceipt = z.infer<typeof ControlGcReceipt>;

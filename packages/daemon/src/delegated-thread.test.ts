@@ -1,12 +1,11 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { CommandStore, commandProjection } from "./command-store.js";
-import { JournalManager } from "./journal-manager.js";
-import { RESTARTED_BEFORE_START, withRunlessTurnRecovery } from "./runless-turn-recovery.js";
-import { ThreadStore, threadProjection } from "./threads.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
+import { RESTARTED_BEFORE_START, recordInterruptedRunlessTurns } from "./runless-turn-recovery.js";
+import { ThreadStore } from "./store/test-support/fixtures/legacy/daemon/threads.js";
 
 const roots: string[] = [];
 const closable: Array<{ close(): void }> = [];
@@ -149,18 +148,14 @@ describe("restart before a turn's run starts (R1)", () => {
   }
 
   function restart(root: string, recover: boolean) {
-    const manager = new JournalManager(root);
-    closable.push(manager);
-    const commands = manager.registerProjection(commandProjection());
-    const threads = manager.registerProjection(
-      recover
-        ? withRunlessTurnRecovery(threadProjection(), () => commands.current().records())
-        : threadProjection(),
-    );
-    expect(manager.prepare().inspection.status).toBe("ready");
-    manager.activatePrepared();
-    manager.recoverAfterStartup();
-    return { commands: commands.current(), threads: threads.current(), manager };
+    const journal = journalAt(root);
+    const commands = new CommandStore(journal);
+    const threads = new ThreadStore(journal);
+    commands.validateProjection();
+    threads.validateProjection();
+    commands.recoverAfterStartup();
+    if (recover) recordInterruptedRunlessTurns(threads, commands.records());
+    return { commands, threads, journal };
   }
 
   it("reproduces the lost refusal without the recovery composition", () => {
@@ -193,7 +188,7 @@ describe("restart before a turn's run starts (R1)", () => {
         .map((record) => record.id)
         .sort(),
     ).toEqual(["job-bound", "job-runless"]);
-    first.manager.close();
+    first.journal.close();
     const second = restart(root, true);
     expect(second.threads.getTurn(turnId)?.enqueue_error?.failed_at).toBe(refusal?.failed_at);
   });

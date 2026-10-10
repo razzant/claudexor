@@ -1,0 +1,37 @@
+{
+  "name": "@claudexor/util",
+  "version": "3.25.1",
+  "license": "MIT",
+  "description": "Low-level utilities (ids, hashing, fs, redaction) with no Claudexor deps.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/razzant/claudexor.git",
+    "directory": "packages/util"
+  },
+  "homepage": "https://github.com/razzant/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/razzant/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,4 +1,3 @@
-import type { DurableJournal } from "@claudexor/journal";
 import type { InteractionStorePort } from "./store-contracts.js";
 import type {
   ControlPendingInteraction,
@@ -25,128 +24,10 @@ export interface InteractionContext {
 export type InteractionAnswerStatus = "delivered" | "not_found" | "already_resolved" | "rejected";
 export type InteractionTerminal = "answered" | "timeout" | "run_terminal" | "interrupted";
 
-interface InteractionResolution {
+export interface InteractionResolution {
   runId: string;
   interactionIds: string[];
   terminal: InteractionTerminal;
-}
-
-const REQUESTED = "interaction.requested";
-const RESOLVED = "interaction.resolved";
-
-/** Journal-backed authority for pending interaction projections. */
-export class InteractionStore {
-  private readonly pending = new Map<string, ControlPendingInteraction>();
-  private readonly resolved = new Set<string>();
-
-  constructor(private readonly journal: DurableJournal) {
-    this.replay();
-  }
-
-  /** Resolve replayed pending interactions only after bootstrap activation. */
-  recoverAfterStartup(): void {
-    this.interruptAfterRestart();
-  }
-
-  request(ctx: InteractionContext): ControlPendingInteraction {
-    const value = PendingInteractionSchema.parse({
-      interactionId: ctx.request.interaction_id,
-      runId: ctx.runId,
-      attemptId: ctx.attemptId,
-      harnessId: ctx.harnessId,
-      sourceTool: ctx.request.source_tool,
-      questions: ctx.request.questions,
-      requestedAt: ctx.requestedAt,
-      timeoutAt: ctx.timeoutAt,
-    });
-    const key = interactionKey(value.runId, value.interactionId);
-    if (this.pending.has(key) || this.resolved.has(key)) {
-      throw new Error(`duplicate interaction '${value.interactionId}' for run '${value.runId}'`);
-    }
-    this.journal.append(REQUESTED, value);
-    this.pending.set(key, value);
-    return value;
-  }
-
-  resolve(
-    runId: string,
-    interactionId: string,
-    terminal: InteractionTerminal,
-  ): "resolved" | "not_found" | "already_resolved" {
-    const key = interactionKey(runId, interactionId);
-    if (this.resolved.has(key)) return "already_resolved";
-    if (!this.pending.has(key)) return "not_found";
-    this.commitResolution({ runId, interactionIds: [interactionId], terminal });
-    return "resolved";
-  }
-
-  resolveRun(
-    runId: string,
-    terminal: Extract<InteractionTerminal, "run_terminal" | "interrupted">,
-  ): string[] {
-    const interactionIds = this.pendingForRun(runId).map((value) => value.interactionId);
-    if (interactionIds.length > 0) this.commitResolution({ runId, interactionIds, terminal });
-    return interactionIds;
-  }
-
-  status(runId: string, interactionId: string): "pending" | "resolved" | "missing" {
-    const key = interactionKey(runId, interactionId);
-    if (this.pending.has(key)) return "pending";
-    return this.resolved.has(key) ? "resolved" : "missing";
-  }
-
-  pendingForRun(runId: string): ControlPendingInteraction[] {
-    return [...this.pending.values()].filter((value) => value.runId === runId);
-  }
-
-  validateProjection(): void {
-    for (const value of this.pending.values()) PendingInteractionSchema.parse(value);
-    for (const key of this.pending.keys()) {
-      if (this.resolved.has(key)) throw new Error("interaction is both pending and resolved");
-    }
-  }
-
-  private replay(): void {
-    for (const record of this.journal.records(0, [REQUESTED, RESOLVED])) {
-      if (record.type === REQUESTED) {
-        const value = PendingInteractionSchema.parse(record.payload);
-        const key = interactionKey(value.runId, value.interactionId);
-        if (this.pending.has(key) || this.resolved.has(key)) {
-          throw new Error("duplicate interaction request history");
-        }
-        this.pending.set(key, value);
-      } else if (record.type === RESOLVED) {
-        this.applyResolution(parseResolution(record.payload));
-      }
-    }
-    this.validateProjection();
-  }
-
-  private interruptAfterRestart(): void {
-    const byRun = new Map<string, string[]>();
-    for (const value of this.pending.values()) {
-      const ids = byRun.get(value.runId) ?? [];
-      ids.push(value.interactionId);
-      byRun.set(value.runId, ids);
-    }
-    for (const [runId, interactionIds] of byRun) {
-      this.commitResolution({ runId, interactionIds, terminal: "interrupted" });
-    }
-  }
-
-  private commitResolution(value: InteractionResolution): void {
-    const parsed = parseResolution(value);
-    this.journal.append(RESOLVED, parsed);
-    this.applyResolution(parsed);
-  }
-
-  private applyResolution(value: InteractionResolution): void {
-    for (const interactionId of value.interactionIds) {
-      const key = interactionKey(value.runId, interactionId);
-      if (!this.pending.delete(key)) throw new Error("interaction resolution precedes request");
-      this.resolved.add(key);
-    }
-  }
 }
 
 interface LiveEntry {
@@ -155,14 +36,14 @@ interface LiveEntry {
   expiresAtMs: number | null;
 }
 
-/** Live answer bridge; durable state remains owned by InteractionStore. */
+/** Live answer bridge; durable state remains owned by its store. */
 export class InteractionRegistry {
   private readonly live = new Map<string, LiveEntry>();
 
   constructor(
     private readonly stores: {
       forRequest(params: unknown): InteractionStorePort;
-      all(): InteractionStorePort[];
+      forRun(runId: string): InteractionStorePort | undefined;
     },
   ) {}
 
@@ -195,9 +76,9 @@ export class InteractionRegistry {
     if (!parsed.success) {
       return { status: "rejected", message: parsed.error.issues[0]?.message ?? "invalid answers" };
     }
-    const store = this.stores
-      .all()
-      .find((candidate) => candidate.status(runId, interactionId) !== "missing");
+    const store = this.storesForRun(runId).find(
+      (candidate) => candidate.status(runId, interactionId) !== "missing",
+    );
     if (!store) return { status: "not_found", message: missingMessage(runId, interactionId) };
     const status = store.resolve(runId, interactionId, "answered");
     if (status !== "resolved") {
@@ -214,7 +95,7 @@ export class InteractionRegistry {
   }
 
   dropForRun(runId: string): void {
-    for (const store of this.stores.all()) store.resolveRun(runId, "run_terminal");
+    for (const store of this.storesForRun(runId)) store.resolveRun(runId, "run_terminal");
     for (const [key, entry] of this.live) {
       if (!key.startsWith(`${runId}\u0000`)) continue;
       this.live.delete(key);
@@ -224,7 +105,12 @@ export class InteractionRegistry {
 
   pendingForRun(runId: string): ControlPendingInteraction[] {
     this.prune();
-    return this.stores.all().flatMap((store) => store.pendingForRun(runId));
+    return this.storesForRun(runId).flatMap((store) => store.pendingForRun(runId));
+  }
+
+  private storesForRun(runId: string): InteractionStorePort[] {
+    const store = this.stores.forRun(runId);
+    return store ? [store] : [];
   }
 
   private prune(): void {
@@ -248,20 +134,11 @@ function parseExpiry(timeoutAt: string | null): number | null {
   return value;
 }
 
-export function interactionProjection() {
-  return {
-    name: "interactions",
-    create: (journal: DurableJournal) => new InteractionStore(journal),
-    validate: (store: InteractionStore) => store.validateProjection(),
-    recover: (store: InteractionStore) => store.recoverAfterStartup(),
-  };
-}
-
-function interactionKey(runId: string, interactionId: string): string {
+export function interactionKey(runId: string, interactionId: string): string {
   return `${runId}\u0000${interactionId}`;
 }
 
-function parseResolution(value: unknown): InteractionResolution {
+export function parseInteractionResolution(value: unknown): InteractionResolution {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("invalid interaction resolution");
   const input = value as Partial<InteractionResolution>;
@@ -284,4 +161,17 @@ function parseResolution(value: unknown): InteractionResolution {
 
 function missingMessage(runId: string, interactionId: string): string {
   return `no pending interaction '${interactionId}' for run '${runId}'`;
+}
+
+export function pendingInteraction(ctx: InteractionContext): ControlPendingInteraction {
+  return PendingInteractionSchema.parse({
+    interactionId: ctx.request.interaction_id,
+    runId: ctx.runId,
+    attemptId: ctx.attemptId,
+    harnessId: ctx.harnessId,
+    sourceTool: ctx.request.source_tool,
+    questions: ctx.request.questions,
+    requestedAt: ctx.requestedAt,
+    timeoutAt: ctx.timeoutAt,
+  });
 }

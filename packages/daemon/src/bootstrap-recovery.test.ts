@@ -1,10 +1,11 @@
+import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { CommandStore } from "./command-store.js";
-import { InteractionStore, type InteractionContext } from "./interactions.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
+import type { InteractionContext } from "./interactions.js";
 import { QuotaRegistry } from "./quota-registry.js";
 
 const roots: string[] = [];

@@ -1,4 +1,4 @@
-import type { SetupJobStore } from "./setup-job-store.js";
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -103,6 +103,7 @@ function fixture(input: { onOpen?: () => void; verify?: () => Promise<void> } = 
     };
   });
   const manager = createSetupJobManager({
+    store: new SetupJobStore(join(root, `daemon-${managers.length}`)),
     rootDir: join(root, `daemon-${managers.length}`),
     platform: "darwin",
     runnerPath: join(root, "unused-runner.js"),

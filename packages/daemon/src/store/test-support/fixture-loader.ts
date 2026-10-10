@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DurableJournal, type DurableJournalOptions } from "@claudexor/journal";
+import { DurableJournal, type DurableJournalOptions } from "./fixtures/legacy/journal/index.js";
 
 export interface LogicalFixture {
   partition: string;

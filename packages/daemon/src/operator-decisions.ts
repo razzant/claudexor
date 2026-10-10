@@ -1,4 +1,3 @@
-import type { DurableJournal } from "@claudexor/journal";
 import { hashJson } from "@claudexor/util";
 
 export interface OperatorDecisionRecord {
@@ -15,97 +14,18 @@ export interface RecordedOperatorDecision {
   reused: boolean;
 }
 
-const RECORDED = "operator.decision_recorded";
-
-interface DecisionBinding {
+export interface DecisionBinding {
   keyDigest: string;
   requestDigest: string;
   runId: string;
 }
 
-interface DecisionMutation {
+export interface DecisionMutation {
   decision: OperatorDecisionRecord;
   idempotency?: DecisionBinding;
 }
 
-/** Journal authority for the human decision that may unblock one exact run patch. */
-export class OperatorDecisionStore {
-  private readonly byRun = new Map<string, OperatorDecisionRecord>();
-  private readonly byKey = new Map<string, { requestDigest: string; runId: string }>();
-
-  constructor(private readonly journal: DurableJournal) {
-    for (const entry of journal.records(0, [RECORDED])) {
-      if (entry.type !== RECORDED) continue;
-      const mutation = parseMutation(entry.payload);
-      this.apply(mutation);
-    }
-  }
-
-  get(runId: string): OperatorDecisionRecord | null {
-    const decision = this.byRun.get(runId);
-    return decision ? structuredClone(decision) : null;
-  }
-
-  findByIdempotency(
-    runId: string,
-    idempotency: { key: string; client: string; request: unknown },
-  ): OperatorDecisionRecord | null {
-    const binding = decisionBinding(this.journal.options.partition, runId, idempotency);
-    if (!binding) return null;
-    const prior = this.byKey.get(binding.keyDigest);
-    if (!prior) return null;
-    if (prior.requestDigest !== binding.requestDigest) throw conflict();
-    const existing = this.byRun.get(prior.runId);
-    if (!existing) throw new Error("operator decision idempotency index is dangling");
-    return structuredClone(existing);
-  }
-
-  record(
-    input: OperatorDecisionRecord,
-    idempotency?: { key: string; client: string; request: unknown },
-  ): RecordedOperatorDecision {
-    const decision = parseDecision(input);
-    const binding = decisionBinding(this.journal.options.partition, decision.runId, idempotency);
-    if (binding) {
-      const existing = this.findByIdempotency(decision.runId, idempotency!);
-      if (existing) return { record: existing, reused: true };
-    }
-    const mutation = { decision, ...(binding ? { idempotency: binding } : {}) };
-    this.journal.append(RECORDED, mutation);
-    this.apply(mutation);
-    return { record: structuredClone(decision), reused: false };
-  }
-
-  validateProjection(): void {
-    for (const decision of this.byRun.values()) parseDecision(decision);
-    for (const binding of this.byKey.values()) {
-      if (!this.byRun.has(binding.runId))
-        throw new Error("operator decision idempotency index is dangling");
-    }
-  }
-
-  private apply(mutation: DecisionMutation): void {
-    this.byRun.set(mutation.decision.runId, structuredClone(mutation.decision));
-    if (mutation.idempotency) {
-      const { keyDigest, requestDigest, runId } = mutation.idempotency;
-      const prior = this.byKey.get(keyDigest);
-      if (prior && (prior.requestDigest !== requestDigest || prior.runId !== runId)) {
-        throw new Error("conflicting operator decision idempotency history");
-      }
-      this.byKey.set(keyDigest, { requestDigest, runId });
-    }
-  }
-}
-
-export function operatorDecisionProjection() {
-  return {
-    name: "operator-decisions",
-    create: (journal: DurableJournal) => new OperatorDecisionStore(journal),
-    validate: (store: OperatorDecisionStore) => store.validateProjection(),
-  };
-}
-
-function parseDecision(value: unknown): OperatorDecisionRecord {
+export function parseOperatorDecision(value: unknown): OperatorDecisionRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid operator decision record");
   }
@@ -126,13 +46,13 @@ function parseDecision(value: unknown): OperatorDecisionRecord {
   return structuredClone(input as unknown as OperatorDecisionRecord);
 }
 
-function parseMutation(value: unknown): DecisionMutation {
+export function parseDecisionMutation(value: unknown): DecisionMutation {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("invalid operator decision mutation");
   }
   const input = value as Record<string, unknown>;
   // Accept the pre-idempotency v2 record shape while the release candidate is local-only.
-  if (!("decision" in input)) return { decision: parseDecision(value) };
+  if (!("decision" in input)) return { decision: parseOperatorDecision(value) };
   const idempotency = input["idempotency"];
   if (
     idempotency !== undefined &&
@@ -146,12 +66,12 @@ function parseMutation(value: unknown): DecisionMutation {
     throw new Error("invalid operator decision idempotency binding");
   }
   return {
-    decision: parseDecision(input["decision"]),
+    decision: parseOperatorDecision(input["decision"]),
     ...(idempotency ? { idempotency: { ...(idempotency as DecisionBinding) } } : {}),
   };
 }
 
-function decisionBinding(
+export function operatorDecisionBinding(
   partition: string,
   runId: string,
   input: { key: string; client: string; request: unknown } | undefined,
@@ -173,13 +93,6 @@ function decisionBinding(
     requestDigest: hashJson(input.request),
     runId,
   };
-}
-
-function conflict(): Error & { code: string; status: number } {
-  return Object.assign(new Error("idempotency key was already used with a different request"), {
-    code: "idempotency_conflict",
-    status: 409,
-  });
 }
 
 function stringArray(value: unknown): value is string[] {

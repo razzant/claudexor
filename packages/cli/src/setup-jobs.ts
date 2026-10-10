@@ -38,7 +38,7 @@ import {
   withAbortAndTimeout,
 } from "./setup-job-support.js";
 import { buildGateway } from "./registry.js";
-import { ACTIVE_SETUP_STATES, SetupJobStore, TERMINAL_SETUP_STATES } from "./setup-job-store.js";
+import { ACTIVE_SETUP_STATES, TERMINAL_SETUP_STATES } from "./setup-job-projection.js";
 import {
   SETUP_LOGIN_PROTOCOL_VERSION,
   atomicPrivateJson,
@@ -79,7 +79,7 @@ const LOGIN_EXTENSION_MS = 15 * 60_000;
 type NativeLoginSpec = NativeLogin.NativeLoginSpec;
 export interface SetupJobManagerOptions {
   rootDir?: string;
-  store?: import("./setup-job-store.js").SetupJobStorePort;
+  store: import("./setup-job-projection.js").SetupJobStorePort;
   probeAuthSource?: (
     harness: string,
     source: "native_session",
@@ -125,12 +125,12 @@ export interface SetupJobManagerOptions {
   runnerPath?: string;
   nodePath?: string;
 }
-export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
+export function createSetupJobManager(opts: SetupJobManagerOptions) {
   const now = opts.now ?? (() => new Date());
   const sleep = opts.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms)));
   const spawnProcess = opts.spawn ?? spawn;
   const rootDir = opts.rootDir ?? daemonDir();
-  const store = opts.store ?? new SetupJobStore(rootDir, { now });
+  const store = opts.store;
   const processGroups =
     opts.processGroups ?? processGroupServiceWithWindowsSupport(opts.platform ?? process.platform);
   const processing = new Map<string, Promise<void>>();

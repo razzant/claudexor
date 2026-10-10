@@ -237,7 +237,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     positionalPatterns: [{ min: 2, max: 2 }],
     usageArgs: "install|status|doctor|repair|uninstall <host|all>",
     summary: "Manage host integrations (cursor|claude|codex|opencode|all)",
-    flags: ["json", "dry-run", "force", "help", "version"],
+    flags: ["json", "dry-run", "force", "host-binding-json", "help", "version"],
     mutability: "ops",
     stability: "stable",
   },

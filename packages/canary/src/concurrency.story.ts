@@ -167,6 +167,7 @@ async function cancelProbeFamily(
   api: ReturnType<typeof requestApi>,
   prefix: string,
   probes: Probe[],
+  expectedQueued: number,
 ): Promise<void> {
   // Await the queued 202 receipt before cancelling: cancellation during the
   // start-observation window otherwise turns the original POST into a 500.
@@ -178,7 +179,7 @@ async function cancelProbeFamily(
     receipts.map((receipt) => receipt.jobId).sort(),
   );
   const queuedIds = new Set(ours.filter((run) => run.state === "queued").map((run) => run.jobId));
-  expect(queuedIds.size).toBeGreaterThan(0);
+  expect(queuedIds.size).toBe(expectedQueued);
   // Cancel queued work first so it cannot be promoted while active work drains.
   const cancelOrder = [...ours].sort(
     (a, b) => Number(b.state === "queued") - Number(a.state === "queued"),
@@ -222,13 +223,15 @@ describe("startup concurrency acceptance", () => {
   });
 
   it(
-    "default product cap admits 24 fake workers and queues the 25th",
+    "default product admission has no hidden cap at the twenty-fifth fake worker",
     async () => {
       sandbox = makeConcurrencySandbox();
       const api = startDaemon(sandbox);
       const health = status(sandbox);
       expect(health.capacity).toMatchObject({
-        maxConcurrent: 24,
+        maxConcurrent: "unlimited",
+        maxConcurrentNonModelJobs: "unlimited",
+        maxConcurrentModelOperations: "unlimited",
         maxParallelCandidates: 4,
         maxDeepScanWidth: 8,
         maxCouncilMembers: 4,
@@ -238,10 +241,10 @@ describe("startup concurrency acceptance", () => {
       const pending = Array.from({ length: 25 }, (_, index) =>
         enqueueProbe(api, `${prefix}${index}`),
       );
-      const snapshot = await waitForSnapshot(api, prefix, { running: 24, queued: 1 }, pending);
-      expect(snapshot.filter((run) => run.state === "running")).toHaveLength(24);
-      expect(snapshot.filter((run) => run.state === "queued")).toHaveLength(1);
-      await cancelProbeFamily(api, prefix, pending);
+      const snapshot = await waitForSnapshot(api, prefix, { running: 25, queued: 0 }, pending);
+      expect(snapshot.filter((run) => run.state === "running")).toHaveLength(25);
+      expect(snapshot.filter((run) => run.state === "queued")).toHaveLength(0);
+      await cancelProbeFamily(api, prefix, pending, 0);
       expect(status(sandbox)).toMatchObject({ active: 0, queue: 0 });
     },
     TEST_TIMEOUT_MS,
@@ -311,7 +314,7 @@ describe("startup concurrency acceptance", () => {
       // Newly submitted jobs still use the startup cap after the file edit.
       pending.push(enqueueProbe(api, `${prefix}after-config-edit`));
       await waitForSnapshot(api, prefix, { running: 24, queued: 2 }, pending);
-      await cancelProbeFamily(api, prefix, pending);
+      await cancelProbeFamily(api, prefix, pending, 2);
       expect(status(sandbox)).toMatchObject({ active: 0, queue: 0 });
 
       const stopped = cli(sandbox, ["daemon", "stop", "--json"]);
@@ -348,7 +351,7 @@ describe("startup concurrency acceptance", () => {
         enqueueProbe(api, `${widePrefix}${index}`),
       );
       await waitForSnapshot(api, widePrefix, { running: 26, queued: 1 }, widePending);
-      await cancelProbeFamily(api, widePrefix, widePending);
+      await cancelProbeFamily(api, widePrefix, widePending, 1);
       expect(status(sandbox)).toMatchObject({ active: 0, queue: 0 });
     },
     TEST_TIMEOUT_MS,

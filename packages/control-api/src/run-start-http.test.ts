@@ -1,16 +1,15 @@
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ControlProblem, type ControlRunStartRequest } from "@claudexor/schema";
-import { DurableJournal } from "../../journal/dist/index.js";
-import { CommandStore } from "../../daemon/src/command-store.js";
 import { DaemonTransportError } from "../../daemon/src/client-errors.js";
 import { DaemonControlApiServer, type DaemonFacadeClient } from "./daemon-server.js";
 import { normalizeRunStartRequest } from "./run-start.js";
 
 const roots: string[] = [];
-const journals: DurableJournal[] = [];
+const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
 const servers: DaemonControlApiServer[] = [];
 const token = "run-start-test-token";
 const sameKeyAction = "Retry the same operation with the same Idempotency-Key.";
@@ -18,17 +17,18 @@ type Route = "create" | "retry";
 
 afterEach(async () => {
   for (const server of servers.splice(0)) await server.stop();
-  for (const journal of journals.splice(0)) journal.close();
+  for (const sql of stores.splice(0)) await sql.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Real HTTP and command journal, with no daemon process or harness execution. */
+/** Real HTTP and SQL command authority, with no daemon process or harness execution. */
 async function fixture() {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "claudexor-start-http-")));
   roots.push(root);
-  const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
-  journals.push(journal);
-  const store = new CommandStore(journal);
+  const sql = await sqlFixture(root);
+  stores.push(sql);
+  const store = sql.graph.commands.current();
+  const queries = sql.graph.commands.queries;
   const request = normalizeRunStartRequest({
     mode: "agent",
     prompt: "inspect the project",
@@ -42,7 +42,7 @@ async function fixture() {
     idempotencyParams = params,
   ) {
     const accepted = store.accept({
-      id: `job-${store.count + 1}`,
+      id: `job-${queries.count() + 1}`,
       params,
       idempotencyKey: key,
       clientId: "control-api",
@@ -97,7 +97,7 @@ async function fixture() {
       },
       async list(query) {
         if (!("id" in query)) throw new Error("expected an addressed source lookup");
-        return store.records().filter((row) => row.id === query.id || row.runId === query.id);
+        return queries.select(query);
       },
       async cancel() {
         throw new Error("lookup cannot cancel an accepted command");
@@ -118,7 +118,18 @@ async function fixture() {
       body: JSON.stringify(route === "create" ? original : {}),
     });
   }
-  return { store, request, source, otherSource, findAccepted, enqueue, preflight, accept, post };
+  return {
+    store,
+    queries,
+    request,
+    source,
+    otherSource,
+    findAccepted,
+    enqueue,
+    preflight,
+    accept,
+    post,
+  };
 }
 
 describe.each(["create", "retry"] as const)("%s idempotency HTTP composition", (route) => {
@@ -159,7 +170,7 @@ describe.each(["create", "retry"] as const)("%s idempotency HTTP composition", (
     expect(await replay.json()).toMatchObject({ jobId: accepted.jobId });
     expect(f.preflight).toHaveBeenCalledTimes(1);
     expect(f.enqueue).toHaveBeenCalledTimes(1);
-    expect(f.store.count).toBe(3);
+    expect(f.queries.count()).toBe(3);
   });
 
   it("exposes actual CommandStore key validation as a definite 400", async () => {
@@ -175,7 +186,7 @@ describe.each(["create", "retry"] as const)("%s idempotency HTTP composition", (
     });
     expect(f.preflight).not.toHaveBeenCalled();
     expect(f.enqueue).not.toHaveBeenCalled();
-    expect(f.store.count).toBe(2);
+    expect(f.queries.count()).toBe(2);
   });
 
   it.each([
@@ -245,7 +256,7 @@ describe.each(["create", "retry"] as const)("%s idempotency HTTP composition", (
       expect(f.findAccepted).toHaveBeenCalledTimes(1);
       expect(f.preflight).not.toHaveBeenCalled();
       expect(f.enqueue).not.toHaveBeenCalled();
-      expect(f.store.count).toBe(2);
+      expect(f.queries.count()).toBe(2);
     },
   );
 
@@ -300,7 +311,7 @@ describe.each(["create", "retry"] as const)("%s idempotency HTTP composition", (
     });
     expect(f.findAccepted).toHaveBeenCalledTimes(2);
     expect(f.enqueue).not.toHaveBeenCalled();
-    expect(f.store.count).toBe(2);
+    expect(f.queries.count()).toBe(2);
   });
 
   it("returns the preflight refusal only after two confirmed misses", async () => {
@@ -344,6 +355,6 @@ describe.each(["create", "retry"] as const)("%s idempotency HTTP composition", (
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject({ jobId: accepted.jobId });
     expect(f.preflight).toHaveBeenCalledTimes(1);
-    expect(f.store.count).toBe(3);
+    expect(f.queries.count()).toBe(3);
   });
 });

@@ -1,0 +1,338 @@
+import { z } from "zod/v3";
+import { CouncilProjection, PlanQuestion, PlanReadiness } from "./plan.js";
+import { ApplyEligibility } from "./apply-eligibility.js";
+import { MAX_DELEGATED_CHILDREN } from "./delegation.js";
+import { RequiredAction } from "./status-projection.js";
+import { DecisionRecord } from "./decision.js";
+import { WorkProduct } from "./workproduct.js";
+import { ReviewFinding } from "./review.js";
+import { RunFacts } from "./run-facts.js";
+import { AttemptExecutionEvidence } from "./attempt-execution.js";
+import {
+  ControlArtifactInfo,
+  ControlBudgetSnapshot,
+  ControlEvidenceIntegrity,
+  ControlPendingInteraction,
+  ControlRunSummary,
+  ControlTimelineEvent,
+} from "./control.js";
+import { RunFailure } from "./control-run-failure.js";
+
+export const ControlPrimaryOutput = z
+  .object({
+    kind: z
+      .enum([
+        "answer",
+        "report",
+        "plan",
+        "summary",
+        "patch",
+        "files",
+        "diagnostic",
+        "structured_output",
+      ])
+      .describe(
+        "What kind of output this is: answer, report, plan, summary, patch, diagnostic, or structured_output (schema-conformant final/output.json).",
+      ),
+    path: z.string().describe("Artifact path of the output."),
+    text: z.string().nullable().default(null).describe("Inline text content, when loaded."),
+    bytes: z.number().int().nonnegative().optional().describe("Size of the output in bytes."),
+    truncated: z
+      .boolean()
+      .default(false)
+      .describe("True when text is a bounded inline preview of the full artifact."),
+  })
+  .describe("The run's primary user-facing output artifact.");
+export type ControlPrimaryOutput = z.infer<typeof ControlPrimaryOutput>;
+
+/** Historical-name projection for an attempt's outer-boundary evidence.
+ * Old attempts may prove an applied boundary; current delegated attempts
+ * deliberately record its absence. Consumers must not infer native harness
+ * permissions from this block. */
+export const ControlCandidateConfinement = z
+  .object({
+    proven: z
+      .boolean()
+      .describe(
+        "Whether a historical outer boundary was proven by a named mechanism, digest, and denied path; false for current native-access attempts.",
+      ),
+    mechanism: z
+      .string()
+      .nullable()
+      .describe("Opaque label of the enforcing mechanism; null when no boundary was applied."),
+    verifiedDeniedPath: z
+      .string()
+      .nullable()
+      .describe("Path proven unreadable under the applied policy before the harness was spawned."),
+    unavailableReason: z
+      .string()
+      .nullable()
+      .describe(
+        "Why no additional outer boundary was applied; current delegated attempts carry the schema-owned deliberate-absence reason.",
+      ),
+  })
+  .describe(
+    "Historical outer-boundary proof for one attempt, or the deliberate reason current native-access execution applied none.",
+  );
+export type ControlCandidateConfinement = z.infer<typeof ControlCandidateConfinement>;
+
+/** Per-candidate evidence card for a race run (projected from
+ * attempts/<id>/attempt.yaml + reviews/<id>.yaml + the decision winner).
+ * The macOS Candidates tab renders these; SSE freshness rides the client's
+ * existing refresh-on-event. */
+export const ControlCandidate = z
+  .object({
+    attemptId: z.string().describe("Attempt id of the candidate."),
+    harnessId: z.string().describe("Harness that produced the candidate."),
+    label: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Human-readable candidate label, when set."),
+    costUsd: z.number().default(0).describe("Spend attributed to the candidate, in USD."),
+    costEstimated: z
+      .boolean()
+      .default(false)
+      .describe("True when the cost is token-derived rather than natively reported."),
+    errored: z.boolean().default(false).describe("True when the candidate's attempt errored."),
+    errorReason: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("First redacted attempt error; null when the candidate did not error."),
+    gatesPassed: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Number of deterministic gates that passed."),
+    gatesTotal: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Total deterministic gates run for the candidate."),
+    /** Blocking review findings count (accepted blockers). */
+    blockers: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Count of accepted blocking review findings."),
+    reviewVerified: z
+      .boolean()
+      .default(false)
+      .describe("Whether the candidate's review route was verified."),
+    finalReviewClean: z
+      .boolean()
+      .nullable()
+      .default(null)
+      .describe("Whether the final review was clean; null when no final review ran."),
+    winner: z.boolean().default(false).describe("True for the adopted/winning candidate."),
+    diffstat: z
+      .object({
+        files: z.number().int().nonnegative().default(0).describe("Files changed."),
+        additions: z.number().int().nonnegative().default(0).describe("Lines added."),
+        deletions: z.number().int().nonnegative().default(0).describe("Lines deleted."),
+      })
+      .nullable()
+      .default(null)
+      .describe("Diff statistics of the candidate's patch; null when there is no patch."),
+    /**
+     * QA-028: this candidate's row of the decision's ranking scorecard —
+     * every compared ranking axis (`tool_warnings`, `diff_size`, `cost`, …)
+     * keyed to its formatted value, projected from
+     * `decision.ranking_scorecard` by attempt id. Null when the run had no
+     * arbitration (single candidate / no decision). Together with the
+     * detail-level `decision.decisive_axis`, a machine surface can explain WHY
+     * a winner beat a runner-up without reimplementing the ranking order.
+     */
+    rankingAxes: z
+      .record(z.string(), z.string())
+      .nullable()
+      .default(null)
+      .describe(
+        "This candidate's ranking-scorecard axis values (from decision.ranking_scorecard); null when no arbitration ran.",
+      ),
+    /** Historical wire name retained so old callers can inspect prior proofs;
+     * new delegated attempts use it to disclose deliberate absence. */
+    confinement: ControlCandidateConfinement.nullable()
+      .default(null)
+      .describe(
+        "Historical outer-boundary evidence or current deliberate-absence evidence; null when the attempt has neither.",
+      ),
+  })
+  .describe(
+    "Per-candidate evidence card for a race run, projected from attempt, review, and decision artifacts.",
+  );
+export type ControlCandidate = z.infer<typeof ControlCandidate>;
+
+export const ControlRunDetail = z
+  .object({
+    attemptExecution: z.array(AttemptExecutionEvidence).optional(),
+    summary: ControlRunSummary,
+    children: z
+      .array(ControlRunSummary)
+      .max(MAX_DELEGATED_CHILDREN)
+      .default([])
+      .describe(
+        "Direct Claudexor Delegate child runs, projected from persisted delegatedFromRunId lineage for reload-safe flat rows.",
+      ),
+    /** Immutable terminal-fact projection (GH #29), read verbatim from
+     * final/run_facts.yaml. Null while active and for legacy runs. */
+    runFacts: RunFacts.nullable()
+      .default(null)
+      .describe("Validated terminal RunFacts receipt; null while active or unavailable."),
+    /**
+     * Server-owned outcome banner (D18): the ONE honest headline for this run,
+     * derived by the single projection owner (status-projection.outcomeBanner)
+     * from the terminal outcome facts + delivery state — e.g. "Candidate ready
+     * — NOT APPLIED", "Applied", "Needs review". Surfaces render this verbatim
+     * above any model prose; null while the run is not terminal.
+     */
+    outcomeBanner: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Server-owned outcome headline (status-projection.outcomeBanner); null while the run is not terminal.",
+      ),
+    /**
+     * Highest event seq included in this snapshot. Clients subscribe to the
+     * event stream from this cursor; events with seq <= lastSeq are already
+     * reflected in the snapshot (snapshot-then-subscribe, no gaps, no dupes).
+     */
+    lastSeq: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe(
+        "Highest event seq included in this snapshot; clients subscribe to the event stream from this cursor (snapshot-then-subscribe, no gaps, no dupes).",
+      ),
+    artifacts: z
+      .array(ControlArtifactInfo)
+      .default([])
+      .describe("Artifacts recorded in the run tree."),
+    primaryOutput: ControlPrimaryOutput.nullable()
+      .default(null)
+      .describe("The run's primary user-facing output; null while pending."),
+    timeline: z
+      .array(ControlTimelineEvent)
+      .default([])
+      .describe("Projected timeline of run events."),
+    budget: ControlBudgetSnapshot.default({}),
+    finalSummary: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Final summary text; null when the run has none."),
+    decision: DecisionRecord.nullable()
+      .default(null)
+      .describe("The arbitration decision; null before arbitration."),
+    /** Persisted operator unblock decision (accept_risk/override), hash-bound; server-owned apply affordance. */
+    operatorDecision: z
+      .object({
+        action: z.string().describe("Operator decision action (e.g. accept_risk, override)."),
+        decidedAt: z.string().nullable().default(null).describe("When the decision was made."),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "Persisted operator unblock decision (accept_risk/override), hash-bound; null when none was made.",
+      ),
+    workProduct: WorkProduct.nullable()
+      .default(null)
+      .describe("The run's work product; null when none was produced."),
+    /** Derived apply-gate verdict (single producer: the delivery gate); null when the run has no patch artifact. */
+    /** Derived plan readiness (mode=plan runs; single derivation owner —
+     * derivePlanReadiness over final/questions.json). Null otherwise. */
+    planReadiness: PlanReadiness.nullable()
+      .default(null)
+      .describe("Derived readiness of a plan run; null for non-plan runs."),
+    /** The plan run's OPEN questions, projected from the same
+     * final/questions.json the readiness derives from (D17). Empty for a ready
+     * plan, an unverified plan, and every non-plan run. Surfaces render these
+     * as a question set (CLI TTY answer loop / ACP turn text) and answer them
+     * as an ordinary follow-up plan turn — the questions are never re-parsed
+     * from plan text on any surface. */
+    planQuestions: z
+      .array(PlanQuestion)
+      .default([])
+      .describe(
+        "Open questions of a plan run (projected from final/questions.json); empty otherwise.",
+      ),
+    /** Council membership + merge disclosure (INV-031); null for solo plans
+     * and every non-plan run. Purely additive — the plan artifacts themselves
+     * are shape-identical to a solo plan. */
+    council: CouncilProjection.nullable()
+      .default(null)
+      .describe("Council membership + merge disclosure; null for solo plans and non-plan runs."),
+    applyEligibility: ApplyEligibility.nullable()
+      .default(null)
+      .describe(
+        "Derived apply-gate verdict (single producer: the delivery gate); null when the run has no patch artifact.",
+      ),
+    reviewFindings: z
+      .array(ReviewFinding)
+      .default([])
+      .describe("Review findings recorded for the run."),
+    pendingInteractions: z
+      .array(ControlPendingInteraction)
+      .default([])
+      .describe("Interactive questions currently awaiting answers."),
+    /** Per-candidate evidence cards. Present for EVERY envelope-producing
+     * mode (races show N lanes; single-candidate turns and convergence
+     * refinements project their attempts too); empty only when no attempt
+     * artifacts exist. */
+    candidates: z
+      .array(ControlCandidate)
+      .default([])
+      .describe(
+        "Per-candidate evidence cards for every envelope-producing mode; empty only when no attempt artifacts exist.",
+      ),
+    /** Live plan checklist: the LAST plan.progress event's items, or null
+     * when the run never emitted one. */
+    planProgress: z
+      .object({
+        items: z
+          .array(
+            z.object({
+              id: z.string().describe("Plan item id."),
+              title: z.string().describe("Plan item title."),
+              status: z
+                .enum(["pending", "in_progress", "completed"])
+                .describe("Progress state of the item."),
+            }),
+          )
+          .default([])
+          .describe("Plan items, last-wins."),
+        evidence: ControlEvidenceIntegrity.default("complete").describe(
+          "Integrity of the canonical events this checklist was projected from: 'incomplete'/'unavailable' warns that a plan.progress event may have been lost to a malformed or unreadable events file, so the checklist may be stale or empty; 'complete' otherwise.",
+        ),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "Live plan checklist from the last plan.progress event; null when the run never emitted one AND its canonical events were fully readable. Non-null with empty items + non-complete evidence discloses that a plan event may have been dropped.",
+      ),
+    failure: RunFailure.nullable()
+      .default(null)
+      .describe("Typed failure info; null unless the run failed."),
+    /** Minimal typed required-operator-actions for a succeeded-but-BLOCKED run
+     * (GH #29): stable-id actions derived by the single status-projection owner
+     * (requiredActionsFor) from the terminal outcome facts + operator-decision
+     * state — review blocked, checks failed, needs-decision, or a work_state
+     * needs_input/incomplete veto. Empty for clean, already-decided, and failed
+     * runs (a failed run's remediation rides RunFailure.nextActions). */
+    requiredActions: z
+      .array(RequiredAction)
+      .default([])
+      .describe(
+        "Stable-id required operator actions for a succeeded-but-blocked run (GH #29); empty for clean/decided/failed runs.",
+      ),
+  })
+  .describe(
+    "Full run detail snapshot served by GET /runs/:id: summary, artifacts, timeline, decision, findings, and progress.",
+  );
+export type ControlRunDetail = z.infer<typeof ControlRunDetail>;

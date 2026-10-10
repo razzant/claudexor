@@ -1,4 +1,4 @@
-import type { RunEvent, RunEventType } from "@claudexor/schema";
+import type { RunEvent, RunEventType, RunTelemetry } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
 import {
   closeSync,
@@ -21,6 +21,8 @@ export type TerminalRunEventType = Extract<
 export interface PreparedTerminalEvent {
   type: TerminalRunEventType;
   payload: Record<string, unknown>;
+  /** Prepared in memory by the receipt owner; a SQL terminal sink writes it. */
+  telemetry?: RunTelemetry | null;
   /**
    * Publish the prepared receipt's canonical commit marker after the durable
    * journal accepts the terminal, but before file-tail/live observers can see
@@ -33,6 +35,14 @@ export interface PreparedTerminalEvent {
    */
   rollback?: () => void;
 }
+
+/** A synchronous replacement for terminal persistence and file finalization.
+ * A throw means no authority committed; pending means it committed and repair
+ * remains owed. The event log never repeats the sink's file writes. */
+export type TerminalPersistenceHook = (
+  event: RunEvent,
+  telemetry: RunTelemetry | null,
+) => { state: "materialized" } | { state: "pending"; error: unknown };
 
 /**
  * Append-only JSONL event log for a single run. Terminal output and human
@@ -51,6 +61,7 @@ export class EventLog {
   private terminalCommittedFlag = false;
   private terminalCommitInProgress = false;
   private terminalWriterPoisoned = false;
+  private terminalPersistence?: TerminalPersistenceHook;
   private prepareOutput?: (type: TerminalRunEventType, payload: Record<string, unknown>) => void;
   private beforeTerminal?: (
     type: TerminalRunEventType,
@@ -134,6 +145,10 @@ export class EventLog {
     return this.terminalCommittedFlag;
   }
 
+  setTerminalPersistence(hook: TerminalPersistenceHook): void {
+    this.terminalPersistence = hook;
+  }
+
   /** Highest seq this writer has appended: its in-memory counter, no file read. */
   lastSeq(): number {
     return this.nextSeq - 1;
@@ -210,24 +225,34 @@ export class EventLog {
       }
     }
     if (terminal) {
-      let durableAuthorityCommitted = false;
-      try {
-        this.onPersist?.(event);
-        durableAuthorityCommitted = this.onPersist !== undefined;
-      } catch (error) {
-        this.rollbackTerminal(previousBytes, prepared, error);
-      }
-      try {
-        prepared?.commit?.();
-      } catch (error) {
-        if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
-        this.rollbackTerminal(previousBytes, prepared, error);
-      }
-      try {
-        appendLine(this.path, JSON.stringify(event));
-      } catch (error) {
-        if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
-        this.rollbackTerminal(previousBytes, prepared, error);
+      if (this.terminalPersistence) {
+        let persisted: ReturnType<TerminalPersistenceHook>;
+        try {
+          persisted = this.terminalPersistence(event, prepared?.telemetry ?? null);
+        } catch (error) {
+          this.rollbackTerminal(previousBytes, prepared, error);
+        }
+        if (persisted.state === "pending") this.poisonAfterDurableCommit(persisted.error);
+      } else {
+        let durableAuthorityCommitted = false;
+        try {
+          this.onPersist?.(event);
+          durableAuthorityCommitted = this.onPersist !== undefined;
+        } catch (error) {
+          this.rollbackTerminal(previousBytes, prepared, error);
+        }
+        try {
+          prepared?.commit?.();
+        } catch (error) {
+          if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
+          this.rollbackTerminal(previousBytes, prepared, error);
+        }
+        try {
+          appendLine(this.path, JSON.stringify(event));
+        } catch (error) {
+          if (durableAuthorityCommitted) this.poisonAfterDurableCommit(error);
+          this.rollbackTerminal(previousBytes, prepared, error);
+        }
       }
       this.nextSeq += 1;
       // The durable journal, canonical prepared receipt, and per-run event are

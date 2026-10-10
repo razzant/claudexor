@@ -159,9 +159,6 @@ importers:
       '@claudexor/harness-raw-api':
         specifier: workspace:*
         version: link:../harness-raw-api
-      '@claudexor/journal':
-        specifier: workspace:*
-        version: link:../journal
       '@claudexor/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
@@ -252,9 +249,6 @@ importers:
       '@claudexor/core':
         specifier: workspace:*
         version: link:../core
-      '@claudexor/journal':
-        specifier: workspace:*
-        version: link:../journal
       '@claudexor/schema':
         specifier: workspace:*
         version: link:../schema
@@ -267,6 +261,11 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+
+    devDependencies:
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
 
   packages/delivery:
     dependencies:
@@ -453,12 +452,6 @@ importers:
       '@claudexor/secrets':
         specifier: workspace:*
         version: link:../secrets
-      '@claudexor/util':
-        specifier: workspace:*
-        version: link:../util
-
-  packages/journal:
-    dependencies:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util

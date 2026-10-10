@@ -7,7 +7,7 @@
  */
 import { existsSync } from "node:fs";
 import { ControlSetupJobInputRequest, type ControlSetupJob } from "@claudexor/schema";
-import { ACTIVE_SETUP_STATES } from "./setup-job-store.js";
+import { ACTIVE_SETUP_STATES } from "./setup-job-projection.js";
 import {
   SETUP_LOGIN_PROTOCOL_VERSION,
   atomicPrivateJson,

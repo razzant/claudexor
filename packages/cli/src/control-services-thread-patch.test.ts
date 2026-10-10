@@ -200,7 +200,7 @@ describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
     ensureLaneHomeEnv(rt, "th-2", "claude", "work");
 
     const threads = {
-      getThread: () => ({ repo: { root: repo }, workspace: { mode: "in_place" } }),
+      getThread: (id: string) => ({ id, repo: { root: repo }, workspace: { mode: "in_place" } }),
       purgeThread: (id: string) => ({ id, state: "purged" }),
     };
     const services = controlServices(

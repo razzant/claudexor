@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/orchestrator",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Hub that composes all subsystems and implements the three canonical intents (ask, plan, agent) with their strategy flags (ask deep-scan, plan solo/council, agent best-of-N race, attempt caps, until-clean, create, delegate).",
   "type": "module",
@@ -50,7 +50,7 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"

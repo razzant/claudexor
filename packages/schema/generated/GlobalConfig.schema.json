@@ -239,20 +239,38 @@
               "description": "Inactivity watchdog for harness streams: no events for this window aborts the stream and fails the attempt with a typed timeout."
             },
             "max_concurrent": {
-              "type": "integer",
-              "minimum": -9007199254740991,
-              "maximum": 9007199254740991,
-              "exclusiveMinimum": 0,
-              "default": 24,
-              "description": "Regular daemon jobs per data root; applied at daemon startup."
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "string",
+                  "const": "unlimited"
+                }
+              ],
+              "default": "unlimited",
+              "description": "Global regular-job limit across model and non-model classes, or unlimited; applied at startup."
+            },
+            "max_concurrent_non_model_jobs": {
+              "$ref": "#/definitions/GlobalConfig/properties/runtime/properties/max_concurrent",
+              "default": "unlimited",
+              "description": "Regular non-model jobs admitted at once, or unlimited; applied at startup."
+            },
+            "max_concurrent_model_operations": {
+              "$ref": "#/definitions/GlobalConfig/properties/runtime/properties/max_concurrent",
+              "default": "unlimited",
+              "description": "Model-operation runners admitted at once, or unlimited; applied at startup."
             },
             "max_parallel_candidates": {
-              "$ref": "#/definitions/GlobalConfig/properties/runtime/properties/max_concurrent",
+              "$ref": "#/definitions/GlobalConfig/properties/runtime/properties/max_concurrent/anyOf/0",
               "default": 4,
               "description": "Active best-of candidates or deep-scan scouts within one run."
             },
             "max_deep_scan_width": {
-              "$ref": "#/definitions/GlobalConfig/properties/runtime/properties/max_concurrent",
+              "$ref": "#/definitions/GlobalConfig/properties/runtime/properties/max_concurrent/anyOf/0",
               "default": 8,
               "description": "Maximum scout count in one deep scan."
             },

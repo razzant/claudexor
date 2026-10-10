@@ -1,12 +1,12 @@
+import type { ResourceStorePort } from "@claudexor/daemon";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  InteractionRegistry,
-  ProjectPartitions,
-  QuotaRegistry,
-  ResourceStore,
-  RunEventBus,
+import {
+  type InteractionRegistry,
+  type ProjectThreadPort,
+  type QuotaRegistry,
+  type RunEventBus,
 } from "@claudexor/daemon";
 import type { DelegationBudgetAuthority } from "@claudexor/orchestrator";
 import { describe, expect, it, vi } from "vitest";
@@ -51,7 +51,7 @@ function runnerFixture(ingest = vi.fn(), publish = vi.fn()) {
     recordSession: () => {},
     recordLaneCheckpoint: () => {},
     setTurnContinuity: () => {},
-  } as unknown as ProjectPartitions;
+  } as unknown as ProjectThreadPort;
   return createDaemonAgentRunner({
     delegationBudgetAuthority: {} as unknown as DelegationBudgetAuthority,
     quotaStore: () => ({ ingest }) as unknown as QuotaRegistry,
@@ -59,7 +59,7 @@ function runnerFixture(ingest = vi.fn(), publish = vi.fn()) {
     commands: { getByRunId: () => undefined },
     interactions: { register: () => {} } as unknown as InteractionRegistry,
     liveInputs: { register: () => ({ release: () => {} }) } as never,
-    resources: () => ({ resolve: () => [] }) as unknown as ResourceStore,
+    resources: () => ({ resolve: () => [] }) as unknown as ResourceStorePort,
     bus: { publish } as unknown as RunEventBus,
   });
 }

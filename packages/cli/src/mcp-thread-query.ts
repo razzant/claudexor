@@ -13,6 +13,7 @@ import { daemonUnavailableError } from "./mcp-daemon-unavailable.js";
 export async function threadQuery(
   input: Record<string, unknown>,
   requireExistingDaemon: boolean,
+  beltContext = false,
 ): Promise<Record<string, unknown>> {
   const creating = input["mode"] === "__thread_create";
   const reading = input["mode"] === "__thread_read";
@@ -21,7 +22,7 @@ export async function threadQuery(
     requireExistingDaemon || reading ? await connectDaemonIfRunning() : await ensureDaemon();
   if (!connection)
     throw daemonUnavailableError(
-      requireExistingDaemon,
+      beltContext,
       "thread read does not start one (start it with `claudexor daemon start` or call a mutating tool first)",
     );
   const threadId = typeof input["threadId"] === "string" ? input["threadId"] : "";

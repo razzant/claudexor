@@ -10,8 +10,7 @@
  * command params are the replay source. A bound turn, or one that already
  * carries a refusal, is never touched, so the pass is idempotent across starts.
  */
-import type { JournalProjectionDescriptor } from "./journal-projection.js";
-import type { ThreadStore } from "./threads.js";
+import type { ProjectThreadPort } from "./store-contracts.js";
 
 interface CommandRecordView {
   state: string;
@@ -23,7 +22,7 @@ interface CommandRecordView {
 export const RESTARTED_BEFORE_START = "daemon_restarted_before_start";
 
 export function recordInterruptedRunlessTurns(
-  store: Pick<ThreadStore, "getTurn" | "setTurnEnqueueError">,
+  store: Pick<ProjectThreadPort, "getTurn" | "setTurnEnqueueError">,
   records: Iterable<CommandRecordView>,
 ): number {
   let recorded = 0;
@@ -43,22 +42,4 @@ export function recordInterruptedRunlessTurns(
     recorded += 1;
   }
   return recorded;
-}
-
-/**
- * Compose the recovery into a partition's thread projection. Registered after
- * the command projection in the same journal manager, so its recovery runs
- * after the commands were interrupted.
- */
-export function withRunlessTurnRecovery(
-  descriptor: JournalProjectionDescriptor<ThreadStore>,
-  commandRecords: () => Iterable<CommandRecordView>,
-): JournalProjectionDescriptor<ThreadStore> {
-  return {
-    ...descriptor,
-    recover: (store) => {
-      descriptor.recover?.(store);
-      recordInterruptedRunlessTurns(store, commandRecords());
-    },
-  };
 }

@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { journalFoldPolicy } from "../journal-fold-policy.js";
 import { createPartition } from "./partitions.js";

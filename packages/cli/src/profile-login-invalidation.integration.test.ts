@@ -1,4 +1,4 @@
-import type { SetupJobStore } from "./setup-job-store.js";
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
@@ -136,6 +136,7 @@ async function withDaemon<T>(
   const quota = { noteCredentialChange: () => {} };
   const build = () =>
     createSetupJobManager({
+      store: new SetupJobStore(root),
       rootDir: root,
       runnerPath: RUNNER,
       monitorPollMs: 20,

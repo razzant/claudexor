@@ -28,7 +28,7 @@ echo "==> Bundling claudexord (esbuild single-file)"
 # (QA-002). build-runtime-closure.mjs re-tars THIS stamped bundle and asserts
 # the same sha, so the bundled and downloaded closures are stamped identically.
 if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/claudexord.js \
-      --bundle --platform=node --format=cjs --target=node22 \
+      --bundle --platform=node --format=cjs --target=node24 \
       --banner:js="const CLAUDEXOR_BUNDLE_URL = require('node:url').pathToFileURL(__filename).href;" \
       --define:import.meta.url=CLAUDEXOR_BUNDLE_URL \
       --define:process.env.CLAUDEXOR_BUILD_SHA="\"$BUILD_SHA\"" \
@@ -40,7 +40,7 @@ else
 fi
 echo "==> Bundling claudexor CLI for remote runtimes"
 if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/cli.js \
-      --bundle --platform=node --format=cjs --target=node22 \
+      --bundle --platform=node --format=cjs --target=node24 \
       --banner:js="const CLAUDEXOR_BUNDLE_URL = require('node:url').pathToFileURL(__filename).href;" \
       --define:import.meta.url=CLAUDEXOR_BUNDLE_URL \
       --define:process.env.CLAUDEXOR_BUILD_SHA="\"$BUILD_SHA\"" \
@@ -52,7 +52,7 @@ else
 fi
 echo "==> Bundling native-login runner"
 if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/setup-login-runner.js \
-      --bundle --platform=node --format=cjs --target=node22 \
+      --bundle --platform=node --format=cjs --target=node24 \
       --banner:js="const CLAUDEXOR_BUNDLE_URL = require('node:url').pathToFileURL(__filename).href;" \
       --define:import.meta.url=CLAUDEXOR_BUNDLE_URL \
       --outfile="$SETUP_RUNNER_JS" >/dev/null ); then

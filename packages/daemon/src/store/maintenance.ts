@@ -1,9 +1,10 @@
 import { unlinkSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 import { BlobFiles } from "./blob-files.js";
-import { StoreError } from "./errors.js";
+import { StoreCorruptError, StoreError } from "./errors.js";
 import { STORE_WORKER_DATA_KEY, resolveStoreWorkerEntry } from "./flusher-protocol.js";
 import type { EngineStore } from "./store.js";
+import { cleanupUploadPart } from "./uploads.js";
 // Static import: the worker module must be part of this module graph so the
 // single-file daemon bundle embeds it (its self-start is inert on the main thread).
 import "./maintenance-worker.js";
@@ -64,7 +65,7 @@ export interface SweepReport extends Omit<SweepCandidates, "candidates"> {
 
 export type MaintenanceResponse =
   | { id: number; ok: true; result: IntegrityReport | ExportReport | SweepCandidates }
-  | { id: number; ok: false; error: string };
+  | { id: number; ok: false; error: string; code?: "store_corrupt" };
 
 export interface MaintenanceControllerOptions {
   workerEntry?: string;
@@ -114,7 +115,7 @@ export class MaintenanceController {
   /** `PRAGMA integrity_check` on the worker; the verdict becomes the `integrity` fact. */
   async integrityCheck(): Promise<IntegrityReport> {
     const report = await this.run<IntegrityReport>({ id: 0, kind: "integrity_check" });
-    this.store.recordIntegrity(report.ok ? "ok" : "failed");
+    this.store.recordIntegrity(report.ok ? "ok" : "failed", report.problems.join("; "));
     return report;
   }
 
@@ -169,8 +170,8 @@ export class MaintenanceController {
         (outcome === "removed" ? report.removedBlobs : report.keptBlobs).push(candidate.sha);
         continue;
       }
-      const decision = await this.decidePart(candidate.uploadId, candidate.path);
-      (decision === "remove" ? report.removedParts : report.keptParts).push(candidate.path);
+      const decision = await cleanupUploadPart(this.store, candidate.uploadId, candidate.path);
+      (decision === "removed" ? report.removedParts : report.keptParts).push(candidate.path);
     }
     if (report.removedTemps.length > 0 || report.removedParts.length > 0) {
       this.store.registerExternal(this.store.paths.uploads);
@@ -189,33 +190,6 @@ export class MaintenanceController {
     const worker = this.worker;
     this.worker = null;
     if (worker) await worker.terminate();
-  }
-
-  /** C2/C10 part decision on main: live or obligated uploads keep their part,
-   * a published unobligated upload loses it at once, and a rowless part goes
-   * through the one owner-generation unlink rule (the `upload` row is its owner). */
-  private async decidePart(uploadId: string, path: string): Promise<"keep" | "remove"> {
-    const observe = (): "keep" | "remove" | "unknown" => {
-      const row = this.store.prepare("SELECT state FROM upload WHERE id = ?").get(uploadId) as
-        { state: string } | undefined;
-      if (!row) return "unknown";
-      if (row.state !== "published") return "keep";
-      const obligated = this.store
-        .prepare("SELECT 1 AS one FROM effect_obligation WHERE kind = 'publish_blob' AND key = ?")
-        .get(uploadId);
-      return obligated ? "keep" : "remove";
-    };
-    const first = observe();
-    if (first === "keep") return "keep";
-    if (first === "remove") {
-      unlinkTolerant(path);
-      return "remove";
-    }
-    const outcome = await this.blobs.owners.unlinkWhenUnowned(`upload:${uploadId}`, {
-      path,
-      owners: () => observe() !== "unknown",
-    });
-    return outcome === "removed" ? "remove" : "keep";
   }
 
   private run<T>(request: MaintenanceRequest): Promise<T> {
@@ -255,10 +229,22 @@ export class MaintenanceController {
       if (!current || current.request.id !== response.id) return;
       this.inFlight = null;
       if (response.ok) current.resolve(response.result as never);
-      else current.reject(new StoreError("store_maintenance_failed", 503, true, response.error));
+      else {
+        const error =
+          response.code === "store_corrupt"
+            ? new StoreCorruptError(response.error)
+            : new StoreError("store_maintenance_failed", 503, true, response.error);
+        current.reject(this.store.failure(error, "maintenance worker") as Error);
+      }
       this.pump();
     });
     worker.on("error", (error) => {
+      if (this.worker !== worker || this.closing) return;
+      const failure = this.store.failure(error, "maintenance worker");
+      if (failure instanceof StoreCorruptError) {
+        this.inFlight?.reject(failure);
+        this.inFlight = null;
+      }
       this.options.log?.(`store maintenance worker error: ${error.message}`);
     });
     worker.on("exit", (code) => {

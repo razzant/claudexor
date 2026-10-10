@@ -143,6 +143,20 @@ export class AccountResets {
       receipt = { ...receipt, state: "running", completed_at: null, outcome: "pending" };
       this.save(receipt); // durable dispatch intent, before native I/O
       try {
+        await this.deps.commands().flushed();
+      } catch {
+        receipt = {
+          ...receipt,
+          state: "completed",
+          completed_at: this.now(),
+          outcome: "unavailable",
+          detail: "store_flush_unavailable",
+          readback: { state: "failed", attempted_at: null, detail: "store_flush_unavailable" },
+        };
+        this.save(receipt);
+        return receipt;
+      }
+      try {
         const outcome = await this.deps.consume(accepted.binding);
         receipt = { ...receipt, ...outcome };
       } catch {

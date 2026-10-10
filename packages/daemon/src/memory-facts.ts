@@ -23,3 +23,11 @@ export function memoryFacts(): DaemonMemoryFacts {
     sampledAt: new Date().toISOString(),
   };
 }
+
+/** Process footprint on the existing admission log line, in whole mebibytes. */
+export function processMemoryFields(
+  usage: Pick<NodeJS.MemoryUsage, "rss" | "heapUsed" | "external"> = process.memoryUsage(),
+): string {
+  const mb = (bytes: number) => Math.round(bytes / (1024 * 1024));
+  return `rssMb=${mb(usage.rss)} heapUsedMb=${mb(usage.heapUsed)} externalMb=${mb(usage.external)}`;
+}

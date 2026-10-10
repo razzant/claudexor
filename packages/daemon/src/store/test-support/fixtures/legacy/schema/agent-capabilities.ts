@@ -1,0 +1,266 @@
+import { z } from "zod/v3";
+import { AccessProfile, ModeKind, ProviderFamily } from "./primitives.js";
+import {
+  AdapterStatus,
+  EffortHint,
+  LiveInputCapability,
+  ReadonlyMechanism,
+  WriteMechanism,
+} from "./harness.js";
+import { WorkspaceMode } from "./thread.js";
+import { AttachmentInputClass } from "./attachment.js";
+import { OutputSchemaDialect } from "./output-schema-dialect.js";
+import { DelegationCapability } from "./delegation.js";
+import { GitCapability } from "./git-capability.js";
+import { SetupLoginCapability } from "./readiness.js";
+import { WorkspaceKind } from "./files-manifest.js";
+import { ProcessingPreference } from "./processing.js";
+import { CatalogInputLimit } from "./harness-input.js";
+
+/**
+ * AgentCapabilityCatalog — the machine-readable answer to "what can this
+ * Claudexor install do RIGHT NOW", for external agents (MCP hosts, scripts,
+ * other CLIs). It is a DERIVED projection over existing truth sources —
+ * harness manifests + doctor status (gateway.statusAll), the model-truth
+ * service, the CLI command registry, and the schema's own closed vocabularies.
+ * Nothing in it is hand-maintained; a catalog field without a live producer
+ * must not exist (staged-field rule).
+ */
+
+/**
+ * ControlRunStartRequest keys a DIRECT client may NOT send to POST /runs —
+ * they belong to the daemon-internal thread-turn pipeline (POST
+ * /threads/:id/turns pre-creates the turn and wires plan lineage). The
+ * daemon-server 400-guards these; the capability catalog must exclude them
+ * from the advertised run-control keys, or the catalog would lie to agents.
+ * ONE list, two consumers — keep them in lockstep here.
+ *
+ * `threadId` is server-owned like `turnId` (D10): a thread turn is ALWAYS
+ * created through POST /threads/:id/turns (the route owns scope resolution,
+ * lineage, and the continuation packet). POST /runs is for one-shot,
+ * thread-less runs only — a threadId there would smuggle a turn past the
+ * continuity pipeline, so it is refused. The field stays on the schema
+ * because the daemon-internal enqueue params still carry it (the turn route
+ * fills it in), exactly like turnId.
+ */
+export const RUN_START_CLIENT_REJECTED_KEYS = [
+  "threadId",
+  "turnId",
+  "planRunId",
+  "planRef",
+  "retryOf",
+  "parentRunId",
+  "delegatedFromRunId",
+  "continueModelInherited",
+] as const;
+
+/**
+ * Mode -> tree mutability. ask/plan are read-only BY CONSTRUCTION
+ * (Bible invariant); agent writes. The catalog derives its
+ * readOnlyModes/writeModes split from this single map instead of re-encoding
+ * the split at each consumer.
+ */
+export const MODE_MUTABILITY: Record<z.infer<typeof ModeKind>, "read" | "write"> = {
+  ask: "read",
+  plan: "read",
+  agent: "write",
+};
+
+export const CatalogModelSummary = z
+  .object({
+    source: z
+      .enum(["api", "manifest", "none"])
+      .describe(
+        "Where the model list comes from: a live vendor API enumeration, the adapter manifest's curated hints, or nothing (model overrides are refused for source=none).",
+      ),
+    count: z
+      .number()
+      .int()
+      .min(0)
+      .describe("Number of enumerable models (GET /harnesses/:id/models has the full list)."),
+    verifiedAgainst: z
+      .string()
+      .nullable()
+      .describe(
+        "Vendor CLI version the manifest hints were last verified against (null for api/none sources).",
+      ),
+  })
+  .describe("Summary of a harness's model truth source (full list via the models endpoint/verb).");
+export type CatalogModelSummary = z.infer<typeof CatalogModelSummary>;
+
+export const CatalogHarness = z
+  .object({
+    inputLimits: z.array(CatalogInputLimit).optional(),
+    processingPreferences: z.array(ProcessingPreference).optional(),
+    accountCatalog: z.boolean().optional(),
+    id: z
+      .string()
+      .describe("Harness id (codex, claude, cursor, opencode, raw-api, openrouter, ...)."),
+    enabled: z
+      .boolean()
+      .describe(
+        "False when settings disable this harness (harnesses.<id>.enabled=false) — routing excludes it regardless of doctor status.",
+      ),
+    displayName: z.string().describe("Human display name from the manifest."),
+    status: AdapterStatus.describe(
+      "Doctor verdict: ok | degraded | unavailable (doctor-backed, cached ~90s).",
+    ),
+    providerFamily: ProviderFamily.describe("Vendor family the harness routes to."),
+    enabledIntents: z
+      .array(z.string())
+      .describe("Intents the gateway will route to this harness right now."),
+    disabledIntents: z
+      .array(z.string())
+      .describe("Intents the doctor disabled (with reasons in `reasons`)."),
+    reasons: z
+      .array(z.string())
+      .describe("Human-readable doctor/discovery reasons for degraded or unavailable status."),
+    configuredModel: z
+      .string()
+      .nullable()
+      .describe(
+        "The user's configured per-harness default model, if any (null = engine default routing).",
+      ),
+    configuredModelValid: z
+      .boolean()
+      .nullable()
+      .describe(
+        "Admission of configuredModel under the harness's own absence declaration (INV-104): false = refused by an authoritative list, or no list could be read; true = listed, or unlisted on an advisory harness (forwarded to the vendor; the settings write and doctor readiness carry that note); null when no model is configured.",
+      ),
+    models: CatalogModelSummary,
+    webPolicy: z
+      .enum(["native", "tools", "uncontrolled", "none"])
+      .describe("How external web/search is controlled for this harness."),
+    attachmentInputs: z
+      .array(AttachmentInputClass)
+      .describe("Finite media/MIME/size/count/transport declarations for this adapter."),
+    effortLevels: z
+      .array(EffortHint)
+      .describe("Reasoning-effort ladder the adapter declares (normalized by the engine)."),
+    accessProfilesSupported: z
+      .array(AccessProfile)
+      .describe("Access profiles the adapter can enforce."),
+    readonlyMechanism: ReadonlyMechanism.describe(
+      "HOW read-only is enforced (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness.",
+    ),
+    writeMechanism: WriteMechanism.default("none").describe(
+      "HOW workspace_write is confined (fs_sandbox | tool_policy | none) — tool_policy means an allowed shell is unconfined (no FS/network fence); consumers choosing lanes by confinement read THIS field, never a harness name.",
+    ),
+    delegation: DelegationCapability.describe(
+      "Whether this installed runtime can offer Delegate through this harness.",
+    ),
+    liveInput: LiveInputCapability.default("none").describe(
+      "How a live message enters one of this harness's RUNNING sessions (POST /v2/runs/:id/messages): mid_turn | next_tool_boundary | none. The harness maximum from its capability profile; the POST answers for the specific run. Omitted by engines older than 3.16.0 (= none).",
+    ),
+    setupLogin: SetupLoginCapability.nullable()
+      .optional()
+      .describe(
+        "Effective setup-login flow for this harness on the current host; current producers emit null or an object, while omission identifies a legacy catalog row.",
+      ),
+  })
+  .describe("Per-harness live capability row (manifest + doctor + model truth).");
+export type CatalogHarness = z.infer<typeof CatalogHarness>;
+
+export const CatalogCliCommand = z
+  .object({
+    id: z.string().describe("CLI verb."),
+    mutability: z
+      .enum(["read", "write", "delivery", "ops"])
+      .describe(
+        "read = never mutates the tree; write = produces tree changes (envelope or live); delivery = moves an existing WorkProduct into the tree/VCS; ops = local config/daemon plumbing.",
+      ),
+    stability: z.enum(["stable", "experimental"]).describe("Contract stability of the verb."),
+    recovery: z
+      .boolean()
+      .describe("True for post-run recovery verbs (inspect/follow/apply/decision)."),
+  })
+  .describe(
+    "CLI verb projection from the command registry (same data `claudexor help --json` serves).",
+  );
+export type CatalogCliCommand = z.infer<typeof CatalogCliCommand>;
+
+export const CatalogMutabilityMatrix = z
+  .object({
+    workspaceKinds: z.array(WorkspaceKind).optional(),
+    readOnlyModes: z
+      .array(ModeKind)
+      .describe("Canonical modes that never mutate the project tree (ask/plan)."),
+    writeModes: z.array(ModeKind).describe("Canonical modes that may mutate a tree (agent)."),
+    isolationKinds: z
+      .array(z.enum(["envelope", "live"]))
+      .describe(
+        "Run isolation: envelope = isolated worktree in the external per-project runtime namespace (default), live = the project tree itself.",
+      ),
+    workspaceModes: z
+      .array(WorkspaceMode)
+      .describe("Thread workspace modes (in_place | isolated | delegated)."),
+    accessProfiles: z
+      .array(AccessProfile)
+      .describe(
+        "Access vocabulary; `full` additionally requires the per-repo trust allow (claudexor trust --allow-full-access) for a run an operator starts at a surface, not for an execution.delegated run.",
+      ),
+    applyModes: z
+      .array(z.enum(["apply", "commit", "branch", "pr"]))
+      .describe("Delivery modes for applying a run's WorkProduct to the project."),
+  })
+  .describe(
+    "The mutability matrix: every way a Claudexor run can (or cannot) touch a tree, from the schema's closed vocabularies.",
+  );
+export type CatalogMutabilityMatrix = z.infer<typeof CatalogMutabilityMatrix>;
+
+export const CatalogOutputSchemaDialect = z
+  .object({
+    dialect: OutputSchemaDialect.describe("Stable dialect id used in structured-output receipts."),
+    uri: z.string().url().describe("Canonical $schema URI accepted for this dialect."),
+    defaultWhenOmitted: z
+      .boolean()
+      .describe("True when this dialect is selected for schemas without a $schema declaration."),
+  })
+  .describe("One JSON Schema dialect accepted by the structured-output validator.");
+export type CatalogOutputSchemaDialect = z.infer<typeof CatalogOutputSchemaDialect>;
+
+export const AgentCapabilityCatalog = z
+  .object({
+    ok: z.literal(true).describe("Envelope marker (matches the CLI JSON convention)."),
+    version: z
+      .string()
+      .describe(
+        "Claudexor version serving this catalog (compare with CLAUDEXOR_PLUGIN_VERSION to detect plugin skew).",
+      ),
+    generatedAt: z.string().describe("ISO timestamp when the catalog was composed."),
+    git: GitCapability.describe(
+      "Execution-location Git readiness. Read-only and valid non-Git in-place flows do not require it.",
+    ),
+    harnesses: z.array(CatalogHarness).describe("Live per-harness capabilities (doctor-backed)."),
+    availableHarnesses: z.array(z.string()).describe("Convenience: ids with doctor status ok."),
+    modes: z
+      .array(ModeKind)
+      .describe(
+        "Canonical run modes; strategy controls are separate schema-owned fields, never modes.",
+      ),
+    runControlKeys: z
+      .array(z.string())
+      .describe(
+        "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these).",
+      ),
+    outputSchemaDialects: z
+      .array(CatalogOutputSchemaDialect)
+      .min(1)
+      .describe("Supported structured-output JSON Schema dialects and canonical $schema URIs."),
+    mutability: CatalogMutabilityMatrix,
+    cliCommands: z
+      .array(CatalogCliCommand)
+      .describe(
+        "CLI verbs with mutability/stability (full flag detail via `claudexor help --json`).",
+      ),
+    mcpTools: z.array(z.string()).describe("MCP tool names `claudexor mcp serve` exposes."),
+    runApplyStates: z
+      .array(z.string())
+      .describe(
+        "RunApplyState vocabulary an agent can encounter on run results (not_applied | applied | applied_review_blocked | reverted) — distinct from the ApplyEligibility verdict object on run details.",
+      ),
+  })
+  .describe(
+    "Machine-readable capability catalog for external agents — derived, never hand-maintained.",
+  );
+export type AgentCapabilityCatalog = z.infer<typeof AgentCapabilityCatalog>;

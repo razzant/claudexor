@@ -1,6 +1,6 @@
 import { cachedLoad } from "./config-cache.js";
 import { ConfigParseError } from "./config-error.js";
-import { concurrencyEnv, omitImplicitConcurrency } from "./concurrency.js";
+import { concurrencyEnv, concurrencySources, omitImplicitConcurrency } from "./concurrency.js";
 import { readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod/v3";
@@ -10,6 +10,8 @@ import {
   GlobalConfig,
   ProjectConfig,
   ResolvedConfig as ResolvedConfigSchema,
+  runtimeConcurrencyCaps,
+  type RuntimeConcurrencyCaps,
   TrustConfig,
 } from "@claudexor/schema";
 import {
@@ -304,7 +306,19 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   if (trustRaw !== null) sources.push(trustPath);
   const trust = parseStrict(TrustConfig, trustRaw ?? {}, trustPath);
 
-  return ResolvedConfigSchema.parse({ project, trust, global, sources });
+  return ResolvedConfigSchema.parse({
+    project,
+    trust,
+    global,
+    sources,
+    runtimeConcurrencySources: concurrencySources(globalRaw),
+  });
+}
+
+/** The startup snapshot binds values to the same resolution's provenance. */
+export function loadRuntimeConcurrencyCaps(repoRoot: string): RuntimeConcurrencyCaps {
+  const resolved = loadConfig(repoRoot);
+  return runtimeConcurrencyCaps(resolved.global, resolved.runtimeConcurrencySources);
 }
 
 /**

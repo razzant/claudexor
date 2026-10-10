@@ -105,9 +105,9 @@ pnpm test
   `interrupted_unknown` and is not replayed. A PROFILE login (INV-135)
   verifies on the profile's own doctor probe and skips the smoke — prove an
   unverified probe fails closed and the default store stays untouched.
-- Setup lifecycle authority is the checksummed global journal. Prove v1 bytes
+- Setup lifecycle authority is the global SQL event ledger. Prove v1 bytes
   remain byte/mode-identical, per-job lifecycle snapshots are absent, corrupt
-  state blocks mutation, and operational sidecars cannot override the journal.
+  state blocks mutation, and operational sidecars cannot override that ledger.
 - Verify duplicate create returns the same active action, conflicting mutating
   actions refuse, cancellation is asynchronous until death proof, and the
   vendor Terminal remains open on its result until Return.

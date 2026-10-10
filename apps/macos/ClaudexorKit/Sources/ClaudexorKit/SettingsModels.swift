@@ -112,10 +112,44 @@ public struct RuntimeConcurrencySettings: Codable, Sendable, Equatable {
 }
 
 public struct RuntimeConcurrencyCaps: Codable, Sendable, Equatable {
-    public let maxConcurrent: Int
+    public let maxConcurrent: ConcurrencyLimit?
+    public let maxConcurrentNonModelJobs: ConcurrencyLimit?
+    public let maxConcurrentModelOperations: ConcurrencyLimit?
     public let maxParallelCandidates: Int
     public let maxDeepScanWidth: Int
     public let maxCouncilMembers: Int
+    /// Absence on older engines is unknown provenance, never an implicit cap.
+    public let sources: [String: ConcurrencySource]?
+}
+
+public enum ConcurrencySource: String, Codable, Sendable, Equatable {
+    case `default`, config, environment, embedder, unknown
+}
+
+/// A real finite capacity or an explicit unlimited value. Missing support is
+/// represented by an optional field, independently of the three strategy widths.
+public enum ConcurrencyLimit: Codable, Sendable, Equatable {
+    case finite(Int)
+    case unlimited
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if let count = try? value.decode(Int.self), count > 0, count <= 9_007_199_254_740_991 {
+            self = .finite(count)
+        } else if (try? value.decode(String.self)) == "unlimited" {
+            self = .unlimited
+        } else {
+            throw DecodingError.dataCorruptedError(in: value, debugDescription: "Expected a positive safe integer or unlimited")
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .finite(let count): try value.encode(count)
+        case .unlimited: try value.encode("unlimited")
+        }
+    }
 }
 
 public struct RuntimeTransientRetrySettings: Codable, Sendable, Equatable {

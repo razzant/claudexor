@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/core",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "HarnessAdapter contract, process helpers, typed errors, and low-level execution utilities.",
   "type": "module",
@@ -41,7 +41,7 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"

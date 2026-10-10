@@ -1,14 +1,15 @@
+import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getHeapStatistics } from "node:v8";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { ControlDaemonStatus } from "@claudexor/schema";
 import { expect, it, vi } from "vitest";
 import { DaemonServer } from "./server.js";
 import { DaemonClient } from "./client.js";
-import { CommandStore } from "./command-store.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { recordAdmissionMemory } from "./memory-facts.js";
 import { loopFacts, startLoopFacts } from "./loop-facts.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
@@ -30,7 +31,7 @@ it("authenticates status, samples real memory without reading commands, and keep
   const daemon = new DaemonServer({
     socketPath,
     token,
-    commands: { current: () => store },
+    commands: legacyCommandFixture({ current: () => store }),
     servingMode: () => mode,
     runner: async () => ({ lifecycle: "succeeded" }),
   });

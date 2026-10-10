@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { JournalRecoveryRequiredError } from "@claudexor/journal";
+import { JournalRecoveryRequiredError } from "@claudexor/daemon";
 import { SetupLifecycleBinding, type SetupLifecycleHandle } from "./setup-lifecycle-binding.js";
 
 interface FakeStore {

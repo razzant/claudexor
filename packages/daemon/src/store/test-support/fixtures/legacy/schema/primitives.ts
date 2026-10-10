@@ -1,0 +1,175 @@
+import { z } from "zod/v3";
+
+/** Current schema version for top-level artifacts. Bump on breaking ABI changes. */
+export const SCHEMA_VERSION = 2 as const;
+
+export const SchemaVersion = z
+  .literal(SCHEMA_VERSION)
+  .describe("Schema version of the artifact; bumped on breaking ABI changes.");
+
+/** A non-empty identifier string. */
+export const Id = z.string().min(1).describe("Non-empty identifier string.");
+export type Id = z.infer<typeof Id>;
+
+/** A user-supplied scalar that must contain visible content, not just spaces. */
+export const NonBlankString = z
+  .string()
+  .min(1)
+  .regex(/\S/, "must contain non-whitespace")
+  .describe("User-supplied string that must contain visible content, not just whitespace.");
+export type NonBlankString = z.infer<typeof NonBlankString>;
+
+/** ISO-8601 timestamp string. */
+export const IsoTimestamp = z.string().min(1).describe("ISO-8601 timestamp string.");
+export type IsoTimestamp = z.infer<typeof IsoTimestamp>;
+
+/** A content hash (algo:hex), e.g. "sha256:abcd...". */
+export const ContentHash = z
+  .string()
+  .min(1)
+  .describe('Content hash in algo:hex form, e.g. "sha256:abcd...".');
+export type ContentHash = z.infer<typeof ContentHash>;
+
+export const RiskLevel = z
+  .enum(["low", "medium", "high", "critical"])
+  .describe("Risk classification of a change or finding, from low to critical.");
+export type RiskLevel = z.infer<typeof RiskLevel>;
+
+export const AccessProfile = z
+  .enum(["readonly", "workspace_write", "full", "inherit_native"])
+  .describe(
+    "Active filesystem/command access profile for a run: readonly (no writes), workspace_write (use the harness's native workspace-write policy), full (unrestricted; requires the per-repo trust allow for a run an operator starts at a surface, not for an execution.delegated run), inherit_native (defer to the harness's own native settings).",
+  );
+export type AccessProfile = z.infer<typeof AccessProfile>;
+
+/** Retired access literal retained only for immutable historical artifacts.
+ * New requests, configuration, manifests and run specs MUST use AccessProfile. */
+export const RETIRED_EXTERNAL_SANDBOX_FULL = "external_sandbox_full" as const;
+export const RecordedAccessProfile = z
+  .enum([...AccessProfile.options, RETIRED_EXTERNAL_SANDBOX_FULL])
+  .describe(
+    "Access profile recorded by an immutable historical artifact. external_sandbox_full is retired and cannot be requested by active surfaces.",
+  );
+export type RecordedAccessProfile = z.infer<typeof RecordedAccessProfile>;
+
+/** External context policy is separate from process/network sandboxing. */
+export const ExternalContextPolicy = z
+  .enum(["off", "auto", "cached", "live"])
+  .describe(
+    "External web/context policy for a run: off (strictly disable external context), auto (optional, engine decides), cached (optional cached-source preference), live (optional live-web preference). Separate from process/network sandboxing.",
+  );
+export type ExternalContextPolicy = z.infer<typeof ExternalContextPolicy>;
+
+/** Whether a terminal run also has a loaded user-facing output artifact. */
+export const OutputReadyState = z
+  .enum(["pending", "finalizing", "ready", "diagnostic"])
+  .describe(
+    "Whether a terminal run also has a loaded user-facing output artifact: pending (not yet), finalizing (being produced), ready (loaded), diagnostic (only diagnostic output).",
+  );
+export type OutputReadyState = z.infer<typeof OutputReadyState>;
+
+/** Provider families used for route-diversity reasoning. Open-ended via "unknown". */
+export const ProviderFamily = z
+  .enum(["openai", "anthropic", "google", "cursor", "opencode", "xai", "local", "unknown"])
+  .describe(
+    'Vendor/provider family a harness routes to, used for route-diversity reasoning; open-ended via "unknown".',
+  );
+export type ProviderFamily = z.infer<typeof ProviderFamily>;
+
+/**
+ * Canonical modes (v3.0.0 collapse, BREAKING): three conversation intents —
+ * ask (read-only answer; `deep_scan` widens it into the bounded multi-scout
+ * research sweep that used to be `audit --swarm`/`explore`), plan
+ * (read-only planning), agent (writes). Strategy controls are separate
+ * schema-owned fields on those modes, never modes themselves. Retired ids (`audit`, `explore`,
+ * `readonly_audit`, `best_of_n`, …) hard-error at every wire boundary
+ * (Bible: modes are canonical and breaking, never silent aliases). The former
+ * `orchestrate` mode was deleted once its delegation replacement landed
+ * (`agent --delegate`, INV-030); the retired verb hard-errors naming it.
+ */
+export const ModeKind = z
+  .enum(["ask", "plan", "agent"])
+  .describe(
+    "Canonical run mode: ask and plan are read-only, agent writes. Strategy controls are separate schema-owned fields, never modes.",
+  );
+export type ModeKind = z.infer<typeof ModeKind>;
+
+/** Canonical intents a harness can be assigned. Roles are intents, never fixed
+ * classes. (`compare`/`arbitrate` were retired in the v0.15 triage: no run
+ * site ever requested them — comparison/arbitration are engine phases, not
+ * harness assignments. `verify` stays for the FinalVerifier.) */
+export const Intent = z
+  .enum([
+    "plan",
+    "spec",
+    "implement",
+    "create_from_scratch",
+    "repair",
+    "review",
+    "verify",
+    "synthesize",
+    "explain",
+    "audit",
+  ])
+  .describe(
+    "Canonical intent a harness can be assigned for a session (roles are intents, never fixed classes).",
+  );
+export type Intent = z.infer<typeof Intent>;
+
+/**
+ * How a dirty working tree is handled when creating an envelope: `snapshot`
+ * captures the dirty state as the base SHA without touching the live tree;
+ * `refuse` fails loudly. (The `include`/`stash` aliases and the untested
+ * `copy` variant were retired in the v0.15 triage — every production call
+ * site passes `snapshot`.)
+ */
+export const DirtyPolicy = z
+  .enum(["refuse", "snapshot"])
+  .describe(
+    "How a dirty working tree is handled when creating an envelope: snapshot captures the dirty state as the base SHA without touching the live tree; refuse fails loudly.",
+  );
+export type DirtyPolicy = z.infer<typeof DirtyPolicy>;
+
+/**
+ * A user's preferred auth route for a harness or thread.
+ * `subscription` = native/OAuth session; `api_key` = a stored API key; `auto`
+ * lets the engine pick subscription-first and fall back per policy. This is a
+ * preference, not a secret — the actual key refs live in global/trust config.
+ */
+export const AuthPreference = z
+  .enum(["subscription", "api_key", "auto"])
+  .describe(
+    "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
+  );
+export type AuthPreference = z.infer<typeof AuthPreference>;
+
+/**
+ * Typed reason an auto-fallback (route/auth switch) or session re-host happened.
+ * Fallback decisions are driven by typed budget/quota signals and events, never
+ * by regex over model/CLI prose (Bible: no regex governance).
+ */
+export const FallbackReason = z
+  .enum([
+    "quota_exhausted",
+    "money_exhausted",
+    "subscription_exhausted",
+    "rate_limited",
+    "harness_error",
+    "stall",
+    "web_evidence_unsatisfied",
+    "fallback_model",
+    /** A native vendor session could not be carried into an isolated envelope
+     * turn (write/race candidate runs fresh; continuity rides on the tree). */
+    "not_portable",
+    /** No usable auth source for the route (native session + api key both absent). */
+    "auth_unavailable",
+    /** Auto routing selected a doctor/smoke-proven route over another available
+     * auth source; used to disclose cost/readiness tradeoffs without implying the
+     * other source was missing. */
+    "readiness_preferred",
+    "manual",
+  ])
+  .describe(
+    "Typed reason an auto-fallback (route/auth switch) or session re-host happened, driven by typed budget/quota signals and events, never by regex over prose.",
+  );
+export type FallbackReason = z.infer<typeof FallbackReason>;

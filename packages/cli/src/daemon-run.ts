@@ -2,6 +2,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
   DaemonClient,
+  awaitDaemonTermination,
+  inspectDaemonWriterLease,
+  canonicalDefaultSocketPath,
   daemonDir,
   defaultSocketPath,
   ensureToken,
@@ -11,6 +14,7 @@ import {
 import { harnessRuntimeEnv } from "@claudexor/core";
 import { hashJson } from "@claudexor/util";
 import { CliError, controlProblemError } from "./cli-error.js";
+import { daemonOwner, managedDaemonUnavailable } from "./daemon-owner.js";
 import {
   CLI_DAEMON_LAUNCH_SOURCES,
   launchDetachedDaemon,
@@ -92,6 +96,13 @@ async function controlApiReachable(): Promise<{
 export async function ensureDaemon(
   timeoutMs = DAEMON_START_READY_TIMEOUT_MS,
 ): Promise<{ client: DaemonClientType; addr: ControlApiAddress; engine: EngineIdentity }> {
+  // Attach before any token/root creation. Recovery-only is a real connection;
+  // its existing route admission errors remain authoritative.
+  if (daemonOwner() === "external") {
+    const connection = await connectDaemonIfRunning();
+    if (!connection) throw managedDaemonUnavailable();
+    return connection;
+  }
   const token = ensureToken();
   const socketPath = defaultSocketPath();
   let client = new DaemonClient(socketPath, token);
@@ -200,9 +211,13 @@ export async function connectDaemonIfRunning(): Promise<{
    * connectable to a recovery-only daemon and report the mode honestly. */
   engine: EngineIdentity;
 } | null> {
+  const external = daemonOwner() === "external";
   const token = readToken();
   if (!token) return null;
-  const client = new DaemonClient(defaultSocketPath(), token);
+  const client = new DaemonClient(
+    external ? canonicalDefaultSocketPath() : defaultSocketPath(),
+    token,
+  );
   if (!(await daemonReachable(client))) return null;
   const reached = await controlApiReachable();
   if (!reached) return null;
@@ -479,7 +494,15 @@ async function ensureRunProject(
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(
+    let problem: unknown;
+    try {
+      problem = JSON.parse(detail);
+    } catch {
+      /* untyped transport body */
+    }
+    throw controlProblemError(
+      response.status,
+      problem,
       `project registration failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
     );
   }
@@ -498,3 +521,25 @@ export {
   fetchOutcomeBanner,
   daemonOutcomeSummary,
 } from "./run-detail-fetch.js";
+
+interface OperatorDaemonStopDeps {
+  inspectLease: typeof inspectDaemonWriterLease;
+  shutdown(): Promise<unknown>;
+  awaitTermination: typeof awaitDaemonTermination;
+}
+
+/** Pin strict signal authority before the asynchronous operator-stop RPC. */
+export async function stopDaemonForOperator(
+  socketPath: string,
+  deps: OperatorDaemonStopDeps,
+): ReturnType<typeof awaitDaemonTermination> {
+  const lease = deps.inspectLease(socketPath);
+  const expectedOwner =
+    lease.status === "owned" && lease.capability.status === "capable" ? lease.owner : null;
+  await deps.shutdown();
+  return deps.awaitTermination(socketPath, {
+    allowSigkill: expectedOwner !== null,
+    ...(expectedOwner === null ? {} : { expectedOwner }),
+    requireNoSuccessor: false,
+  });
+}

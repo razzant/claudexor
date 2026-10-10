@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   DaemonRuntimeShutdown,
   type DaemonRuntimeShutdownOptions,
@@ -28,6 +28,46 @@ function machine(overrides: Partial<DaemonRuntimeShutdownOptions> = {}): {
 }
 
 describe("DaemonRuntimeShutdown", () => {
+  it("waits for asynchronous storage close before reporting a clean stop", async () => {
+    let release!: () => void;
+    let closing = false;
+    let stopped = false;
+    const closed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { runtime } = machine({
+      journal: {
+        close: () => {
+          closing = true;
+          return closed;
+        },
+      },
+    });
+    const completion = runtime.beginShutdown("SQL close").then(() => {
+      stopped = true;
+    });
+    await vi.waitFor(() => expect(closing).toBe(true));
+    expect(stopped).toBe(false);
+    release();
+    await completion;
+    expect(stopped).toBe(true);
+  });
+
+  it("reports an asynchronous storage close failure without claiming a clean stop", async () => {
+    const failure = new Error("final SQLite barrier failed");
+    const observed = vi.fn();
+    const { runtime } = machine({
+      journal: {
+        close: async () => {
+          throw failure;
+        },
+      },
+      onStopFailure: observed,
+    });
+    await expect(runtime.beginShutdown("SQL close failure")).rejects.toBe(failure);
+    expect(observed).toHaveBeenCalledWith(failure);
+  });
+
   it("refuses active setup without fencing any writer", () => {
     const events: string[] = [];
     const runtime = new DaemonRuntimeShutdown({

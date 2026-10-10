@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ProjectPartitions } from "@claudexor/daemon";
+import { type ProjectThreadPort } from "@claudexor/daemon";
 import { PR_SECRET_LIKE_REFUSAL } from "@claudexor/delivery";
 import { projectRuntimeDir } from "@claudexor/util";
 import { ensureThreadWorktree } from "@claudexor/workspace";
@@ -48,7 +48,7 @@ async function threadWithLeak(kind: "text" | "binary") {
   const threads = {
     getThread: () => thread,
     setThreadWorktree: () => undefined,
-  } as unknown as ProjectPartitions;
+  } as unknown as ProjectThreadPort;
   return { repo, remote, threads };
 }
 

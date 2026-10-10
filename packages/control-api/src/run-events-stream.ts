@@ -12,6 +12,8 @@ export interface StreamEventsCtx {
     bus?: { subscribe(fn: (event: { run_id?: string }) => void): () => void } | undefined;
     pollMs?: number;
     heartbeatMs?: number;
+    /** SQL composition supplies the existing terminal-files obligation fact. */
+    terminalFilesPending?: (runIdOrCommandId: string) => boolean;
   };
   sseClients: Set<ServerResponse>;
 }
@@ -49,6 +51,8 @@ export async function streamRunEvents(
   let offset = 0;
   let carry = "";
   let closed = false;
+  let terminalSeen = false;
+  const pendingTerminalFiles = () => ctx.opts.terminalFilesPending?.(rec.runId ?? rec.id) === true;
   let unsubscribe: (() => void) | undefined;
   const cleanup = () => {
     closed = true;
@@ -94,7 +98,7 @@ export async function streamRunEvents(
           const latest = await ctx.opts.daemon.status(rec.id).catch(() => rec);
           if (latest.runDir) {
             eventsPath = join(latest.runDir, "events.jsonl");
-          } else if (TERMINAL_STATES.has(latest.state)) {
+          } else if (TERMINAL_STATES.has(latest.state) && !pendingTerminalFiles()) {
             res.write("event: end\ndata: {}\n\n");
             res.end();
             cleanup();
@@ -125,6 +129,9 @@ export async function streamRunEvents(
           } catch {
             type = "malformed";
           }
+          const terminal =
+            type === "run.completed" || type === "run.failed" || type === "run.blocked";
+          if (terminal) terminalSeen = true;
           if (seq <= lastEventId) continue;
           // Backpressure: a large replay into a slow client must not balloon
           // the socket buffer — pause the tail until the kernel drains it
@@ -141,7 +148,7 @@ export async function streamRunEvents(
             });
             if (closed) return;
           }
-          if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
+          if (terminal && !pendingTerminalFiles()) {
             res.write("event: end\ndata: {}\n\n");
             res.end();
             cleanup();
@@ -151,8 +158,14 @@ export async function streamRunEvents(
         // A productive pass may have surfaced only a PREFIX of the tail: loop to
         // re-read from the advanced cursor before deciding anything.
         if (lines.length > 0) continue;
+        if (terminalSeen && !pendingTerminalFiles()) {
+          res.write("event: end\ndata: {}\n\n");
+          res.end();
+          cleanup();
+          return;
+        }
         const latest = await ctx.opts.daemon.status(rec.id).catch(() => rec);
-        if (TERMINAL_STATES.has(latest.state)) {
+        if (TERMINAL_STATES.has(latest.state) && !pendingTerminalFiles()) {
           // A materialized run appends its canonical terminal event to the file
           // BEFORE the daemon commits terminal job state, so once status is
           // terminal the terminal event is durably readable. Re-check the file

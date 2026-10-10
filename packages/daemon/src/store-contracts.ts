@@ -1,20 +1,228 @@
-/** Structural boundaries shared by the legacy and SQL composition roots.
- * These are method sets, not storage selectors or alternate lifecycle owners. */
-import type { CommandListQuery } from "@claudexor/schema";
-import type { CommandStore } from "./command-store.js";
+/** Operational storage boundaries, independent of their implementation. */
+import type {
+  Attachment,
+  CommandListQuery,
+  ControlJournalEvent,
+  ControlJournalExportReceipt,
+  ControlJournalInspection,
+  ControlJournalQuarantineReceipt,
+  ControlJournalValidation,
+  ControlPendingInteraction,
+  ControlProjectListingProblem,
+  ControlResource,
+  ControlUploadStatus,
+  ModelPayloadRef,
+  Project,
+  ProjectNesting,
+  ResourceAttachmentRef,
+  RunEvent,
+  Session,
+  Thread,
+  ThreadTurn,
+} from "@claudexor/schema";
+import type { AcceptCommand, FindCommand } from "./command-store.js";
 import type { JobRecord } from "./job-record.js";
-import type { ProjectStore } from "./projects.js";
-import type { ResourceStore } from "./resource-store.js";
-import type { InteractionStore } from "./interactions.js";
-import type { ProjectPartitions } from "./project-partitions.js";
-import type { JournalManager } from "./journal-manager.js";
+import type { ProjectRegistration, RegisterProject } from "./projects.js";
+import type { InteractionContext, InteractionTerminal } from "./interactions.js";
+import type { OperatorDecisionRecord, RecordedOperatorDecision } from "./operator-decisions.js";
+import type { CreateThreadInput, CreateTurnInput, UpdateThreadInput } from "./threads.js";
+import type { JournalQuarantineRequest } from "./journal-recovery-operation.js";
+export interface ProfileContinuityResult {
+  sessions: number;
+  checkpoints: number;
+  skippedPartitions: string[];
+}
 
-export type CommandStorePort = Pick<
-  CommandStore,
-  "accept" | "find" | "get" | "update" | "prune" | "prunedScopeRoots" | "recoverDurableTerminal"
->;
-/** Enumeration belongs only to the still-serving legacy graph. */
-export type LegacyCommandStorePort = CommandStorePort & Pick<CommandStore, "records" | "count">;
+export interface CommandStorePort {
+  accept(input: AcceptCommand): { record: JobRecord; reused: boolean };
+  find(input: FindCommand): JobRecord | null;
+  get(id: string): JobRecord | undefined;
+  update(id: string, patch: Partial<JobRecord>): JobRecord;
+  prune(ids: readonly string[]): void;
+  prunedScopeRoots(): string[];
+  recoverDurableTerminal(id: string): JobRecord | null;
+  flushed(): Promise<void>;
+}
+
+export interface ProjectStorePort {
+  list(): Project[];
+  listWithNesting(): Array<
+    Project & {
+      nesting: ProjectNesting[];
+    }
+  >;
+  get(id: string): Project | undefined;
+  findByRoot(root: string): Project | undefined;
+  nestingFor(id: string): ProjectNesting[];
+  register(input: RegisterProject): ProjectRegistration;
+  relink(id: string, rootInput: string): Project;
+  unregister(id: string): Project | undefined;
+}
+
+export interface ResourceStorePort {
+  create(raw: unknown, idempotencyKey: string): ControlUploadStatus;
+  status(uploadId: string): ControlUploadStatus;
+  write(uploadId: string, chunks: AsyncIterable<Uint8Array>): Promise<ControlUploadStatus>;
+  cancel(uploadId: string): ControlUploadStatus;
+  finalize(
+    uploadId: string,
+    expectedSha256: string | undefined,
+    idempotencyKey: string,
+  ): ControlResource;
+  resolve(refs: ResourceAttachmentRef[] | undefined): Attachment[];
+  readModel(raw: ModelPayloadRef): Buffer;
+  publishModel(bytes: Uint8Array): ModelPayloadRef;
+  releaseModel(raw: ModelPayloadRef): void;
+  expireModel(raw: ModelPayloadRef, expiredAt: string): void;
+  listModelResources(): Array<
+    ModelPayloadRef & {
+      createdAt: string;
+    }
+  >;
+}
+
+export interface InteractionStorePort {
+  request(ctx: InteractionContext): ControlPendingInteraction;
+  resolve(
+    runId: string,
+    interactionId: string,
+    terminal: InteractionTerminal,
+  ): "resolved" | "not_found" | "already_resolved";
+  resolveRun(
+    runId: string,
+    terminal: Extract<InteractionTerminal, "run_terminal" | "interrupted">,
+  ): string[];
+  status(runId: string, interactionId: string): "pending" | "resolved" | "missing";
+  pendingForRun(runId: string): ControlPendingInteraction[];
+}
+
+export interface ProjectThreadPort {
+  registerProject(input: RegisterProject): ProjectRegistration;
+  relinkProject(id: string, root: string): Project;
+  removeProject(
+    id: string,
+    activeRunRoots: ReadonlySet<string>,
+  ): import("@claudexor/schema").ControlProjectRemoveReceipt;
+  createThread(
+    input: CreateThreadInput & {
+      ephemeral?: boolean;
+    },
+  ): Thread;
+  findThreadCreation(
+    input: CreateThreadInput & {
+      ephemeral?: boolean;
+    },
+  ): Thread | null;
+  listThreads(): Thread[];
+  listThreadsResilient(): {
+    threads: Thread[];
+    problems: ControlProjectListingProblem[];
+  };
+  listPurgedThreads(): Thread[];
+  getThread(id: string): Thread | undefined;
+  getTurn(id: string): ThreadTurn | undefined;
+  turnsFor(id: string): ThreadTurn[];
+  sessionsForThread(id: string): Session[];
+  createTurn(id: string, prompt: string, input?: CreateTurnInput): ThreadTurn;
+  findTurnByIdempotency(
+    id: string,
+    input: NonNullable<CreateTurnInput["idempotency"]>,
+  ): ThreadTurn | undefined;
+  updateThread(id: string, patch: UpdateThreadInput): Thread;
+  trashThread(id: string): Thread;
+  restoreThread(id: string): Thread;
+  purgeThread(id: string): Thread;
+  setThreadWorktree(
+    id: string,
+    path: string,
+    baseSha: string,
+    deliveredThroughRunId?: string,
+  ): void;
+  assertKnownIds(
+    threadId: unknown,
+    turnId: unknown,
+  ): {
+    threadId?: string;
+    turnId?: string;
+  };
+  bindTurnRun(id: string, runId: string): void;
+  setTurnEnqueueError(id: string, problem: import("@claudexor/schema").TurnEnqueueProblem): void;
+  resumeMap(
+    id: string,
+    profileId?: string | null,
+  ): Record<
+    string,
+    {
+      sessionId: string;
+      profileId: string | null;
+    }
+  >;
+  resumeMapAuto(id: string): Record<
+    string,
+    {
+      sessionId: string;
+      profileId: string | null;
+    }
+  >;
+  accountBindings(id: string): Record<string, string>;
+  recordSession(
+    id: string,
+    harnessId: string,
+    nativeSessionId: string,
+    observedModel?: string | null,
+    profileId?: string | null,
+  ): void;
+  recordLaneCheckpoint(
+    id: string,
+    harnessId: string,
+    profileId: string | null,
+    turnId: string,
+  ): void;
+  laneCheckpoint(id: string, harnessId: string, profileId: string | null): string | null;
+  laneCheckpointsForThread(id: string): import("@claudexor/schema").LaneCheckpoint[];
+  setTurnContinuity(
+    turnId: string,
+    disclosure: import("@claudexor/schema").ContinuityDisclosure,
+  ): void;
+  pingThreadHead(id: string): void;
+  healthyProjectRoots(): string[];
+  migrateNullProfileContinuity(harnessId: string, rowId: string): ProfileContinuityResult;
+  rollbackProfileContinuity(harnessId: string, rowId: string): ProfileContinuityResult;
+  invalidateCredentialProfile(
+    harnessId: string,
+    profileId: string,
+  ): {
+    clearedThreads: number;
+    invalidatedSessions: number;
+  };
+  assertCredentialProfileInvalidationReady(): void;
+  operatorDecision(params: unknown, runId: string): OperatorDecisionRecord | null;
+  findOperatorDecisionByIdempotency(
+    params: unknown,
+    runId: string,
+    idempotency: {
+      key: string;
+      client: string;
+      request: unknown;
+    },
+  ): OperatorDecisionRecord | null;
+  recordOperatorDecision(
+    params: unknown,
+    decision: OperatorDecisionRecord,
+    idempotency?: {
+      key: string;
+      client: string;
+      request: unknown;
+    },
+  ): RecordedOperatorDecision;
+  recordRunEvent(params: unknown, event: RunEvent): RunEvent;
+  beginDelivery(
+    params: unknown,
+    input: { key: string; client: string; operation: string; request: unknown },
+  ): JobRecord & { reused: boolean };
+  completeDelivery(id: string, result: unknown): void;
+  failDelivery(id: string, error: unknown): void;
+}
 
 export interface CommandQueries {
   getByRunId(runId: string): JobRecord | undefined;
@@ -24,92 +232,21 @@ export interface CommandQueries {
   count(): number;
 }
 
-export type ProjectStorePort = Pick<
-  ProjectStore,
-  | "list"
-  | "listWithNesting"
-  | "get"
-  | "findByRoot"
-  | "nestingFor"
-  | "register"
-  | "relink"
-  | "unregister"
->;
-export type ResourceStorePort = Pick<
-  ResourceStore,
-  | "create"
-  | "status"
-  | "write"
-  | "cancel"
-  | "finalize"
-  | "resolve"
-  | "readModel"
-  | "publishModel"
-  | "releaseModel"
-  | "listModelResources"
->;
-export type InteractionStorePort = Pick<
-  InteractionStore,
-  "request" | "resolve" | "resolveRun" | "status" | "pendingForRun"
->;
-
-export type ProjectThreadPort = Pick<
-  ProjectPartitions,
-  | "registerProject"
-  | "relinkProject"
-  | "removeProject"
-  | "createThread"
-  | "findThreadCreation"
-  | "listThreads"
-  | "listThreadsResilient"
-  | "listPurgedThreads"
-  | "getThread"
-  | "getTurn"
-  | "turnsFor"
-  | "sessionsForThread"
-  | "createTurn"
-  | "findTurnByIdempotency"
-  | "updateThread"
-  | "trashThread"
-  | "restoreThread"
-  | "purgeThread"
-  | "setThreadWorktree"
-  | "assertKnownIds"
-  | "bindTurnRun"
-  | "setTurnEnqueueError"
-  | "resumeMap"
-  | "resumeMapAuto"
-  | "accountBindings"
-  | "recordSession"
-  | "recordLaneCheckpoint"
-  | "laneCheckpoint"
-  | "laneCheckpointsForThread"
-  | "setTurnContinuity"
-  | "pingThreadHead"
-  | "healthyProjectRoots"
-  | "migrateNullProfileContinuity"
-  | "rollbackProfileContinuity"
-  | "invalidateCredentialProfile"
-  | "assertCredentialProfileInvalidationReady"
-  | "operatorDecision"
-  | "findOperatorDecisionByIdempotency"
-  | "recordOperatorDecision"
-  | "recordRunEvent"
-  | "beginDelivery"
-  | "completeDelivery"
-  | "failDelivery"
->;
-
 /** Product recovery operations, without journal preparation or file ownership. */
-export type PartitionControlPort = Pick<
-  JournalManager,
-  | "events"
-  | "inspect"
-  | "validate"
-  | "exportRecovery"
-  | "preflightQuarantine"
-  | "quarantineAndStartFresh"
->;
+export interface PartitionControlPort {
+  events(afterCursor?: string): ControlJournalEvent[];
+  inspect(): ControlJournalInspection;
+  preflightQuarantine(input: JournalQuarantineRequest): {
+    disposition: string;
+    receipt: ControlJournalQuarantineReceipt | null;
+  };
+  validate(): ControlJournalValidation | Promise<ControlJournalValidation>;
+  exportRecovery(): ControlJournalExportReceipt | Promise<ControlJournalExportReceipt>;
+  quarantineAndStartFresh(
+    input: JournalQuarantineRequest,
+  ): ControlJournalQuarantineReceipt | Promise<ControlJournalQuarantineReceipt>;
+}
+
 export type ProjectControlPort = ProjectThreadPort & {
   journal(partition: string): PartitionControlPort;
 };
