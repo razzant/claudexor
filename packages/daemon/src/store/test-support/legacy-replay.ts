@@ -1,4 +1,4 @@
-import type { DurableJournal } from "@claudexor/journal";
+import type { DurableJournal } from "./fixtures/legacy/journal/index.js";
 import { legacyOracle as legacy } from "./legacy-oracle.js";
 
 /** Baseline projections only. The SQL path must supply its own factory in PR-C. */

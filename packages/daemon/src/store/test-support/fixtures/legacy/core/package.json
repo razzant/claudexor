@@ -1,0 +1,49 @@
+{
+  "name": "@claudexor/core",
+  "version": "3.25.1",
+  "license": "MIT",
+  "description": "HarnessAdapter contract, process helpers, typed errors, and low-level execution utilities.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "claudexor-process-identity": "./dist/native/claudexor-process-identity"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && node scripts/build-darwin-process-identity.mjs && node scripts/build-win32-conpty-helper.mjs",
+    "build:darwin-helper": "node scripts/build-darwin-process-identity.mjs",
+    "build:win32-helper": "node scripts/build-win32-conpty-helper.mjs --require",
+    "build:win32-fixtures": "node scripts/build-win32-conpty-helper.mjs --require --with-test-child",
+    "prepack": "node ../../scripts/verify-npm-darwin-package.mjs --built-package .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@playwright/mcp": "0.0.83",
+    "@claudexor/schema": "workspace:*",
+    "@claudexor/util": "workspace:*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/razzant/claudexor.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/razzant/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/razzant/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

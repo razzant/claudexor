@@ -50,5 +50,6 @@
     "enumMembers": "error",
     "nsExports": "off",
     "nsTypes": "off"
-  }
+  },
+  "ignore": ["packages/daemon/src/store/test-support/fixtures/legacy/**"]
 }

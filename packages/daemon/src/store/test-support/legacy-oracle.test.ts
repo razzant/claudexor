@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { journalPartitionDirectory } from "@claudexor/journal";
+import { journalPartitionDirectory } from "./fixtures/legacy/journal/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { readFixtureManifest, verifyFixtureManifest, LEGACY_BASELINE } from "./fixture-manifest.js";
 import {
@@ -59,10 +59,10 @@ function observations(
 }
 
 describe("frozen legacy oracle (M0, not SQL equivalence)", () => {
-  it("seals the baseline bytes, import-only rewrites, shared closure and fixture provenance", () => {
+  it("seals the baseline bytes, import-only rewrites, frozen closure and fixture provenance", () => {
     const manifest = readFixtureManifest();
     expect(manifest.baseline).toBe(LEGACY_BASELINE);
-    expect(manifest.snapshots).toHaveLength(34);
+    expect(manifest.snapshots).toHaveLength(219);
     expect(Object.keys(legacyOracle)).toHaveLength(34);
     expect(verifyFixtureManifest(manifest)).toEqual([]);
     const changed = structuredClone(manifest);
@@ -72,10 +72,10 @@ describe("frozen legacy oracle (M0, not SQL equivalence)", () => {
     );
     const incomplete = structuredClone(manifest);
     incomplete.snapshots = incomplete.snapshots.filter(
-      (row) => row.snapshotPath !== "legacy/daemon/job-record.ts",
+      (row) => row.snapshotPath !== "fixtures/legacy/daemon/job-record.ts",
     );
     expect(verifyFixtureManifest(incomplete)).toContain(
-      "unsealed local import: legacy/daemon/command-store.ts -> ./job-record.js",
+      "unsealed local import: fixtures/legacy/daemon/command-store.ts -> ./job-record.js",
     );
   });
 

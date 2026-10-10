@@ -5,27 +5,18 @@ baseline. This is test support, excluded from the daemon's production build.
 It does not select a runtime backend, open the SQL store, migrate a real data
 root, or certify SQL equivalence.
 
-The 25 agreed daemon/CLI roots are copied with their nine reachable local
-dependencies (34 files, 290,928 original bytes). Only three `./server.js`
-imports are redirected to the frozen `./job-record.js` leaf: the server
-re-exported those same declarations. No method body is edited. The manifest
-records original Git blob IDs, original SHA-256, copied SHA-256 and each
-import rewrite; the smoke reconstructs and hashes the original bytes without
-needing Git history in CI.
+The 25 agreed daemon/CLI roots, their nine local dependencies and the complete
+schema/util/journal/workspace/core dependency closure are frozen here (219
+files under `fixtures/legacy/`). Only import paths change: three server re-exports point directly to
+job-record, and workspace package imports point to their frozen counterparts.
+No method body changes. The manifest records original Git blob IDs, original
+SHA-256, copied SHA-256 and each import rewrite; the smoke reconstructs the
+original bytes without Git history. Scoped Git attributes retain LF.
 
-Scoped Git attributes retain LF in frozen sources and fixture bytes. Shared
-source and lockfile pins use Git-canonical LF text when Windows checks them
-out as CRLF. This source-text handling never normalizes replayed payloads.
-
-Shared schema/util/journal/workspace/core dependencies are not copied. Their
-reachable source closure, package manifests and the lockfile are hash-pinned.
-The current tree includes three PR-A changes to shared files. Their explicitly
-listed unused declarations are `appendLine`, `ControlProjectRegisterResponse`,
-`ControlDaemonStatus`, `DaemonLoopFacts` and the latter's private `ms` helper.
-The remaining declarations are byte-identical to the baseline; neither the
-frozen roots nor their shared dependency closure imports those exports. Both
-baseline and consumed source hashes are recorded, and the smoke checks this
-bounded exception. It is not permission to accept other dependency changes.
+The only shared runtime packages are yaml 2.9.1 and zod 4.6.5 (v3 entry).
+Their resolved versions are checked independently. Current workspace source,
+release versions and unrelated lockfile entries can evolve without changing
+this baseline. There are no unused-declaration exceptions or live-source pins.
 
 `legacy-oracle.ts` exposes the frozen public modules; `legacy-replay.ts` creates
 baseline projections without calling their startup recovery callbacks.
@@ -68,9 +59,7 @@ stream folding, retained-event lifetime, `already_resolved`, logical archive
 locator, upload lifetime and durability class. Do not introduce a general
 normalizer that strips IDs, timestamps or payloads.
 
-If a pinned dependency changes, inspect the precise imported surface. Freeze
-the needed baseline leaf or prove a narrowly named unused change; do not
-refresh all expected hashes or regenerate goldens just to obtain green tests.
-Before PR-E removes `@claudexor/journal`, preserve the reader needed by this
-oracle. The production backend's retirement must not erase its independent
-reference implementation.
+If an external runtime dependency changes, preserve its prior version for this
+oracle or explicitly requalify its behavior. Never refresh source hashes or
+regenerate goldens just to obtain green tests. The production backend's
+retirement must not erase its independent reference implementation.

@@ -1,0 +1,44 @@
+{
+  "name": "@claudexor/schema",
+  "version": "3.25.1",
+  "license": "MIT",
+  "description": "Single source of truth for all Claudexor data shapes (Zod + generated JSON Schema).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./generated/*.schema.json": "./generated/*.schema.json"
+  },
+  "files": [
+    "dist",
+    "generated"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@claudexor/util": "workspace:*",
+    "zod": "^4.6.5",
+    "zod-to-json-schema": "^3.24.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/razzant/claudexor.git",
+    "directory": "packages/schema"
+  },
+  "homepage": "https://github.com/razzant/claudexor#readme",
+  "bugs": {
+    "url": "https://github.com/razzant/claudexor/issues"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
