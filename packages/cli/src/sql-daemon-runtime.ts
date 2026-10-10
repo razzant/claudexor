@@ -50,6 +50,7 @@ export function createSqlDaemonRuntime(
     resources: () => graph.resources,
     quota: () => graph.quota,
     client,
+    admission: (id) => server.admission(id),
     warn: options.warn,
   });
   const harnessMaintenance = createHarnessMaintenance({
