@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as util from "@claudexor/util";
 import {
   ControlJournalInspection,
   ControlJournalQuarantineReceipt,
@@ -372,6 +373,112 @@ describe("physical engine-state recovery", () => {
       expect(readFileSync(join(root, dir, "evidence"), "utf8")).toBe(`keep ${dir}`);
   });
 
+  it("persists operation and archive ancestor names before closing or moving source bytes", async () => {
+    seed();
+    const f = lifecycle();
+    const synced: string[] = [];
+    const originalSync = util.fsyncDirectory;
+    vi.spyOn(util, "fsyncDirectory").mockImplementation((path) => {
+      synced.push(path);
+      originalSync(path);
+    });
+    let transfers = 0;
+    const current = api(f.owner, {
+      fault: (stage) => {
+        if (stage === "intent") {
+          expect(synced).toEqual(
+            expect.arrayContaining([
+              join(root, "recovery-operations/engine-state"),
+              join(root, "recovery-operations"),
+              root,
+            ]),
+          );
+          expect(f.calls).toEqual([]);
+        }
+        if (stage === "closed") synced.length = 0;
+        if (stage === "closed_record") {
+          expect(synced.slice(-2)).toEqual([root, join(root, "recovery-operations/engine-state")]);
+          synced.length = 0;
+        }
+        if (stage === "renamed") {
+          transfers++;
+          expect(synced).toContain(join(root, "journal-quarantine"));
+          expect(synced.slice(-2)).toEqual([operation().quarantinePath, root]);
+        }
+      },
+    });
+    await current.quarantineAndStartFresh(input(current));
+    expect(transfers).toBe(3);
+  });
+
+  it.each(["intent", "closed", "archived", "completed"])(
+    "retries visible operation records after their directory sync failed at %s",
+    async (point) => {
+      seed();
+      const f = lifecycle();
+      const ops = join(root, "recovery-operations/engine-state");
+      const requiredSyncs =
+        point === "intent" ? [ops, join(root, "recovery-operations"), root] : [ops];
+      let failed = false;
+      const resumedSyncs: string[] = [];
+      const originalSync = util.fsyncDirectory;
+      vi.spyOn(util, "fsyncDirectory").mockImplementation((path) => {
+        if (path === ops && !failed && operation().phase === point) {
+          failed = true;
+          throw Object.assign(new Error("operation sync failed"), { code: "EIO" });
+        }
+        originalSync(path);
+        if (failed) resumedSyncs.push(path);
+      });
+      const close = f.owner.close;
+      f.owner.close = async () => {
+        if (failed) expect(resumedSyncs).toEqual(expect.arrayContaining(requiredSyncs));
+        await close();
+      };
+      const current = api(f.owner);
+      const request = input(current);
+      await expect(current.quarantineAndStartFresh(request)).rejects.toThrow(
+        "operation sync failed",
+      );
+      const visible = operation();
+      const receipt = await current.quarantineAndStartFresh(request);
+      expect(resumedSyncs).toEqual(expect.arrayContaining(requiredSyncs));
+      expect(receipt.operationId).toBe(visible.operationId);
+      expect(receipt.newEpoch).toBe(visible.newEpoch);
+      if (visible.receipt) expect(receipt).toEqual(visible.receipt);
+      expect(f.created).toHaveLength(1);
+    },
+  );
+
+  it("retries a transferred file's failed destination sync before persisting its source removal", async () => {
+    seed();
+    const f = lifecycle();
+    const current = api(f.owner);
+    const request = input(current);
+    let failed = false;
+    let destinationRetried = false;
+    const originalSync = util.fsyncDirectory;
+    vi.spyOn(util, "fsyncDirectory").mockImplementation((path) => {
+      if (!existsSync(join(root, "engine.sqlite"))) {
+        const destination = operation().quarantinePath;
+        if (path === destination && !failed) {
+          failed = true;
+          throw Object.assign(new Error("destination sync failed"), { code: "EIO" });
+        }
+        if (path === destination && failed) destinationRetried = true;
+        if (path === root && failed) expect(destinationRetried).toBe(true);
+      }
+      originalSync(path);
+    });
+    await expect(current.quarantineAndStartFresh(request)).rejects.toThrow(
+      "destination sync failed",
+    );
+    const receipt = await current.quarantineAndStartFresh(request);
+    expect(destinationRetried).toBe(true);
+    for (const [name, bytes] of original)
+      expect(readFileSync(join(receipt.quarantinePath, name))).toEqual(bytes);
+  });
+
   it("retains pending custody when closing or fresh creation fails, and serializes duplicate requests", async () => {
     seed();
     const f = lifecycle();
@@ -430,6 +537,10 @@ describe("physical engine-state recovery", () => {
             .run(operationId);
         });
       expect(freshStore.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 0 });
+      const generation = freshStore.registerExternal(root);
+      const durable = freshStore.synced(generation);
+      freshStore.flusherControl.tick();
+      await durable;
     };
     const current = api(f.owner);
     const receipt = await current.quarantineAndStartFresh(input(current));

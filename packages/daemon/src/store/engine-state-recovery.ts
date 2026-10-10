@@ -167,6 +167,7 @@ export class EngineStateRecovery implements PartitionControlPort {
       );
       fsyncDirectory(bundlePath);
       fsyncDirectory(exportsRoot);
+      fsyncDirectory(this.rootDir);
       return ControlJournalExportReceipt.parse({
         schemaVersion: 1,
         exportId,
@@ -218,7 +219,10 @@ export class EngineStateRecovery implements PartitionControlPort {
   ): Promise<ControlJournalQuarantineReceipt> {
     return this.exclusive(async () => {
       const preflight = this.preflightQuarantine(input);
-      if (preflight.disposition === "completed") return preflight.receipt!;
+      if (preflight.disposition === "completed") {
+        this.syncOperationCustody("completed");
+        return preflight.receipt!;
+      }
       const keyDigest = sha256(Buffer.from(input.idempotencyKey));
       const path = this.operationPath(keyDigest);
       let operation = this.read(path);
@@ -238,6 +242,7 @@ export class EngineStateRecovery implements PartitionControlPort {
         };
         ensureCanonicalPrivateDirectory(dirname(this.operationsDir));
         writeAtomicPrivateJson(path, operation, true);
+        this.syncOperationCustody("intent");
         this.options.fault?.("intent");
       }
       return this.resume(operation, path);
@@ -262,11 +267,13 @@ export class EngineStateRecovery implements PartitionControlPort {
     operation: EngineOperation,
     path: string,
   ): Promise<ControlJournalQuarantineReceipt> {
+    this.syncOperationCustody(operation.phase);
     await this.lifecycle.close();
     this.options.fault?.("closed");
     if (operation.phase === "intent") {
       const closedFiles = engineFileEvidence(this.rootDir);
       syncEngineFiles(this.rootDir, closedFiles);
+      fsyncDirectory(this.rootDir);
       operation = { ...operation, phase: "closed", closedFiles };
       writeAtomicPrivateJson(path, operation, false);
       this.options.fault?.("closed_record");
@@ -274,6 +281,10 @@ export class EngineStateRecovery implements PartitionControlPort {
     if (operation.phase === "closed") {
       ensureCanonicalPrivateDirectory(this.quarantineDir);
       ensureCanonicalPrivateDirectory(operation.quarantinePath);
+      // Persist the destination directory name before source entries disappear.
+      fsyncDirectory(operation.quarantinePath);
+      fsyncDirectory(this.quarantineDir);
+      fsyncDirectory(this.rootDir);
       for (const file of operation.closedFiles!) {
         const source = join(this.rootDir, file.name),
           target = join(operation.quarantinePath, file.name);
@@ -293,13 +304,12 @@ export class EngineStateRecovery implements PartitionControlPort {
         if (!existsSync(source) || sha256File(source) !== file.sha256)
           throw conflict("recovery_fingerprint_mismatch");
         renameSync(source, target);
-        fsyncDirectory(this.rootDir);
         fsyncDirectory(operation.quarantinePath);
+        fsyncDirectory(this.rootDir);
         this.options.fault?.("renamed", file.name);
       }
       operation = { ...operation, phase: "archived" };
       writeAtomicPrivateJson(path, operation, false);
-      fsyncDirectory(this.quarantineDir);
       this.options.fault?.("archived_record");
     }
     await this.lifecycle.createFresh({
@@ -328,6 +338,14 @@ export class EngineStateRecovery implements PartitionControlPort {
 
   private operationPath(keyDigest: string): string {
     return join(this.operationsDir, `${keyDigest}.json`);
+  }
+  private syncOperationCustody(phase: Phase): void {
+    // A failed directory sync can leave renamed JSON visible but not yet durable.
+    fsyncDirectory(this.operationsDir);
+    if (phase === "intent") {
+      fsyncDirectory(dirname(this.operationsDir));
+      fsyncDirectory(this.rootDir);
+    }
   }
   private read(path: string): EngineOperation | null {
     const base = readOperation(path, this.quarantineDir, PARTITION, PREFIX);
