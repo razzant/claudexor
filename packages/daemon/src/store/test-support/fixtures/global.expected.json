@@ -1,0 +1,400 @@
+{
+  "snapshot": {
+    "commands": [
+      {
+        "id": "job-success",
+        "state": "succeeded",
+        "createdAt": "2026-09-14T00:00:00.000Z",
+        "runId": "run-success",
+        "taskId": "task-success",
+        "startedAt": "2026-09-14T00:00:00.000Z",
+        "finishedAt": "2026-09-14T00:00:00.000Z",
+        "result": {
+          "lifecycle": "succeeded"
+        },
+        "params": {
+          "mode": "agent",
+          "prompt": "Keep this exact prompt and its provenance.",
+          "scope": {
+            "kind": "project",
+            "root": "/fixture/project"
+          }
+        }
+      },
+      {
+        "id": "job-model",
+        "state": "queued",
+        "params": {
+          "kind": "model",
+          "request": {
+            "resourceId": "res-fixture",
+            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sizeBytes": 2
+          }
+        },
+        "createdAt": "2026-09-14T00:00:00.000Z"
+      }
+    ],
+    "prunedRoots": ["/fixture/project"],
+    "projects": [
+      {
+        "schema_version": 2,
+        "id": "prj-fixture",
+        "root": "/fixture/project",
+        "created_at": "2026-09-14T00:00:00.000Z",
+        "updated_at": "2026-09-14T00:00:00.000Z"
+      }
+    ],
+    "threads": [
+      {
+        "thread": {
+          "schema_version": 2,
+          "id": "th-00000000000d",
+          "created_at": "2026-09-14T00:00:00.000Z",
+          "updated_at": "2026-09-14T00:00:00.000Z",
+          "repo": null,
+          "title": "Fixture thread",
+          "folder": null,
+          "mode": "ask",
+          "auth_preference": "auto",
+          "access": null,
+          "credential_profile_id": null,
+          "primary_harness": null,
+          "eligible_harnesses": [],
+          "workspace": {
+            "mode": "in_place",
+            "worktree_path": null,
+            "base_sha": null,
+            "delivered_through_run_id": null,
+            "workspace_root": null
+          },
+          "run_ids": ["run-success"],
+          "head_run_id": "run-success",
+          "state": "active",
+          "trashed_at": null,
+          "purge_after": null,
+          "pre_trash_state": null
+        },
+        "turns": [
+          {
+            "id": "tn-000000000010",
+            "thread_id": "th-00000000000d",
+            "run_id": "run-success",
+            "parent_run_id": null,
+            "answers_plan_run_id": null,
+            "plan_run_id": null,
+            "plan_hash": null,
+            "plan_readiness_overridden": false,
+            "kind": "initial",
+            "prompt": "Exact owner words",
+            "attachments": [],
+            "enqueue_error": null,
+            "continuity": null,
+            "created_at": "2026-09-14T00:00:00.000Z"
+          }
+        ],
+        "sessions": [
+          {
+            "id": "se-000000000013",
+            "thread_id": "th-00000000000d",
+            "harness_id": "codex",
+            "native_session_id": "native-fixture",
+            "resume_kind": "resume_by_id",
+            "profile_id": null,
+            "last_observed_model": "gpt-fixture",
+            "state": "live",
+            "created_at": "2026-09-14T00:00:00.000Z",
+            "updated_at": "2026-09-14T00:00:00.000Z"
+          }
+        ],
+        "checkpoints": [
+          {
+            "id": "th-00000000000d::codex::default",
+            "thread_id": "th-00000000000d",
+            "harness_id": "codex",
+            "profile_id": null,
+            "turn_id": "tn-000000000010",
+            "updated_at": "2026-09-14T00:00:00.000Z"
+          }
+        ],
+        "revision": 5
+      }
+    ],
+    "quota": {
+      "snapshots": [
+        {
+          "subject": {
+            "harness": "codex",
+            "credential_route": "vendor_native",
+            "plan_label": null,
+            "subject_id": "profile-fixture"
+          },
+          "constraints": [
+            {
+              "id": "five_hour",
+              "label": "5 hour",
+              "used_ratio": 0.4,
+              "window_seconds": 18000,
+              "resets_at": null,
+              "cooldown_until": null
+            }
+          ],
+          "source": "codex_app_server",
+          "observed_at": "2026-09-14T00:00:00.000Z",
+          "freshness": "fresh"
+        }
+      ],
+      "absences": [],
+      "refreshed_at": null
+    },
+    "resources": [],
+    "setup": [
+      {
+        "job": {
+          "jobId": "setup-fixture",
+          "harness": "codex",
+          "action": "login",
+          "transport": "daemon",
+          "profileId": null,
+          "state": "failed",
+          "phase": "completed",
+          "outcome": {
+            "reason": "launch_failed"
+          },
+          "command": null,
+          "guideUrl": null,
+          "message": "fixture only, no login process",
+          "createdAt": "2026-09-14T00:00:00.000Z",
+          "startedAt": null,
+          "finishedAt": "2026-09-14T00:00:00.000Z",
+          "authCapability": {
+            "attemptId": "attempt-fixture",
+            "challengeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "disclosure": {
+              "schemaVersion": 1,
+              "protocolVersion": 1,
+              "harness": "codex",
+              "requested": "subscription",
+              "requiredRoute": "vendor_native",
+              "requiredSource": "native_session",
+              "networkScope": "selected_harness_only",
+              "billingKnowledge": "unknown",
+              "incrementalCostKnowledge": "unknown",
+              "mayConsumeQuota": true,
+              "generatedAt": "2026-09-14T00:00:00.000Z"
+            },
+            "state": "disclosed"
+          }
+        },
+        "events": [
+          {
+            "jobId": "setup-fixture",
+            "cursor": "eyJ2IjoxLCJwIjoiZ2xvYmFsIiwiZSI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsInMiOjI3fQ",
+            "previousCursor": null,
+            "sequence": 27,
+            "time": "2026-09-14T00:00:00.000Z",
+            "kind": "status",
+            "state": "queued",
+            "message": "fixture only, no login process",
+            "job": {
+              "jobId": "setup-fixture",
+              "harness": "codex",
+              "action": "login",
+              "transport": "daemon",
+              "profileId": null,
+              "state": "queued",
+              "phase": "preparing",
+              "command": null,
+              "guideUrl": null,
+              "message": "fixture only, no login process",
+              "createdAt": "2026-09-14T00:00:00.000Z",
+              "startedAt": null,
+              "finishedAt": null,
+              "authCapability": {
+                "attemptId": "attempt-fixture",
+                "challengeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "disclosure": {
+                  "schemaVersion": 1,
+                  "protocolVersion": 1,
+                  "harness": "codex",
+                  "requested": "subscription",
+                  "requiredRoute": "vendor_native",
+                  "requiredSource": "native_session",
+                  "networkScope": "selected_harness_only",
+                  "billingKnowledge": "unknown",
+                  "incrementalCostKnowledge": "unknown",
+                  "mayConsumeQuota": true,
+                  "generatedAt": "2026-09-14T00:00:00.000Z"
+                },
+                "state": "disclosed"
+              }
+            }
+          },
+          {
+            "jobId": "setup-fixture",
+            "cursor": "eyJ2IjoxLCJwIjoiZ2xvYmFsIiwiZSI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsInMiOjI4fQ",
+            "previousCursor": "eyJ2IjoxLCJwIjoiZ2xvYmFsIiwiZSI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsInMiOjI3fQ",
+            "sequence": 28,
+            "time": "2026-09-14T00:00:00.000Z",
+            "kind": "status",
+            "state": "failed",
+            "message": "fixture only, no login process",
+            "job": {
+              "jobId": "setup-fixture",
+              "harness": "codex",
+              "action": "login",
+              "transport": "daemon",
+              "profileId": null,
+              "state": "failed",
+              "phase": "completed",
+              "outcome": {
+                "reason": "launch_failed"
+              },
+              "command": null,
+              "guideUrl": null,
+              "message": "fixture only, no login process",
+              "createdAt": "2026-09-14T00:00:00.000Z",
+              "startedAt": null,
+              "finishedAt": "2026-09-14T00:00:00.000Z",
+              "authCapability": {
+                "attemptId": "attempt-fixture",
+                "challengeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "disclosure": {
+                  "schemaVersion": 1,
+                  "protocolVersion": 1,
+                  "harness": "codex",
+                  "requested": "subscription",
+                  "requiredRoute": "vendor_native",
+                  "requiredSource": "native_session",
+                  "networkScope": "selected_harness_only",
+                  "billingKnowledge": "unknown",
+                  "incrementalCostKnowledge": "unknown",
+                  "mayConsumeQuota": true,
+                  "generatedAt": "2026-09-14T00:00:00.000Z"
+                },
+                "state": "disclosed"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "terminalEvents": [
+      [
+        "run-success",
+        {
+          "seq": 1,
+          "ts": "2026-09-14T00:00:00.000Z",
+          "run_id": "run-success",
+          "task_id": "task-success",
+          "type": "run.completed",
+          "payload": {
+            "lifecycle": "succeeded"
+          }
+        }
+      ]
+    ]
+  },
+  "bindings": {
+    "command": {
+      "id": "job-success",
+      "state": "succeeded",
+      "createdAt": "2026-09-14T00:00:00.000Z",
+      "runId": "run-success",
+      "taskId": "task-success",
+      "startedAt": "2026-09-14T00:00:00.000Z",
+      "finishedAt": "2026-09-14T00:00:00.000Z",
+      "result": {
+        "lifecycle": "succeeded"
+      },
+      "params": {
+        "mode": "agent",
+        "prompt": "Keep this exact prompt and its provenance.",
+        "scope": {
+          "kind": "project",
+          "root": "/fixture/project"
+        }
+      }
+    },
+    "decision": {
+      "runId": "run-success",
+      "action": "accept_risk",
+      "findingIds": ["finding-fixture"],
+      "acceptedRisks": ["risk-fixture"],
+      "patchSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "decidedAt": "2026-09-14T00:00:00.000Z"
+    },
+    "thread": {
+      "schema_version": 2,
+      "id": "th-00000000000d",
+      "created_at": "2026-09-14T00:00:00.000Z",
+      "updated_at": "2026-09-14T00:00:00.000Z",
+      "repo": null,
+      "title": "Fixture thread",
+      "folder": null,
+      "mode": "ask",
+      "auth_preference": "auto",
+      "access": null,
+      "credential_profile_id": null,
+      "primary_harness": null,
+      "eligible_harnesses": [],
+      "workspace": {
+        "mode": "in_place",
+        "worktree_path": null,
+        "base_sha": null,
+        "delivered_through_run_id": null,
+        "workspace_root": null
+      },
+      "run_ids": ["run-success"],
+      "head_run_id": "run-success",
+      "state": "active",
+      "trashed_at": null,
+      "purge_after": null,
+      "pre_trash_state": null
+    },
+    "setup": {
+      "jobId": "setup-fixture",
+      "harness": "codex",
+      "action": "login",
+      "transport": "daemon",
+      "profileId": null,
+      "state": "failed",
+      "phase": "completed",
+      "outcome": {
+        "reason": "launch_failed"
+      },
+      "command": null,
+      "guideUrl": null,
+      "message": "fixture only, no login process",
+      "createdAt": "2026-09-14T00:00:00.000Z",
+      "startedAt": null,
+      "finishedAt": "2026-09-14T00:00:00.000Z",
+      "authCapability": {
+        "attemptId": "attempt-fixture",
+        "challengeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "disclosure": {
+          "schemaVersion": 1,
+          "protocolVersion": 1,
+          "harness": "codex",
+          "requested": "subscription",
+          "requiredRoute": "vendor_native",
+          "requiredSource": "native_session",
+          "networkScope": "selected_harness_only",
+          "billingKnowledge": "unknown",
+          "incrementalCostKnowledge": "unknown",
+          "mayConsumeQuota": true,
+          "generatedAt": "2026-09-14T00:00:00.000Z"
+        },
+        "state": "disclosed"
+      }
+    }
+  },
+  "interactions": {
+    "closed": "resolved",
+    "open": "pending"
+  }
+}

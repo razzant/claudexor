@@ -1,0 +1,1458 @@
+{
+  "schemaVersion": 1,
+  "baseline": "820e849cd15cca47758b700603e156ef29129fbf",
+  "scope": "M0 independent legacy replay; not SQL equivalence or production migration",
+  "rootFiles": [
+    "packages/daemon/src/command-store.ts",
+    "packages/daemon/src/command-retention.ts",
+    "packages/daemon/src/command-list-select.ts",
+    "packages/daemon/src/command-list-projection.ts",
+    "packages/daemon/src/interactions.ts",
+    "packages/daemon/src/operator-decisions.ts",
+    "packages/daemon/src/run-events.ts",
+    "packages/daemon/src/run-event-terminal-index.ts",
+    "packages/daemon/src/terminal-authority.ts",
+    "packages/daemon/src/threads.ts",
+    "packages/daemon/src/thread-store-support.ts",
+    "packages/daemon/src/thread-lane-checkpoints.ts",
+    "packages/daemon/src/thread-lifecycle.ts",
+    "packages/daemon/src/thread-worktree-state.ts",
+    "packages/daemon/src/thread-head-ping.ts",
+    "packages/daemon/src/projects.ts",
+    "packages/daemon/src/quota-registry.ts",
+    "packages/daemon/src/quota-registry-replay.ts",
+    "packages/daemon/src/quota-registry-support.ts",
+    "packages/daemon/src/quota-resources.ts",
+    "packages/daemon/src/journal-fold-policy.ts",
+    "packages/daemon/src/idempotency-wire-projection.ts",
+    "packages/daemon/src/resource-store.ts",
+    "packages/cli/src/setup-job-store.ts",
+    "packages/cli/src/setup-job-reducer.ts"
+  ],
+  "snapshots": [
+    {
+      "sourcePath": "packages/cli/src/setup-job-reducer.ts",
+      "snapshotPath": "legacy/cli/setup-job-reducer.ts",
+      "sourceGitBlob": "ffdb8f146686b2d274f0c3541a32efc4aa4a2544",
+      "sourceSha256": "80f204610d2beb44415c3e0a15a9802e6850a9340c5060a00207daa19474e8e5",
+      "copiedSha256": "80f204610d2beb44415c3e0a15a9802e6850a9340c5060a00207daa19474e8e5",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/cli/src/setup-job-store.ts",
+      "snapshotPath": "legacy/cli/setup-job-store.ts",
+      "sourceGitBlob": "6692e2acb2cbb7a8fa84175793e34b88a7e59726",
+      "sourceSha256": "6ec0811436cd94ba672527a944f11b6f620234b02aa85a0cb58bdbe7a9acacd2",
+      "copiedSha256": "6ec0811436cd94ba672527a944f11b6f620234b02aa85a0cb58bdbe7a9acacd2",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/command-list-projection.ts",
+      "snapshotPath": "legacy/daemon/command-list-projection.ts",
+      "sourceGitBlob": "ae4e44955c46ddf366e191f0a7a37ef7bd78ed4e",
+      "sourceSha256": "b196fba774f44daf52193b1e77095f1b508262a1afc78e780ed6f503d21201fb",
+      "copiedSha256": "b196fba774f44daf52193b1e77095f1b508262a1afc78e780ed6f503d21201fb",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/command-list-select.ts",
+      "snapshotPath": "legacy/daemon/command-list-select.ts",
+      "sourceGitBlob": "d0cfe202badbb8cd1a00d57b52c89fb46a9edf6a",
+      "sourceSha256": "dc8e528a867e18d392a8087673c98e6c765877f0f1750a52e4fa1c1909f87097",
+      "copiedSha256": "dc8e528a867e18d392a8087673c98e6c765877f0f1750a52e4fa1c1909f87097",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/command-retention.ts",
+      "snapshotPath": "legacy/daemon/command-retention.ts",
+      "sourceGitBlob": "9256f372c31fdb72f9148df775aabb9a21a2f61b",
+      "sourceSha256": "7a1455ad7d3ae7f95126e7c13a7060b2a9bfc68bad65d2c250c2d0deca79ff40",
+      "copiedSha256": "710b5c7228195e27374241d8f6b78deaf6684925179b4aa0706e582fdc8982b7",
+      "rewrites": [
+        {
+          "offset": 182,
+          "from": "./server.js",
+          "to": "./job-record.js"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/daemon/src/command-scope-roots.ts",
+      "snapshotPath": "legacy/daemon/command-scope-roots.ts",
+      "sourceGitBlob": "ad7fa0bc2f6454697b12e8da1897ca9486791188",
+      "sourceSha256": "4a4622630720b466c587da8f954b8029aaf87a073fa5d1b3090621918007f31d",
+      "copiedSha256": "4a4622630720b466c587da8f954b8029aaf87a073fa5d1b3090621918007f31d",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/command-store.ts",
+      "snapshotPath": "legacy/daemon/command-store.ts",
+      "sourceGitBlob": "56be6797d378ebc2071715a3284828898323de36",
+      "sourceSha256": "74b83397c3a9d919931bc6a59e3ce6f8bdd1c68356b0436ebe2b0ed735957318",
+      "copiedSha256": "b3bf6b891bf8b35948e7725700e322fb7cd72b922d95f9217099bb5cfd8a8543",
+      "rewrites": [
+        {
+          "offset": 936,
+          "from": "./server.js",
+          "to": "./job-record.js"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/daemon/src/idempotency-wire-projection.ts",
+      "snapshotPath": "legacy/daemon/idempotency-wire-projection.ts",
+      "sourceGitBlob": "12b5932abe3be5b7d41f91b11c2b08afb8a99020",
+      "sourceSha256": "a87feac2a043b8789ad0ce767a283807b7cd99629cf2d71e6b0afe0519b4571e",
+      "copiedSha256": "a87feac2a043b8789ad0ce767a283807b7cd99629cf2d71e6b0afe0519b4571e",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/interactions.ts",
+      "snapshotPath": "legacy/daemon/interactions.ts",
+      "sourceGitBlob": "d1382402abcccce4d485876ffd5bb49524f1414f",
+      "sourceSha256": "09bab950cfd02d4b1cc5175fc0cbf317f982a3ff95046696f5ad10888b5c0e54",
+      "copiedSha256": "09bab950cfd02d4b1cc5175fc0cbf317f982a3ff95046696f5ad10888b5c0e54",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/job-record.ts",
+      "snapshotPath": "legacy/daemon/job-record.ts",
+      "sourceGitBlob": "06e5f72abbefa245a61a192899614f6c0d56336f",
+      "sourceSha256": "c734f3f84f5e29193d7bf134be079d360edb8c8d68b97a0c2b4b8343e668560c",
+      "copiedSha256": "c734f3f84f5e29193d7bf134be079d360edb8c8d68b97a0c2b4b8343e668560c",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/journal-fold-policy.ts",
+      "snapshotPath": "legacy/daemon/journal-fold-policy.ts",
+      "sourceGitBlob": "90549fa2ada464143daca1e823f371a1e129b6a0",
+      "sourceSha256": "8eb2794ad5e69b290aca506288d9e7f0785266bfec17254b3c96ea62492d3547",
+      "copiedSha256": "8eb2794ad5e69b290aca506288d9e7f0785266bfec17254b3c96ea62492d3547",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/journaled-run-events.ts",
+      "snapshotPath": "legacy/daemon/journaled-run-events.ts",
+      "sourceGitBlob": "6fea96b9219960c46b83db2a367ff618d13b6854",
+      "sourceSha256": "7625f76f6d946b2a6ac1edb17c49557d5f2026ef4a69ccf5d8b37c14e3afd3ff",
+      "copiedSha256": "7625f76f6d946b2a6ac1edb17c49557d5f2026ef4a69ccf5d8b37c14e3afd3ff",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/operator-decisions.ts",
+      "snapshotPath": "legacy/daemon/operator-decisions.ts",
+      "sourceGitBlob": "c9a31cf24c5e88115ab08e9e93a624aafa6f03c1",
+      "sourceSha256": "87c143a762ddbd54baabd299e961bc080f4c818b3b31f1e872fc19a6c48ddcda",
+      "copiedSha256": "87c143a762ddbd54baabd299e961bc080f4c818b3b31f1e872fc19a6c48ddcda",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/projects.ts",
+      "snapshotPath": "legacy/daemon/projects.ts",
+      "sourceGitBlob": "a8383f7d053f8803f654cebff78f53b18d1a52ed",
+      "sourceSha256": "be815d220174df65d98c6dbb8b0317fe4fc23f28055bdc92ebaae9725072668f",
+      "copiedSha256": "be815d220174df65d98c6dbb8b0317fe4fc23f28055bdc92ebaae9725072668f",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-poll-lanes.ts",
+      "snapshotPath": "legacy/daemon/quota-poll-lanes.ts",
+      "sourceGitBlob": "e6d13f44796b00d7ba8b7425ee7ff4bf8cf9be47",
+      "sourceSha256": "aaa40069fc01b42f342aadb6209bf14037bb6fe95229e93cc1d2f494a82a9a20",
+      "copiedSha256": "aaa40069fc01b42f342aadb6209bf14037bb6fe95229e93cc1d2f494a82a9a20",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-poll-pacer.ts",
+      "snapshotPath": "legacy/daemon/quota-poll-pacer.ts",
+      "sourceGitBlob": "22f2ca31d0aefd9adf5a9aab93d11fb1af6291e4",
+      "sourceSha256": "b287eec3b81569bc2239994c9c2265d45b01be9c2bd8eb7e46b851584a6deefe",
+      "copiedSha256": "b287eec3b81569bc2239994c9c2265d45b01be9c2bd8eb7e46b851584a6deefe",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-refresh-batches.ts",
+      "snapshotPath": "legacy/daemon/quota-refresh-batches.ts",
+      "sourceGitBlob": "433fb65b31661fb49bf7f80fa67353ce731799a5",
+      "sourceSha256": "95b69a0233d399efb83109b82a962e4e3ec59dca75f3021476c23056ec4f7b4c",
+      "copiedSha256": "95b69a0233d399efb83109b82a962e4e3ec59dca75f3021476c23056ec4f7b4c",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-refresh-coordinator.ts",
+      "snapshotPath": "legacy/daemon/quota-refresh-coordinator.ts",
+      "sourceGitBlob": "daa731c74dd485e6078336996a4ef2b4d3457b20",
+      "sourceSha256": "482ce49052e3b7fcdbf82e0a70926c9dd83f0062800288258ebd8e362f2e8505",
+      "copiedSha256": "482ce49052e3b7fcdbf82e0a70926c9dd83f0062800288258ebd8e362f2e8505",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-refresh-demand.ts",
+      "snapshotPath": "legacy/daemon/quota-refresh-demand.ts",
+      "sourceGitBlob": "52c525ac53749ad80cf1f6b0372b54a65acf5600",
+      "sourceSha256": "0bc3ee9fdb34a142c6380b6e81556bd5cf9e9a83fd66afb1a0ba62b53fecd712",
+      "copiedSha256": "0bc3ee9fdb34a142c6380b6e81556bd5cf9e9a83fd66afb1a0ba62b53fecd712",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-registry-replay.ts",
+      "snapshotPath": "legacy/daemon/quota-registry-replay.ts",
+      "sourceGitBlob": "96816b5b90e9817059a8052924416ed0413c78e6",
+      "sourceSha256": "c18ee2cbf74565119556fb281165cca9e886efd2116ec2317b372a68a434a6c2",
+      "copiedSha256": "c18ee2cbf74565119556fb281165cca9e886efd2116ec2317b372a68a434a6c2",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-registry-support.ts",
+      "snapshotPath": "legacy/daemon/quota-registry-support.ts",
+      "sourceGitBlob": "671b82121b0968e189f69a70da03f3bb6684778c",
+      "sourceSha256": "2bce60626a0f816dfc73c9cc4269a20d191e8f06ce1048ba12c373b6adec3581",
+      "copiedSha256": "2bce60626a0f816dfc73c9cc4269a20d191e8f06ce1048ba12c373b6adec3581",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-registry.ts",
+      "snapshotPath": "legacy/daemon/quota-registry.ts",
+      "sourceGitBlob": "7fcf9f189d63fa8eaad1efbec67a204c51101e03",
+      "sourceSha256": "fbd7b6996c7455a39a50d8a315e6e1c328b95d52dc3267a2656e7aa69f0d290e",
+      "copiedSha256": "fbd7b6996c7455a39a50d8a315e6e1c328b95d52dc3267a2656e7aa69f0d290e",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/quota-resources.ts",
+      "snapshotPath": "legacy/daemon/quota-resources.ts",
+      "sourceGitBlob": "db528df112148f7c3d77eac590a8580e9408c095",
+      "sourceSha256": "856d1078b665553c3fc78e3b3526d9a778c39d2777a689d9fe4dc86acfa64e78",
+      "copiedSha256": "856d1078b665553c3fc78e3b3526d9a778c39d2777a689d9fe4dc86acfa64e78",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/resource-store.ts",
+      "snapshotPath": "legacy/daemon/resource-store.ts",
+      "sourceGitBlob": "49073c16918cb94af25eee7e35791cd1132087a4",
+      "sourceSha256": "a0f022d3edbfd70b3c5a86c00f2bb769d04c7e7f4c4a5e1cc03bb04b8491f157",
+      "copiedSha256": "a0f022d3edbfd70b3c5a86c00f2bb769d04c7e7f4c4a5e1cc03bb04b8491f157",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/run-event-terminal-index.ts",
+      "snapshotPath": "legacy/daemon/run-event-terminal-index.ts",
+      "sourceGitBlob": "862d2d93489d693e646475d2d2fda008f38f0b7d",
+      "sourceSha256": "66a55da91e5033477037c04d7636ce672fe00d70516c4d72d9da2ae2bed4006c",
+      "copiedSha256": "66a55da91e5033477037c04d7636ce672fe00d70516c4d72d9da2ae2bed4006c",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/run-events.ts",
+      "snapshotPath": "legacy/daemon/run-events.ts",
+      "sourceGitBlob": "7fd1814e95c9a10d21e0da9e396229dd4018dd49",
+      "sourceSha256": "cad8d13f752809eed7ad04f32013ef5d682fb5e459d0dd1a3f6d2d9dec44f9fc",
+      "copiedSha256": "cad8d13f752809eed7ad04f32013ef5d682fb5e459d0dd1a3f6d2d9dec44f9fc",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/terminal-authority.ts",
+      "snapshotPath": "legacy/daemon/terminal-authority.ts",
+      "sourceGitBlob": "f09000cc433b11e0371ea936c6e808ad29eaac9b",
+      "sourceSha256": "01f650a8d33ea8ca94b8605df90c118b9a1d868af7044f4859e7ed33e69210b6",
+      "copiedSha256": "bfc539f9181fda1a8e846e83a1d06c2edd4eb5574e41d5d0dcccc896ff214cd6",
+      "rewrites": [
+        {
+          "offset": 240,
+          "from": "./server.js",
+          "to": "./job-record.js"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/daemon/src/thread-head-ping.ts",
+      "snapshotPath": "legacy/daemon/thread-head-ping.ts",
+      "sourceGitBlob": "be2ed23a08975ac3be2c9355de1278a95abb3274",
+      "sourceSha256": "6ef0a3b10a2e121cc78e788b1289618496254eaa3b39107dea30a4d0805e3810",
+      "copiedSha256": "6ef0a3b10a2e121cc78e788b1289618496254eaa3b39107dea30a4d0805e3810",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/thread-lane-checkpoints.ts",
+      "snapshotPath": "legacy/daemon/thread-lane-checkpoints.ts",
+      "sourceGitBlob": "4dbc45a8c995dd31b626f3538637ff5020a01f3b",
+      "sourceSha256": "740d284b6b61d8e3b3a6820a522ba9bdc3045f1a13b12a838d72e2ee9958dd92",
+      "copiedSha256": "740d284b6b61d8e3b3a6820a522ba9bdc3045f1a13b12a838d72e2ee9958dd92",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/thread-lifecycle.ts",
+      "snapshotPath": "legacy/daemon/thread-lifecycle.ts",
+      "sourceGitBlob": "75f12311895a248165b167ee5e981c235c7da652",
+      "sourceSha256": "b14f55bade88092b69287fcc7d605bcea2e91d1c530f423d67f2173825f9a7fe",
+      "copiedSha256": "b14f55bade88092b69287fcc7d605bcea2e91d1c530f423d67f2173825f9a7fe",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/thread-store-support.ts",
+      "snapshotPath": "legacy/daemon/thread-store-support.ts",
+      "sourceGitBlob": "451f8571d4c63bcb0a52d66b38cfa9f48551db68",
+      "sourceSha256": "cffdce30415799faeded3baf93d2211f09e78165ccffa1a4da0ad68d523e58d2",
+      "copiedSha256": "cffdce30415799faeded3baf93d2211f09e78165ccffa1a4da0ad68d523e58d2",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/thread-title.ts",
+      "snapshotPath": "legacy/daemon/thread-title.ts",
+      "sourceGitBlob": "5a75e63046f7c013230293fa4e1d30e6ea2f2600",
+      "sourceSha256": "f6c9be45d8ce8cbafed31fb94906419621b9305b922807b1995f2457b35b9237",
+      "copiedSha256": "f6c9be45d8ce8cbafed31fb94906419621b9305b922807b1995f2457b35b9237",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/thread-worktree-state.ts",
+      "snapshotPath": "legacy/daemon/thread-worktree-state.ts",
+      "sourceGitBlob": "a2f4c370834bee7883a422d52b04fd2c9d8dc73b",
+      "sourceSha256": "118f787cb04627805c5d7c4be5a25c3aa6a06af04291912ce39a05dc827ccbbd",
+      "copiedSha256": "118f787cb04627805c5d7c4be5a25c3aa6a06af04291912ce39a05dc827ccbbd",
+      "rewrites": []
+    },
+    {
+      "sourcePath": "packages/daemon/src/threads.ts",
+      "snapshotPath": "legacy/daemon/threads.ts",
+      "sourceGitBlob": "417ca6bdb9eedb27a479a3c97f8e9c4b946f7f81",
+      "sourceSha256": "51d9652429039e066125109e8e7c7a82ff3e7790a53f9d129ef0dfa9f3b5bcca",
+      "copiedSha256": "51d9652429039e066125109e8e7c7a82ff3e7790a53f9d129ef0dfa9f3b5bcca",
+      "rewrites": []
+    }
+  ],
+  "shared": [
+    {
+      "path": "packages/core/src/adapter.ts",
+      "baselineGitBlob": "c19309985863f5ebf5b7980b9eaa049b72cad07b",
+      "baselineSha256": "3c17219a428c58a86b126b693591dffe34564adb0ca25c5625d92c7bcde73f07",
+      "sha256": "3c17219a428c58a86b126b693591dffe34564adb0ca25c5625d92c7bcde73f07"
+    },
+    {
+      "path": "packages/core/src/answer-assembly.ts",
+      "baselineGitBlob": "3a99da16b8892aa29e17a7000e8d0f843cee6fbf",
+      "baselineSha256": "a45316c87883113fa1d08d9adfa939ab41d336b6c7b1652819493a4f11b46fd8",
+      "sha256": "a45316c87883113fa1d08d9adfa939ab41d336b6c7b1652819493a4f11b46fd8"
+    },
+    {
+      "path": "packages/core/src/attachment-integrity.ts",
+      "baselineGitBlob": "0bc0a0fed1f356c5c623a42fe66fd964cb7a7b3e",
+      "baselineSha256": "b872c146edeafcf1034d3140244b5c2583816e1a08980170a37413593501719d",
+      "sha256": "b872c146edeafcf1034d3140244b5c2583816e1a08980170a37413593501719d"
+    },
+    {
+      "path": "packages/core/src/auth-capability-verifier.ts",
+      "baselineGitBlob": "8039733591065e0d074143ad009fd6a6036ed116",
+      "baselineSha256": "dd16fb4206280f6b58277a3b5afd4a5006263635e83d737e0f950f85347e0df7",
+      "sha256": "dd16fb4206280f6b58277a3b5afd4a5006263635e83d737e0f950f85347e0df7"
+    },
+    {
+      "path": "packages/core/src/auth-readiness.ts",
+      "baselineGitBlob": "813111cf6a2f103d223e3254ef1e5cbf5113657e",
+      "baselineSha256": "75d5081dd52f989452b435825c40c8012bcfb87d009dcc344338a3a9db141d0d",
+      "sha256": "75d5081dd52f989452b435825c40c8012bcfb87d009dcc344338a3a9db141d0d"
+    },
+    {
+      "path": "packages/core/src/browser-mcp.ts",
+      "baselineGitBlob": "6ce3280561beca52a7e5e4ea566512ebb1963fc1",
+      "baselineSha256": "7327927f126162b9ca7c169192e1fb786e90ad208bb689388a07c1f244c87499",
+      "sha256": "7327927f126162b9ca7c169192e1fb786e90ad208bb689388a07c1f244c87499"
+    },
+    {
+      "path": "packages/core/src/capabilities.ts",
+      "baselineGitBlob": "180b0bdd82badfc62443f3f97739f318a28ff06f",
+      "baselineSha256": "b727df316d9f6bca0759060de95795549280adf361a37eb1bb4b5f53113ceaae",
+      "sha256": "b727df316d9f6bca0759060de95795549280adf361a37eb1bb4b5f53113ceaae"
+    },
+    {
+      "path": "packages/core/src/conformance.ts",
+      "baselineGitBlob": "3fc474bd8b19b9da052fc233437580e52060f951",
+      "baselineSha256": "a0e850c543c3dbbc9e8e783a9b62cb284765569c78c69021065bb2ead6b27193",
+      "sha256": "a0e850c543c3dbbc9e8e783a9b62cb284765569c78c69021065bb2ead6b27193"
+    },
+    {
+      "path": "packages/core/src/credential-execution.ts",
+      "baselineGitBlob": "8f14cefa06c1ad832e25a24efdbfee700f7a925c",
+      "baselineSha256": "0745b709210de52393ebe601c6f91676c8b35ee6158a5298479513a4bde17ade",
+      "sha256": "0745b709210de52393ebe601c6f91676c8b35ee6158a5298479513a4bde17ade"
+    },
+    {
+      "path": "packages/core/src/credential-mutation-window.ts",
+      "baselineGitBlob": "6604b181586b5e4c2a129542e4382bd56880af07",
+      "baselineSha256": "9256373a36f4871fdf917c1384660896dbbbcb74968255fac8440249804489fc",
+      "sha256": "9256373a36f4871fdf917c1384660896dbbbcb74968255fac8440249804489fc"
+    },
+    {
+      "path": "packages/core/src/credential-profile-policy.ts",
+      "baselineGitBlob": "7e0f4aa2e845c2fc80eb1a16f693620f11f416c4",
+      "baselineSha256": "eb0b7d769ec89fa2e328d3b2fd91f8b839f0318aa8c10f891ff55dd1d0ca3268",
+      "sha256": "eb0b7d769ec89fa2e328d3b2fd91f8b839f0318aa8c10f891ff55dd1d0ca3268"
+    },
+    {
+      "path": "packages/core/src/credential-selection.ts",
+      "baselineGitBlob": "df49fb8a04aac6b750151da6fc565d8caf312af7",
+      "baselineSha256": "dbf392f71d5c7e97af578e941fca779bf8c73789302dc79315069d4608948a6b",
+      "sha256": "dbf392f71d5c7e97af578e941fca779bf8c73789302dc79315069d4608948a6b"
+    },
+    {
+      "path": "packages/core/src/diff.ts",
+      "baselineGitBlob": "b7f87477a3fec34687e7713ea09e78c4c472853a",
+      "baselineSha256": "f0a2fe4c2b8d26337bcd81161592fd1b608c00d12b2f6229d8ec389c4825dafd",
+      "sha256": "f0a2fe4c2b8d26337bcd81161592fd1b608c00d12b2f6229d8ec389c4825dafd"
+    },
+    {
+      "path": "packages/core/src/doctor.ts",
+      "baselineGitBlob": "439c7160a9f3688a2c9938f4d10bc81e43c93c7f",
+      "baselineSha256": "f7f0bf53c5111a4cb6c85b5e97d2937e3e87daed64ffdc5de97f4054545cfd49",
+      "sha256": "f7f0bf53c5111a4cb6c85b5e97d2937e3e87daed64ffdc5de97f4054545cfd49"
+    },
+    {
+      "path": "packages/core/src/effort-variants.ts",
+      "baselineGitBlob": "c72cbe6823a712ae0c1c50aca1a4f21e48d3bc02",
+      "baselineSha256": "fc4b3d83cbed90e9d59ee4153bf4593c01b5f5ddda09d717594dadea96f0a6b8",
+      "sha256": "fc4b3d83cbed90e9d59ee4153bf4593c01b5f5ddda09d717594dadea96f0a6b8"
+    },
+    {
+      "path": "packages/core/src/effort.ts",
+      "baselineGitBlob": "a0e0fc8ec46db89f303a2fa49788ededd757f269",
+      "baselineSha256": "8246a72530aca798185a14cfd2ab79980413d3f445c53f21ab027aebf49d4e45",
+      "sha256": "8246a72530aca798185a14cfd2ab79980413d3f445c53f21ab027aebf49d4e45"
+    },
+    {
+      "path": "packages/core/src/env-scope.ts",
+      "baselineGitBlob": "aca1a7ed50c49def1cb47f956f8ce82086c709e6",
+      "baselineSha256": "0670a0d9f9a9ab4397fcc9ebcff9377a9c2083a656819f3f8c713fefb19c169f",
+      "sha256": "0670a0d9f9a9ab4397fcc9ebcff9377a9c2083a656819f3f8c713fefb19c169f"
+    },
+    {
+      "path": "packages/core/src/errors.ts",
+      "baselineGitBlob": "b452f8d4dac5407d05edf2ab6784a467a9e4ed86",
+      "baselineSha256": "0a526e96eff22dfbb6431e4001c9594869c67afce59fea0a151dbca7318e07bc",
+      "sha256": "0a526e96eff22dfbb6431e4001c9594869c67afce59fea0a151dbca7318e07bc"
+    },
+    {
+      "path": "packages/core/src/executable-inspection.ts",
+      "baselineGitBlob": "2d7c38a05ff59b4b2f8b4a9d28ccd8f17448273c",
+      "baselineSha256": "6b9d1bf032ef49d0958de2ff63378f19fc35a2bd4aeda49242c9e9ff3337d999",
+      "sha256": "6b9d1bf032ef49d0958de2ff63378f19fc35a2bd4aeda49242c9e9ff3337d999"
+    },
+    {
+      "path": "packages/core/src/inactivity.ts",
+      "baselineGitBlob": "0d064b9a265f6aa317498e6423c56872fc3d2cad",
+      "baselineSha256": "cb35d88fec8d9dcb428e623c0c917c7405874f6d5d5599a0690157093c2bffb0",
+      "sha256": "cb35d88fec8d9dcb428e623c0c917c7405874f6d5d5599a0690157093c2bffb0"
+    },
+    {
+      "path": "packages/core/src/index.ts",
+      "baselineGitBlob": "4b1e6d43b171def2e141a01bc7cc4e178050c49f",
+      "baselineSha256": "88ccd45d174103b24e105146bf995a8804f8756d89d16717cfa7ace08ed17495",
+      "sha256": "88ccd45d174103b24e105146bf995a8804f8756d89d16717cfa7ace08ed17495"
+    },
+    {
+      "path": "packages/core/src/instructions.ts",
+      "baselineGitBlob": "868d4701ec6abe241e7fe1a556725bf9b7c58ca7",
+      "baselineSha256": "8334992fd4d5c2232459dc582713783265f4ec79bdea046311ecc34f6c70f9a3",
+      "sha256": "8334992fd4d5c2232459dc582713783265f4ec79bdea046311ecc34f6c70f9a3"
+    },
+    {
+      "path": "packages/core/src/isolation-locator.ts",
+      "baselineGitBlob": "2d2cdf85cd15166bc13d3ecb244441bc8689156b",
+      "baselineSha256": "dffc798e22e1187a3eeb3ac5a31d192d31e8a5365da24a329f48ecbb58644b1f",
+      "sha256": "dffc798e22e1187a3eeb3ac5a31d192d31e8a5365da24a329f48ecbb58644b1f"
+    },
+    {
+      "path": "packages/core/src/model-adapter.ts",
+      "baselineGitBlob": "6d579786d8e8fd3654f9e2469b41a94d52128209",
+      "baselineSha256": "db4ff3748b577858a5bf7bcf89d0ca46b2246962076eae809082e697b9876c8f",
+      "sha256": "db4ff3748b577858a5bf7bcf89d0ca46b2246962076eae809082e697b9876c8f"
+    },
+    {
+      "path": "packages/core/src/model.ts",
+      "baselineGitBlob": "b68314aa1a5afb5a5dad540264a015d7231513c1",
+      "baselineSha256": "db88fdf6b59bc7bf794fcff898bd3b267c732a2b644157890ff56cf713f6c52e",
+      "sha256": "db88fdf6b59bc7bf794fcff898bd3b267c732a2b644157890ff56cf713f6c52e"
+    },
+    {
+      "path": "packages/core/src/npm-launch.ts",
+      "baselineGitBlob": "99bd2554dcd0d1c8f74bdf0ea83738a755db191e",
+      "baselineSha256": "27121d9bace5f6f640a4cfc9bd5cf6367606b11e3af849752f029e2854571148",
+      "sha256": "27121d9bace5f6f640a4cfc9bd5cf6367606b11e3af849752f029e2854571148"
+    },
+    {
+      "path": "packages/core/src/proc.ts",
+      "baselineGitBlob": "d7c84e1855a3e6393d5e8b9e74b9d1e25bf5da01",
+      "baselineSha256": "2114c2b08154148f141f125907bce3fcf84df4b46fd11354fd08272ada289c4a",
+      "sha256": "2114c2b08154148f141f125907bce3fcf84df4b46fd11354fd08272ada289c4a"
+    },
+    {
+      "path": "packages/core/src/process-group.ts",
+      "baselineGitBlob": "192d4d74a02debeae4241b39af36a13191af2b85",
+      "baselineSha256": "f1b54c4e51fdd2b14a000c364d49ed166770f734f5e1221707cda0024ee45a4a",
+      "sha256": "f1b54c4e51fdd2b14a000c364d49ed166770f734f5e1221707cda0024ee45a4a"
+    },
+    {
+      "path": "packages/core/src/process-identity.ts",
+      "baselineGitBlob": "b3c7419eb91708c4f176fcdb9c5ca79dbd20310a",
+      "baselineSha256": "0ea2df120385b8a97aabd3de956f404b92f24a90b8f1c7cbce8550cc853ee627",
+      "sha256": "0ea2df120385b8a97aabd3de956f404b92f24a90b8f1c7cbce8550cc853ee627"
+    },
+    {
+      "path": "packages/core/src/process-lifeline.ts",
+      "baselineGitBlob": "5ac89f8bf70ea1e36174b3346d2d86152c8e734a",
+      "baselineSha256": "9a667064e79a10cb622345f6d220f47c5e49053f4c025571f074b1dd61861a1a",
+      "sha256": "9a667064e79a10cb622345f6d220f47c5e49053f4c025571f074b1dd61861a1a"
+    },
+    {
+      "path": "packages/core/src/process-lines.ts",
+      "baselineGitBlob": "6cac183faa20840df7055f477c1daa72f4da20f1",
+      "baselineSha256": "c77453b1dd2e8444470f0980dfd68fc752feea0fb9f1f3c03b04676bdf9223bd",
+      "sha256": "c77453b1dd2e8444470f0980dfd68fc752feea0fb9f1f3c03b04676bdf9223bd"
+    },
+    {
+      "path": "packages/core/src/process-registry.ts",
+      "baselineGitBlob": "d7a39fd6b18a4fe745163cfef9eec092e44a3d44",
+      "baselineSha256": "f25fd8005b71661b4b32ef45a0d888ec31073b272caa567ac139e8604224a500",
+      "sha256": "f25fd8005b71661b4b32ef45a0d888ec31073b272caa567ac139e8604224a500"
+    },
+    {
+      "path": "packages/core/src/process-tree.ts",
+      "baselineGitBlob": "cbf5f13accd1f989d480d5f8a26658d91f3f9ada",
+      "baselineSha256": "53f56e31a92ea7fb04f7ced5cc634bc26b7b43ba58699300ae37e3ea09c0cb48",
+      "sha256": "53f56e31a92ea7fb04f7ced5cc634bc26b7b43ba58699300ae37e3ea09c0cb48"
+    },
+    {
+      "path": "packages/core/src/processing.ts",
+      "baselineGitBlob": "c635e6bbddcd68cf03d7dcb853ab97ee53ab3ac5",
+      "baselineSha256": "0631f8d8af74c84f82eef6b6a5aec09cef4d33ff70c96d679df6117d706717e0",
+      "sha256": "0631f8d8af74c84f82eef6b6a5aec09cef4d33ff70c96d679df6117d706717e0"
+    },
+    {
+      "path": "packages/core/src/runloop.ts",
+      "baselineGitBlob": "00e60fad14f9813f593ccc9efdf2817ee913406d",
+      "baselineSha256": "b6dddb19bf7eae2630afd629932e4c0f69c2d30c433ff87c5044764da2488517",
+      "sha256": "b6dddb19bf7eae2630afd629932e4c0f69c2d30c433ff87c5044764da2488517"
+    },
+    {
+      "path": "packages/core/src/runtime-env.ts",
+      "baselineGitBlob": "30ffadb505721bfcb79aba924f22565ef8f2770e",
+      "baselineSha256": "97cb4e5ea76802f197bd5627dab65573151cef9a7c889b765662ef22bd3bf94e",
+      "sha256": "97cb4e5ea76802f197bd5627dab65573151cef9a7c889b765662ef22bd3bf94e"
+    },
+    {
+      "path": "packages/journal/src/append-batch.ts",
+      "baselineGitBlob": "c61cb3891eb59a60490e7a57a43ac40aec6a38a6",
+      "baselineSha256": "ddb8e275d57232697d0d11a6f8e3711f37a7db7ad39fa93f16d77d5008405b49",
+      "sha256": "ddb8e275d57232697d0d11a6f8e3711f37a7db7ad39fa93f16d77d5008405b49"
+    },
+    {
+      "path": "packages/journal/src/frame-codec.ts",
+      "baselineGitBlob": "1e5fa732930992b04784a9e1c616e1f6d9cd9f6b",
+      "baselineSha256": "519c9a36340f0f29545b87997c2e8038364d1813052098d7ddea2cba9a0e552c",
+      "sha256": "519c9a36340f0f29545b87997c2e8038364d1813052098d7ddea2cba9a0e552c"
+    },
+    {
+      "path": "packages/journal/src/frame-reader.ts",
+      "baselineGitBlob": "fa1189882bc5f06054dff620ddd8ff5c1ede60ce",
+      "baselineSha256": "cc6cb9ff81d35f37ca3154347cbc8024f65e38446973d11655ad37422e6f5d72",
+      "sha256": "cc6cb9ff81d35f37ca3154347cbc8024f65e38446973d11655ad37422e6f5d72"
+    },
+    {
+      "path": "packages/journal/src/index.ts",
+      "baselineGitBlob": "4c41db498ae68a58673ba9554cc724731bfccebf",
+      "baselineSha256": "c1a97075d6ec72659803a4250c6a0844691a17193532f9832959fdace677e89b",
+      "sha256": "c1a97075d6ec72659803a4250c6a0844691a17193532f9832959fdace677e89b"
+    },
+    {
+      "path": "packages/journal/src/journal-background-compaction.ts",
+      "baselineGitBlob": "361a383aaa8288f4fa32eadd799c1008c0ec09ed",
+      "baselineSha256": "4e1da29999df8994183a325db75eab9fb52c5f6f9e59a5ff4c91dc439cb4c485",
+      "sha256": "4e1da29999df8994183a325db75eab9fb52c5f6f9e59a5ff4c91dc439cb4c485"
+    },
+    {
+      "path": "packages/journal/src/journal-compaction-chunks.ts",
+      "baselineGitBlob": "fe01061e1cedd7c12732bbaab890ba01b14443eb",
+      "baselineSha256": "560e70b845334670db5452dfe93a4a5d945052e3d2b57df827492341f347dea7",
+      "sha256": "560e70b845334670db5452dfe93a4a5d945052e3d2b57df827492341f347dea7"
+    },
+    {
+      "path": "packages/journal/src/journal-compaction.ts",
+      "baselineGitBlob": "d855f8a15bb3f24ccaca8b0fa4c3b6cafd0c1ef0",
+      "baselineSha256": "3337b2177ea304ebcb803ceaf47df412857c059865ae951fc83f26cb67721e82",
+      "sha256": "3337b2177ea304ebcb803ceaf47df412857c059865ae951fc83f26cb67721e82"
+    },
+    {
+      "path": "packages/journal/src/journal-core.ts",
+      "baselineGitBlob": "098bb7b0875f010e4fce4b8316a11af258883005",
+      "baselineSha256": "1c9dbfde2a91c4b5893939f8e82217446162ed980c16e323129e67e0ea154813",
+      "sha256": "1c9dbfde2a91c4b5893939f8e82217446162ed980c16e323129e67e0ea154813"
+    },
+    {
+      "path": "packages/journal/src/journal-cursor.ts",
+      "baselineGitBlob": "1ac4fa49c43718e2f282a4d1f4de0b3aea93c5f3",
+      "baselineSha256": "fc84927243f7e827e3f383a1c5f03efc590d8efbbc1a3ce46c2464833aa60617",
+      "sha256": "fc84927243f7e827e3f383a1c5f03efc590d8efbbc1a3ce46c2464833aa60617"
+    },
+    {
+      "path": "packages/journal/src/journal-files.ts",
+      "baselineGitBlob": "31e3a4bc4ee7cef1ff36e1bbee227b28acc50385",
+      "baselineSha256": "ff0d6a3bb7ee7b72c29da991702bc210d900eb2bec2a9de1a3d69292089d5109",
+      "sha256": "ff0d6a3bb7ee7b72c29da991702bc210d900eb2bec2a9de1a3d69292089d5109"
+    },
+    {
+      "path": "packages/journal/src/journal-fold.ts",
+      "baselineGitBlob": "7b3689d21630bd5c9f9ebc14de1868395fde72e3",
+      "baselineSha256": "bd5bbc527ccfc30614f06d88816db8d51cacfbcbcccdb1aca8c5954a62b2549c",
+      "sha256": "bd5bbc527ccfc30614f06d88816db8d51cacfbcbcccdb1aca8c5954a62b2549c"
+    },
+    {
+      "path": "packages/journal/src/journal-partition.ts",
+      "baselineGitBlob": "ed685b548ce15bbb56a44b08e884bf95c8a0c5f9",
+      "baselineSha256": "50a4c74811326bc70e3d1c7ddd3d26348f4fad98eef66c88274763cf7c896279",
+      "sha256": "50a4c74811326bc70e3d1c7ddd3d26348f4fad98eef66c88274763cf7c896279"
+    },
+    {
+      "path": "packages/journal/src/journal-recovery-state.ts",
+      "baselineGitBlob": "6c8d3858ec5199552ec0ca05973baef479762c5f",
+      "baselineSha256": "c9b55546b82f2aa29c5ae882c37798bfae8fd0bd949b3b818538c0383570535b",
+      "sha256": "c9b55546b82f2aa29c5ae882c37798bfae8fd0bd949b3b818538c0383570535b"
+    },
+    {
+      "path": "packages/journal/src/journal-recovery.ts",
+      "baselineGitBlob": "76a73652e84904f568c8e7bfb90c2a236f2347ff",
+      "baselineSha256": "cdbb9174029ff22422009e22ef1c317cad4586ec63e06799471ce7e28e4d674b",
+      "sha256": "cdbb9174029ff22422009e22ef1c317cad4586ec63e06799471ce7e28e4d674b"
+    },
+    {
+      "path": "packages/journal/src/read-only-preparation.ts",
+      "baselineGitBlob": "f43ede6b48e21a8ac46ea40b157169e3201b3b6e",
+      "baselineSha256": "91ae772c5fb7d803241a8b51fa0ff900705917b322d7900cc1d24395e7bb0711",
+      "sha256": "91ae772c5fb7d803241a8b51fa0ff900705917b322d7900cc1d24395e7bb0711"
+    },
+    {
+      "path": "packages/schema/src/account-resources.ts",
+      "baselineGitBlob": "be82c5bf74584e697334d41ce43b1eb369870f0a",
+      "baselineSha256": "4d12135393a49813346e31b32b62ddea354f1c81e4396500ff3396be49ceec7b",
+      "sha256": "4d12135393a49813346e31b32b62ddea354f1c81e4396500ff3396be49ceec7b"
+    },
+    {
+      "path": "packages/schema/src/account-target.ts",
+      "baselineGitBlob": "ab17d2152031d9af378cda14d60c6735a6926f28",
+      "baselineSha256": "cb68b269d2f0c4e083544a3e08c9cbaf2046aa1b771c64cdad615d4511c5ef52",
+      "sha256": "cb68b269d2f0c4e083544a3e08c9cbaf2046aa1b771c64cdad615d4511c5ef52"
+    },
+    {
+      "path": "packages/schema/src/accounts-migration.ts",
+      "baselineGitBlob": "260ee5afb7f54054903b8b953a5347843638d87b",
+      "baselineSha256": "a522762a08ffb8d9331515dad2ed9587cb3b4d2260f9f9b8128018063effb07b",
+      "sha256": "a522762a08ffb8d9331515dad2ed9587cb3b4d2260f9f9b8128018063effb07b"
+    },
+    {
+      "path": "packages/schema/src/agent-capabilities.ts",
+      "baselineGitBlob": "ce46f15214ca1698689bd92d98371365264c335b",
+      "baselineSha256": "1e69af7fd944c9c120abdaec66a1421a29943861d73defcc385fce84cc332b47",
+      "sha256": "1e69af7fd944c9c120abdaec66a1421a29943861d73defcc385fce84cc332b47"
+    },
+    {
+      "path": "packages/schema/src/apply-eligibility.ts",
+      "baselineGitBlob": "6e644177c7d984e44ba4c2d410fc57a8300c512a",
+      "baselineSha256": "001f5af923c07465de7e4d4faa0f176719063d2d7ded17b21c48fa3f5779679f",
+      "sha256": "001f5af923c07465de7e4d4faa0f176719063d2d7ded17b21c48fa3f5779679f"
+    },
+    {
+      "path": "packages/schema/src/attachment.ts",
+      "baselineGitBlob": "d9cc3fc18dee34d4c76bac37da8f388f3b62562f",
+      "baselineSha256": "fec0b25903c1433b1b4245f2b7dd310f4fc608fb038d62a56f3781677ee85b36",
+      "sha256": "fec0b25903c1433b1b4245f2b7dd310f4fc608fb038d62a56f3781677ee85b36"
+    },
+    {
+      "path": "packages/schema/src/attempt-execution.ts",
+      "baselineGitBlob": "51d657af4cd32e10c2ea8c50b0d3630448af5164",
+      "baselineSha256": "86f3a0531d1a503fe822b57c51f1938d17b1572ed65d2a3835eff152f710f282",
+      "sha256": "86f3a0531d1a503fe822b57c51f1938d17b1572ed65d2a3835eff152f710f282"
+    },
+    {
+      "path": "packages/schema/src/auth.ts",
+      "baselineGitBlob": "04d20ae9a2dbb5d0cb6665761595b2336b03117d",
+      "baselineSha256": "d519ca6303157a2feab5f07f277e050aecfba56adda959b16096adc37d0d33f4",
+      "sha256": "d519ca6303157a2feab5f07f277e050aecfba56adda959b16096adc37d0d33f4"
+    },
+    {
+      "path": "packages/schema/src/budget.ts",
+      "baselineGitBlob": "4fa1c472c704751158c3e64774a79144dbd0a595",
+      "baselineSha256": "158adbf059fe54996e4981856a926b565a660d1d8da57024625da4417c92b2df",
+      "sha256": "158adbf059fe54996e4981856a926b565a660d1d8da57024625da4417c92b2df"
+    },
+    {
+      "path": "packages/schema/src/cancel-reason.ts",
+      "baselineGitBlob": "d0850efcf5eae13493ae2ab80acb13af2b757c35",
+      "baselineSha256": "18dda78810d356d8f6296860e3c5e3fb5bcdfd7558dfa4bd2715545cf2e8cb38",
+      "sha256": "18dda78810d356d8f6296860e3c5e3fb5bcdfd7558dfa4bd2715545cf2e8cb38"
+    },
+    {
+      "path": "packages/schema/src/command-list.ts",
+      "baselineGitBlob": "03b924f315b98c74272a28ee69050bbd016cd8ef",
+      "baselineSha256": "ee40f2741a257100aa03c85a7600ab68aa14d478476fbde80e49b72e1db68c47",
+      "sha256": "ee40f2741a257100aa03c85a7600ab68aa14d478476fbde80e49b72e1db68c47"
+    },
+    {
+      "path": "packages/schema/src/command-summary.ts",
+      "baselineGitBlob": "7b57492ea8e19534bb0a912837ce200b9369e778",
+      "baselineSha256": "4594ec74cf55a006cda32c1d578abf0c1b4310ff9ebe7abeda516573366bdd77",
+      "sha256": "4594ec74cf55a006cda32c1d578abf0c1b4310ff9ebe7abeda516573366bdd77"
+    },
+    {
+      "path": "packages/schema/src/config.ts",
+      "baselineGitBlob": "942b79279b9e3237aa561dbc80e11508d2412285",
+      "baselineSha256": "b25951c249921c7906a78bfd0af63db29449e815f853f643649cce0100e16f15",
+      "sha256": "b25951c249921c7906a78bfd0af63db29449e815f853f643649cce0100e16f15"
+    },
+    {
+      "path": "packages/schema/src/context.ts",
+      "baselineGitBlob": "16add1f5266c71abe2733e113c7bbfbbb2c737de",
+      "baselineSha256": "26d2d93cae5d0fded657031c1b43261070f976162840db903ce86905982c03cf",
+      "sha256": "26d2d93cae5d0fded657031c1b43261070f976162840db903ce86905982c03cf"
+    },
+    {
+      "path": "packages/schema/src/continuation-admission.ts",
+      "baselineGitBlob": "e7a1ca4ba04e7dbb8551300dca777a97cc93ff6f",
+      "baselineSha256": "a138128e6de0a03be0aeb5b6d3604414d854ee2c2f57baf21cb365446428e261",
+      "sha256": "a138128e6de0a03be0aeb5b6d3604414d854ee2c2f57baf21cb365446428e261"
+    },
+    {
+      "path": "packages/schema/src/control-auth-route.ts",
+      "baselineGitBlob": "47a3e128fcb038ad28b3082f8fc94a144e4545c6",
+      "baselineSha256": "26dfdb112a1f70cf06796235ddcef6ca7cfca3aafa4026140725261d8dfe4a29",
+      "sha256": "26dfdb112a1f70cf06796235ddcef6ca7cfca3aafa4026140725261d8dfe4a29"
+    },
+    {
+      "path": "packages/schema/src/control-gc.ts",
+      "baselineGitBlob": "75ab08f07d74f8163d2430f0ca1006fcc2f24e33",
+      "baselineSha256": "8d645697e92d9c0763ebe48fb4b2e1db86f845131cc6d9cc2336ccfa82684078",
+      "sha256": "8d645697e92d9c0763ebe48fb4b2e1db86f845131cc6d9cc2336ccfa82684078"
+    },
+    {
+      "path": "packages/schema/src/control-harness-list.ts",
+      "baselineGitBlob": "e30968598be8d9099d928d2ca705ab1e9b6bbfb9",
+      "baselineSha256": "d827e7c7751ef615be09a8e225c18eb135b271ceb19ffd645e25b7833e904080",
+      "sha256": "d827e7c7751ef615be09a8e225c18eb135b271ceb19ffd645e25b7833e904080"
+    },
+    {
+      "path": "packages/schema/src/control-harness-models.ts",
+      "baselineGitBlob": "7b9814ba9edfa1ce942c5ee963fd14d966970323",
+      "baselineSha256": "fc0607cf3b5d671caed82b756d6bc1e4ebcd9800d7ec1edd98f7986010e62ac7",
+      "sha256": "fc0607cf3b5d671caed82b756d6bc1e4ebcd9800d7ec1edd98f7986010e62ac7"
+    },
+    {
+      "path": "packages/schema/src/control-operation-responses.ts",
+      "baselineGitBlob": "40ecb1b10dc5eb789bcd3bdefc19bfc54ab1be88",
+      "baselineSha256": "0c2e0ae35db3e4190da8cbb9c8fa47161ffca94e956d84a8978df0a4ceb77ffc",
+      "sha256": "0c2e0ae35db3e4190da8cbb9c8fa47161ffca94e956d84a8978df0a4ceb77ffc"
+    },
+    {
+      "path": "packages/schema/src/control-run-detail.ts",
+      "baselineGitBlob": "746053d0961e94846b643b25df45432dbd4cead8",
+      "baselineSha256": "ec02571b67a7c87695f3cb6fdc00363c71e6307697fb48db9a53092d052fe3cc",
+      "sha256": "ec02571b67a7c87695f3cb6fdc00363c71e6307697fb48db9a53092d052fe3cc"
+    },
+    {
+      "path": "packages/schema/src/control-run-execution.ts",
+      "baselineGitBlob": "fbb0599a0efe5e1d738a6646bd45ac81fd29ab68",
+      "baselineSha256": "42f1161386e9d810f138be786b0effb800dbcbb6d0904c5c6a2b9381534a86d2",
+      "sha256": "42f1161386e9d810f138be786b0effb800dbcbb6d0904c5c6a2b9381534a86d2"
+    },
+    {
+      "path": "packages/schema/src/control-run-failure.ts",
+      "baselineGitBlob": "761960b089b496bf6e834578160764552bbc4cb5",
+      "baselineSha256": "d93a29fa2be4d7f42643ef8e06a3799fcd2aff729e75ab8ae0e766ca4803dd41",
+      "sha256": "d93a29fa2be4d7f42643ef8e06a3799fcd2aff729e75ab8ae0e766ca4803dd41"
+    },
+    {
+      "path": "packages/schema/src/control-run-message.ts",
+      "baselineGitBlob": "2beee35eb67153424830f768e1846d3ad3862522",
+      "baselineSha256": "ec975a3f0661df5088b2d857da774ec48d92a939be0aaeb78edcb3ce1021d560",
+      "sha256": "ec975a3f0661df5088b2d857da774ec48d92a939be0aaeb78edcb3ce1021d560"
+    },
+    {
+      "path": "packages/schema/src/control-run-retry.ts",
+      "baselineGitBlob": "36cae1a23e44549aa3d647595aae402bca132355",
+      "baselineSha256": "87ba1469d4373ef86ffde00fecc1fb177d005a65bf77892c366ca14bc63b6fb3",
+      "sha256": "87ba1469d4373ef86ffde00fecc1fb177d005a65bf77892c366ca14bc63b6fb3"
+    },
+    {
+      "path": "packages/schema/src/control-run-scope.ts",
+      "baselineGitBlob": "a5add8dfc14919df34f86cbcdd9f0c6d94e8fcda",
+      "baselineSha256": "2f56ba87e1a9d15f8bffd21d9e8fc12a40a11047542f83a050065ae58f0f3ad9",
+      "sha256": "2f56ba87e1a9d15f8bffd21d9e8fc12a40a11047542f83a050065ae58f0f3ad9"
+    },
+    {
+      "path": "packages/schema/src/control-secret.ts",
+      "baselineGitBlob": "ed0ee860feda61049ba12cbd3f9d4be953d9c443",
+      "baselineSha256": "f7634ad552b39e7f8ad462fdfbda8fd08f4154bda67e52804818a84105bc0584",
+      "sha256": "f7634ad552b39e7f8ad462fdfbda8fd08f4154bda67e52804818a84105bc0584"
+    },
+    {
+      "path": "packages/schema/src/control-thread-apply.ts",
+      "baselineGitBlob": "f2b0c9b83da3b24c90b91e596a08fbd103f52f50",
+      "baselineSha256": "2a1260b9d3fb4fef4d947d57b850caad851de5939435eb6d1493c96f94e29cd3",
+      "sha256": "2a1260b9d3fb4fef4d947d57b850caad851de5939435eb6d1493c96f94e29cd3"
+    },
+    {
+      "path": "packages/schema/src/control-thread-requests.ts",
+      "baselineGitBlob": "abf2e7c62948d726885d077e9c293a74dfcb2408",
+      "baselineSha256": "c0a3bd0c7b390a405b80be040c9541cd9f13f9859c051c1fa719b3e594e0afd2",
+      "sha256": "c0a3bd0c7b390a405b80be040c9541cd9f13f9859c051c1fa719b3e594e0afd2"
+    },
+    {
+      "path": "packages/schema/src/control-timeline.ts",
+      "baselineGitBlob": "e55709ccb00ba436ad6a71108b40f93332f1d791",
+      "baselineSha256": "3c0c99e0649872abbcb032189412de39d20f009dd97c6126f33efb9732d19159",
+      "sha256": "3c0c99e0649872abbcb032189412de39d20f009dd97c6126f33efb9732d19159"
+    },
+    {
+      "path": "packages/schema/src/control-trust.ts",
+      "baselineGitBlob": "0d3f27bba3b0c0d535bd1f0421c16c98c3891c85",
+      "baselineSha256": "9e2c548ca6484eb5a0955945862c676ed35aa0fbc3e7742af7045d67dc633f9b",
+      "sha256": "9e2c548ca6484eb5a0955945862c676ed35aa0fbc3e7742af7045d67dc633f9b"
+    },
+    {
+      "path": "packages/schema/src/control.ts",
+      "baselineGitBlob": "dc0f47d017eb3620e31fad4b1efce0c7f73c9e6a",
+      "baselineSha256": "9f5d8cc0c68c56a10013604c96e0744d3fd152c5ebe556d3495c66b71bbcb3d4",
+      "sha256": "9f5d8cc0c68c56a10013604c96e0744d3fd152c5ebe556d3495c66b71bbcb3d4"
+    },
+    {
+      "path": "packages/schema/src/credential-profile-snapshot.ts",
+      "baselineGitBlob": "775297c7bd86fbbe5a4b3fb3210e9157200302a3",
+      "baselineSha256": "7e3b643bcb87fd232efa5ee6178e0ff9006ed1937da4840cd20a2ad8c204f8f2",
+      "sha256": "7e3b643bcb87fd232efa5ee6178e0ff9006ed1937da4840cd20a2ad8c204f8f2"
+    },
+    {
+      "path": "packages/schema/src/credential-profile.ts",
+      "baselineGitBlob": "df48d0f0d84ab0cc39ab8d63a8945523a2b8701d",
+      "baselineSha256": "aebcf2056e91f82ed4c63c335388bcb19d668bde79aa963bc9db1f0cee18f839",
+      "sha256": "aebcf2056e91f82ed4c63c335388bcb19d668bde79aa963bc9db1f0cee18f839"
+    },
+    {
+      "path": "packages/schema/src/credential-store.ts",
+      "baselineGitBlob": "b46a8620001c309b44cefda062b61355fca21fec",
+      "baselineSha256": "114db6b2ffd5076fe7651e74b7aa3d2ddb7b0329e564b43f177521062609e7f5",
+      "sha256": "114db6b2ffd5076fe7651e74b7aa3d2ddb7b0329e564b43f177521062609e7f5"
+    },
+    {
+      "path": "packages/schema/src/daemon-status.ts",
+      "baselineGitBlob": "39651171bc35b34466ac60006a91a5917753840e",
+      "baselineSha256": "d0154b29512367b5e2332e76c28fa0bdcdc48a9a6e5348339f92949f770bdbea",
+      "sha256": "2a23f7132ef7dbdb231b0e5bdea4fc657e7b4887d06575b5967cb36d16dad982",
+      "unusedDeclarations": ["ms", "DaemonLoopFacts", "ControlDaemonStatus"],
+      "remainderSha256": "8ffbfad20ce4510f91aec8114f48324ab24b26f02422de7a06ce02dfea83974f"
+    },
+    {
+      "path": "packages/schema/src/decision.ts",
+      "baselineGitBlob": "39b9bebc5f8267acfe7a6d4aec98a894e16b87c7",
+      "baselineSha256": "a82487aff7662f867d41400eb56c0efc7dba8dfe47a834df73a6bbc4f6bb8156",
+      "sha256": "a82487aff7662f867d41400eb56c0efc7dba8dfe47a834df73a6bbc4f6bb8156"
+    },
+    {
+      "path": "packages/schema/src/deep-scan.ts",
+      "baselineGitBlob": "93e5bf5c4b9c4b7a6a015cb3a87abc0dc371b5ae",
+      "baselineSha256": "cd1b9da07cae803a3d5d466c71a77f7c557399e0e25c632a0d653f1030a3100b",
+      "sha256": "cd1b9da07cae803a3d5d466c71a77f7c557399e0e25c632a0d653f1030a3100b"
+    },
+    {
+      "path": "packages/schema/src/delegation.ts",
+      "baselineGitBlob": "d29f88b7798e739a92303c95576fc43f3f716f2e",
+      "baselineSha256": "455ae3ad9f101bc643672d829eb27ddf27eb647b82a88b52c2cd7ab3989dda15",
+      "sha256": "455ae3ad9f101bc643672d829eb27ddf27eb647b82a88b52c2cd7ab3989dda15"
+    },
+    {
+      "path": "packages/schema/src/delivery.ts",
+      "baselineGitBlob": "3f4499e46a2c472260a4cff3cda2fd4dfa62de7e",
+      "baselineSha256": "2a4a154bd497424311f17fd81604dea4ec1f798764ca73cc5446ded79bc913b3",
+      "sha256": "2a4a154bd497424311f17fd81604dea4ec1f798764ca73cc5446ded79bc913b3"
+    },
+    {
+      "path": "packages/schema/src/effort.ts",
+      "baselineGitBlob": "67e0c453ae9eb377f9b0d5e42c6e06988bfee7c7",
+      "baselineSha256": "a282980ae243d63555e18bb5d7ecbdffff537f6b24ff5deed6260653a163b9a1",
+      "sha256": "a282980ae243d63555e18bb5d7ecbdffff537f6b24ff5deed6260653a163b9a1"
+    },
+    {
+      "path": "packages/schema/src/events.ts",
+      "baselineGitBlob": "1ee48f9f05edf8698683833801aa2ff0a8690a56",
+      "baselineSha256": "f981f972ba760e068d68cf09f017feabe578cb318547783dc0ea91702d7f24e6",
+      "sha256": "f981f972ba760e068d68cf09f017feabe578cb318547783dc0ea91702d7f24e6"
+    },
+    {
+      "path": "packages/schema/src/files-manifest.ts",
+      "baselineGitBlob": "9dbd9ce3589935deb95e28a3f72926d36a3a996d",
+      "baselineSha256": "f59720060224c5a4f131808f63b87ea115d90c12a0bc8b583d85eaff3637e9c5",
+      "sha256": "f59720060224c5a4f131808f63b87ea115d90c12a0bc8b583d85eaff3637e9c5"
+    },
+    {
+      "path": "packages/schema/src/gate.ts",
+      "baselineGitBlob": "4dd54603ac79b8846974d2d1553a8ce6a1eb48db",
+      "baselineSha256": "4bdd239a5f5d15c2b2bc4890cbea91638ce6ce946a38bc20491bf661df2859e3",
+      "sha256": "4bdd239a5f5d15c2b2bc4890cbea91638ce6ce946a38bc20491bf661df2859e3"
+    },
+    {
+      "path": "packages/schema/src/git-capability.ts",
+      "baselineGitBlob": "787aa30a833d6167c63a185a23265934dee8307e",
+      "baselineSha256": "f7fc5fd71d407c133801750f895c922cedc0be9c5eeafdf881cc4dc7a6ad0e8f",
+      "sha256": "f7fc5fd71d407c133801750f895c922cedc0be9c5eeafdf881cc4dc7a6ad0e8f"
+    },
+    {
+      "path": "packages/schema/src/harness-confinement.ts",
+      "baselineGitBlob": "63fd58e3de2a20e36507561704367a0c86611b0d",
+      "baselineSha256": "10a4b05fa4feac3ae5bb51f94b41822571844ffb73077ac48339efbab786d37c",
+      "sha256": "10a4b05fa4feac3ae5bb51f94b41822571844ffb73077ac48339efbab786d37c"
+    },
+    {
+      "path": "packages/schema/src/harness-input.ts",
+      "baselineGitBlob": "52e4d0624189d7cf2d5579e71098f407610ad1dc",
+      "baselineSha256": "387da8052d2da52abb19b65c392194ec54b496947df7e981ec794beeec7eca22",
+      "sha256": "387da8052d2da52abb19b65c392194ec54b496947df7e981ec794beeec7eca22"
+    },
+    {
+      "path": "packages/schema/src/harness-interaction.ts",
+      "baselineGitBlob": "890aebc9473c4b9dcca2a2cb16584a4af64f7aab",
+      "baselineSha256": "2e59496897cc3a0410d7e6f811dcd33b517571b71f9fded00f8639956652bedd",
+      "sha256": "2e59496897cc3a0410d7e6f811dcd33b517571b71f9fded00f8639956652bedd"
+    },
+    {
+      "path": "packages/schema/src/harness-maintenance.ts",
+      "baselineGitBlob": "7a5de9b2ead7273703a87d4e24c81671d2343707",
+      "baselineSha256": "15e0cdbf9d207194cc829c73c96c0229e9db63a3e685ddcd87b3c9e40e8ebeb2",
+      "sha256": "15e0cdbf9d207194cc829c73c96c0229e9db63a3e685ddcd87b3c9e40e8ebeb2"
+    },
+    {
+      "path": "packages/schema/src/harness-model.ts",
+      "baselineGitBlob": "018083d4ec355324abe34bd5ba0897d4880dd9c0",
+      "baselineSha256": "dd76fe199f9333e92c78a75da14f2623397a6c9293d7b67734a0849edf418463",
+      "sha256": "dd76fe199f9333e92c78a75da14f2623397a6c9293d7b67734a0849edf418463"
+    },
+    {
+      "path": "packages/schema/src/harness-quota.ts",
+      "baselineGitBlob": "484fdb2d22574d8b14c470e463e47a83ad2095db",
+      "baselineSha256": "48864e373fa7f4935e138324c0bd9cfdd3b39ec2f47a3e92297caf9f3cef7411",
+      "sha256": "48864e373fa7f4935e138324c0bd9cfdd3b39ec2f47a3e92297caf9f3cef7411"
+    },
+    {
+      "path": "packages/schema/src/harness.ts",
+      "baselineGitBlob": "9e044353dd69dc0fceb10d5ed287f625196a9456",
+      "baselineSha256": "c1ae0bf7f1f6e1cd36a8516cde2644fb1daa8a11537933f568256c31768fce34",
+      "sha256": "c1ae0bf7f1f6e1cd36a8516cde2644fb1daa8a11537933f568256c31768fce34"
+    },
+    {
+      "path": "packages/schema/src/index.ts",
+      "baselineGitBlob": "55ecacb057f9ff10edc6b0b943b8af47e97d4d20",
+      "baselineSha256": "c6704de6939c9b691419484bb99e8c9e1b1cb2a615769c5c6d280741f4cd4822",
+      "sha256": "c6704de6939c9b691419484bb99e8c9e1b1cb2a615769c5c6d280741f4cd4822"
+    },
+    {
+      "path": "packages/schema/src/interaction.ts",
+      "baselineGitBlob": "d147335a1ce03a508c44ba7a0ac624e811ad1b4d",
+      "baselineSha256": "64727469cee5f778e9efd75a8139e5f60b7dae466f57e1bd35574366d190330a",
+      "sha256": "64727469cee5f778e9efd75a8139e5f60b7dae466f57e1bd35574366d190330a"
+    },
+    {
+      "path": "packages/schema/src/mcp-run-result.ts",
+      "baselineGitBlob": "fe4828e15eaf6b9334262cfdf5757ae60dd22bac",
+      "baselineSha256": "4a62707522c9a80e1c53f98fd100eb0acf7b97dccbcfd7643b2ad8d6cf9f32a1",
+      "sha256": "4a62707522c9a80e1c53f98fd100eb0acf7b97dccbcfd7643b2ad8d6cf9f32a1"
+    },
+    {
+      "path": "packages/schema/src/model-operation.ts",
+      "baselineGitBlob": "aec060a3cfbeb4739235dc2007ade6f57005894e",
+      "baselineSha256": "f8011a4cdc3ecdfc8de1cf1ae79d729320960a75cffde59fbe14b22c8d12d000",
+      "sha256": "f8011a4cdc3ecdfc8de1cf1ae79d729320960a75cffde59fbe14b22c8d12d000"
+    },
+    {
+      "path": "packages/schema/src/operation.ts",
+      "baselineGitBlob": "57c2c33b61d02f53d071bb5f99aacc81d77b869f",
+      "baselineSha256": "1bade460bfc6e1bcb7fb5994601ec06cdc680a85410035edd968487332926d85",
+      "sha256": "1bade460bfc6e1bcb7fb5994601ec06cdc680a85410035edd968487332926d85"
+    },
+    {
+      "path": "packages/schema/src/output-schema-dialect.ts",
+      "baselineGitBlob": "67abb03c52554cf940b6abda0e82fc603b7c7919",
+      "baselineSha256": "f45ebafc94d49a078ca3e94efd06786643908e63c2cca40b253205ddc326e58e",
+      "sha256": "f45ebafc94d49a078ca3e94efd06786643908e63c2cca40b253205ddc326e58e"
+    },
+    {
+      "path": "packages/schema/src/output-schema.ts",
+      "baselineGitBlob": "9dd1e2ab38f80f2a724954674e48d384c5b879b8",
+      "baselineSha256": "c5c3387bd42303a8428f1e3b00f3753d431c530d4542c4d348d6aa49dd87b619",
+      "sha256": "c5c3387bd42303a8428f1e3b00f3753d431c530d4542c4d348d6aa49dd87b619"
+    },
+    {
+      "path": "packages/schema/src/plan.ts",
+      "baselineGitBlob": "be99c7f7b87dc7de5da075ee4c5bcf480f6e9c3a",
+      "baselineSha256": "cafe4179dbc470ac2953b07e0dd9fa1dce4baf223c8925492958a8894fdebc74",
+      "sha256": "cafe4179dbc470ac2953b07e0dd9fa1dce4baf223c8925492958a8894fdebc74"
+    },
+    {
+      "path": "packages/schema/src/platform-auth.ts",
+      "baselineGitBlob": "fc6c3e75168736c161acf7237d2609e4d0030935",
+      "baselineSha256": "c23312ae173dd4c7b17ea90f27a73dd30f203a801ecc8a1c549c187ff3a2b85f",
+      "sha256": "c23312ae173dd4c7b17ea90f27a73dd30f203a801ecc8a1c549c187ff3a2b85f"
+    },
+    {
+      "path": "packages/schema/src/primitives.ts",
+      "baselineGitBlob": "c8f71aab50b6aca1c182a07bb68627948ecb4f8a",
+      "baselineSha256": "ffebf8387d3c0935b1ad14f5f8ce3d3545bfc1c365ee1ffd3e5c300f842f31dc",
+      "sha256": "ffebf8387d3c0935b1ad14f5f8ce3d3545bfc1c365ee1ffd3e5c300f842f31dc"
+    },
+    {
+      "path": "packages/schema/src/problem.ts",
+      "baselineGitBlob": "a8dd2d35dbd64e33dc0f2824195306af4cb63dbf",
+      "baselineSha256": "2fc868e931eab9b71fb11e51f49a8cd06d0d5c04d77f734ffe46af38b66e94fa",
+      "sha256": "2fc868e931eab9b71fb11e51f49a8cd06d0d5c04d77f734ffe46af38b66e94fa"
+    },
+    {
+      "path": "packages/schema/src/processing.ts",
+      "baselineGitBlob": "3d0ed90744113c7adccea107ca82645c6ab5357c",
+      "baselineSha256": "fe42e72ddd1595f4b721b808e8b0fa01d26afaed7733227f86aa05bf7e66f42a",
+      "sha256": "fe42e72ddd1595f4b721b808e8b0fa01d26afaed7733227f86aa05bf7e66f42a"
+    },
+    {
+      "path": "packages/schema/src/project.ts",
+      "baselineGitBlob": "6de61d5dd09c9164c2de68174540ab7ae22ee672",
+      "baselineSha256": "f57e950567868af029af215e593e34dee5abf50d38edea844518c55e4931d505",
+      "sha256": "f0251914fee566b0767b3f77af7c88947bfeeb5fa2fc71076eaab1ca7322ab30",
+      "unusedDeclarations": ["ControlProjectRegisterResponse"],
+      "remainderSha256": "a9c0ca9a3fb850201efc41817a0b40e629fa950505dcdb81c1c001dc64d49f76"
+    },
+    {
+      "path": "packages/schema/src/quota-read.ts",
+      "baselineGitBlob": "cd971aa8f79b36d5d583e0f06ebe24eca4d7be3d",
+      "baselineSha256": "ef636d008fbf33d04ff1fecc92a85a6ddd5c3b3d78e5d0fe4b315207a5a12a42",
+      "sha256": "ef636d008fbf33d04ff1fecc92a85a6ddd5c3b3d78e5d0fe4b315207a5a12a42"
+    },
+    {
+      "path": "packages/schema/src/quota.ts",
+      "baselineGitBlob": "43f2d8a1bd1f7140b6570af961562df5dc20a8f0",
+      "baselineSha256": "c01b42db861e3d7d68559218eeca655c2cad67c638b4204b9cfbacb764b624e0",
+      "sha256": "c01b42db861e3d7d68559218eeca655c2cad67c638b4204b9cfbacb764b624e0"
+    },
+    {
+      "path": "packages/schema/src/rate-limit.ts",
+      "baselineGitBlob": "70e1c12f87952df98a73e06a3a14acacc852003d",
+      "baselineSha256": "cd6cf457f694e68c9569fd3bcb4e1263eab08efd5875f2a4bfc9a589cc306fb2",
+      "sha256": "cd6cf457f694e68c9569fd3bcb4e1263eab08efd5875f2a4bfc9a589cc306fb2"
+    },
+    {
+      "path": "packages/schema/src/raw.ts",
+      "baselineGitBlob": "ec06cd38b334806ddbc7ad23452ace650264c454",
+      "baselineSha256": "25849acee409674d0d168341d5e7af5cacdbcd8b0c5ed71c709df98bb308e10f",
+      "sha256": "25849acee409674d0d168341d5e7af5cacdbcd8b0c5ed71c709df98bb308e10f"
+    },
+    {
+      "path": "packages/schema/src/readiness.ts",
+      "baselineGitBlob": "c1f939eb1de2f4dd65124b852fdf3d1fdf4f0fb1",
+      "baselineSha256": "fec7257b3203fd0b98c7e838786232930d7d757ac2be801311ddb2131dc1fd85",
+      "sha256": "fec7257b3203fd0b98c7e838786232930d7d757ac2be801311ddb2131dc1fd85"
+    },
+    {
+      "path": "packages/schema/src/recovery.ts",
+      "baselineGitBlob": "4de738da38ccf0454d97149c369b31b69859abec",
+      "baselineSha256": "a850822728430aeb2294e0213e228e72c73e6438333481261999832662ed1937",
+      "sha256": "a850822728430aeb2294e0213e228e72c73e6438333481261999832662ed1937"
+    },
+    {
+      "path": "packages/schema/src/request-requirements.ts",
+      "baselineGitBlob": "eccf73deeb3d2925419e975c2178d4e3f68f9a96",
+      "baselineSha256": "6bda33391823a642d64f8cfa9e657a7152b2f66cd36bbc6da5f974fe7340c7d4",
+      "sha256": "6bda33391823a642d64f8cfa9e657a7152b2f66cd36bbc6da5f974fe7340c7d4"
+    },
+    {
+      "path": "packages/schema/src/review.ts",
+      "baselineGitBlob": "f072bb510009dc7ecac738f8cd682ef239529744",
+      "baselineSha256": "224d3255d0ce7a54a8ec02067cb020eb615929fd5a845ec1c7ad80411509a2ee",
+      "sha256": "224d3255d0ce7a54a8ec02067cb020eb615929fd5a845ec1c7ad80411509a2ee"
+    },
+    {
+      "path": "packages/schema/src/route.ts",
+      "baselineGitBlob": "486382d0b9588f32d2f6b884a103c1e4bf9a777d",
+      "baselineSha256": "1f5830e60c2722a2a5021879d77366142fe9dcc3f76df21e0991f3fcd5151564",
+      "sha256": "1f5830e60c2722a2a5021879d77366142fe9dcc3f76df21e0991f3fcd5151564"
+    },
+    {
+      "path": "packages/schema/src/run-applicability.ts",
+      "baselineGitBlob": "66be619bc15786a16cf2ea4b8f844d426984055e",
+      "baselineSha256": "965c774f66464dd816e43a917014547bda94cb39e150e188f48a7ba52315e655",
+      "sha256": "965c774f66464dd816e43a917014547bda94cb39e150e188f48a7ba52315e655"
+    },
+    {
+      "path": "packages/schema/src/run-continuation.ts",
+      "baselineGitBlob": "a4729a18404fe50da64d224b034d19b5f0dc21a4",
+      "baselineSha256": "c7aa5593882635f45e9498daede5bd0ca66b833cd594752fd183af10811e1ad3",
+      "sha256": "c7aa5593882635f45e9498daede5bd0ca66b833cd594752fd183af10811e1ad3"
+    },
+    {
+      "path": "packages/schema/src/run-continuity.ts",
+      "baselineGitBlob": "e002a305c58f30b2e95e3fb6ff9b24e793cf613f",
+      "baselineSha256": "f87a137cd72040d109e0363b3cc0d9e37471098e6dbf22c622287213a40bfb5a",
+      "sha256": "f87a137cd72040d109e0363b3cc0d9e37471098e6dbf22c622287213a40bfb5a"
+    },
+    {
+      "path": "packages/schema/src/run-facts.ts",
+      "baselineGitBlob": "92ba362d03ee648ba514ef59bfa2efb024ffebd6",
+      "baselineSha256": "273ba5c5ffdd25c2224aa06f60949fd0039739ab2b32a86ed8b9d0844252299b",
+      "sha256": "273ba5c5ffdd25c2224aa06f60949fd0039739ab2b32a86ed8b9d0844252299b"
+    },
+    {
+      "path": "packages/schema/src/run-list-page.ts",
+      "baselineGitBlob": "2f30d9e3e5399da9cdf7d230876b2b46eddf6d7b",
+      "baselineSha256": "b38eab41c4a5112802918389d5595f85a899f67fcec0e914004c4663f8acb2fd",
+      "sha256": "b38eab41c4a5112802918389d5595f85a899f67fcec0e914004c4663f8acb2fd"
+    },
+    {
+      "path": "packages/schema/src/run-strategy.ts",
+      "baselineGitBlob": "9b856b6e85bc2b4ec98c0cffe0af197c92c46bc6",
+      "baselineSha256": "55bfe775f19c7fb30e5cbb8ded983e4c3891ece1473921cd4833e73d17866ac9",
+      "sha256": "55bfe775f19c7fb30e5cbb8ded983e4c3891ece1473921cd4833e73d17866ac9"
+    },
+    {
+      "path": "packages/schema/src/runtime-concurrency.ts",
+      "baselineGitBlob": "bcc45fa55fb193ec90c77c655fd2f1758c5c4526",
+      "baselineSha256": "d575f8b3806af5f05231fb1e8a5af16224e157dd7c112f90b69c6da2427c809b",
+      "sha256": "d575f8b3806af5f05231fb1e8a5af16224e157dd7c112f90b69c6da2427c809b"
+    },
+    {
+      "path": "packages/schema/src/setup-device-code-envelope.ts",
+      "baselineGitBlob": "cd6c92e36c18fae66cc175536b0e9cdd3e5db6f5",
+      "baselineSha256": "00722af745c4fe7b75ca37d5f913902e50b7f460619a01c69c97524c11fa83e6",
+      "sha256": "00722af745c4fe7b75ca37d5f913902e50b7f460619a01c69c97524c11fa83e6"
+    },
+    {
+      "path": "packages/schema/src/setup-login-input.ts",
+      "baselineGitBlob": "bb9862458d788ce4041555a6e0846f7bd7b2e455",
+      "baselineSha256": "3534521ea3079e037c8c75462215cbe0553896c818252aeee3b089b798013a9f",
+      "sha256": "3534521ea3079e037c8c75462215cbe0553896c818252aeee3b089b798013a9f"
+    },
+    {
+      "path": "packages/schema/src/setup-login-protocol.ts",
+      "baselineGitBlob": "04c55ed076e6f27f7dc2f8b9b16f6410c6df9cdd",
+      "baselineSha256": "49470ec81f6faf58b203f0e52633dd8e3ede25f8b8ce15c5dc2c54157baa472c",
+      "sha256": "49470ec81f6faf58b203f0e52633dd8e3ede25f8b8ce15c5dc2c54157baa472c"
+    },
+    {
+      "path": "packages/schema/src/setup-login.ts",
+      "baselineGitBlob": "5199b8e9dbee985fa3f8770232ff7df3a1b186da",
+      "baselineSha256": "0273a0070b6f671c4241cad4dab7cc9a170e22c523d908df305f3bb395ff38a2",
+      "sha256": "0273a0070b6f671c4241cad4dab7cc9a170e22c523d908df305f3bb395ff38a2"
+    },
+    {
+      "path": "packages/schema/src/setup-transport.ts",
+      "baselineGitBlob": "8540ce44dcf4e5f6fa35cb38ae03f181c2c5d105",
+      "baselineSha256": "2ccc5bc7f7994428cec73e7de438aa225c72367957e041332056133eccd98f8b",
+      "sha256": "2ccc5bc7f7994428cec73e7de438aa225c72367957e041332056133eccd98f8b"
+    },
+    {
+      "path": "packages/schema/src/setup.ts",
+      "baselineGitBlob": "35453ca26da6ed3ef7bbb26257f64ff4f73600de",
+      "baselineSha256": "2fc37dd03666af98fcef9b6af0e84a2d0510f2b9cc0449b5c10c857006124de9",
+      "sha256": "2fc37dd03666af98fcef9b6af0e84a2d0510f2b9cc0449b5c10c857006124de9"
+    },
+    {
+      "path": "packages/schema/src/status-projection.ts",
+      "baselineGitBlob": "ca7550696198b73797964407318454b681f57f74",
+      "baselineSha256": "ea23f9563df00f45aa852fe209cdfededbde0fb0cf3a109082525d5a8fa49868",
+      "sha256": "ea23f9563df00f45aa852fe209cdfededbde0fb0cf3a109082525d5a8fa49868"
+    },
+    {
+      "path": "packages/schema/src/surface-run-controls.ts",
+      "baselineGitBlob": "3d73b14899eaaf0381256fd99b8ea10fef3d1c4d",
+      "baselineSha256": "f3a1c548d2dfcef1b932c5a6bc3d3b0a034de205f6810ab7de24a62ad60fc6e2",
+      "sha256": "f3a1c548d2dfcef1b932c5a6bc3d3b0a034de205f6810ab7de24a62ad60fc6e2"
+    },
+    {
+      "path": "packages/schema/src/task.ts",
+      "baselineGitBlob": "bcf85d57cca38fbdf18b141173da033f9f2caae8",
+      "baselineSha256": "918d4028cbb5370726765bc5c4f633227dd58bd758943932ac006625212bd81c",
+      "sha256": "918d4028cbb5370726765bc5c4f633227dd58bd758943932ac006625212bd81c"
+    },
+    {
+      "path": "packages/schema/src/telemetry.ts",
+      "baselineGitBlob": "c27cda1c8734ed1155afc882e6649d0a31ad29b2",
+      "baselineSha256": "ef4019ab7d62e27f776f2fda45275eaa0ab45f386f3a2c45c590956bc8fecd68",
+      "sha256": "ef4019ab7d62e27f776f2fda45275eaa0ab45f386f3a2c45c590956bc8fecd68"
+    },
+    {
+      "path": "packages/schema/src/thread.ts",
+      "baselineGitBlob": "ff54eae9847a35dd1e0157e737956ce287d9022f",
+      "baselineSha256": "e916628d9d98afb9a6e012e56449ace374f742842ec924e446b6d30dbf7219e5",
+      "sha256": "e916628d9d98afb9a6e012e56449ace374f742842ec924e446b6d30dbf7219e5"
+    },
+    {
+      "path": "packages/schema/src/tool-ref.ts",
+      "baselineGitBlob": "2f9877702ef7a4ef791e984a244f24da8685b9ef",
+      "baselineSha256": "eeec47e82d8c73567e10d851a0710a07c6140089eb854420bfff351cc9f5202b",
+      "sha256": "eeec47e82d8c73567e10d851a0710a07c6140089eb854420bfff351cc9f5202b"
+    },
+    {
+      "path": "packages/schema/src/work-report.ts",
+      "baselineGitBlob": "87ca6cd2b202eb310d78f806f7dd4ba91064d3a0",
+      "baselineSha256": "b538de5876adf6b1b89ce37fddefe8c2d8a5ef34be70fe7625b38fd41229eb3e",
+      "sha256": "b538de5876adf6b1b89ce37fddefe8c2d8a5ef34be70fe7625b38fd41229eb3e"
+    },
+    {
+      "path": "packages/schema/src/workproduct.ts",
+      "baselineGitBlob": "797b96d68fc26ca629f0addebe1195034f563b6f",
+      "baselineSha256": "b399a7753eab73ef4c6e487807a6a30e0b436fc1223fea14ee06e11534dd72cb",
+      "sha256": "b399a7753eab73ef4c6e487807a6a30e0b436fc1223fea14ee06e11534dd72cb"
+    },
+    {
+      "path": "packages/schema/src/workspace.ts",
+      "baselineGitBlob": "95429f8ca0a72ecdc4e76f42e2552b12f0518557",
+      "baselineSha256": "e3514e8e22d1523d4fb72ddeac1f2e3ffdc3a0c960020335a9084e59a1734276",
+      "sha256": "e3514e8e22d1523d4fb72ddeac1f2e3ffdc3a0c960020335a9084e59a1734276"
+    },
+    {
+      "path": "packages/util/src/daemon-heap.ts",
+      "baselineGitBlob": "281d78752c2eacff4e9dc83a5d52cf5e88d3f701",
+      "baselineSha256": "806a369654c0b54cd307b07bc3c3d88ffc1334fb8d83e92342cecdbce41bb113",
+      "sha256": "806a369654c0b54cd307b07bc3c3d88ffc1334fb8d83e92342cecdbce41bb113"
+    },
+    {
+      "path": "packages/util/src/delegation-env.ts",
+      "baselineGitBlob": "38939e5743a04c1a94bf289ad407e9d2d9429788",
+      "baselineSha256": "e94bdcd7c0fda11a6a3b9b4a6c93951353410e7f20d0dee51902995230c46ce4",
+      "sha256": "e94bdcd7c0fda11a6a3b9b4a6c93951353410e7f20d0dee51902995230c46ce4"
+    },
+    {
+      "path": "packages/util/src/index.ts",
+      "baselineGitBlob": "0ea7d23b1e8fa8ae0dcb24ea56091797cbfe08c1",
+      "baselineSha256": "0da1ddfdf266bd95103e3e55bae43b8aa502df22ba97f1c1861c9f4de1d27ea2",
+      "sha256": "13e8c00d98a2e44688d06ae0a3f449eea46a37e284ffb3f9ed7342dfbb576840",
+      "unusedDeclarations": ["appendLine"],
+      "remainderSha256": "96c3f81a1ecfa86cb343ce5a940f032fb4cd09416b6f39fbb19f50eb1ef9f10e"
+    },
+    {
+      "path": "packages/util/src/node-heap-args.ts",
+      "baselineGitBlob": "e41b0b1f2cec0cc3145f17a8e21697081505ae86",
+      "baselineSha256": "12554afc5b593d2d0b2e7f806364df6dbd6c5d2e9e72a13bc09614254b1195ab",
+      "sha256": "12554afc5b593d2d0b2e7f806364df6dbd6c5d2e9e72a13bc09614254b1195ab"
+    },
+    {
+      "path": "packages/util/src/problem-safety.ts",
+      "baselineGitBlob": "184cfe8d5067322fce473b074bc36c38013f2343",
+      "baselineSha256": "01dd95b9451394c5fdd07a1004b988dbb45603bdf88768e4636c2c9d0b2c6221",
+      "sha256": "01dd95b9451394c5fdd07a1004b988dbb45603bdf88768e4636c2c9d0b2c6221"
+    },
+    {
+      "path": "packages/util/src/retry-delay.ts",
+      "baselineGitBlob": "7cf4ba6ceb0e4560e89c68a0cec490b0b2a42073",
+      "baselineSha256": "5b04efd9b52d9001eb9c99eb649d744dd2381f0edcc6acf29cd8bf97f7110672",
+      "sha256": "5b04efd9b52d9001eb9c99eb649d744dd2381f0edcc6acf29cd8bf97f7110672"
+    },
+    {
+      "path": "packages/util/src/runtime-manifest.ts",
+      "baselineGitBlob": "d458f97beaec04e84bae2dff8a8831cd73cb7a71",
+      "baselineSha256": "b2b46151af96668c2945b0b6542363d2e4c58f97c2d23126d5543d7218edd328",
+      "sha256": "b2b46151af96668c2945b0b6542363d2e4c58f97c2d23126d5543d7218edd328"
+    },
+    {
+      "path": "packages/util/src/secret-names.ts",
+      "baselineGitBlob": "a0cabe5827fcffa5d5fd1943423410298ae0536c",
+      "baselineSha256": "da4aabc5f29d6fbd08333b572cfe706cc0786f318af9e6cdc4a274e2f4293e0d",
+      "sha256": "da4aabc5f29d6fbd08333b572cfe706cc0786f318af9e6cdc4a274e2f4293e0d"
+    },
+    {
+      "path": "packages/util/src/sensitive-resource.ts",
+      "baselineGitBlob": "65ad49fa237fd63614297ee14cd700e0e34eab3c",
+      "baselineSha256": "61fc2261631dde3ba23b31400402df3d3806887a0e9add33550d924b1841a74d",
+      "sha256": "61fc2261631dde3ba23b31400402df3d3806887a0e9add33550d924b1841a74d"
+    },
+    {
+      "path": "packages/util/src/vendor-pin.ts",
+      "baselineGitBlob": "b812d09ea0d61dffe1979cdc2b3a7983921ea2c6",
+      "baselineSha256": "4c2ae7805a38a7883eded541c55083fcf2e07affc642a55aa2d7087bb8c87f0d",
+      "sha256": "4c2ae7805a38a7883eded541c55083fcf2e07affc642a55aa2d7087bb8c87f0d"
+    },
+    {
+      "path": "packages/util/src/version.ts",
+      "baselineGitBlob": "d27a176878f53e30fedb0750be83a94b32e704a2",
+      "baselineSha256": "ee589f6ab72a7e5fdec59f14299442ff5d247364afe54b4a416c40853d501ae6",
+      "sha256": "ee589f6ab72a7e5fdec59f14299442ff5d247364afe54b4a416c40853d501ae6"
+    },
+    {
+      "path": "packages/workspace/src/anchor-store.ts",
+      "baselineGitBlob": "16590d982fdf6867eed3693e42d70c88475fd4c8",
+      "baselineSha256": "83e6e0722f9a974e636e66ec66a3da184369886ec2708e61464d88520fce3a04",
+      "sha256": "83e6e0722f9a974e636e66ec66a3da184369886ec2708e61464d88520fce3a04"
+    },
+    {
+      "path": "packages/workspace/src/artifact-ownership.ts",
+      "baselineGitBlob": "b023d0bffeeb3ff757e7f32128800fe969fdb4df",
+      "baselineSha256": "2a11e238470a8de71ef99c39a03a89648a976762039ad18e5f31232adb938220",
+      "sha256": "2a11e238470a8de71ef99c39a03a89648a976762039ad18e5f31232adb938220"
+    },
+    {
+      "path": "packages/workspace/src/artifact-paths.ts",
+      "baselineGitBlob": "a7913c3c4133712e9ffd97c57c129bf93cb012a6",
+      "baselineSha256": "489f9f3ecdc8993c6303570ed8acbf38968e6068dbe8081aa48151a196278fc3",
+      "sha256": "489f9f3ecdc8993c6303570ed8acbf38968e6068dbe8081aa48151a196278fc3"
+    },
+    {
+      "path": "packages/workspace/src/claude-bridge.ts",
+      "baselineGitBlob": "20905cdeb87099fc89d18a639f71dd2aff5afba9",
+      "baselineSha256": "e4c8bbb76b567aac3ca2d767832c6f97dcf440bc9c5768f2f5bdd9cbcc918706",
+      "sha256": "e4c8bbb76b567aac3ca2d767832c6f97dcf440bc9c5768f2f5bdd9cbcc918706"
+    },
+    {
+      "path": "packages/workspace/src/continuation-sources.ts",
+      "baselineGitBlob": "99925a233e4820532b4c1d1ffc1afd06bb8a7586",
+      "baselineSha256": "d0373196285d7ab30b66c3541ebedf5697fbb917e63074b759fe8e05940d4913",
+      "sha256": "d0373196285d7ab30b66c3541ebedf5697fbb917e63074b759fe8e05940d4913"
+    },
+    {
+      "path": "packages/workspace/src/directory-workspace.ts",
+      "baselineGitBlob": "bfcba5e00d3d408b099b174477eb6fe1af558b6d",
+      "baselineSha256": "63bf19fdcfd26142bdb8bf9491d21e6fa07ce9aa8dd30d97071a122ce04fd401",
+      "sha256": "63bf19fdcfd26142bdb8bf9491d21e6fa07ce9aa8dd30d97071a122ce04fd401"
+    },
+    {
+      "path": "packages/workspace/src/envelope-custody.ts",
+      "baselineGitBlob": "70fb48dcf919477d51fe385dd06003beecac64d8",
+      "baselineSha256": "8dd2166941b4bddfadb98ffc11fcfa99e9a91d106d1a81700630c1416266926f",
+      "sha256": "8dd2166941b4bddfadb98ffc11fcfa99e9a91d106d1a81700630c1416266926f"
+    },
+    {
+      "path": "packages/workspace/src/envelope-recovery.ts",
+      "baselineGitBlob": "9fad75f243df1665a34f6e5ce7ffabc6a72c6dd4",
+      "baselineSha256": "39a8a319275cc2cb50dfad2a3bf9ff35255c73438c9e4898ecf24eae140fe673",
+      "sha256": "39a8a319275cc2cb50dfad2a3bf9ff35255c73438c9e4898ecf24eae140fe673"
+    },
+    {
+      "path": "packages/workspace/src/files-apply.ts",
+      "baselineGitBlob": "ab282e872b2c869d450f104269dcc368658bd482",
+      "baselineSha256": "38e2e11aea0c1c858d998afbf08d45f940efdf0f86a2013dc6835b2711e4114f",
+      "sha256": "38e2e11aea0c1c858d998afbf08d45f940efdf0f86a2013dc6835b2711e4114f"
+    },
+    {
+      "path": "packages/workspace/src/files-io.ts",
+      "baselineGitBlob": "2fc83e722a27f98b43d4fae21a201c4192001f4e",
+      "baselineSha256": "3b9837c374425ca26dab529f019cd6248f67414b082d568748f89ee8e04bfcc3",
+      "sha256": "3b9837c374425ca26dab529f019cd6248f67414b082d568748f89ee8e04bfcc3"
+    },
+    {
+      "path": "packages/workspace/src/git-capability.ts",
+      "baselineGitBlob": "65fee2a171d5a11b088cf9d97a8f073ae6d28585",
+      "baselineSha256": "047fc130cf568f819ef966854b0aeeaee8747b2d40f1bf020c9c46f8b8d44a46",
+      "sha256": "047fc130cf568f819ef966854b0aeeaee8747b2d40f1bf020c9c46f8b8d44a46"
+    },
+    {
+      "path": "packages/workspace/src/git-initialization.ts",
+      "baselineGitBlob": "b6bfb19b16073f2acf23f6e07472d38acdea72a0",
+      "baselineSha256": "3328db96963ccfeb4c3de7cd9e5510447835fc28115599e026dbbe78418711df",
+      "sha256": "3328db96963ccfeb4c3de7cd9e5510447835fc28115599e026dbbe78418711df"
+    },
+    {
+      "path": "packages/workspace/src/git.ts",
+      "baselineGitBlob": "31a2cb27acd8fd6141764cd6c6e30034d1d7b84d",
+      "baselineSha256": "eaef97beec996269f55e6774a97516c91b506f9eb2e061a7260b8cc4484b0ae8",
+      "sha256": "eaef97beec996269f55e6774a97516c91b506f9eb2e061a7260b8cc4484b0ae8"
+    },
+    {
+      "path": "packages/workspace/src/harness-home.ts",
+      "baselineGitBlob": "c1fdbeed254ec5f91fb7429aea419534a5d81149",
+      "baselineSha256": "1d86aa6cf323d2d88250132489aec58221fe32822107ec1ff4eae07b99b0f838",
+      "sha256": "1d86aa6cf323d2d88250132489aec58221fe32822107ec1ff4eae07b99b0f838"
+    },
+    {
+      "path": "packages/workspace/src/index.ts",
+      "baselineGitBlob": "eda83f5634cc68a9295b33e21509b5b32a088355",
+      "baselineSha256": "3b499f2fa72b326288e62f659e30429c29ab860116f6fcb6893fc845e0a90d00",
+      "sha256": "3b499f2fa72b326288e62f659e30429c29ab860116f6fcb6893fc845e0a90d00"
+    },
+    {
+      "path": "packages/workspace/src/lanes.ts",
+      "baselineGitBlob": "212398e2dc001b5f709a675029e430705ce3a3cb",
+      "baselineSha256": "75bbd60b02b02a186da15d63a641ffd448176331b49acd433563976f44c92d7e",
+      "sha256": "75bbd60b02b02a186da15d63a641ffd448176331b49acd433563976f44c92d7e"
+    },
+    {
+      "path": "packages/workspace/src/manager.ts",
+      "baselineGitBlob": "aa25640c5ae3383389d21bb3d3c3d60bc28f078f",
+      "baselineSha256": "c41158fd7d5333bb6e6c4dfd44ba53afca7d2de64e9e24f16cf423c9aad6d33a",
+      "sha256": "c41158fd7d5333bb6e6c4dfd44ba53afca7d2de64e9e24f16cf423c9aad6d33a"
+    },
+    {
+      "path": "packages/workspace/src/plain-diff.ts",
+      "baselineGitBlob": "5fb78874ab9a129fa34440eeec6ceaee8b000a45",
+      "baselineSha256": "c4b5476e9d249da631cec06edd694372ec86aac508f0e8a5b5fc19c5620fd0f7",
+      "sha256": "c4b5476e9d249da631cec06edd694372ec86aac508f0e8a5b5fc19c5620fd0f7"
+    },
+    {
+      "path": "packages/workspace/src/raw-patch.ts",
+      "baselineGitBlob": "50e8d3ed9e998bbd12cff029410c3ef57c81330b",
+      "baselineSha256": "0644f8883a9ce6390a303b3452b39ef94b26c625de58d39323b782a23b52714b",
+      "sha256": "0644f8883a9ce6390a303b3452b39ef94b26c625de58d39323b782a23b52714b"
+    },
+    {
+      "path": "packages/workspace/src/retained-envelopes.ts",
+      "baselineGitBlob": "c21e76c8a39772b6cb5b6149926cbbc5ce6abc84",
+      "baselineSha256": "0da53b06a9da619980441b200ad88ff48f7f6f14995746d205515b4e37db88cd",
+      "sha256": "0da53b06a9da619980441b200ad88ff48f7f6f14995746d205515b4e37db88cd"
+    },
+    {
+      "path": "packages/workspace/src/revert.ts",
+      "baselineGitBlob": "d83b00705c6f7776184a49f5517fc7fb39edb613",
+      "baselineSha256": "68cf963ad743a18da361b44d6993d5f30db0208cb40b2a48d73f029579b30ac1",
+      "sha256": "68cf963ad743a18da361b44d6993d5f30db0208cb40b2a48d73f029579b30ac1"
+    },
+    {
+      "path": "packages/workspace/src/thread-tree.ts",
+      "baselineGitBlob": "9eb85eeddba606f641b3ca51402fcc6d1e30e474",
+      "baselineSha256": "b8dfe9c8fc587e4d1850892ac170b6ac177e5ccffdbde237fd7b7b5649b7ded2",
+      "sha256": "b8dfe9c8fc587e4d1850892ac170b6ac177e5ccffdbde237fd7b7b5649b7ded2"
+    },
+    {
+      "path": "packages/core/package.json",
+      "baselineGitBlob": "3d92662bdea3ae4162f1c43194d0f6a950aa9716",
+      "baselineSha256": "4bf36ef05559b1bc2c23e622f723eecf0143c07919b10428d7ea7b18dc6e0b45",
+      "sha256": "4bf36ef05559b1bc2c23e622f723eecf0143c07919b10428d7ea7b18dc6e0b45"
+    },
+    {
+      "path": "packages/journal/package.json",
+      "baselineGitBlob": "6bf739097af4111f6752402fad82cc8699e5990c",
+      "baselineSha256": "fbd6ef236f185f574d992072b696ccb67a3ac7f76e2f6b8844e7cb75b41ea6a0",
+      "sha256": "fbd6ef236f185f574d992072b696ccb67a3ac7f76e2f6b8844e7cb75b41ea6a0"
+    },
+    {
+      "path": "packages/schema/package.json",
+      "baselineGitBlob": "aca53839c030d74325e2d3ddc0018e0d20111b27",
+      "baselineSha256": "33241cc1e58d571f42ae46f6905a04cac34dc17bc595f3bc0f83c1721c0504ea",
+      "sha256": "33241cc1e58d571f42ae46f6905a04cac34dc17bc595f3bc0f83c1721c0504ea"
+    },
+    {
+      "path": "packages/util/package.json",
+      "baselineGitBlob": "665e526b5b32080e6c70f79c18546cecaf2a0c33",
+      "baselineSha256": "3796ddb79ba7dab7509b4b2cee03376b612d57dd43390161f6cb8d43a09a483c",
+      "sha256": "3796ddb79ba7dab7509b4b2cee03376b612d57dd43390161f6cb8d43a09a483c"
+    },
+    {
+      "path": "packages/workspace/package.json",
+      "baselineGitBlob": "dfbb9d9931024433fd15c1654251ded7317ed53e",
+      "baselineSha256": "f54e948961e91b6a30856d7b5c854e1ff753bc342623a6088611849c8d541d51",
+      "sha256": "f54e948961e91b6a30856d7b5c854e1ff753bc342623a6088611849c8d541d51"
+    }
+  ],
+  "externalPackages": ["yaml", "zod/v3"],
+  "lockfile": {
+    "path": "pnpm-lock.yaml",
+    "sha256": "f8a776984dc1df45ee37b31414e5a1ffbcefc429d200fa34b62b025da71c2abb",
+    "gitBlob": "5222cd85b3e2aeb328b2a8be16251a7ceb0c390f"
+  },
+  "fixtures": [
+    {
+      "path": "fixtures/global.expected.json",
+      "sha256": "2a16c805c0753bc7c21ef9e0ada64409420b2215f7c186138f27e042d961f2f6"
+    },
+    {
+      "path": "fixtures/global.json",
+      "sha256": "cd1bfa1dea9c8fc9746246020f935f3bfe78520735c31dc0476ee89d26239bf6"
+    }
+  ]
+}

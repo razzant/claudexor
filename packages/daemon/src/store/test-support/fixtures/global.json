@@ -1,0 +1,622 @@
+{
+  "partition": "global",
+  "epoch": "11111111-1111-4111-8111-111111111111",
+  "now": "2026-09-14T00:00:00.000Z",
+  "records": [
+    {
+      "type": "command.accepted",
+      "payload": {
+        "record": {
+          "id": "job-success",
+          "state": "queued",
+          "params": {
+            "mode": "agent",
+            "prompt": "Keep this exact prompt and its provenance.",
+            "scope": {
+              "kind": "project",
+              "root": "/fixture/project"
+            }
+          },
+          "createdAt": "2026-09-14T00:00:00.000Z"
+        },
+        "keyDigest": "sha256:f4d4cc9fbd9cd6e73e64df5d049ff4ee94cdf1797ac5001bf6d1615a63a515f3",
+        "requestDigest": "sha256:3d2f578216cc7d83876fdda8fcfa25c5a5b74048103c9cf08e335678f9b4f66c"
+      }
+    },
+    {
+      "type": "command.updated",
+      "payload": {
+        "record": {
+          "id": "job-success",
+          "state": "running",
+          "createdAt": "2026-09-14T00:00:00.000Z",
+          "runId": "run-success",
+          "taskId": "task-success",
+          "startedAt": "2026-09-14T00:00:00.000Z"
+        }
+      }
+    },
+    {
+      "type": "run.event",
+      "payload": {
+        "seq": 1,
+        "ts": "2026-09-14T00:00:00.000Z",
+        "run_id": "run-success",
+        "task_id": "task-success",
+        "type": "run.completed",
+        "payload": {
+          "lifecycle": "succeeded"
+        }
+      }
+    },
+    {
+      "type": "command.updated",
+      "payload": {
+        "record": {
+          "id": "job-success",
+          "state": "succeeded",
+          "createdAt": "2026-09-14T00:00:00.000Z",
+          "runId": "run-success",
+          "taskId": "task-success",
+          "startedAt": "2026-09-14T00:00:00.000Z",
+          "finishedAt": "2026-09-14T00:00:00.000Z",
+          "result": {
+            "lifecycle": "succeeded"
+          }
+        }
+      }
+    },
+    {
+      "type": "command.accepted",
+      "payload": {
+        "record": {
+          "id": "job-pruned",
+          "state": "queued",
+          "params": {
+            "mode": "agent",
+            "prompt": "Keep this exact prompt and its provenance.",
+            "scope": {
+              "kind": "project",
+              "root": "/fixture/project"
+            }
+          },
+          "createdAt": "2026-09-14T00:00:00.000Z"
+        },
+        "keyDigest": "sha256:d8ffdd34c9fb010d049b0254eefaddf429d2a7a557e797922929d2af9f290471",
+        "requestDigest": "sha256:3d2f578216cc7d83876fdda8fcfa25c5a5b74048103c9cf08e335678f9b4f66c"
+      }
+    },
+    {
+      "type": "command.pruned",
+      "payload": {
+        "ids": ["job-pruned"],
+        "roots": ["/fixture/project"],
+        "run_ids": []
+      }
+    },
+    {
+      "type": "command.accepted",
+      "payload": {
+        "record": {
+          "id": "job-model",
+          "state": "queued",
+          "params": {
+            "kind": "model",
+            "request": {
+              "resourceId": "res-fixture",
+              "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "sizeBytes": 2
+            }
+          },
+          "createdAt": "2026-09-14T00:00:00.000Z"
+        },
+        "keyDigest": "sha256:56a99712d7f6b75da238919c88119196fa37be9c9a3eedd33143ed03531977e7",
+        "requestDigest": "sha256:a9faf1144e9f34627469e6833e6e19ffee7e57c3fcce98d8abd853fade47570c"
+      }
+    },
+    {
+      "type": "interaction.requested",
+      "payload": {
+        "interactionId": "question-closed",
+        "runId": "run-success",
+        "attemptId": "a01",
+        "harnessId": "fake",
+        "sourceTool": "AskUserQuestion",
+        "questions": [],
+        "requestedAt": "2026-09-14T00:00:00.000Z",
+        "timeoutAt": null
+      }
+    },
+    {
+      "type": "interaction.resolved",
+      "payload": {
+        "runId": "run-success",
+        "interactionIds": ["question-closed"],
+        "terminal": "answered"
+      }
+    },
+    {
+      "type": "interaction.requested",
+      "payload": {
+        "interactionId": "question-open",
+        "runId": "run-success",
+        "attemptId": "a01",
+        "harnessId": "fake",
+        "sourceTool": "AskUserQuestion",
+        "questions": [],
+        "requestedAt": "2026-09-14T00:00:00.000Z",
+        "timeoutAt": null
+      }
+    },
+    {
+      "type": "operator.decision_recorded",
+      "payload": {
+        "decision": {
+          "runId": "run-success",
+          "action": "accept_risk",
+          "findingIds": ["finding-fixture"],
+          "acceptedRisks": ["risk-fixture"],
+          "patchSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "decidedAt": "2026-09-14T00:00:00.000Z"
+        },
+        "idempotency": {
+          "keyDigest": "sha256:6986871408ac54c9ef8fa9e3b7d8916175f65ad8bbc5bed71eb41256af6f1e55",
+          "requestDigest": "sha256:fd2e0fe2764d3d61ad0233a5a34b3723cd691b23b4154ae417d12cd857ee4c16",
+          "runId": "run-success"
+        }
+      }
+    },
+    {
+      "type": "project.registered",
+      "payload": {
+        "project": {
+          "schema_version": 2,
+          "id": "prj-fixture",
+          "root": "/fixture/project",
+          "created_at": "2026-09-14T00:00:00.000Z",
+          "updated_at": "2026-09-14T00:00:00.000Z"
+        }
+      }
+    },
+    {
+      "type": "thread.entities_upserted",
+      "payload": {
+        "threads": [
+          {
+            "schema_version": 2,
+            "id": "th-00000000000d",
+            "created_at": "2026-09-14T00:00:00.000Z",
+            "updated_at": "2026-09-14T00:00:00.000Z",
+            "repo": null,
+            "title": "Fixture thread",
+            "folder": null,
+            "mode": "ask",
+            "auth_preference": "auto",
+            "access": null,
+            "credential_profile_id": null,
+            "primary_harness": null,
+            "eligible_harnesses": [],
+            "workspace": {
+              "mode": "in_place",
+              "worktree_path": null,
+              "base_sha": null,
+              "delivered_through_run_id": null,
+              "workspace_root": null
+            },
+            "run_ids": [],
+            "head_run_id": null,
+            "state": "active",
+            "trashed_at": null,
+            "purge_after": null,
+            "pre_trash_state": null
+          }
+        ],
+        "threadCreation": {
+          "keyDigest": "sha256:c7dd7f06cfcac7a40f28c720e5cbb2199fb2bf701bf2fbb57dc1f6a735454db2",
+          "requestDigest": "sha256:50f4659a80ecd7ae2c26bd30aa267cb2664fb875eeb40d4085bf6464856ac199",
+          "threadId": "th-00000000000d"
+        }
+      }
+    },
+    {
+      "type": "thread.head.updated",
+      "payload": {
+        "thread_id": "th-00000000000d",
+        "project_id": null,
+        "revision": 1
+      }
+    },
+    {
+      "type": "thread.entities_upserted",
+      "payload": {
+        "threads": [
+          {
+            "schema_version": 2,
+            "id": "th-00000000000d",
+            "created_at": "2026-09-14T00:00:00.000Z",
+            "updated_at": "2026-09-14T00:00:00.000Z",
+            "repo": null,
+            "title": "Fixture thread",
+            "folder": null,
+            "mode": "ask",
+            "auth_preference": "auto",
+            "access": null,
+            "credential_profile_id": null,
+            "primary_harness": null,
+            "eligible_harnesses": [],
+            "workspace": {
+              "mode": "in_place",
+              "worktree_path": null,
+              "base_sha": null,
+              "delivered_through_run_id": null,
+              "workspace_root": null
+            },
+            "run_ids": [],
+            "head_run_id": null,
+            "state": "active",
+            "trashed_at": null,
+            "purge_after": null,
+            "pre_trash_state": null
+          }
+        ],
+        "turns": [
+          {
+            "id": "tn-000000000010",
+            "thread_id": "th-00000000000d",
+            "run_id": null,
+            "parent_run_id": null,
+            "answers_plan_run_id": null,
+            "plan_run_id": null,
+            "plan_hash": null,
+            "plan_readiness_overridden": false,
+            "kind": "initial",
+            "prompt": "Exact owner words",
+            "attachments": [],
+            "enqueue_error": null,
+            "continuity": null,
+            "created_at": "2026-09-14T00:00:00.000Z"
+          }
+        ],
+        "idempotency": {
+          "keyDigest": "sha256:f324d873e63360daaaf222404ace8c2b95a814b587348627f2d040b01edff423",
+          "requestDigest": "sha256:257f7583e9fb02ac44f7bd2b8bb1dd46afd64f2ace977490d85576e9dbe57e91",
+          "turnId": "tn-000000000010"
+        }
+      }
+    },
+    {
+      "type": "thread.head.updated",
+      "payload": {
+        "thread_id": "th-00000000000d",
+        "project_id": null,
+        "revision": 2
+      }
+    },
+    {
+      "type": "thread.entities_upserted",
+      "payload": {
+        "threads": [
+          {
+            "schema_version": 2,
+            "id": "th-00000000000d",
+            "created_at": "2026-09-14T00:00:00.000Z",
+            "updated_at": "2026-09-14T00:00:00.000Z",
+            "repo": null,
+            "title": "Fixture thread",
+            "folder": null,
+            "mode": "ask",
+            "auth_preference": "auto",
+            "access": null,
+            "credential_profile_id": null,
+            "primary_harness": null,
+            "eligible_harnesses": [],
+            "workspace": {
+              "mode": "in_place",
+              "worktree_path": null,
+              "base_sha": null,
+              "delivered_through_run_id": null,
+              "workspace_root": null
+            },
+            "run_ids": [],
+            "head_run_id": null,
+            "state": "active",
+            "trashed_at": null,
+            "purge_after": null,
+            "pre_trash_state": null
+          }
+        ],
+        "sessions": [
+          {
+            "id": "se-000000000013",
+            "thread_id": "th-00000000000d",
+            "harness_id": "codex",
+            "native_session_id": "native-fixture",
+            "resume_kind": "resume_by_id",
+            "profile_id": null,
+            "last_observed_model": "gpt-fixture",
+            "state": "live",
+            "created_at": "2026-09-14T00:00:00.000Z",
+            "updated_at": "2026-09-14T00:00:00.000Z"
+          }
+        ]
+      }
+    },
+    {
+      "type": "thread.head.updated",
+      "payload": {
+        "thread_id": "th-00000000000d",
+        "project_id": null,
+        "revision": 3
+      }
+    },
+    {
+      "type": "thread.entities_upserted",
+      "payload": {
+        "checkpoints": [
+          {
+            "id": "th-00000000000d::codex::default",
+            "thread_id": "th-00000000000d",
+            "harness_id": "codex",
+            "profile_id": null,
+            "turn_id": "tn-000000000010",
+            "updated_at": "2026-09-14T00:00:00.000Z"
+          }
+        ]
+      }
+    },
+    {
+      "type": "thread.head.updated",
+      "payload": {
+        "thread_id": "th-00000000000d",
+        "project_id": null,
+        "revision": 4
+      }
+    },
+    {
+      "type": "thread.entities_upserted",
+      "payload": {
+        "threads": [
+          {
+            "schema_version": 2,
+            "id": "th-00000000000d",
+            "created_at": "2026-09-14T00:00:00.000Z",
+            "updated_at": "2026-09-14T00:00:00.000Z",
+            "repo": null,
+            "title": "Fixture thread",
+            "folder": null,
+            "mode": "ask",
+            "auth_preference": "auto",
+            "access": null,
+            "credential_profile_id": null,
+            "primary_harness": null,
+            "eligible_harnesses": [],
+            "workspace": {
+              "mode": "in_place",
+              "worktree_path": null,
+              "base_sha": null,
+              "delivered_through_run_id": null,
+              "workspace_root": null
+            },
+            "run_ids": ["run-success"],
+            "head_run_id": "run-success",
+            "state": "active",
+            "trashed_at": null,
+            "purge_after": null,
+            "pre_trash_state": null
+          }
+        ],
+        "turns": [
+          {
+            "id": "tn-000000000010",
+            "thread_id": "th-00000000000d",
+            "run_id": "run-success",
+            "parent_run_id": null,
+            "answers_plan_run_id": null,
+            "plan_run_id": null,
+            "plan_hash": null,
+            "plan_readiness_overridden": false,
+            "kind": "initial",
+            "prompt": "Exact owner words",
+            "attachments": [],
+            "enqueue_error": null,
+            "continuity": null,
+            "created_at": "2026-09-14T00:00:00.000Z"
+          }
+        ]
+      }
+    },
+    {
+      "type": "thread.head.updated",
+      "payload": {
+        "thread_id": "th-00000000000d",
+        "project_id": null,
+        "revision": 5
+      }
+    },
+    {
+      "type": "quota.snapshot.upserted",
+      "payload": {
+        "subject": {
+          "harness": "codex",
+          "credential_route": "vendor_native",
+          "plan_label": null,
+          "subject_id": "profile-fixture"
+        },
+        "constraints": [
+          {
+            "id": "five_hour",
+            "label": "5 hour",
+            "used_ratio": 0.2,
+            "window_seconds": 18000,
+            "resets_at": null,
+            "cooldown_until": null
+          }
+        ],
+        "source": "codex_app_server",
+        "observed_at": "2026-09-14T00:00:00.000Z",
+        "freshness": "fresh"
+      }
+    },
+    {
+      "type": "quota.projection.updated",
+      "payload": {
+        "reason": "direct_mutation",
+        "observed_at": "2026-09-14T00:00:00.000Z",
+        "projection_signature": "sha256:d3fbbd114ef3a0ca112106d7ea1246847d6e283391ecdd36e7f302afc0c3f2d9"
+      }
+    },
+    {
+      "type": "quota.snapshot.upserted",
+      "payload": {
+        "subject": {
+          "harness": "codex",
+          "credential_route": "vendor_native",
+          "plan_label": null,
+          "subject_id": "profile-fixture"
+        },
+        "constraints": [
+          {
+            "id": "five_hour",
+            "label": "5 hour",
+            "used_ratio": 0.4,
+            "window_seconds": 18000,
+            "resets_at": null,
+            "cooldown_until": null
+          }
+        ],
+        "source": "codex_app_server",
+        "observed_at": "2026-09-14T00:00:00.000Z",
+        "freshness": "fresh"
+      }
+    },
+    {
+      "type": "quota.projection.updated",
+      "payload": {
+        "reason": "direct_mutation",
+        "observed_at": "2026-09-14T00:00:00.000Z",
+        "projection_signature": "sha256:02b5c7d37c203ad9b2741c862f0ab423e833cba236560acad3a7b548cde4655e"
+      }
+    },
+    {
+      "type": "setup.job.saved",
+      "payload": {
+        "job": {
+          "jobId": "setup-fixture",
+          "harness": "codex",
+          "action": "login",
+          "transport": "daemon",
+          "profileId": null,
+          "state": "queued",
+          "phase": "preparing",
+          "command": null,
+          "guideUrl": null,
+          "message": "fixture only, no login process",
+          "createdAt": "2026-09-14T00:00:00.000Z",
+          "startedAt": null,
+          "finishedAt": null,
+          "authCapability": {
+            "attemptId": "attempt-fixture",
+            "challengeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "disclosure": {
+              "schemaVersion": 1,
+              "protocolVersion": 1,
+              "harness": "codex",
+              "requested": "subscription",
+              "requiredRoute": "vendor_native",
+              "requiredSource": "native_session",
+              "networkScope": "selected_harness_only",
+              "billingKnowledge": "unknown",
+              "incrementalCostKnowledge": "unknown",
+              "mayConsumeQuota": true,
+              "generatedAt": "2026-09-14T00:00:00.000Z"
+            },
+            "state": "disclosed"
+          }
+        },
+        "binding": {
+          "keyDigest": "sha256:8ac193689519088937dcca442481c7d142ecd0a21c650bcd8cfc5a034d47bb4d",
+          "requestDigest": "sha256:81f5cc78f9808a66e218f66515c6e75390a771e16f78161f28bb14907645d775",
+          "jobId": "setup-fixture"
+        }
+      }
+    },
+    {
+      "type": "setup.job.saved",
+      "payload": {
+        "job": {
+          "jobId": "setup-fixture",
+          "harness": "codex",
+          "action": "login",
+          "transport": "daemon",
+          "profileId": null,
+          "state": "failed",
+          "phase": "completed",
+          "outcome": {
+            "reason": "launch_failed"
+          },
+          "command": null,
+          "guideUrl": null,
+          "message": "fixture only, no login process",
+          "createdAt": "2026-09-14T00:00:00.000Z",
+          "startedAt": null,
+          "finishedAt": "2026-09-14T00:00:00.000Z",
+          "authCapability": {
+            "attemptId": "attempt-fixture",
+            "challengeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "requestDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "disclosure": {
+              "schemaVersion": 1,
+              "protocolVersion": 1,
+              "harness": "codex",
+              "requested": "subscription",
+              "requiredRoute": "vendor_native",
+              "requiredSource": "native_session",
+              "networkScope": "selected_harness_only",
+              "billingKnowledge": "unknown",
+              "incrementalCostKnowledge": "unknown",
+              "mayConsumeQuota": true,
+              "generatedAt": "2026-09-14T00:00:00.000Z"
+            },
+            "state": "disclosed"
+          }
+        }
+      }
+    }
+  ],
+  "lookups": {
+    "command": {
+      "params": {
+        "mode": "agent",
+        "prompt": "Keep this exact prompt and its provenance.",
+        "scope": {
+          "kind": "project",
+          "root": "/fixture/project"
+        }
+      },
+      "idempotencyKey": "fixture-command-key",
+      "clientId": "fixture"
+    },
+    "decision": {
+      "key": "decision-key",
+      "client": "fixture",
+      "request": {
+        "runId": "run-success"
+      }
+    },
+    "thread": {
+      "key": "thread-key",
+      "client": "fixture",
+      "request": {
+        "title": "Fixture thread"
+      }
+    },
+    "setup": {
+      "key": "setup-key",
+      "client": "fixture",
+      "request": {
+        "harness": "codex"
+      }
+    }
+  }
+}
