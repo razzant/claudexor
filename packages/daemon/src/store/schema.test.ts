@@ -120,6 +120,24 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
     expect(assertSchemaServable(readSchemaIdentity(db))).toBe("current");
   });
 
+  it("keeps stable session entities when profile migration makes their lanes equal", async () => {
+    const db = await connect();
+    ensureSchema(db);
+    const insert = db.prepare(
+      "INSERT INTO session(id,thread_id,harness_id,profile_id,pid,insertion_ordinal,body) VALUES(?,'thread','codex',?,1,?,x'7b7d')",
+    );
+    insert.run("session-default", "", 1);
+    insert.run("session-named", "named", 2);
+    db.prepare("UPDATE session SET profile_id='named' WHERE id='session-default'").run();
+    expect(
+      db
+        .prepare(
+          "SELECT id FROM session WHERE thread_id='thread' AND harness_id='codex' AND profile_id='named' ORDER BY insertion_ordinal",
+        )
+        .all(),
+    ).toEqual([{ id: "session-default" }, { id: "session-named" }]);
+  });
+
   it("reopening a current schema writes nothing", async () => {
     const writer = await connect();
     applyPragmas(writer, MAIN_CONNECTION_PRAGMAS);

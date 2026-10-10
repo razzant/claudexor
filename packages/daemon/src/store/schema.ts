@@ -63,8 +63,9 @@ CREATE TABLE turn(id TEXT PRIMARY KEY, pid INTEGER NOT NULL, thread_id TEXT NOT 
 CREATE UNIQUE INDEX turn_thread ON turn(thread_id, ordinal);
 CREATE UNIQUE INDEX turn_run    ON turn(run_id) WHERE run_id IS NOT NULL;
 CREATE INDEX turn_prompt        ON turn(prompt_sha);
-CREATE TABLE session(thread_id TEXT NOT NULL, harness_id TEXT NOT NULL, profile_id TEXT NOT NULL DEFAULT '', pid INTEGER NOT NULL,
-  insertion_ordinal INTEGER NOT NULL DEFAULT 0, body BLOB NOT NULL, PRIMARY KEY(thread_id, harness_id, profile_id)) WITHOUT ROWID, STRICT;
+CREATE TABLE session(id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, harness_id TEXT NOT NULL, profile_id TEXT NOT NULL DEFAULT '', pid INTEGER NOT NULL,
+  insertion_ordinal INTEGER NOT NULL DEFAULT 0, body BLOB NOT NULL) WITHOUT ROWID, STRICT;
+CREATE INDEX session_lane ON session(thread_id, harness_id, profile_id);
 CREATE INDEX session_order ON session(thread_id, insertion_ordinal);
 CREATE TABLE lane_checkpoint(thread_id TEXT NOT NULL, harness_id TEXT NOT NULL, profile_id TEXT NOT NULL DEFAULT '', pid INTEGER NOT NULL,
   insertion_ordinal INTEGER NOT NULL DEFAULT 0, turn_id TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY(thread_id, harness_id, profile_id)) WITHOUT ROWID, STRICT;
