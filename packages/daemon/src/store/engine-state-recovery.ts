@@ -44,6 +44,7 @@ interface EngineOperation extends QuarantineOperation {
   phase: Phase;
   newEpoch: string;
   closedFiles?: EngineFileEvidence[];
+  closedResourceStore?: boolean;
 }
 export interface EngineRecoveryLifecycle {
   state(): { generation: number; recovery: JournalRecoveryState };
@@ -274,7 +275,12 @@ export class EngineStateRecovery implements PartitionControlPort {
       const closedFiles = engineFileEvidence(this.rootDir);
       syncEngineFiles(this.rootDir, closedFiles);
       fsyncDirectory(this.rootDir);
-      operation = { ...operation, phase: "closed", closedFiles };
+      operation = {
+        ...operation,
+        phase: "closed",
+        closedFiles,
+        closedResourceStore: existsSync(join(this.rootDir, "resource-store")),
+      };
       writeAtomicPrivateJson(path, operation, false);
       this.options.fault?.("closed_record");
     }
@@ -308,6 +314,7 @@ export class EngineStateRecovery implements PartitionControlPort {
         fsyncDirectory(this.rootDir);
         this.options.fault?.("renamed", file.name);
       }
+      this.archiveResourceStore(operation);
       operation = { ...operation, phase: "archived" };
       writeAtomicPrivateJson(path, operation, false);
       this.options.fault?.("archived_record");
@@ -339,6 +346,26 @@ export class EngineStateRecovery implements PartitionControlPort {
   private operationPath(keyDigest: string): string {
     return join(this.operationsDir, `${keyDigest}.json`);
   }
+  private archiveResourceStore(operation: EngineOperation): void {
+    // External bodies, upload parts and legacy bindings belong with the DB
+    // whose owners they describe. Keep the canonical relative layout; the
+    // fresh graph must never collect bytes from this closed generation.
+    const source = join(this.rootDir, "resource-store"),
+      target = join(operation.quarantinePath, "resource-store");
+    const atSource = existsSync(source),
+      atTarget = existsSync(target);
+    if (operation.closedResourceStore ? atSource === atTarget : atSource || atTarget)
+      throw typedError(
+        "recovery_quarantine_mismatch",
+        503,
+        "resource-store custody differs from the closed generation inventory",
+      );
+    if (!atSource) return;
+    renameSync(source, target);
+    fsyncDirectory(operation.quarantinePath);
+    fsyncDirectory(this.rootDir);
+    this.options.fault?.("renamed", "resource-store");
+  }
   private syncOperationCustody(phase: Phase): void {
     // A failed directory sync can leave renamed JSON visible but not yet durable.
     fsyncDirectory(this.operationsDir);
@@ -362,7 +389,15 @@ export class EngineStateRecovery implements PartitionControlPort {
         503,
         "engine recovery operation has invalid progress metadata",
       );
-    if (op.phase !== "intent") op.closedFiles = parseEngineFiles(op.closedFiles);
+    if (op.phase !== "intent") {
+      op.closedFiles = parseEngineFiles(op.closedFiles);
+      if (typeof op.closedResourceStore !== "boolean")
+        throw typedError(
+          "recovery_operation_malformed",
+          503,
+          "closed resource-store inventory is missing or invalid",
+        );
+    }
     if (op.receipt && op.receipt.newEpoch !== op.newEpoch)
       throw typedError(
         "recovery_receipt_mismatch",

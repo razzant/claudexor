@@ -56,6 +56,8 @@ function seed() {
     "credentials",
     "journal-legacy",
     "resource-store/blobs",
+    "resource-store/uploads",
+    "resource-store/idempotency",
     "runs/kept",
     "setup-artifacts/kept",
     "authority",
@@ -105,6 +107,7 @@ function lifecycle() {
       expect(op.phase).toBe("archived");
       expect(op.newEpoch).toBe(input.newEpoch);
       expect(op.closedFiles).toHaveLength(3);
+      expect(op.closedResourceStore).toBe(existsSync(join(op.quarantinePath, "resource-store")));
       const db = join(root, "engine.sqlite");
       if (existsSync(db)) expect(JSON.parse(readFileSync(db, "utf8"))).toEqual(input);
       else {
@@ -260,6 +263,7 @@ describe("physical engine-state recovery", () => {
     "engine.sqlite",
     "engine.sqlite-wal",
     "engine.sqlite-shm",
+    "resource-store",
     "archived_record",
     "fresh",
     "receipt",
@@ -291,6 +295,10 @@ describe("physical engine-state recovery", () => {
     expect(f.created).toHaveLength(1);
     for (const [name, bytes] of original)
       expect(readFileSync(join(resumed.quarantinePath, name))).toEqual(bytes);
+    for (const dir of ["blobs", "uploads", "idempotency"])
+      expect(
+        readFileSync(join(resumed.quarantinePath, "resource-store", dir, "evidence"), "utf8"),
+      ).toBe(`keep resource-store/${dir}`);
     const calls = f.calls.length;
     expect(await api(f.owner).quarantineAndStartFresh(request)).toEqual(resumed);
     expect(f.calls).toHaveLength(calls);
@@ -354,7 +362,7 @@ describe("physical engine-state recovery", () => {
     const f = lifecycle();
     const current = api(f.owner);
     const authority = readFileSync(join(root, "authority/root-authority-v2.json"));
-    await current.quarantineAndStartFresh(input(current));
+    const receipt = await current.quarantineAndStartFresh(input(current));
     expect(readFileSync(join(root, "authority/root-authority-v2.json"))).toEqual(authority);
     const status = readRootAuthority(join(root, "authority"));
     expect(status.status).toBe("valid");
@@ -365,12 +373,99 @@ describe("physical engine-state recovery", () => {
     for (const dir of [
       "credentials",
       "journal-legacy",
-      "resource-store/blobs",
       "runs/kept",
       "setup-artifacts/kept",
       "authority",
     ])
       expect(readFileSync(join(root, dir, "evidence"), "utf8")).toBe(`keep ${dir}`);
+    expect(existsSync(join(root, "resource-store"))).toBe(false);
+    for (const dir of ["blobs", "uploads", "idempotency"])
+      expect(
+        readFileSync(join(receipt.quarantinePath, "resource-store", dir, "evidence"), "utf8"),
+      ).toBe(`keep resource-store/${dir}`);
+  });
+
+  it("records absent resource custody without inventing an archive tree", async () => {
+    seed();
+    rmSync(join(root, "resource-store"), { recursive: true });
+    const f = lifecycle();
+    const current = api(f.owner);
+    const receipt = await current.quarantineAndStartFresh(input(current));
+    expect(operation().closedResourceStore).toBe(false);
+    expect(existsSync(join(receipt.quarantinePath, "resource-store"))).toBe(false);
+    expect(f.created).toHaveLength(1);
+  });
+
+  it.each(["missing inventory", "missing source", "destination collision"])(
+    "retains pending recovery and refuses fresh creation with %s",
+    async (fault) => {
+      seed();
+      const f = lifecycle();
+      const first = api(f.owner, {
+        fault: (stage) => {
+          if (stage === "closed_record") throw new Error("closed");
+        },
+      });
+      const request = input(first);
+      await expect(first.quarantineAndStartFresh(request)).rejects.toThrow("closed");
+      const op = operation();
+      if (fault === "missing inventory") {
+        delete op.closedResourceStore;
+        writeFileSync(
+          join(root, "recovery-operations/engine-state", `${op.keyDigest}.json`),
+          JSON.stringify(op),
+        );
+      } else if (fault === "missing source") {
+        rmSync(join(root, "resource-store"), { recursive: true });
+      } else {
+        mkdirSync(join(op.quarantinePath, "resource-store"), { recursive: true });
+        writeFileSync(join(op.quarantinePath, "resource-store", "prior"), "do not overwrite");
+      }
+      await expect(api(f.owner).quarantineAndStartFresh(request)).rejects.toMatchObject({
+        code:
+          fault === "missing inventory"
+            ? "recovery_operation_malformed"
+            : "recovery_quarantine_mismatch",
+      });
+      expect(f.created).toHaveLength(0);
+      expect(operation().phase).toBe("closed");
+      if (fault === "destination collision") {
+        expect(readFileSync(join(op.quarantinePath, "resource-store", "prior"), "utf8")).toBe(
+          "do not overwrite",
+        );
+        expect(readFileSync(join(root, "resource-store/blobs/evidence"), "utf8")).toBe(
+          "keep resource-store/blobs",
+        );
+      }
+    },
+  );
+
+  it("resumes after fresh creation without archiving that generation's new resource files", async () => {
+    seed();
+    const f = lifecycle();
+    const create = f.owner.createFresh;
+    f.owner.createFresh = async (identity) => {
+      await create(identity);
+      mkdirSync(join(root, "resource-store/blobs"), { recursive: true });
+      const path = join(root, "resource-store/blobs/new");
+      if (!existsSync(path)) writeFileSync(path, "fresh generation");
+    };
+    const first = api(f.owner, {
+      fault: (stage) => {
+        if (stage === "fresh") throw new Error("fresh opened");
+      },
+    });
+    const request = input(first);
+    await expect(first.quarantineAndStartFresh(request)).rejects.toThrow("fresh opened");
+    expect(operation().phase).toBe("archived");
+    const receipt = await api(f.owner).resumePending();
+    expect(await api(f.owner).quarantineAndStartFresh(request)).toEqual(receipt);
+    expect(f.created).toHaveLength(1);
+    expect(readFileSync(join(root, "resource-store/blobs/new"), "utf8")).toBe("fresh generation");
+    expect(existsSync(join(receipt!.quarantinePath, "resource-store/blobs/new"))).toBe(false);
+    expect(
+      readFileSync(join(receipt!.quarantinePath, "resource-store/blobs/evidence"), "utf8"),
+    ).toBe("keep resource-store/blobs");
   });
 
   it("persists operation and archive ancestor names before closing or moving source bytes", async () => {
@@ -408,7 +503,7 @@ describe("physical engine-state recovery", () => {
       },
     });
     await current.quarantineAndStartFresh(input(current));
-    expect(transfers).toBe(3);
+    expect(transfers).toBe(4);
   });
 
   it.each(["intent", "closed", "archived", "completed"])(
@@ -450,34 +545,37 @@ describe("physical engine-state recovery", () => {
     },
   );
 
-  it("retries a transferred file's failed destination sync before persisting its source removal", async () => {
-    seed();
-    const f = lifecycle();
-    const current = api(f.owner);
-    const request = input(current);
-    let failed = false;
-    let destinationRetried = false;
-    const originalSync = util.fsyncDirectory;
-    vi.spyOn(util, "fsyncDirectory").mockImplementation((path) => {
-      if (!existsSync(join(root, "engine.sqlite"))) {
-        const destination = operation().quarantinePath;
-        if (path === destination && !failed) {
-          failed = true;
-          throw Object.assign(new Error("destination sync failed"), { code: "EIO" });
+  it.each(["engine.sqlite", "resource-store"])(
+    "retries %s destination sync before persisting its source removal",
+    async (name) => {
+      seed();
+      const f = lifecycle();
+      const current = api(f.owner);
+      const request = input(current);
+      let failed = false;
+      let destinationRetried = false;
+      const originalSync = util.fsyncDirectory;
+      vi.spyOn(util, "fsyncDirectory").mockImplementation((path) => {
+        if (!existsSync(join(root, name))) {
+          const destination = operation().quarantinePath;
+          if (path === destination && !failed) {
+            failed = true;
+            throw Object.assign(new Error("destination sync failed"), { code: "EIO" });
+          }
+          if (path === destination && failed) destinationRetried = true;
+          if (path === root && failed) expect(destinationRetried).toBe(true);
         }
-        if (path === destination && failed) destinationRetried = true;
-        if (path === root && failed) expect(destinationRetried).toBe(true);
-      }
-      originalSync(path);
-    });
-    await expect(current.quarantineAndStartFresh(request)).rejects.toThrow(
-      "destination sync failed",
-    );
-    const receipt = await current.quarantineAndStartFresh(request);
-    expect(destinationRetried).toBe(true);
-    for (const [name, bytes] of original)
-      expect(readFileSync(join(receipt.quarantinePath, name))).toEqual(bytes);
-  });
+        originalSync(path);
+      });
+      await expect(current.quarantineAndStartFresh(request)).rejects.toThrow(
+        "destination sync failed",
+      );
+      const receipt = await current.quarantineAndStartFresh(request);
+      expect(destinationRetried).toBe(true);
+      for (const [name, bytes] of original)
+        expect(readFileSync(join(receipt.quarantinePath, name))).toEqual(bytes);
+    },
+  );
 
   it("retains pending custody when closing or fresh creation fails, and serializes duplicate requests", async () => {
     seed();
