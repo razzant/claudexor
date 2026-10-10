@@ -34,6 +34,9 @@ CREATE TABLE command(id TEXT PRIMARY KEY, pid INTEGER NOT NULL, operation TEXT N
 CREATE INDEX command_run       ON command(run_id);
 CREATE INDEX command_active    ON command(state, pid) WHERE live = 1 AND state IN ('queued','running');
 CREATE INDEX command_thread    ON command(thread_id, state);
+CREATE INDEX command_turn      ON command(turn_id, created_at);
+CREATE INDEX command_request_resource ON command(request_resource_id) WHERE request_resource_id IS NOT NULL;
+CREATE INDEX command_response_resource ON command(response_resource_id) WHERE response_resource_id IS NOT NULL;
 CREATE INDEX command_parent    ON command(delegated_from);
 CREATE INDEX command_continue  ON command(continue_from);
 CREATE INDEX command_list      ON command(created_at DESC, id DESC)        WHERE live = 1 AND kind = 'product';
@@ -61,16 +64,19 @@ CREATE UNIQUE INDEX turn_thread ON turn(thread_id, ordinal);
 CREATE UNIQUE INDEX turn_run    ON turn(run_id) WHERE run_id IS NOT NULL;
 CREATE INDEX turn_prompt        ON turn(prompt_sha);
 CREATE TABLE session(thread_id TEXT NOT NULL, harness_id TEXT NOT NULL, profile_id TEXT NOT NULL DEFAULT '', pid INTEGER NOT NULL,
-  body BLOB NOT NULL, PRIMARY KEY(thread_id, harness_id, profile_id)) WITHOUT ROWID, STRICT;
+  insertion_ordinal INTEGER NOT NULL DEFAULT 0, body BLOB NOT NULL, PRIMARY KEY(thread_id, harness_id, profile_id)) WITHOUT ROWID, STRICT;
+CREATE INDEX session_order ON session(thread_id, insertion_ordinal);
 CREATE TABLE lane_checkpoint(thread_id TEXT NOT NULL, harness_id TEXT NOT NULL, profile_id TEXT NOT NULL DEFAULT '', pid INTEGER NOT NULL,
-  turn_id TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY(thread_id, harness_id, profile_id)) WITHOUT ROWID, STRICT;
+  insertion_ordinal INTEGER NOT NULL DEFAULT 0, turn_id TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY(thread_id, harness_id, profile_id)) WITHOUT ROWID, STRICT;
+CREATE INDEX lane_checkpoint_order ON lane_checkpoint(thread_id, insertion_ordinal);
 CREATE TABLE interaction(id TEXT PRIMARY KEY, pid INTEGER NOT NULL, run_id TEXT NOT NULL, state TEXT NOT NULL,
   request BLOB NOT NULL, resolution BLOB) STRICT;
 CREATE INDEX interaction_pending ON interaction(run_id) WHERE state = 'pending';
 CREATE TABLE operator_decision(run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, body BLOB NOT NULL) STRICT;
 CREATE TABLE project(id TEXT PRIMARY KEY, pid INTEGER NOT NULL, root TEXT NOT NULL, status TEXT NOT NULL,
-  current_pid INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, body BLOB NOT NULL) STRICT;
+  current_pid INTEGER, creation_key_digest TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, body BLOB NOT NULL) STRICT;
 CREATE UNIQUE INDEX project_root_active ON project(pid, root) WHERE status = 'active';
+CREATE INDEX project_current_pid ON project(current_pid) WHERE status = 'active';
 CREATE TABLE pruned_root(root TEXT PRIMARY KEY) STRICT;
 CREATE TABLE resource(id TEXT PRIMARY KEY, purpose TEXT, kind TEXT NOT NULL, sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
   state TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT, released_at TEXT, body BLOB NOT NULL) STRICT;
