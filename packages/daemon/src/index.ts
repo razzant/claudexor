@@ -29,9 +29,16 @@ export { EngineStore } from "./store/store.js";
 export { BlobFiles } from "./store/blob-files.js";
 export { maintenanceCommandSummary, type MaintenanceCommandSummary } from "./store/command-rows.js";
 export { createSqlDaemonServices } from "./store/sql-daemon-services.js";
+export {
+  parseSetupBinding,
+  setupIdempotencyConflict,
+  bindSetupInTx,
+  importSetupBindingInTx,
+  type SetupCreateBinding,
+} from "./store/setup-bindings.js";
 export { SqlEventLedger } from "./store/event-store.js";
-export { runMutation, type SqlWriteContext } from "./store/mutation.js";
-export { lookupIdempotency, bindIdempotencyInTx } from "./store/idempotency.js";
+export { runMutation } from "./store/mutation.js";
+export { lookupIdempotency } from "./store/idempotency.js";
 export { currentGeneration } from "./store/partitions.js";
 export { encodeJournalCursor, decodeJournalCursor } from "./store/cursors.js";
 export * from "./resource-store.js";
