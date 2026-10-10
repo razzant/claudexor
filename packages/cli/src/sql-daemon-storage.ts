@@ -131,19 +131,11 @@ export class SqlDaemonStorage {
       onPhysicalCorruption: this.corrupt,
     });
   }
+  /** A logical project fault is isolated by the registry/current-pid queries.
+   * Only the shared global authority blocks the whole product plane. */
   blockedPartitions(): string[] {
-    const store = this.graph().store;
-    const global = globalGeneration(store);
-    if (!global) return ["global"];
-    if (global.status !== "ready") return ["global"];
-    return (
-      store
-        .prepare(
-          `SELECT q.name FROM project p JOIN partition q ON q.id=p.current_pid
-      WHERE p.pid=? AND p.status='active' AND q.status<>'ready'`,
-        )
-        .all(global.pid) as Array<{ name: string }>
-    ).map((row) => row.name);
+    const global = globalGeneration(this.graph().store);
+    return !global || global.status !== "ready" ? ["global"] : [];
   }
   /** Always join every storage participant before reporting successful close. */
   async close(physicalRecovery = false): Promise<void> {

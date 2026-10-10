@@ -1,6 +1,7 @@
 import {
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -68,14 +69,12 @@ describe("one SQL storage owner", () => {
     const graph = f.storage.graph();
     expect(graph.projects.global().epoch).toBe(receipt.newEpoch);
     expect(f.storage.blockedPartitions()).toEqual([]);
-    graph.commands
-      .current()
-      .accept({
-        id: "kept-after-repair",
-        params: { prompt: "keep" },
-        clientId: "test",
-        idempotencyKey: "keep",
-      });
+    graph.commands.current().accept({
+      id: "kept-after-repair",
+      params: { prompt: "keep" },
+      clientId: "test",
+      idempotencyKey: "keep",
+    });
     expect(await f.storage.engineRecovery.quarantineAndStartFresh(request)).toEqual(receipt);
     expect(graph.commands.current().get("kept-after-repair")).toBeDefined();
     expect(f.onOpen).toHaveBeenCalledOnce();
@@ -103,4 +102,43 @@ describe("one SQL storage owner", () => {
     expect(f.storage.graph()).toBe(graph);
     expect(graph.quota.read()).toBeDefined();
   });
+});
+
+it("isolates an unhealthy project while serving a healthy project and global commands", async () => {
+  const f = fixture();
+  await f.storage.open();
+  const graph = f.storage.graph();
+  const register = (name: string) => {
+    const root = join(f.rootDir, name);
+    mkdirSync(root);
+    return graph.projects.register({ root, clientId: "test", idempotencyKey: name }).project;
+  };
+  const healthy = register("healthy"),
+    damaged = register("damaged");
+  const generation = graph.projects.partition(damaged.id)!;
+  graph.store.transaction(() =>
+    graph.store
+      .prepare("UPDATE partition SET status='recovery_required' WHERE id=?")
+      .run(generation.pid),
+  );
+  expect(f.storage.blockedPartitions()).toEqual([]);
+  expect(() =>
+    graph.commands.forRequest({ scope: { kind: "project", root: damaged.root } }),
+  ).toThrow(expect.objectContaining({ code: "journal_recovery_required" }));
+  expect(f.storage.partition(generation.name).inspect().status).toBe("recovery_required");
+  const params = { scope: { kind: "project", root: healthy.root }, prompt: "still available" };
+  const command = graph.commands
+    .forRequest(params)
+    .accept({ id: "healthy-job", params, clientId: "test", idempotencyKey: "healthy" });
+  expect(command.record.id).toBe("healthy-job");
+  expect(
+    graph.commands
+      .current()
+      .accept({
+        id: "global-job",
+        params: { prompt: "global" },
+        clientId: "test",
+        idempotencyKey: "global",
+      }).record.id,
+  ).toBe("global-job");
 });

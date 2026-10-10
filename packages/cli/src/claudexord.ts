@@ -14,6 +14,8 @@ import {
   logPath,
   socketAlive,
   loadEngineRuntime,
+  recordAdmissionMemory,
+  processMemoryFields,
   recoveryOnlyRefusal,
   type createSqlDaemonServices,
 } from "@claudexor/daemon";
@@ -149,7 +151,8 @@ export async function main(): Promise<void> {
       recoveryInspectPartition: async (name: string) => partition(name).inspect(),
       recoveryValidatePartition: async (name: string) => {
         const result = await partition(name).validate();
-        if (result.status === "recovery_required") admission.enterRecoveryOnly();
+        if (result.status === "recovery_required" && name === "global")
+          admission.enterRecoveryOnly();
         return result;
       },
       recoveryExportPartition: async (name: string) => partition(name).exportRecovery(),
@@ -371,6 +374,7 @@ export async function main(): Promise<void> {
           dutiesFor = value;
         }
         admission.openNormal();
+        recordAdmissionMemory();
         quotaPoller.arm();
         lifecycle!.beginPidSnapshots();
         scheduleStartupRetention(services.runRetention!, {
@@ -384,7 +388,7 @@ export async function main(): Promise<void> {
               await value.maintenance.sweepOrphans();
           })
           .catch((error) => log(`store maintenance: ${String(error)}`));
-        log("startup admission: normal product admission open");
+        log(`startup admission: normal product admission open (${processMemoryFields()})`);
       };
       admissionFlight = work();
       try {
@@ -408,6 +412,7 @@ export async function main(): Promise<void> {
     await shutdown.wait();
     await lifecycle.finalize();
     log("claudexord shut down");
+    diagnostics.recordStage("shutdown_complete", "claudexord shut down");
   } catch (error) {
     log(`daemon lifecycle FAILED: ${redactSecrets(String(error))}`);
     diagnostics.recordFailure("daemon lifecycle FAILED", error);
