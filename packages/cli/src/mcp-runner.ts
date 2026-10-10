@@ -24,7 +24,7 @@ import {
 import { primaryOutputForCli } from "./primary-output.js";
 import { controlProblemError } from "./cli-error.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
-import { absentDaemonRecovery, BELT_DAEMON_LOST } from "./mcp-daemon-unavailable.js";
+import { absentDaemonRecovery, daemonUnavailableError } from "./mcp-daemon-unavailable.js";
 import {
   isRecoverableRunDetailIntegrityProblem,
   projectDegradedRecoveryRunDetail,
@@ -43,7 +43,7 @@ export interface SurfaceRunnerHooks {
 }
 
 export interface McpSurfaceRunnerOptions {
-  /** Bind belt subprocesses to their existing parent daemon. */
+  /** Connection policy, independent of Delegate lineage/tool identity. */
   requireExistingDaemon?: boolean;
   /** Belt-only lineage bound by the bridge from its injected environment.
    * Raw tool arguments can never switch the generic MCP runner into this path. */
@@ -69,13 +69,20 @@ export interface McpSurfaceRunnerOptions {
  */
 export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
+    const beltContext = Boolean(options.delegationParentRunId);
     if (p?.mode === "__account_resources")
-      return accountResourceQuery("resources", p, options.requireExistingDaemon === true);
+      return accountResourceQuery(
+        "resources",
+        p,
+        options.requireExistingDaemon === true,
+        beltContext,
+      );
     if (p?.mode === "__account_reset")
-      return accountResourceQuery("reset", p, options.requireExistingDaemon === true);
+      return accountResourceQuery("reset", p, options.requireExistingDaemon === true, beltContext);
     if (p?.mode === "__status" || p?.mode === "__capabilities" || p?.mode === "__accounts") {
       return catalogQuery(p.mode, options.requireExistingDaemon === true, {
         fresh: p?.fresh === true,
+        beltContext,
       });
     }
     if (
@@ -95,7 +102,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
           ? { ...p, delegatedFromRunId: options.delegationParentRunId }
           : p,
         {
-          beltContext: options.requireExistingDaemon === true,
+          beltContext,
         },
       );
     }
@@ -105,7 +112,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       p?.mode === "__thread_turn" ||
       p?.mode === "__thread_read"
     ) {
-      return threadQuery(p, options.requireExistingDaemon === true);
+      return threadQuery(p, options.requireExistingDaemon === true, beltContext);
     }
     if (typeof p?.mode === "string" && p.mode.startsWith("__acp_session_")) {
       if (!options.acpSessionQuery) {
@@ -120,7 +127,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
     const connection = options.requireExistingDaemon
       ? await connectDaemonIfRunning()
       : await ensureDaemon();
-    if (!connection) throw new Error(BELT_DAEMON_LOST);
+    if (!connection) throw daemonUnavailableError(beltContext, "no run was started");
     const { client, addr } = connection;
     const repoRoot =
       options.delegationRepoRoot ??

@@ -22,7 +22,7 @@
 import { ControlProblem } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { printJson, printJsonLine } from "./cli-io.js";
-import { ENGINE_STOP_REMEDY, stampEngineSkew } from "./engine-skew.js";
+import { engineSkewRemedy, stampEngineSkew } from "./engine-skew.js";
 
 export type CliErrorCategory = "usage" | "operational";
 
@@ -454,14 +454,14 @@ export function handshakeRefusalError(status: number, body: unknown): CliError {
   }
   if (problem.success) {
     process.stderr.write(
-      `claudexor: the daemon refused the control API handshake (HTTP ${status}); ${ENGINE_STOP_REMEDY}\n`,
+      `claudexor: the daemon refused the control API handshake (HTTP ${status}); ${engineSkewRemedy()}\n`,
     );
   }
   return controlProblemError(
     status,
     problem.success ? body : null,
     `the daemon refused the control API handshake (HTTP ${status}); ` +
-      `an incompatible or older daemon build may be holding this socket — ${ENGINE_STOP_REMEDY}`,
-    { appendRequiredActions: [ENGINE_STOP_REMEDY] },
+      `an incompatible or older daemon build may be holding this socket — ${engineSkewRemedy()}`,
+    { appendRequiredActions: [engineSkewRemedy()] },
   );
 }

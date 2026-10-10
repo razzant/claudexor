@@ -30,6 +30,11 @@ script can do). The macOS app, the MCP/ACP bridges, and the editor plugins
 are deliberately thin: they decode engine state and send typed requests, and
 they are forbidden from inventing semantics of their own.
 
+An embedding application may own runtime lifecycle while reusing the full
+control plane. Ownership of generated integration files does not transfer
+authority to start another process; the [explicit host binding](INTEGRATIONS.md#externally-owned-host-integrations)
+keeps those responsibilities distinct.
+
 Claudexor is also not a digital entity. It has no personality, no memory
 identity, no self-modification doctrine. It is a tool developed BY external
 agents, and its immune system exists to constrain those agents' sessions.

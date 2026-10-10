@@ -23,6 +23,7 @@
  */
 import { ControlHandshakeResponse } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
+import { daemonOwner, EXTERNAL_DAEMON_REMEDY } from "./daemon-owner.js";
 
 /** Same-major daemon/CLI skew observed on this process's control connection. */
 export interface EngineSkew {
@@ -54,6 +55,10 @@ export interface EngineIdentity {
  * its own runtime afterwards; its reconciler owns that lifecycle). */
 export const ENGINE_STOP_REMEDY =
   "run `claudexor daemon stop`, then rerun — an acting command starts a matching daemon (read-only commands: run `claudexor daemon start` first)";
+
+export function engineSkewRemedy(): string {
+  return daemonOwner() === "external" ? EXTERNAL_DAEMON_REMEDY : ENGINE_STOP_REMEDY;
+}
 
 let observedSkew: EngineSkew | null = null;
 
@@ -113,7 +118,7 @@ export function consumeHandshakeIdentity(body: unknown): HandshakeIdentity {
       engine: { engineVersion: daemonVersion, engineBuildSha, servingMode },
       skewAdvisory:
         `claudexor: daemon is engine ${daemonVersion} but this CLI is ${CLAUDEXOR_VERSION}; ` +
-        `${ENGINE_STOP_REMEDY}\n`,
+        `${engineSkewRemedy()}\n`,
     };
   }
   recordEngineSkew(null);
@@ -149,7 +154,7 @@ export function stampEngineSkew(
 ): SkewStampableFields {
   const skew = observedSkew;
   const existing = fields.requiredActions ?? [];
-  const appended = [...(appendRequiredActions ?? []), ...(skew ? [ENGINE_STOP_REMEDY] : [])].filter(
+  const appended = [...(appendRequiredActions ?? []), ...(skew ? [engineSkewRemedy()] : [])].filter(
     (action, index, all) => !existing.includes(action) && all.indexOf(action) === index,
   );
   if (!skew && appended.length === 0) return fields;

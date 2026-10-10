@@ -6,7 +6,7 @@ import {
 } from "@claudexor/schema";
 import { connectDaemonIfRunning, ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
-import { BELT_DAEMON_LOST } from "./mcp-daemon-unavailable.js";
+import { daemonUnavailableError } from "./mcp-daemon-unavailable.js";
 import { controlProblemError } from "./cli-error.js";
 
 export function parseAccountTarget(value: string): AccountTarget {
@@ -23,16 +23,19 @@ export async function accountResourceQuery(
   kind: "resources",
   input: ResourceQuery,
   existing?: boolean,
+  beltContext?: boolean,
 ): Promise<ControlAccountResourcesResponse>;
 export async function accountResourceQuery(
   kind: "reset",
   input: ResetQuery,
   existing?: boolean,
+  beltContext?: boolean,
 ): Promise<ControlAccountResetResponse>;
 export async function accountResourceQuery(
   kind: "resources" | "reset",
   input: ResourceQuery | ResetQuery,
   existing = false,
+  beltContext = false,
 ) {
   let path: string;
   let method = "GET";
@@ -68,7 +71,7 @@ export async function accountResourceQuery(
     path = "/account-resets";
   }
   const connection = existing ? await connectDaemonIfRunning() : await ensureDaemon();
-  if (!connection) throw new Error(BELT_DAEMON_LOST);
+  if (!connection) throw daemonUnavailableError(beltContext, "account request was not performed");
   const response = await controlApiFetch(connection.addr, path, {
     method,
     headers: { ...headers, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },

@@ -272,7 +272,7 @@ at every wire boundary.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
   (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
   skill/MCP artifacts and commands; portable distributions live under `plugins/`. Plugin
-  lifecycle state is user-level local setup state, not a schema/control-api
+  lifecycle state is user-level local setup state, not a control-api
   contract.
 - `packages/claudexor`: the bare-name npm bin wrapper — `claudexor` and
   `claudexord` bins that import `@claudexor/cli`'s explicit entry exports;
@@ -307,6 +307,17 @@ Host integrations are generated translational artifacts: Claude Code, Codex,
 Cursor, and OpenCode files point at the local CLI/MCP server and carry ownership
 markers for safe repair/uninstall. They do not route work or duplicate
 orchestration logic.
+
+The schema-owned `ExternalHostBinding` is optional local integration state in
+the existing plugin `HostState` ledger. `plugin-runtime.ts` projects one argv
+prefix and environment into MCP, shell fallbacks, doctor and Claude statusline.
+An installed canonical MCP source addresses its ledger even when repair runs
+from another CLI/root; host caches remain host-owned copies. `daemon-owner.ts`
+validates explicit lifecycle ownership, and `ensureDaemon` attaches before
+token/root creation when ownership is external. The same existing connection
+retains recovery-only mode. Delegate lineage is independent of this connection
+policy. Registration and compatibility are documented under
+[externally owned host integrations](INTEGRATIONS.md#externally-owned-host-integrations).
 
 ### External-orchestrator workspaces and native access
 

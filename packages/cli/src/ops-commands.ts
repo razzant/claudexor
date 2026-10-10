@@ -6,6 +6,7 @@
 import { fileURLToPath } from "node:url";
 import {
   DaemonClient,
+  canonicalDefaultSocketPath,
   awaitDaemonTermination,
   defaultSocketPath,
   inspectDaemonWriterLease,
@@ -46,33 +47,22 @@ import {
 } from "./cli-io.js";
 import { authLoginHarnessList, isKnownAuthLoginHarness } from "./auth-login-harnesses.js";
 export { authLoginHarnessList, isKnownAuthLoginHarness } from "./auth-login-harnesses.js";
-import { DAEMON_START_READY_TIMEOUT_MS, ensureDaemon, waitForDaemonReady } from "./daemon-run.js";
+export { stopDaemonForOperator } from "./daemon-run.js";
+import {
+  DAEMON_START_READY_TIMEOUT_MS,
+  ensureDaemon,
+  waitForDaemonReady,
+  stopDaemonForOperator,
+} from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import { streamDurableLogin } from "./setup-login-inline.js";
 import { terminalLoginFallback } from "./setup-login-fallback.js";
 import { readDaemonDiagnosticTail } from "./startup-diagnostics.js";
-
-interface OperatorDaemonStopDeps {
-  inspectLease: typeof inspectDaemonWriterLease;
-  shutdown(): Promise<unknown>;
-  awaitTermination: typeof awaitDaemonTermination;
-}
-
-/** Pin strict signal authority before the asynchronous operator-stop RPC. */
-export async function stopDaemonForOperator(
-  socketPath: string,
-  deps: OperatorDaemonStopDeps,
-): ReturnType<typeof awaitDaemonTermination> {
-  const lease = deps.inspectLease(socketPath);
-  const expectedOwner =
-    lease.status === "owned" && lease.capability.status === "capable" ? lease.owner : null;
-  await deps.shutdown();
-  return deps.awaitTermination(socketPath, {
-    allowSigkill: expectedOwner !== null,
-    ...(expectedOwner === null ? {} : { expectedOwner }),
-    requireNoSuccessor: false,
-  });
-}
+import {
+  assertOperatorDaemonLifecycle,
+  daemonOwner,
+  managedDaemonUnavailable,
+} from "./daemon-owner.js";
 
 export function dispatchOpsCommand(
   command: string,
@@ -104,7 +94,9 @@ export function dispatchOpsCommand(
 }
 
 export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  daemonOwner();
   const sub = args._[1] ?? "status";
+  if (["start", "stop", "rotate-token"].includes(sub)) assertOperatorDaemonLifecycle();
   if (sub === "start") {
     // Probe FIRST: with a live daemon the spawned child dies on the singleton
     // guard while readiness connects to the OLD daemon — reporting the DEAD
@@ -205,10 +197,15 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
   if (!token) {
     return renderCliFailure(
       json,
-      new Error("daemon not initialized — run: claudexor daemon start"),
+      daemonOwner() === "external"
+        ? managedDaemonUnavailable()
+        : new Error("daemon not initialized — run: claudexor daemon start"),
     );
   }
-  const client = new DaemonClient(defaultSocketPath(), token);
+  const client = new DaemonClient(
+    daemonOwner() === "external" ? canonicalDefaultSocketPath() : defaultSocketPath(),
+    token,
+  );
   try {
     if (sub === "status") {
       const health = await client.health();

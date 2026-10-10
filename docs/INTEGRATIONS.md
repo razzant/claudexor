@@ -742,6 +742,41 @@ modes) run `node scripts/cursor-itest.mjs`; the real-harness battery covers
 (phases 10-12, filterable via `CLAUDEXOR_BATTERY_PHASES=10,11,12`). Use `claudexor doctor` for Codex/Claude/Cursor/
 OpenCode harness availability and smoke status.
 
+### Externally owned host integrations
+
+An embedding application can register its existing stable runtime command and
+complete data root when installing or repairing a host plugin:
+
+```bash
+claudexor plugin install all --host-binding-json '{"schemaVersion":1,"command":["/opt/example/bin/managed-claudexor"],"configDir":"/var/lib/example/claudexor","daemonOwner":"external"}'
+```
+
+`command` is an absolute executable followed by optional prefix arguments, not a
+shell expression. The application owns selection of its current CLI and Node;
+Claudexor adds no runtime updater or locator. The existing plugin ledger retains
+this binding per host. Install/repair, including `--force` from another CLI or
+root, keeps it. A complete owned MCP source can recover a lost ledger, disclosed
+in the receipt; a surviving ledger rebuilds a missing source. When neither
+contains the binding, register it explicitly instead of guessing another root.
+An explicit new binding changes the selected command/root. Generated host caches
+still require the host's normal reload or reinstall from that canonical source.
+
+The ordinary full MCP and acting CLI attach only to that application's daemon.
+Absence returns `daemon_unavailable` without creating a root/token, launching a
+replacement or triggering authentication. Recovery-only admission stays visible;
+recovery reads remain available. Operator `daemon start`, `stop` and
+`rotate-token` refuse with `daemon_lifecycle_external`; the owning application's
+own lifecycle entrypoints remain available. A custom root alone does not select
+external ownership: standalone installations retain ordinary startup behavior.
+
+MCP, CLI fallback examples, plugin doctor and Claude statusline share the command,
+root and ownership projection. Shell examples use POSIX syntax or explicitly
+named PowerShell syntax on Windows. The manifest retains its actual generator
+version. Dynamic launches validate binding format `1` rather than an exact
+runtime version, so the stable command can follow an application runtime update.
+Unknown formats refuse with `host_binding_unsupported`. Fixed-runtime plugins
+keep their existing exact-version skew check.
+
 ### Portable Agent Skill and host packages
 
 `plugins/copilot` owns the canonical portable `skills/claudexor/SKILL.md` and
@@ -1379,6 +1414,8 @@ subscription sessions are always preferred.
 | Variable | Owner | Effect |
 |---|---|---|
 | `CLAUDEXOR_CONFIG_DIR` | util | Relocates the whole config/state root (default `~/.claudexor/v3`; tests and CI use a disposable absolute path). |
+| `CLAUDEXOR_DAEMON_OWNER` | CLI | Explicit `standalone` (default) or `external` lifecycle; external requires an absolute root. See [external host integrations](#externally-owned-host-integrations). |
+| `CLAUDEXOR_HOST_BINDING_VERSION` | plugins / mcp-server | Declared dynamic binding format, independently of the manifest's generator version; see [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_BUILD_SHA` | util | Build-time stamp of the engine's git commit SHA (packaging sets it); without it a dev checkout reads `git rev-parse HEAD` and packaged builds report `unknown`. Reported in the handshake build identity. |
 | `CLAUDEXOR_DISABLE_STORED_SECRETS` | secrets | Ignore v2 file-stored secret refs entirely (hermetic runs; native sessions still work). |
 | `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` / `CLAUDEXOR_AGY_BIN` / `CLAUDEXOR_COPILOT_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
@@ -1397,9 +1434,9 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_REMOTE_RUNTIME` | remote runtime wrapper / core | Internal `1` marker set by signed remote-runtime wrappers. It adds the app-owned remote vendor CLI directory to harness discovery ahead of inherited PATH entries; users do not set it. |
 | `CLAUDEXOR_DOCTOR_TTL_MS` / `CLAUDEXOR_DOCTOR_NON_OK_TTL_MS` | doctor | Cache TTLs for ok / non-ok doctor probes. |
 | `CLAUDEXOR_CLI_PATH` / `CLAUDEXOR_NODE_PATH` | plugins | Paths baked into generated host-plugin MCP configs (set by the installer, rarely by hand). |
-| `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by generated host configs; a mismatch with the CLI version is a hard `mcp serve` refusal (`plugin_artifact_skew`) whose message names `claudexor plugin repair all`. |
-| `CLAUDEXOR_ROOT_MODE` | plugins / mcp-server | Provenance marker (`explicit`) the installer stamps ALONGSIDE a serialized `CLAUDEXOR_CONFIG_DIR` only for an operator-chosen non-default root; its absence next to a frozen non-default root is treated as legacy skew and refused. Default-root installs serialize neither. Never set by hand. |
-| `CLAUDEXOR_MANAGED` | plugins | Ownership marker the installer writes into generated host MCP configs (never set by hand). |
+| `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by fixed-runtime host configs; a mismatch with the CLI version is a hard `mcp serve` refusal (`plugin_artifact_skew`) whose message names `claudexor plugin repair all`. |
+| `CLAUDEXOR_ROOT_MODE` | plugins / mcp-server | Provenance marker (`explicit`) alongside an operator-chosen or externally owned `CLAUDEXOR_CONFIG_DIR`; its absence next to a frozen non-default root is treated as legacy skew and refused. Standalone default-root installs serialize neither. |
+| `CLAUDEXOR_MANAGED` | plugins | Generated-artifact ownership marker; does not select daemon lifecycle ownership. |
 | `CLAUDEXOR_DELEGATION_PARENT_RUN_ID` / `CLAUDEXOR_DELEGATION_REPO_ROOT` / `CLAUDEXOR_DELEGATION_DEPTH` / `CLAUDEXOR_DELEGATION_MAX_SUBRUNS` / `CLAUDEXOR_DELEGATION_BUDGET` | mcp-server (delegation belt) | Injected by the daemon into the `agent --delegate` belt process (`claudexor mcp serve-belt`); carry the parent run id, the original normalized user-project root, nesting depth (belt refuses depth>0), the per-parent sub-run cap, and the resolved parent budget used to bind children to one live daemon-owned paid-budget authority. The bound root prevents a child from falling into the parent harness envelope or being redirected by a raw tool argument. These bootstrap values seed a conservative process-local refusal ledger so the belt can fail closed between daemon responses; daemon family accounting remains the authoritative cap, every child reports its own spend, and the parent reports the aggregate. Never set by hand. |
 | `CLAUDEXOR_DELEGATION_PROCESSING_PREFERENCE` / `CLAUDEXOR_DELEGATION_WORKSPACE_KIND` / `CLAUDEXOR_DELEGATION_SCOPE_PATHS` | orchestrator / mcp-server (delegation belt) | Injected captured Processing preference, workspace kind and JSON array of selected relative paths. The belt carries them into child requests with the parent's bound project; omission preserves the legacy request. These are internal transport fields, never user-set overrides. |
 | `CLAUDEXOR_REVIEWER_TIMEOUT_MS` | config | Per-reviewer timeout override for review panels. |

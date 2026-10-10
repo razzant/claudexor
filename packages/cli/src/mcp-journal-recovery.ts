@@ -1,10 +1,12 @@
 import { connectDaemonIfRunning } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
+import { daemonUnavailableError } from "./mcp-daemon-unavailable.js";
+import { controlProblemError } from "./cli-error.js";
 
 /** Durable journal recovery through the existing daemon boundary. */
 export async function journalRecoveryQuery(input: Record<string, unknown>): Promise<unknown> {
   const conn = await connectDaemonIfRunning();
-  if (!conn) throw new Error("the Claudexor daemon is not running");
+  if (!conn) throw daemonUnavailableError(false, "journal recovery requires an existing daemon");
   const action = String(input["action"] ?? "inspect");
   const partition = String(input["partition"] ?? "");
   if (!partition) throw new Error("partition is required");
@@ -31,10 +33,10 @@ export async function journalRecoveryQuery(input: Record<string, unknown>): Prom
   });
   const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
-    throw new Error(
-      typeof result["message"] === "string"
-        ? (result["message"] as string)
-        : `journal recovery failed (HTTP ${response.status})`,
+    throw controlProblemError(
+      response.status,
+      result,
+      `journal recovery failed (HTTP ${response.status})`,
     );
   }
   return result;
