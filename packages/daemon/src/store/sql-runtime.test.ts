@@ -18,6 +18,7 @@ afterEach(async () => {
 
 async function fixture(
   runner: RunnerFn = async () => ({ summary: "done", lifecycle: "succeeded" }),
+  recoveryRequired = false,
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sql-runtime-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -29,6 +30,10 @@ async function fixture(
   const global = store.transaction(() => {
     const generation = createPartition(store, "global");
     setGlobalGenerationInTx(store, generation.pid);
+    if (recoveryRequired)
+      store
+        .prepare("UPDATE partition SET status='recovery_required' WHERE id=?")
+        .run(generation.pid);
     return generation;
   });
   const graph = createSqlDaemonServices(store, { purgeFiles: async () => [root] });
@@ -37,6 +42,7 @@ async function fixture(
     commands: graph.commands,
     runner,
     token: "fixture",
+    servingMode: () => (recoveryRequired ? "recovery_only" : "normal"),
     socketPath:
       process.platform === "win32"
         ? `\\\\.\\pipe\\sql-runtime-${process.pid}-${Date.now()}`
@@ -49,6 +55,18 @@ async function fixture(
 }
 
 describe("SQL daemon composition through the existing RPC boundary", () => {
+  it("keeps the storage owners available when the global projection needs recovery", async () => {
+    const f = await fixture(undefined, true);
+    expect(f.graph.store.facts().integrity).toBe("pending");
+    expect(() => f.graph.quota).toThrow(
+      expect.objectContaining({ code: "journal_recovery_required" }),
+    );
+    expect(await f.client.health()).toMatchObject({ servingMode: "recovery_only" });
+    await expect(f.client.enqueue({ prompt: "must wait" })).rejects.toMatchObject({
+      code: "daemon_recovery_only",
+    });
+    expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 0 });
+  });
   it("runs global and project jobs, replays acceptance, and never writes a journal", async () => {
     const observed: unknown[] = [];
     const f = await fixture(async (params) => {

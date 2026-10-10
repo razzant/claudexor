@@ -6,6 +6,7 @@ import type { QuotaRefresher, QuotaVendorRefresher } from "../quota-poll-lanes.j
 import type { QuotaSubjectUniverse } from "../quota-registry.js";
 import { BlobFiles } from "./blob-files.js";
 import { SqlCommandPruner } from "./command-prune.js";
+import type { SqlEventLedger } from "./event-store.js";
 import { readJournalEvents } from "./cursors.js";
 import { isServedPid } from "./generations.js";
 import { SqlInteractionStore } from "./interactions.js";
@@ -28,9 +29,9 @@ export interface SqlDaemonServicesOptions {
   maintenance?: Omit<MaintenanceControllerOptions, "blobs">;
 }
 
-/** Builds a complete SQL graph over an already opened store and bound current
- * global generation. Startup/import/recovery admission remain the caller's
- * lifecycle; this factory never discovers roots or selects a second backend. */
+/** Builds one storage graph over an opened store. Global projections validate
+ * lazily, so a recovery-required registry cannot hide the recovery owners.
+ * Startup owns admission; this factory discovers no roots or second backend. */
 export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonServicesOptions) {
   const blobs = new BlobFiles(store);
   let resources: SqlResourceStore;
@@ -42,7 +43,7 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
   const pruner = new SqlCommandPruner(store, blobs, { log: options.log });
   const projects = new SqlProjectStore(store, blobs, obligations);
   const threads = new SqlCommandRouter(projects, { obligations, terminalFiles, pruner });
-  let globalEvents = threads.ledger(projects.global());
+  let globalEvents: SqlEventLedger | null = null;
   resources = new SqlResourceStore(store, blobs, obligations, options.log);
   const purgeFiles = new SqlPurgeFiles(store, obligations);
   obligations.registerHandler("purge_fs", purgeFiles.handler(options.purgeFiles));
@@ -53,9 +54,17 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
     log: options.log,
     blobs,
   });
-  const quotaFor = (events: typeof globalEvents) =>
+  const quotaFor = (events: SqlEventLedger) =>
     new QuotaRegistry(events, options.refreshers, store.now, options.subjects, options.pacerStore);
-  let quota = quotaFor(globalEvents);
+  let quota: QuotaRegistry | null = null;
+  const rebindGlobal = () => {
+    const generation = projects.global();
+    if (generation.pid === globalEvents?.generation.pid && quota) return;
+    const nextEvents = threads.ledger(generation);
+    const nextQuota = quotaFor(nextEvents);
+    globalEvents = nextEvents;
+    quota = nextQuota;
+  };
   const interactions = new InteractionRegistry({
     forRequest: (params) => threads.interactionsForRequest(params),
     forRun: (runId) => threads.interactionsForRun(runId),
@@ -73,27 +82,22 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
     threads,
     commands: threads,
     get globalEvents() {
-      return globalEvents;
+      rebindGlobal();
+      return globalEvents!;
     },
     resources,
     purgeFiles,
     maintenance,
     get quota() {
-      return quota;
+      rebindGlobal();
+      return quota!;
     },
     interactions,
     liveInputs,
     /** Called by the existing global recovery replacement owner after it
      * drains setup and changes the registry generation. Publish both owners
      * together only after the new quota projection validates. */
-    rebindGlobal() {
-      const generation = projects.global();
-      if (generation.pid === globalEvents.generation.pid) return;
-      const nextEvents = threads.ledger(generation);
-      const nextQuota = quotaFor(nextEvents);
-      globalEvents = nextEvents;
-      quota = nextQuota;
-    },
+    rebindGlobal,
     journalEvents: (partition: string, afterCursor?: string) =>
       readJournalEvents(store, partition, afterCursor, blobs),
     async recoverAfterStartup() {
@@ -113,7 +117,8 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
         new SqlInteractionStore(store, threads.ledger(generation)).recoverAfterStartup();
       }
       threads.recoverRunlessTurns();
-      quota.recoverAfterStartup();
+      rebindGlobal();
+      quota!.recoverAfterStartup();
       return effects;
     },
     /** Caller closes transports/runners first, then this graph, then its store. */

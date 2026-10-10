@@ -29,6 +29,9 @@ export { EngineStore } from "./store/store.js";
 export { BlobFiles } from "./store/blob-files.js";
 export { maintenanceCommandSummary, type MaintenanceCommandSummary } from "./store/command-rows.js";
 export { createSqlDaemonServices } from "./store/sql-daemon-services.js";
+export { importLegacyInWorker } from "./store/import-worker.js";
+export { createPartition } from "./store/partitions.js";
+export { setGlobalGenerationInTx, globalGeneration } from "./store/generations.js";
 export {
   parseSetupBinding,
   setupIdempotencyConflict,
