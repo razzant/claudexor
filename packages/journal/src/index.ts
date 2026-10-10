@@ -35,6 +35,7 @@ import {
 export type { JournalRecord, JournalPreparationReceipt, DurableJournalOptions };
 export { JournalCursorError } from "./journal-cursor.js";
 export { journalPartitionDirectory } from "./journal-partition.js";
+export { PREFIX_BYTES, readFramePrefix, decodeFrameBody } from "./frame-codec.js";
 export { JournalRecoveryRequiredError, JournalAppendUncertainError };
 export type { JournalRecoveryLocation, JournalRecoveryState } from "./journal-recovery-state.js";
 export type { FoldRecord, FoldVerdict, JournalFold } from "./journal-fold.js";

@@ -6,6 +6,9 @@ import { BLOB_OWNER_PREDICATE } from "./blob-files.js";
 import { sqlitePrimaryCode } from "./errors.js";
 import { STORE_WORKER_DATA_KEY } from "./flusher-protocol.js";
 import { loadEngineRuntime } from "./runtime.js";
+import { runLegacyImport } from "./importer.js";
+import { discoverLegacyPartitions } from "./import-discovery.js";
+import type { LegacyImportWorkerData } from "./import-worker.js";
 import type {
   ExportReport,
   IntegrityReport,
@@ -147,11 +150,41 @@ export async function runMaintenanceWorker(
   });
 }
 
-const spawnData = workerData as Partial<MaintenanceWorkerData> | null | undefined;
+const spawnData = workerData as
+  Partial<MaintenanceWorkerData & LegacyImportWorkerData> | null | undefined;
 if (!isMainThread && parentPort && spawnData?.[STORE_WORKER_DATA_KEY] === "maintenance") {
-  void runMaintenanceWorker(parentPort, spawnData as MaintenanceWorkerData).catch(
-    (error: unknown) => {
-      throw error;
-    },
-  );
+  const port = parentPort;
+  const task = spawnData.import
+    ? Promise.resolve()
+        .then(() =>
+          runLegacyImport({
+            ...spawnData.import!,
+            partitions:
+              spawnData.import!.partitions ??
+              discoverLegacyPartitions(spawnData.import!.journalRoot),
+            onProgress: (progress) => port.postMessage({ type: "progress", progress }),
+          }),
+        )
+        .then((receipt) => {
+          port.postMessage({ type: "imported", receipt });
+          port.close();
+        })
+    : runMaintenanceWorker(port, spawnData as MaintenanceWorkerData);
+  void task.catch((error: unknown) => {
+    if (spawnData.import) {
+      const failure = error as { code?: string; status?: number; retryable?: boolean };
+      port.postMessage({
+        type: "import_failed",
+        error: {
+          message: String(error),
+          code: failure.code,
+          status: failure.status,
+          retryable: failure.retryable,
+        },
+      });
+      port.close();
+      return;
+    }
+    throw error;
+  });
 }
