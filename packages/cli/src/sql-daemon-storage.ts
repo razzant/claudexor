@@ -20,6 +20,8 @@ type Graph = ReturnType<typeof createSqlDaemonServices>;
 /** Storage ownership for the one daemon. Transport and setup retain their
  * existing owners; a physical replacement closes them before closing SQL. */
 export class SqlDaemonStorage {
+  /** Acquisition precedes graph construction, which can fail on a SQL read. */
+  private storeValue: EngineStore | null = null;
   private graphValue: Graph | null = null;
   private problem: Error | null = null;
   private migration: StoreMigrationProgress | null = null;
@@ -109,7 +111,12 @@ export class SqlDaemonStorage {
         flusherWorkerEntry: this.options.flusherWorkerEntry,
         onCorrupt: this.corrupt,
       });
-      this.attach(store);
+      this.storeValue = store;
+      try {
+        this.attach(store);
+      } catch (error) {
+        await this.closeAfterFailedOpen(error);
+      }
     } catch (error) {
       if ((error as { code?: string }).code === "store_corrupt") this.corrupt(error);
       if (this.migration) this.migration = { ...this.migration, phase: "failed" };
@@ -139,22 +146,25 @@ export class SqlDaemonStorage {
   }
   /** Always join every storage participant before reporting successful close. */
   async close(physicalRecovery = false): Promise<void> {
-    const graph = this.graphValue;
-    if (!graph) return;
+    const store = this.storeValue,
+      graph = this.graphValue;
+    if (!store) return;
     let failure: unknown;
     try {
-      await graph.close();
+      await graph?.close();
     } catch (error) {
       failure = error;
     }
     try {
-      await graph.store.close();
+      await store.close();
     } catch (error) {
       failure ??= error;
     }
-    if (graph.store.isClosed) this.graphValue = null;
-    if (failure && !(physicalRecovery && graph.store.isClosed && storageFailure(failure)))
-      throw failure;
+    if (store.isClosed) {
+      this.storeValue = null;
+      this.graphValue = null;
+    }
+    if (failure && !(physicalRecovery && store.isClosed && storageFailure(failure))) throw failure;
     if (failure) this.options.log(`closed corrupt store: ${String(failure)}`);
   }
   private attach(store: EngineStore): void {
@@ -170,6 +180,7 @@ export class SqlDaemonStorage {
       onCorrupt: this.corrupt,
       log: this.options.log,
     });
+    this.storeValue = store;
     try {
       const current = globalGeneration(store);
       const prior = store
@@ -193,8 +204,18 @@ export class SqlDaemonStorage {
       this.options.advanceFloor();
       this.attach(store);
     } catch (error) {
-      await store.close();
-      throw error;
+      await this.closeAfterFailedOpen(error);
+    }
+  }
+  private async closeAfterFailedOpen(primary: unknown): Promise<never> {
+    try {
+      await this.close();
+    } catch (error) {
+      this.options.log(`engine store cleanup after failed open also failed: ${String(error)}`);
+    } finally {
+      // Cleanup (including diagnostics) cannot replace the initiating failure.
+      // An unclosed store remains owned for the next explicit close.
+      throw primary;
     }
   }
 }
