@@ -92,12 +92,11 @@ pnpm canary        # canary golden stories (offline fake harnesses; needs pnpm b
 
 There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
 Prettier formatting when a formatting pass is relevant. Note on Node versions:
-`.node-version` pins the DEV toolchain (24.16.0, matching CI); the root
-`engines.node >= 20.19.0` is the published-package compatibility floor — the
-split is intentional. CI runs positive store coverage on 24.15.0 and 24.16.0
-and separately proves the typed store refusal on Node 20.19.0. Publication
-still repeats a clean installed-package CLI smoke on the published floor and
-pin before the GitHub Release becomes public.
+`.node-version` pins the development toolchain (24.16.0, matching CI); the
+supported engine floor is Node 24.15.0 with bundled SQLite 3.51.3 or newer.
+CI runs positive store coverage on 24.15.0 and 24.16.0 and proves typed refusal
+on Node 20.19.0. Publication repeats a clean installed-package CLI smoke on the
+published floor and pin before the GitHub Release becomes public.
 
 macOS app checks:
 
@@ -241,11 +240,11 @@ publication always requires both validly signed runtime manifests; the
 signature-reading helpers and test vectors preserve historical review evidence
 without making its old panel or sealing ceremony a current gate.
 
-RESTART `claudexord` AFTER REBUILDING: the daemon loads the engine at start
-and serves that build until stopped — a long-lived daemon silently runs
-pre-rebuild code (`claudexor daemon stop` and let the next command
-auto-start it). This trap has silently invalidated dogfood runs; restart the
-daemon after every rebuild.
+A running daemon keeps the build it loaded at start. Prove rebuilt code with an
+isolated fixture owned and cleaned up by the test. A standalone developer may
+replace their own idle daemon; an externally owned daemon is replaced only by
+its lifecycle owner. Rebuilding a checkout does not update an existing daemon
+or authorize interrupting another host's active work.
 
 ### Local toolchain notes
 
@@ -312,17 +311,18 @@ Tests and local smokes must never touch real user state:
   artifacts: retained unverified drafts, original failures, merge selection and
   terminal RunFacts must agree. Check solo/draft/merge prompt guidance through
   the real prompt consumers, and inspect the affected Council receipt visually.
-- Journal maintenance tests preserve synchronous `compact()` consumer coverage
-  and separately exercise streamed compaction with concurrent acknowledged
-  batches, cursor continuity, cancellation and installation faults, plus the
-  fold contract: positional-reader equivalence with whole-buffer replay,
-  receipt byte-identity, disk chain state when a fold drops the last frame,
-  fold boundary arithmetic under streaming appends, and multi-frame
-  seq-preserving snapshot roundtrips. `scripts/journal-bench.mjs` is the opt-in
-  preparation benchmark against a copied journal root. Run daemon
-  responsiveness/SSE acceptance in an empty fixture config without provider
-  profiles; rebuilding candidate source never requires restarting a live daemon
-  used by other work.
+- Store tests distinguish committed process-crash recovery from a proved
+  power-loss barrier, including worker death, terminal-file obligations and
+  resource-owner changes. Cold import tests retain original frame/intent and
+  sparse-cursor semantics, source-byte preservation, interrupted publication and
+  independent legacy/SQL comparisons. The 219-file frozen oracle is test-only:
+  never refresh its hashes or goldens to fit a new implementation.
+  `scripts/store-load-bench.mjs` measures the SQL request path and checkpoint
+  behavior; the writer's checkpoint threshold is not a maximum WAL size. Use
+  copied historical corpora and isolated roots. Run responsiveness/SSE and bundle
+  worker checks without provider profiles; normal cleanup must close every
+  fixture worker and daemon it owns. The durability and migration contracts are
+  in [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store).
 - Read-only run lookups (`inspect`, `apply`) connect to an already-running daemon
   but never auto-start one (a typo'd run id reports `no such run`); only acting
   paths (`agent`/`best-of`/`create`, `decision`) auto-start it. `daemon start` blocks

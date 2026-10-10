@@ -158,7 +158,8 @@ The public [Ouroboros runtime pin](https://github.com/razzant/ouroboros/blob/our
 is a working example of that exact-version, exact-build, and checksum contract.
 
 The host owns install location, daemon config root, process lifecycle, and
-rollback. Start, handshake, and stop must address the same config root/socket.
+compatible rollback/recovery. Start, handshake, and stop must address the same
+config root/socket; an older runtime cannot bypass the migrated store's semantic floor.
 Portable extraction alone is not a platform-support claim: Windows support
 also requires a native extract, exact-Node probe, isolated daemon handshake,
 and graceful-stop smoke; individual harness and login capabilities keep their
@@ -508,8 +509,10 @@ and a finite `interaction_timeout_ms` lets an unanswered question decline
 benignly; `null` disables only that automatic expiry. Answers, cancellation,
 outer run deadlines, terminal cleanup, and daemon restart still release the
 wait. Pending and resolved interaction projections are
-fsynced in the run's journal partition; daemon restart terminalizes unresolved
-questions instead of presenting a stale prompt as live.
+committed in the run's partition generation; daemon restart terminalizes
+unresolved questions instead of presenting a stale prompt as live. Storage
+acknowledgement and power-loss barriers follow the
+[engine-store contract](ARCHITECTURE.md#sqlite-engine-store).
 
 Live messages into a RUNNING attempt are the separate `POST /v2/runs/:id/messages`
 verb (protocol major stays 3; clients discover the route by its row in
@@ -791,7 +794,7 @@ npm install -g claudexor
 copilot plugin install razzant/claudexor:plugins/copilot
 ```
 
-The portable path supports macOS and Linux with Node.js 20.19 or newer. Windows
+The portable path supports macOS and Linux with Node.js 24.15 or newer. Windows
 is not supported. Copilot owns installation, caching, enable/disable, update,
 and uninstall for this plugin; `claudexor plugin install` does not add a fifth
 managed Copilot host. Generated Claude Code, Codex, Cursor, and OpenCode
@@ -1343,11 +1346,34 @@ Known traps (class → CURRENT rule → pin):
 
 ## Storage
 
-Project runs write under the external per-project namespace
-`~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; the target repository's
-`.claudexor/` remains user-owned config. No-project Ask runs use a synthetic cwd
-and write artifacts under `~/.claudexor/v3/runs/`. See `docs/ARCHITECTURE.md` for
-the full current layout.
+One `daemon/engine.sqlite` under the selected config root owns command,
+project, thread and event state. Project run artifacts retain the external
+`~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/` namespace; the target
+repository's `.claudexor/` remains user-owned config. No-project Ask uses a
+synthetic cwd and writes artifacts under `~/.claudexor/v3/runs/`. An explicitly
+bound host data root keeps its own location.
+
+The 4.0 migration requires Node 24.15.0 or newer with supported bundled SQLite.
+Desktop application 4.0 is required before engine 4.0; the existing updater
+keeps the working engine and requests the app update first. Protocol major
+remains 3, but that alone does not make an older finite-only capacity decoder
+compatible. An explicit existing `max_concurrent: N` remains a global cap across
+model and non-model jobs; omission now has no finite ceiling. See
+[the admission contract](ARCHITECTURE.md#6-main-execution-paths).
+
+The first startup imports the old journal with recovery-only admission and
+visible status progress. It preserves original ids, request keys, epochs and
+sparse cursors, then retains the original journal as `journal-legacy/`. Account
+and credential bytes are not relocated or deleted by this storage migration.
+Unreplayed upload keys still depend on the preserved
+`resource-store/idempotency/` directory; removing it can change a later replay.
+The data-root floor prevents an older engine reopening migrated state: use a
+compatible forward fix, not an automatic rollback or legacy reimport. Logical
+partition recovery and whole-store physical recovery remain distinct. See
+[Legacy import and recovery](ARCHITECTURE.md#legacy-import-and-recovery) for
+publication order and diagnostic export limits, and the
+[event-stream contract](ARCHITECTURE.md#event-streaming-contract-snapshot-then-subscribe)
+for retained-stream changes.
 
 ## Stability Rules
 

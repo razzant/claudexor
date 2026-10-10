@@ -124,9 +124,12 @@ invariant or operator decision before proceeding.
 - **INV-014** A model operation performs at most one provider generation.
   Adapters may prepare managed authorization and discover the exact account's
   model catalog beforehand, but never retry generation, switch the model,
-  compact the conversation or execute tools. The existing command journal,
+  compact the conversation or execute tools. The existing command store,
   idempotency, cancellation and shutdown own its lifecycle; no second scheduler
-  or attempt journal is introduced. Status and result reads recover that same
+  or attempt journal is introduced. The dispatch record is committed and flushed
+  (`flushed()`) before the adapter may POST; an unavailable barrier leaves
+  `not_started` with a typed problem and sends nothing. Status and result reads
+  recover that same
   operation, and an unknown dispatch outcome is never a never-sent/free claim.
   Native continuation is retained exactly and bound to its actual account and
   model. Context metadata comes from that route, not CLI compaction policy;
@@ -228,23 +231,29 @@ invariant or operator decision before proceeding.
   (thread, harness, profile) triple with a persistent scoped home under the
   project runtime namespace — and never dispose them with the run; the next
   turn of the same lane resumes that session, and only thread purge,
-  credential-profile deletion, or orphan retention removes a lane home. Thread, turn, and session mutations are fsync-before-ACK
-  journal records; create and Exact Retry bind `Idempotency-Key` to the
+  credential-profile deletion, or orphan retention removes a lane home. Thread,
+  turn, and session mutations commit to the engine store before ACK and survive
+  an engine process crash or kill. Power loss or a kernel panic may discard
+  commits after the last completed flusher barrier (INV-143). Create and Exact Retry
+  bind `Idempotency-Key` to the
   original request and never duplicate a turn. An already accepted command
   remains the replay authority after later turns; a historical runless turn
   with no accepted command is never admitted after it stops being the thread
   tail. Exact Retry is a fresh linked command with fresh preflight; Run Again is an editable draft with explicit
-  differences. verify: thread journal restart and idempotency tests; run retry
+  differences. verify: SQL thread restart and idempotency tests; run retry
   and draft tests; session-resume orchestrator tests; delegated lane-home tests
   (`packages/orchestrator/src/delegatedHome.test.ts`).
 - **INV-035** A v2 project has a stable daemon-owned id bound to one canonical
   local root. The v2 registry starts empty, never imports v1 state implicitly,
   and registration is request-idempotent; relink moves the same project id
   instead of creating a second authority. Registered project commands, threads,
-  turns, and sessions live in that stable id's isolated journal partition;
-  no-project state remains global. Every public CLI mode and REPL turn enters
+  turns, and sessions live in that stable id's partition generation (`pid`) in
+  the shared engine store. State, idempotency and cursors are generation-scoped;
+  archive and quarantine retire generations without deleting their rows.
+  No-project state remains global; physical database corruption requires
+  whole-store recovery. Every public CLI mode and REPL turn enters
   through the managed daemon; daemon startup failure never creates a second
-  in-process run/thread authority. verify: ProjectStore restart, partition
+  in-process run/thread authority. verify: SQL project restart, partition
   routing/idempotency/recovery isolation, relink tests, `/v2/projects` API tests,
   and canary `[INV-035:cli-all-modes-daemon-owned]`.
 
@@ -419,9 +428,12 @@ invariant or operator decision before proceeding.
   into a patch. verify: workspace env tests; T3 audit sweep.
 - **INV-064** User attachments (images, files) are persisted only in a
   daemon-owned store outside any worktree; source paths/base64 are never runtime
-  authority. Upload streams to a temporary file, finalize fsyncs and atomically
-  publishes digest-bound immutable bytes, and run/turn requests accept only the
-  returned resource IDs. verify: resource-store and control-api upload tests.
+  authority. Upload streams to a write-through temporary file. Finalize commits
+  its pending binding (digest, key, request digest and result) before consuming
+  that file, publishes digest-bound immutable bytes by hard link, and removes
+  the part only after the flusher confirms publication. Run/turn requests accept
+  only the returned resource IDs. verify: resource-store and control-api upload
+  tests.
   Model resources use the same upload/blob owner with atomic, replayable
   finalization. Request bytes are released when the operation terminates;
   response bytes after explicit digest-bound acknowledgement, or 30 days from
@@ -873,6 +885,23 @@ invariant or operator decision before proceeding.
   `[INV-142:addressed-reads]`;
   `packages/daemon/src/command-list-select.test.ts`;
   `packages/daemon/src/addressed-command-read.test.ts`.
+- **INV-143** One SQLite engine store per data root owns command, conversation,
+  resource metadata and event state.
+  Normal row mutations commit synchronously under WAL `synchronous=NORMAL`;
+  their request path uses write-through external files without Node storage-sync
+  calls on the request thread. A separate flusher proves generation-numbered
+  power-loss barriers for committed state and registered directory entries;
+  `flushed()` waits for that proof. A checkpoint result alone is not a barrier,
+  and synchronized backfill precedes WAL reuse. Maintenance has its own worker.
+  State tables are projections; live scoped event streams contain only retained
+  rows, so a superseded row need not be delivered. Receipt lifetime is separate
+  from its stream copy. Collection reads omit bodies and command retention uses
+  bounded indexed queries. Legacy journals and unreplayed upload-key files remain
+  read-only migration evidence/authority and are not deleted by engine retirement.
+  Integrity checking after admission does not promise to detect every index
+  corruption before a read. verify: `packages/daemon/src/store/durability.test.ts`;
+  `packages/daemon/src/store/main-thread-sync.test.ts`; flusher generation,
+  retention query-plan, importer and recovery tests.
 - **INV-123** Dead code is deleted, not allowlisted (justified, dated
   baseline entries tied to a locked decision are the only exception). Docs
   claims about endpoints, mode ids, and CLI flags are checked against
