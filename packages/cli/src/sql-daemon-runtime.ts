@@ -73,6 +73,7 @@ export function createSqlDaemonRuntime(
   });
   const server = new DaemonServer({
     ...options.server,
+    storeFacts: options.server.storeFacts ?? (() => graph.store.facts()),
     commands: graph.commands,
     delegationAuthority: authority,
     onCommandTerminal: (record) => models.operations.onCommandTerminal(record),

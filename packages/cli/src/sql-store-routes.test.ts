@@ -10,6 +10,8 @@ import {
 } from "@claudexor/daemon";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
+import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
+import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -95,6 +97,67 @@ async function stream(
 }
 
 describe("SQL state through real control HTTP and SSE", () => {
+  it("rebinds quota and the one setup supervisor to a replaced global generation", async () => {
+    const f = await fixture();
+    const oldQuota = f.graph.quota;
+    const slot = new SqlSetupLifecycleSlot(f.root, f.graph);
+    const oldSetup = slot.current();
+    const stopped = vi.fn();
+    const started = vi.fn();
+    const binding = new SetupLifecycleBinding(slot, (store) => ({
+      async start() {
+        store.validateProjection();
+        started();
+      },
+      list: () => [],
+      beginDrain: () => {},
+      shutdown: async () => {
+        stopped();
+      },
+    }));
+    await binding.start();
+    await binding.replaceAfter(() =>
+      f.store.transaction(() => {
+        f.store.prepare("UPDATE partition SET status='quarantined' WHERE id=1").run();
+        f.store
+          .prepare(
+            "INSERT INTO partition(id,name,epoch,status,next_seq,created_at) VALUES(2,'global','new','ready',1,?)",
+          )
+          .run(new Date().toISOString());
+        f.store.prepare("UPDATE meta SET value='2' WHERE key='global_pid'").run();
+      }),
+    );
+    expect(f.graph.globalEvents.generation.pid).toBe(2);
+    expect(f.graph.quota).not.toBe(oldQuota);
+    expect(slot.current()).not.toBe(oldSetup);
+    expect(() => oldSetup.list()).toThrow(
+      expect.objectContaining({ code: "journal_recovery_required" }),
+    );
+    expect(started).toHaveBeenCalledTimes(2);
+    expect(stopped).toHaveBeenCalledTimes(1);
+    await binding.start();
+    expect(started).toHaveBeenCalledTimes(2);
+    await binding.shutdown();
+  });
+  it("exposes store facts without turning unmeasured integrity into success", async () => {
+    const f = await fixture();
+    const response = await fetch(f.url + "/v2/daemon/status", { headers: f.headers });
+    expect(response.status).toBe(200);
+    const status = (await response.json()) as {
+      store: {
+        integrity: string;
+        migration: unknown;
+        flusher: { state: string };
+        obligations_open: number;
+      };
+    };
+    expect(status.store).toMatchObject({
+      integrity: "pending",
+      migration: null,
+      obligations_open: 0,
+    });
+    expect(status.store.flusher.state).toBe("up");
+  });
   it("creates one accepted run through HTTP and replays the same SQL operation", async () => {
     const f = await fixture();
     const input = {

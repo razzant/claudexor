@@ -13,7 +13,7 @@ import {
 import { hashJson } from "@claudexor/util";
 import type { ControlSetupJob } from "@claudexor/schema";
 import { insertEventInTx, restoreEventSequenceInTx } from "../../daemon/src/store/retention.js";
-import { SetupJobStore as FrozenSetupJobStore } from "../../daemon/src/store/test-support/legacy/cli/setup-job-store.js";
+import { SetupJobStore as FrozenSetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { SqlSetupJobStore } from "./sql-setup-store.js";
 import type { SetupJournalPayload } from "./setup-job-persistence.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";

@@ -42,8 +42,7 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
   const pruner = new SqlCommandPruner(store, blobs, { log: options.log });
   const projects = new SqlProjectStore(store, blobs, obligations);
   const threads = new SqlCommandRouter(projects, { obligations, terminalFiles, pruner });
-  const global = projects.global();
-  const globalEvents = threads.ledger(global);
+  let globalEvents = threads.ledger(projects.global());
   resources = new SqlResourceStore(store, blobs, obligations, options.log);
   const purgeFiles = new SqlPurgeFiles(store, obligations);
   obligations.registerHandler("purge_fs", purgeFiles.handler(options.purgeFiles));
@@ -54,13 +53,9 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
     log: options.log,
     blobs,
   });
-  const quota = new QuotaRegistry(
-    globalEvents,
-    options.refreshers,
-    store.now,
-    options.subjects,
-    options.pacerStore,
-  );
+  const quotaFor = (events: typeof globalEvents) =>
+    new QuotaRegistry(events, options.refreshers, store.now, options.subjects, options.pacerStore);
+  let quota = quotaFor(globalEvents);
   const interactions = new InteractionRegistry({
     forRequest: (params) => threads.interactionsForRequest(params),
     forRun: (runId) => threads.interactionsForRun(runId),
@@ -77,13 +72,28 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
     projects,
     threads,
     commands: threads,
-    globalEvents,
+    get globalEvents() {
+      return globalEvents;
+    },
     resources,
     purgeFiles,
     maintenance,
-    quota,
+    get quota() {
+      return quota;
+    },
     interactions,
     liveInputs,
+    /** Called by the existing global recovery replacement owner after it
+     * drains setup and changes the registry generation. Publish both owners
+     * together only after the new quota projection validates. */
+    rebindGlobal() {
+      const generation = projects.global();
+      if (generation.pid === globalEvents.generation.pid) return;
+      const nextEvents = threads.ledger(generation);
+      const nextQuota = quotaFor(nextEvents);
+      globalEvents = nextEvents;
+      quota = nextQuota;
+    },
     journalEvents: (partition: string, afterCursor?: string) =>
       readJournalEvents(store, partition, afterCursor, blobs),
     async recoverAfterStartup() {

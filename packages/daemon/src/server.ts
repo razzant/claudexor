@@ -11,6 +11,7 @@ import {
   isTerminalLifecycle,
   type CancelReasonCode,
   type RuntimeConcurrencyCaps,
+  type DaemonStoreFacts,
 } from "@claudexor/schema";
 import { daemonHealth, daemonConcurrencyLimit } from "./daemon-health.js";
 import { RpcFollowers } from "./rpc-followers.js";
@@ -69,6 +70,7 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   maxConcurrent?: number;
   /** Startup-frozen strategy caps; absent embedders retain historical defaults. */
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
+  storeFacts?: () => DaemonStoreFacts;
   commands: LegacyCommandAuthority | CommandBackend;
   delegationAuthority?: DelegationAdmissionAuthority;
   maxHistory?: number;
@@ -280,7 +282,7 @@ export class DaemonServer {
     if (shutdown) return shutdown;
     const servingMode = servingModeOf(this.opts.servingMode);
     if (method === "claudexor.health") {
-      return daemonHealth(
+      const health = daemonHealth(
         this.startedAt,
         this.queue.length,
         this.active,
@@ -290,6 +292,7 @@ export class DaemonServer {
         this.maxConcurrent,
         this.opts.runtimeConcurrencyCaps,
       );
+      return this.opts.storeFacts ? { ...health, store: this.opts.storeFacts() } : health;
     }
     // Issue #165 D5: with product admission closed, every product RPC gets
     // one typed refusal; health above and the shutdown RPCs stay reachable.

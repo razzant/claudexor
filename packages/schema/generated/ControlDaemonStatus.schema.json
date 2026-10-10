@@ -130,6 +130,330 @@
           ],
           "additionalProperties": false
         },
+        "store": {
+          "type": "object",
+          "properties": {
+            "flusher": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "starting",
+                        "up",
+                        "down"
+                      ]
+                    },
+                    "interval_ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "acknowledged_generation": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "pending_registrations": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "pending_waiters": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "flush_lag_ms": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                    },
+                    "last_barrier_at": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "ISO-8601 timestamp string."
+                    },
+                    "last_pass": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "at": {
+                              "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                            },
+                            "pass_ms": {
+                              "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                            },
+                            "barrier_ms": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "dirty": {
+                              "type": "boolean"
+                            },
+                            "barrier": {
+                              "type": "boolean"
+                            },
+                            "wal_bytes": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "checkpoint": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "busy": {
+                                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                                    },
+                                    "log": {
+                                      "type": "integer"
+                                    },
+                                    "checkpointed": {
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "busy",
+                                    "log",
+                                    "checkpointed"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "at",
+                            "pass_ms",
+                            "barrier_ms",
+                            "dirty",
+                            "barrier",
+                            "wal_bytes",
+                            "checkpoint"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "counters": {
+                      "type": "object",
+                      "properties": {
+                        "passes": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "barriers": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "dirSyncs": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "busyPassive": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "walReopens": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "restarts": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "deaths": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        }
+                      },
+                      "required": [
+                        "passes",
+                        "barriers",
+                        "dirSyncs",
+                        "busyPassive",
+                        "walReopens",
+                        "restarts",
+                        "deaths"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "interval_ms",
+                    "generation",
+                    "acknowledged_generation",
+                    "pending_registrations",
+                    "pending_waiters",
+                    "flush_lag_ms",
+                    "last_barrier_at",
+                    "last_pass",
+                    "counters"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "flush_lag_ms": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "last_barrier_at": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO-8601 timestamp string."
+            },
+            "interval_ms": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "wal_bytes": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "busy_waits": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "obligations_open": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "integrity": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "ok",
+                    "failed"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "migration": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "phase": {
+                      "type": "string",
+                      "enum": [
+                        "reading",
+                        "importing",
+                        "verifying",
+                        "complete",
+                        "publishing",
+                        "failed"
+                      ]
+                    },
+                    "completedPartitions": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "totalPartitions": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "currentPartition": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "processedBytes": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "totalBytes": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    }
+                  },
+                  "required": [
+                    "phase",
+                    "completedPartitions",
+                    "totalPartitions",
+                    "currentPartition",
+                    "processedBytes",
+                    "totalBytes"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "flusher",
+            "flush_lag_ms",
+            "last_barrier_at",
+            "interval_ms",
+            "wal_bytes",
+            "busy_waits",
+            "obligations_open",
+            "integrity",
+            "migration"
+          ],
+          "additionalProperties": false
+        },
         "loop": {
           "anyOf": [
             {
