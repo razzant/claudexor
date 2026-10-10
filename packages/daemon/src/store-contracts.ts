@@ -110,13 +110,14 @@ export type ProjectThreadPort = Pick<
 /** Product recovery operations, without journal preparation or file ownership. */
 export type PartitionControlPort = Pick<
   JournalManager,
-  | "events"
-  | "inspect"
-  | "validate"
-  | "exportRecovery"
-  | "preflightQuarantine"
-  | "quarantineAndStartFresh"
->;
+  "events" | "inspect" | "preflightQuarantine" | "quarantineAndStartFresh"
+> & {
+  validate():
+    ReturnType<JournalManager["validate"]> | Promise<ReturnType<JournalManager["validate"]>>;
+  exportRecovery():
+    | ReturnType<JournalManager["exportRecovery"]>
+    | Promise<ReturnType<JournalManager["exportRecovery"]>>;
+};
 export type ProjectControlPort = ProjectThreadPort & {
   journal(partition: string): PartitionControlPort;
 };
