@@ -1,4 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { Comparisons } from "./test-support/equivalence-evidence.js";
+import { StoreError } from "./errors.js";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -64,4 +66,32 @@ describe("independent store equivalence driver", () => {
       false,
     );
   });
+});
+
+it("records typed qualification failures without exposing error messages or source payloads", () => {
+  const dir = output();
+  mkdirSync(dir);
+  const checks = new Comparisons(dir);
+  checks.problem(
+    "import",
+    new StoreError("store_import_partition_invalid", 503, false, "private-source-body"),
+  );
+  checks.problem("unknown", {
+    code: 123,
+    status: "503",
+    retryable: "false",
+    message: "private-other-body",
+  });
+  const report = readFileSync(join(dir, "comparisons.json"), "utf8");
+  expect(JSON.parse(report).failures).toEqual([
+    {
+      label: "import",
+      problem: "StoreError",
+      code: "store_import_partition_invalid",
+      status: 503,
+      retryable: false,
+    },
+    { label: "unknown", problem: "object" },
+  ]);
+  expect(report).not.toContain("private");
 });

@@ -7,7 +7,6 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readlinkSync,
   readSync,
   readdirSync,
@@ -157,6 +156,9 @@ export class Comparisons {
     expectedSha256?: string;
     actualSha256?: string;
     problem?: string;
+    code?: string;
+    status?: number;
+    retryable?: boolean;
   }> = [];
   readonly counts: Record<string, number> = {};
   constructor(private readonly output: string) {}
@@ -177,7 +179,14 @@ export class Comparisons {
     return false;
   }
   problem(label: string, error: unknown): void {
-    const row = { label, problem: error instanceof Error ? error.name : typeof error };
+    const typed = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+    const row = {
+      label,
+      problem: error instanceof Error ? error.name : typeof error,
+      ...(typeof typed.code === "string" ? { code: typed.code } : {}),
+      ...(typeof typed.status === "number" ? { status: typed.status } : {}),
+      ...(typeof typed.retryable === "boolean" ? { retryable: typed.retryable } : {}),
+    };
     this.failures.push(row);
     this.save();
     console.log(JSON.stringify({ mismatch: row }));
@@ -194,7 +203,4 @@ export function privateMap(value: object, name: string): Map<string, unknown> {
   const map = Reflect.get(value, name);
   if (!(map instanceof Map)) throw new Error(`frozen projection no longer exposes ${name}`);
   return map;
-}
-export function fileJson(path: string): unknown {
-  return JSON.parse(readFileSync(path, "utf8"));
 }
