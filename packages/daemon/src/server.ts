@@ -33,7 +33,6 @@ import { parseCommandListQuery } from "./command-list-select.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
 import {
-  JOB_STATES,
   jobStateFromResult,
   publicJobRecord,
   resultReason,
@@ -57,7 +56,7 @@ import {
 import { socketAlive } from "./socket-probe.js";
 import { isWindowsPipePath } from "./token.js";
 import { dispatchShutdownRpc, type RuntimeReplacementAuthority } from "./daemon-shutdown-rpc.js";
-export { JOB_STATES, jobStateFromResult, socketAlive, type JobRecord };
+export { jobStateFromResult, socketAlive, type JobRecord };
 
 export interface RunContext {
   jobId: string;
