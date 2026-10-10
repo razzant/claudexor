@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -208,6 +208,9 @@ const readEvents = (runDir: string) =>
 describe("SQL terminal transaction and real EventLog", () => {
   it("commits once, materializes every prepared file, and cannot be overwritten by a late result", async () => {
     const f = await fixture();
+    f.commands.update("job", { result: { temporary: "x".repeat(80000) } });
+    const replaced = commandRow(f.store, "job")!.result_sha!;
+    expect(existsSync(f.blobs.filePath(replaced))).toBe(true);
     const event = f.log.emit("run.failed", terminal().payload);
     expect(f.legacyCommit).not.toHaveBeenCalled();
     expect(f.rollback).not.toHaveBeenCalled();
@@ -240,6 +243,10 @@ describe("SQL terminal transaction and real EventLog", () => {
       result: { summary: "late detail", lifecycle: "failed", facts: facts().outcome },
     });
     await pass(f.store);
+    await vi.waitFor(() =>
+      expect(f.store.prepare("SELECT 1 FROM blob WHERE sha256=?").get(replaced)).toBeUndefined(),
+    );
+    expect(existsSync(f.blobs.filePath(replaced))).toBe(false);
     expect(f.obligations.get("terminal_files", "run")).toBeUndefined();
     expect(readEvents(f.runDir).filter((row) => row.type === "run.failed")).toHaveLength(1);
     expect(syncSpies.fsyncSync).not.toHaveBeenCalled();
