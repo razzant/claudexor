@@ -10,6 +10,7 @@ import type {
   ControlModelCatalogResponse,
   ModelCallResult,
   ModelCatalogEntry,
+  ModelMessage,
   ModelNativeContinuation,
   ModelRoute,
 } from "@claudexor/schema";
@@ -26,6 +27,7 @@ import {
   providerProblem,
   readResponsesStream,
   record,
+  replayedNativeItems,
   text,
   validateCodexModelOptions,
 } from "./responses.js";
@@ -41,6 +43,12 @@ import { codexModelEfforts, codexModelEffortResolution } from "./model-effort.js
 const ENDPOINT = "https://chatgpt.com/backend-api/codex";
 const CLIENT = "claudexor";
 const TURN_FORMAT = "codex.turn.v1";
+
+/** Whether THIS engine build carries image content over its Responses transport.
+ * The catalog's imageInput is the AND of the model's own input modality and this
+ * build capability. An engine without transport image support leaves it false so
+ * the invoke gate below refuses image-bearing requests before dispatch. */
+const BUILD_SUPPORTS_IMAGE_INPUT = true;
 
 /** Transport state belongs to a caller's live turn, never to assistant history. */
 function prepareTurnContinuation(
@@ -91,6 +99,39 @@ function headers(auth: CodexModelAuth): Record<string, string> {
 
 function capacity(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/** True when the request carries image content blocks in user or tool messages,
+ * the only roles whose content this transport serializes as input_image, or an
+ * image part hidden inside a replayable native continuation: its payload items
+ * reach the provider verbatim without passing through the content serializer,
+ * so the gate scans them structurally too. Image blocks in other roles are
+ * refused by the serializer itself, independent of model capability. */
+function requestCarriesImages(messages: ModelMessage[], route: ModelRoute): boolean {
+  return messages.some((message) => {
+    if (
+      (message.role === "user" || message.role === "tool") &&
+      Array.isArray(message.content) &&
+      message.content.some((block) => block.type === "image_url" || block.type === "input_image")
+    )
+      return true;
+    const replayed = replayedNativeItems(message, route);
+    return replayed !== null && replayedItemsCarryImages(replayed, new WeakSet());
+  });
+}
+
+/** Structural image search over replayed native items. Their parts are wire
+ * objects, never serializer-validated content blocks, so an input_image at any
+ * nesting depth is image content on the wire; cycle-safe because callers may
+ * hand over arbitrary JSON-shaped payload objects. */
+function replayedItemsCarryImages(value: unknown, seen: WeakSet<object>): boolean {
+  if (Array.isArray(value)) return value.some((item) => replayedItemsCarryImages(item, seen));
+  if (value === null || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  const item = value as Record<string, unknown>;
+  if (item.type === "input_image" || item.type === "image_url") return true;
+  return Object.values(item).some((nested) => replayedItemsCarryImages(nested, seen));
 }
 
 /** An expired/opaque access token's 401 is not proof that a new login is needed. */
@@ -159,6 +200,11 @@ export function parseCodexModelCatalog(value: unknown): ModelCatalogEntry[] {
       // Backend output-cap parameters are unsupported even when a model has a published output capacity.
       maxOutputTokens: capacity(entry.max_output_tokens),
       inputModalities: modalities,
+      // Model modality alone never authorizes images; the build must carry them
+      // over this transport too. Text-only models stay false. An older engine
+      // that omits this field never granted the capability — the invoke gate
+      // refuses image-bearing requests unless it reads exactly true.
+      imageInput: modalities.includes("image") && BUILD_SUPPORTS_IMAGE_INPUT,
       ...projectedEfforts,
       reasoningEffortsVerified,
       defaultReasoningEffort:
@@ -335,6 +381,19 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
         // The raw source declares what a valid catalog miss proves (INV-104).
         // Missing metadata never becomes a fabricated model row or sibling limits.
         const model = catalog.models.find((entry) => entry.id === request.model);
+        // Image input is a build-declared capability, never a transport guess.
+        // The catalog's imageInput is exactly true when the model itself has an
+        // image modality AND this engine build carries images; anything else —
+        // a false/absent field, or a catalog with no row for the requested
+        // model at all (INV-104: a miss never becomes a fabricated row) —
+        // refuses image-bearing requests BEFORE dispatch, like the effort gate.
+        if (requestCarriesImages(request.messages, route) && model?.imageInput !== true) {
+          throw new CodexModelError(
+            "unsupported_parameter",
+            "This model or engine build does not accept image inputs; the request carries image content.",
+            { parameter: "imageInput" },
+          );
+        }
         effortResolution = codexModelEffortResolution(
           request.options.reasoningEffort,
           model,

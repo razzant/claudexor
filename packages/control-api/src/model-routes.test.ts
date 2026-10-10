@@ -199,6 +199,7 @@ describe("raw model operation HTTP surface", () => {
             maxContextWindow: null,
             maxOutputTokens: null,
             inputModalities: [],
+            imageInput: false,
             reasoningEfforts: levels.filter((level) => level !== "ultra"),
             defaultReasoningEffort: null,
             supportedOptions: [

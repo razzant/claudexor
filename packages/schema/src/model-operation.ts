@@ -224,6 +224,12 @@ export const ModelCatalogEntry = z
     maxContextWindow: z.number().int().positive().nullable(),
     maxOutputTokens: z.number().int().positive().nullable(),
     inputModalities: z.array(z.string()),
+    imageInput: z
+      .boolean()
+      .optional()
+      .describe(
+        "True only when the model itself is image-capable (an input modality) AND this engine build carries images over its transport. Absent or false never authorizes an image-bearing request; the adapter refuses it before dispatch. Missing on historical catalogs means no build-declared capability.",
+      ),
     reasoningEfforts: z.array(z.string()),
     reasoningEffortPreferenceOrder: z
       .array(NonBlankString)

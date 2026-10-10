@@ -137,6 +137,10 @@
                   "type": "string"
                 }
               },
+              "imageInput": {
+                "type": "boolean",
+                "description": "True only when the model itself is image-capable (an input modality) AND this engine build carries images over its transport. Absent or false never authorizes an image-bearing request; the adapter refuses it before dispatch. Missing on historical catalogs means no build-declared capability."
+              },
               "reasoningEfforts": {
                 "type": "array",
                 "items": {

@@ -4,6 +4,7 @@ import type {
   ModelCallRequest,
   ModelCallResult,
   ModelMessage,
+  ModelNativeContinuation,
   ModelRoute,
   ModelUsage,
 } from "@claudexor/schema";
@@ -113,28 +114,53 @@ function content(value: ModelMessage["content"], role: string): unknown[] {
 function replay(message: ModelMessage, route: ModelRoute): unknown[] | null {
   const native = message.nativeContinuation;
   if (!native) return null;
+  const replayed = replayedNativeItems(message, route);
+  if (replayed !== null) return replayed;
   // The same account may answer with another model, or disclose none. That
   // continuation stays bound to the model that produced it and is never
   // replayed here; the message uses its canonical projection instead. A message
   // with nothing but its continuation has no projection and still refuses.
-  const otherModel = native.route.model !== route.model;
   if (
-    message.role !== "assistant" ||
-    native.format !== CODEX_CONTINUATION_FORMAT ||
-    !route.accountFingerprint ||
-    native.route.accountFingerprint !== route.accountFingerprint ||
-    native.route.source !== route.source ||
-    native.route.credentialProfileId !== route.credentialProfileId ||
-    !Array.isArray(native.payload) ||
-    !native.payload.every((item) => typeof record(item)?.type === "string") ||
-    (otherModel && !message.content?.length && !message.tool_calls?.length)
-  ) {
-    throw new CodexModelError(
-      "invalid_continuation",
-      "Native continuation must match the exact account, profile and format, and a turn another model answered must carry its own content or tool calls.",
-    );
-  }
-  return otherModel ? null : native.payload;
+    native.route.model !== route.model &&
+    continuationValid(message, native, route) &&
+    (message.content?.length || message.tool_calls?.length)
+  )
+    return null;
+  throw new CodexModelError(
+    "invalid_continuation",
+    "Native continuation must match the exact account, profile and format, and a turn another model answered must carry its own content or tool calls.",
+  );
+}
+
+/** Exact account, profile, format, and string-typed payload items. */
+function continuationValid(
+  message: ModelMessage,
+  native: ModelNativeContinuation,
+  route: ModelRoute,
+): boolean {
+  return (
+    message.role === "assistant" &&
+    native.format === CODEX_CONTINUATION_FORMAT &&
+    !!route.accountFingerprint &&
+    native.route.accountFingerprint === route.accountFingerprint &&
+    native.route.source === route.source &&
+    native.route.credentialProfileId === route.credentialProfileId &&
+    Array.isArray(native.payload) &&
+    native.payload.every((item) => typeof record(item)?.type === "string")
+  );
+}
+
+/** The payload items a message's continuation pushes verbatim onto the wire for
+ * this route, or null when it would not replay: no continuation, a malformed
+ * one, or a turn another model answered (which projects structurally instead).
+ * These items are the only image bytes that can reach the provider without
+ * passing through the content serializer, so the invoke-side capability gate
+ * scans exactly them. */
+export function replayedNativeItems(message: ModelMessage, route: ModelRoute): unknown[] | null {
+  const native = message.nativeContinuation;
+  if (native == null) return null;
+  if (native.route.model !== route.model || !continuationValid(message, native, route)) return null;
+  return native.payload as unknown[];
 }
 
 export function validateCodexModelOptions(options: ModelCallOptions): void {
