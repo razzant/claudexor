@@ -1,3 +1,27 @@
+import type { ControlJournalInspection } from "@claudexor/schema";
+
+export type JournalRecoveryState = ControlJournalInspection["recovery"];
+
+export class JournalRecoveryRequiredError extends Error {
+  readonly code: string = "journal_recovery_required";
+  readonly status = 503;
+  readonly retryable = false;
+  readonly requiredActions = ["inspect_recovery", "export_recovery", "quarantine_partition"];
+  readonly evidenceRefs: string[] = [];
+  readonly recovery: Extract<JournalRecoveryState, { status: "recovery_required" }>;
+
+  constructor(recovery: Extract<JournalRecoveryState, { status: "recovery_required" }>) {
+    const safe = Object.freeze({ ...recovery, location: Object.freeze({ ...recovery.location }) });
+    const where =
+      safe.location.kind === "byte"
+        ? `byte ${safe.location.byteOffset}`
+        : `cursor ${safe.location.epoch}:${safe.location.seq}`;
+    super(`journal partition requires recovery at ${where}: ${safe.reason}`);
+    this.name = "JournalRecoveryRequiredError";
+    this.recovery = safe;
+  }
+}
+
 /**
  * Typed failures of the engine store. Every error carries the `code` /
  * `status` / `retryable` triple the daemon's problem projection already

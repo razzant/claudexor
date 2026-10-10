@@ -45,7 +45,7 @@
  *     state/phase/evidence transition, so intermediate saves are replay
  *     authority); a terminal save retires the job's `setup.job.log` lines.
  */
-import type { FoldRecord, FoldVerdict, JournalFold } from "@claudexor/journal";
+import type { FoldRecord, FoldVerdict, JournalFold } from "./store/legacy-journal/journal-fold.js";
 import {
   CredentialRoute,
   AccountResourcesObserved,

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StoreError } from "./errors.js";
 import { linkExternalFile, writeExternalFile } from "./external-files.js";
+import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 import type { OwnerGenerations, UnlinkOutcome } from "./owner-generations.js";
 import type { EngineStore } from "./store.js";
 
@@ -29,11 +30,21 @@ export const BLOB_OWNER_PREDICATE = `EXISTS(SELECT 1 FROM command WHERE params_s
   OR EXISTS(SELECT 1 FROM command WHERE result_sha = ?1)
   OR EXISTS(SELECT 1 FROM turn WHERE prompt_sha = ?1)
   OR EXISTS(SELECT 1 FROM event WHERE payload_sha = ?1)
-  OR EXISTS(SELECT 1 FROM resource WHERE sha256 = ?1)
+  OR EXISTS(SELECT 1 FROM resource WHERE sha256 = ?1 AND state IN ('publishing', 'ready'))
   OR EXISTS(SELECT 1 FROM upload WHERE finalize_sha = ?1)
   OR EXISTS(SELECT 1 FROM effect_obligation WHERE kind = 'publish_blob'
             AND json_extract(CAST(payload AS TEXT), '$.sha') = ?1)`;
 export const BLOB_OWNER_SQL = `SELECT (${BLOB_OWNER_PREDICATE}) AS owned`;
+
+/** Inline bytes and their final reference disappear in one durable prefix. */
+export function deleteUnownedInlineInTx(sql: SqlWriteContext, sha256: string): void {
+  requireTransaction(sql);
+  sql
+    .prepare(
+      `DELETE FROM blob WHERE sha256 = ?1 AND inline IS NOT NULL AND NOT (${BLOB_OWNER_PREDICATE})`,
+    )
+    .run(sha256);
+}
 
 export function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -127,10 +138,14 @@ export class BlobFiles {
     sourcePath: string,
     sha256: string,
   ): { path: string; generation: number; linked: boolean } {
+    const path = this.filePath(sha256);
+    // Restart may find the published blob after its redundant part was removed.
+    if (existsSync(path))
+      return { path, generation: this.store.registerExternal(this.dir), linked: false };
     const receipt = linkExternalFile(this.store, {
       source: sourcePath,
       dir: this.dir,
-      name: this.filePath(sha256).slice(this.dir.length + 1),
+      name: path.slice(this.dir.length + 1),
     });
     return { path: receipt.path, generation: receipt.generation, linked: receipt.written };
   }

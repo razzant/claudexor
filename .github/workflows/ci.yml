@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [20.19.0, 24.16.0]
+        node-version: [24.15.0, 24.16.0]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,7 +39,7 @@ jobs:
           fi
 
       # No `version:` here — pnpm/action-setup reads the `packageManager` field in package.json
-      # (the Node-20-compatible pinned pnpm version). Specifying both causes
+      # (the pinned pnpm version). Specifying both causes
       # ERR_PNPM_BAD_PM_VERSION.
       - name: Install pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -173,9 +173,19 @@ jobs:
           node packages/cli/dist/cli.js doctor --json > /tmp/doctor.json
           node -e 'const j=JSON.parse(require("node:fs").readFileSync("/tmp/doctor.json","utf8")); if(!Array.isArray(j.harnesses)) { console.error("doctor --json did not produce a harnesses array"); process.exit(1); }'
 
+      - name: Setup unsupported Node for typed-refusal proof
+        if: matrix.node-version == '24.15.0'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20.19.0
+
+      - name: Refuse an unsupported store runtime before opening its root
+        if: matrix.node-version == '24.15.0'
+        run: pnpm vitest run packages/daemon/src/store/runtime.test.ts
+
   # Branch protection on main requires a check context literally named
   # `build-test`. The job above never publishes one: a matrix job's check runs
-  # are named from its `name:` template, so it reports as "Node 20.19.0" and
+  # are named from its `name:` template, so it reports as "Node 24.15.0" and
   # "Node 24.16.0" and the required context stays pending forever (every PR
   # sits at BLOCKED). This aggregate exists only to publish that name.
   # `if: always()` is load-bearing — without it the job is skipped when the
@@ -217,7 +227,7 @@ jobs:
       matrix:
         include:
           - runner: windows-2022
-            node-version: 20.19.0
+            node-version: 24.15.0
           - runner: windows-latest
             node-version: 24.16.0
     steps:
@@ -277,12 +287,12 @@ jobs:
 
       # The Windows-shaped surfaces, and only suites whose fixtures are
       # portable: the absolute-path contract, win32 process identity and
-      # termination, and the journal walker whose separator bug reproduces
+      # termination, and the legacy reader whose separator bug reproduces
       # ONLY here. Suites built on POSIX mode bits, symlinks or `#!/bin/sh`
       # fixtures stay on the Linux/macOS legs; their win32 branches are
       # proven by injected-platform unit tests instead. The CLI exit tail runs
       # here because only Windows libuv aborts a forced exit after fetch().
-      - name: Test (platform auth, agy print, ConPTY, setup transport, journal, CLI exit)
+      - name: Test (platform auth, agy print, ConPTY, setup transport, SQL recovery, CLI exit)
         run: >
           pnpm vitest run packages/schema/src/schema.test.ts
           packages/schema/src/platform-auth-policy.test.ts
@@ -306,11 +316,29 @@ jobs:
           packages/harness-cursor/src/status-cache.test.ts
           packages/harness-cursor/src/status-cache-clock.test.ts
           packages/cli/src/cli-io.test.ts
-          packages/journal/src/index.test.ts
-          packages/journal/src/background-compaction.test.ts
-          packages/journal/src/background-capacity.test.ts
-          packages/daemon/src/journal-maintenance.test.ts
-          packages/control-api/src/journal-background.test.ts
+          packages/daemon/src/store/store.test.ts
+          packages/daemon/src/store/runtime.test.ts
+          packages/daemon/src/store/schema.test.ts
+          packages/daemon/src/store/flusher.test.ts
+          packages/daemon/src/store/external-files.test.ts
+          packages/daemon/src/store/blob-files.test.ts
+          packages/daemon/src/store/obligations.test.ts
+          packages/daemon/src/store/maintenance.test.ts
+          packages/daemon/src/store/retention.test.ts
+          packages/daemon/src/store/cursors.test.ts
+          packages/daemon/src/store/main-thread-sync.test.ts
+          packages/cli/src/store-worker-bundle.test.ts
+          packages/daemon/src/store/legacy-journal/frame-reader.test.ts
+          packages/daemon/src/store/legacy-journal/frame-reader-shrink.test.ts
+          packages/daemon/src/store/command-contract.test.ts
+          packages/daemon/src/store/terminal-contract.test.ts
+          packages/daemon/src/store/import-faults.test.ts
+          packages/daemon/src/store/engine-state-recovery.test.ts
+          packages/daemon/src/store/sql-recovery.test.ts
+          packages/daemon/src/store/store-close.test.ts
+          packages/daemon/src/store/statement-observer.test.ts
+          packages/cli/src/sql-startup-storage.test.ts
+          packages/cli/src/sql-daemon-storage.test.ts
           packages/harness-codex/src/model-auth.test.ts
           packages/harness-codex/src/model.test.ts
           packages/harness-codex/src/responses.test.ts
@@ -320,6 +348,20 @@ jobs:
           packages/daemon/src/resource-store.model.test.ts
           packages/daemon/src/command-retention.test.ts
           packages/control-api/src/model-routes.test.ts
+
+      - name: Exercise SQLite writers, flush barriers and maintenance together
+        shell: pwsh
+        env:
+          RATE: "200"
+          K: "2"
+          SECONDS: "3"
+          OUT: ${{ runner.temp }}/claudexor-store-load.jsonl
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/store-load-bench.mjs
+          if ($LASTEXITCODE -ne 0) { throw "store-load-bench exited $LASTEXITCODE" }
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
+          if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
 
       # The local Codex installer on Windows, proven against the REAL pinned
       # package: the exact embedded Node toolchain (the official zip's

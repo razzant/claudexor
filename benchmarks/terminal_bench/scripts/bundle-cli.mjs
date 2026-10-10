@@ -20,7 +20,7 @@
  * What: esbuild bundles the built CLI entry (packages/cli/dist/cli.js) into
  * benchmarks/terminal_bench/dist/claudexor-cli.js AND the built daemon entry
  * (packages/cli/dist/claudexord.js) into a SIBLING dist/claudexord.js — each with
- * its full workspace dependency tree (ESM, node20 target, node shebang banner). This
+ * its full workspace dependency tree (ESM, node24 target, node shebang banner). This
  * is the same proven pattern apps/macos/scripts/build-app.sh uses to bundle claudexord
  * for the .app. The sibling relationship is exactly what ensureDaemon resolves.
  *
@@ -77,7 +77,7 @@ for (const { name, entry, outfile } of TARGETS) {
     bundle: true,
     platform: "node",
     format: "esm",
-    target: "node20",
+    target: "node24",
     outfile,
     external: EXTERNALS,
     // Each entry (cli.js / claudexord.js) already starts with `#!/usr/bin/env node`,

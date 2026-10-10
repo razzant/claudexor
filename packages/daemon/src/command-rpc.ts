@@ -1,5 +1,32 @@
-import { commandStoreForRequest, type CommandAuthority } from "./command-authority.js";
+import { continuedRunOf, delegatedParentOf } from "@claudexor/schema";
+import {
+  commandStoreForRequest,
+  type CommandAuthority,
+  type CommandBackend,
+} from "./command-authority.js";
 import { publicJobRecord, type JobRecord } from "./job-record.js";
+import { admitContinuationRequest } from "./continuation-admission.js";
+import {
+  admitDelegatedRequest,
+  type DelegationAdmissionAuthority,
+} from "./delegation-admission.js";
+
+/** Existing admission rules over their addressed subjects, in the enqueue turn. */
+export function admitCommandRequest(
+  commands: CommandBackend,
+  raw: unknown,
+  operation: string | undefined,
+  delegation?: DelegationAdmissionAuthority,
+): unknown {
+  const from = continuedRunOf(raw);
+  const request = admitContinuationRequest(
+    raw,
+    from ? commands.queries.select({ continuationChainOf: from }) : [],
+  );
+  const parentId = delegatedParentOf(request);
+  const parent = parentId ? commands.queries.getByRunId(parentId) : undefined;
+  return admitDelegatedRequest(request, operation, parent ? [parent] : [], delegation);
+}
 
 interface CommandLookupEnvelope {
   request?: unknown;

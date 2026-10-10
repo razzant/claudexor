@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { ProjectStore } from "@claudexor/daemon";
+import type { ProjectStorePort } from "@claudexor/daemon";
 import { ControlDirectoryListing } from "@claudexor/schema";
 
 const MAX_DIRECTORY_ENTRIES = 1_000;
@@ -157,7 +157,7 @@ export interface RunWorkspaceBinding {
 
 /** The run's recorded project root names this project (canonical lookup; a
  *  root that no longer resolves matches only the registered spelling). */
-function identifiesProject(projects: ProjectStore, projectId: string, root: string): boolean {
+function identifiesProject(projects: ProjectStorePort, projectId: string, root: string): boolean {
   if (projects.get(projectId)?.root === root) return true;
   try {
     return projects.findByRoot(root)?.id === projectId;
@@ -172,7 +172,7 @@ function identifiesProject(projects: ProjectStore, projectId: string, root: stri
  * An unavailable recorded workspace is a typed refusal, never the project's same-named file.
  */
 function boundWorkspaceRoot(
-  projects: ProjectStore,
+  projects: ProjectStorePort,
   projectId: string,
   binding: RunWorkspaceBinding,
   projectRoot: string,
@@ -197,7 +197,7 @@ function boundWorkspaceRoot(
 }
 
 export function readScopedProjectFile(
-  projects: ProjectStore,
+  projects: ProjectStorePort,
   projectId: string,
   requestedPath: string,
   binding?: RunWorkspaceBinding,
@@ -347,7 +347,7 @@ export interface RemoteFilesystemServices {
  * only when the process runs as the remote runtime.
  */
 export function remoteFilesystemServices(
-  projects: () => ProjectStore,
+  projects: () => ProjectStorePort,
   env: NodeJS.ProcessEnv = process.env,
 ): RemoteFilesystemServices {
   if (env.CLAUDEXOR_REMOTE_RUNTIME !== "1") return {};

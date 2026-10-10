@@ -1,0 +1,600 @@
+import { EffortResolution } from "./effort.js";
+import { z } from "zod/v3";
+import {
+  RecordedAccessProfile,
+  ContentHash,
+  ExternalContextPolicy,
+  Id,
+  IsoTimestamp,
+  ModeKind,
+  AuthPreference,
+  SchemaVersion,
+} from "./primitives.js";
+import { OutputSchemaDialect } from "./output-schema-dialect.js";
+import { DeepScanSynthesis } from "./deep-scan.js";
+import { ToolKind } from "./tool-ref.js";
+import { AuthMode, RouteRankingRationale, UsageCostSummary } from "./budget.js";
+import { AuthRouteReason, AuthSourceKind } from "./auth.js";
+import { RequestRequirementResolution } from "./request-requirements.js";
+import { WorkState } from "./work-report.js";
+import { ProcessingReceipt, ProcessingCostBasis } from "./processing.js";
+import { RunDelegationInfo } from "./delegation.js";
+import { RunFacts } from "./run-facts.js";
+import { InputTokenUsage, HarnessRequestRefusal } from "./harness.js";
+
+/** Engine-owned final/telemetry.yaml: surfaces project, never re-derive evidence.
+ * Legacy runs without this artifact disclose unavailable telemetry. */
+
+export const WebEvidenceStatus = z
+  .enum(["none", "attempted", "satisfied", "failed", "unverified"])
+  .describe("Observed web activity: none, attempted, satisfied, failed, or unverified.");
+export type WebEvidenceStatus = z.infer<typeof WebEvidenceStatus>;
+
+export const WebEvidenceRecord = z
+  .object({
+    required: z.boolean().default(false).describe("Explicit stored web requirement."),
+    policy: ExternalContextPolicy.default("auto").describe("Requested web policy for the run."),
+    effective_mode: ExternalContextPolicy.default("auto").describe(
+      "Policy actually executed by the harness route (disclosed upgrades, e.g. cached to live).",
+    ),
+    attempted: z.boolean().default(false).describe("Whether any web activity was attempted."),
+    satisfied: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Completed without a typed failure; verification records retrieval-proof strength.",
+      ),
+    status: WebEvidenceStatus.default("none"),
+    /**
+     * QA-042: retrieval STRENGTH of satisfied/attempted web activity, orthogonal
+     * to `status`. `verified` = at least one web result carried a
+     * typed successful retrieval (e.g. claude WebFetch content, a browser
+     * navigation); `dispatched` = web activity completed but the route exposes
+     * no typed fetch outcome (codex `web_search`/`open_page`), so the gate is
+     * satisfied at dispatch strength but content is NOT proven; `none` = no web
+     * activity. A surface renders "Web verified" only for `verified`, never for
+     * a dispatch-only route (which is honestly "Web reached").
+     */
+    verification: z
+      .enum(["verified", "dispatched", "none"])
+      .default("none")
+      .describe(
+        "Retrieval-proof strength of observed web activity: verified (typed successful retrieval; content proven), dispatched (operation completed but no typed retrieval outcome; content not proven), or none.",
+      ),
+    tool: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Web tool that produced the evidence, when any."),
+    target: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Redacted target (query/url) of the web activity, when any."),
+    error_summary: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Redacted error detail when web activity failed."),
+  })
+  .describe(
+    "Typed web-evidence record computed by the orchestrator; surfaces project it and never re-derive evidence from raw events.",
+  );
+export type WebEvidenceRecord = z.infer<typeof WebEvidenceRecord>;
+
+export const ToolErrorRecord = z
+  .object({
+    tool: z.string().describe("Native tool name that errored."),
+    kind: ToolKind.default("other"),
+    target: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Redacted target of the tool use, when known."),
+    summary: z.string().describe("Redacted error summary."),
+    /** True when a later successful result is attributable to this failed invocation. */
+    recovered: z
+      .boolean()
+      .default(false)
+      .describe("True when a later successful result matches this failed invocation."),
+    tool_use_id: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Tool use id correlating the error to its call, when known."),
+  })
+  .describe("One tool error observed during an attempt.");
+export type ToolErrorRecord = z.infer<typeof ToolErrorRecord>;
+
+/**
+ * Typed taxonomy (GH #31) the orchestrator classifies every adapter/harness
+ * transient failure into at the adapter→orchestrator boundary. Orthogonal to
+ * the fine-grained `kind`: the retry policy gates on this category's
+ * `retryable` verdict, and required-actions attach auth guidance ONLY on
+ * `auth_failed`. Never inferred by surfaces or parsed from prose.
+ */
+export const HarnessFailureCategory = z
+  .enum([
+    "timeout",
+    "rate_limited",
+    "auth_failed",
+    "capability_refused",
+    "process_crash",
+    "config_error",
+    "unknown_harness_error",
+  ])
+  .describe(
+    "Typed harness-failure category (GH #31) the retry policy and required-actions read; orthogonal to the fine-grained kind.",
+  );
+export type HarnessFailureCategory = z.infer<typeof HarnessFailureCategory>;
+
+export const TransientFailureRecord = z
+  .object({
+    kind: z
+      .enum(["network", "stream_disconnect", "service_unavailable", "timeout", "unknown"])
+      .default("unknown")
+      .describe("Fine-grained kind of transient failure (adapter-declared)."),
+    /** GH #31 typed category the retry policy and required-actions read. */
+    category: HarnessFailureCategory.default("unknown_harness_error").describe(
+      "Typed failure category (GH #31) the retry policy and required-actions read; orthogonal to kind.",
+    ),
+    /** Whether the classified category is retryable — the centralized retry
+     * gate reads THIS, never a bare sawTransient boolean. */
+    retryable: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Whether the classified category is retryable (the centralized retry-policy gate).",
+      ),
+    retry_delay_ms: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .default(null)
+      .describe("Suggested retry delay in milliseconds, when reported."),
+    /** Preserved safe provider metadata: the vendor's HTTP status when disclosed. */
+    http_status: z
+      .number()
+      .int()
+      .nullable()
+      .default(null)
+      .describe("Vendor HTTP status code disclosed by the error, when any; null otherwise."),
+    /** Process termination signal (e.g. SIGKILL) when a crash killed the child, else null. */
+    signal: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Process termination signal (e.g. SIGKILL) when a crash killed the child; null otherwise.",
+      ),
+    /** Vendor/adapter error-category code passed verbatim as evidence, when any. */
+    adapter_code: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Vendor/adapter error-category code passed verbatim as evidence; null when none."),
+  })
+  .describe("An adapter-declared transient failure that informed bounded retry policy.");
+export type TransientFailureRecord = z.infer<typeof TransientFailureRecord>;
+
+export const AttemptOutcomeStatus = z
+  .enum(["success", "success_with_warnings", "blocked", "failed"])
+  .describe("Outcome of one attempt: success, success_with_warnings, blocked, or failed.");
+export type AttemptOutcomeStatus = z.infer<typeof AttemptOutcomeStatus>;
+
+/**
+ * Contract/outcome truth for one attempt. Tool errors are tracked separately
+ * from whether the attempt produced the work product the intent asked for.
+ */
+export const AttemptOutcome = z
+  .object({
+    deliverable_present: z
+      .boolean()
+      .default(false)
+      .describe("Whether the attempt produced the deliverable the intent asked for."),
+    gates_passed: z
+      .boolean()
+      .nullable()
+      .default(null)
+      .describe("Whether deterministic gates passed; null when no gates ran."),
+    harness_errored: z.boolean().default(false).describe("Whether the harness itself errored."),
+    web_required_unsatisfied: z
+      .boolean()
+      .default(false)
+      .describe("True when required web evidence was not satisfied."),
+    /** QA-024: the run requested the Claudexor delegation belt (--delegate) but
+     * the injected MCP server never became operational (the harness reported it
+     * `failed`). A requested-but-unavailable belt must not terminalize a silent
+     * clean success — the harness may have degraded to its own native subagent
+     * with no Claudexor sub-run provenance. */
+    delegation_belt_unavailable: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True when --delegate requested the belt but the injected MCP server failed to become operational (QA-024); blocks a silent clean success.",
+      ),
+    tool_warnings_count: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Count of tool warnings in the attempt."),
+    status: AttemptOutcomeStatus.default("success"),
+    /**
+     * D-16 work_state axis for this attempt (INV-116): the model-attested work
+     * outcome from its WorkReport, orthogonal to `status`. Absent when the
+     * route carries no work_report transport (pre-D16 shape preserved).
+     */
+    work_state: WorkState.optional().describe(
+      "D-16 model-attested work outcome for the attempt (from its WorkReport), orthogonal to status; absent when the route has no work_report transport.",
+    ),
+  })
+  .describe(
+    "Contract/outcome truth for one attempt; tool errors are tracked separately from deliverable production.",
+  );
+export type AttemptOutcome = z.infer<typeof AttemptOutcome>;
+
+/**
+ * Typed conformance receipt for a run started with an output schema, persisted
+ * as final/structured_output.yaml by the ONE engine validator. Surfaces project
+ * it (summary.outputConformance) and never re-validate the answer themselves.
+ */
+export const StructuredOutputConformance = z
+  .object({
+    schema_version: SchemaVersion,
+    schema_dialect: OutputSchemaDialect.nullable()
+      .default(null)
+      .describe(
+        "Dialect used to compile and validate the caller schema; null only for legacy receipts.",
+      ),
+    schema_hash: ContentHash.nullable()
+      .default(null)
+      .describe(
+        "Stable hash of the original caller schema; null only for legacy receipts written before schema identity was recorded.",
+      ),
+    status: z
+      .enum(["passed", "failed"])
+      .describe("Whether the final answer conformed to the run's output schema."),
+    reason: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Why conformance failed (missing/unparsable answer, validator errors); null on pass.",
+      ),
+    /** Present when the answer parsed as JSON at all (even non-conformant JSON
+     * is materialized to help the embedder debug and retry). */
+    output_path: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Artifact path of the materialized structured output: final/output.json when conformant, final/output.invalid.json when parsed but non-conformant; null when the answer never parsed.",
+      ),
+    normalized_optional_nulls: z.number().int().nonnegative().default(0),
+    generated_at: IsoTimestamp.describe("When the receipt was generated."),
+  })
+  .describe(
+    "Structured-output conformance receipt (final/structured_output.yaml): the single engine validator's verdict on the final answer.",
+  );
+export type StructuredOutputConformance = z.infer<typeof StructuredOutputConformance>;
+
+export const TokenUsage = z
+  .object({
+    input_tokens: z.number().int().nonnegative().nullable().default(null),
+    output_tokens: z.number().int().nonnegative().nullable().default(null),
+    cached_input_tokens: z.number().int().nonnegative().nullable().default(null),
+  })
+  .describe(
+    "Token usage summed from harness usage events; money is tracked separately in the budget ledger, not here. Each field is null until a harness reports it, so unreported never reads as 0. The relation between cached_input_tokens and input_tokens is harness-specific; do not derive a grand total.",
+  );
+export type TokenUsage = z.infer<typeof TokenUsage>;
+
+const AttemptTokenUsage = TokenUsage.extend({
+  input_token_usage: InputTokenUsage.optional(),
+});
+
+/**
+ * Runtime readiness receipt for the Claudexor delegation belt (D32) on one
+ * attempt (QA-024). The preflight/descriptor layer refuses TYPED when no belt
+ * `cli.js` entry exists; THIS record is the complementary runtime truth: when a
+ * belt WAS injected, did the harness's MCP server actually come up, and did any
+ * belt tool actually run? A `failed` server with zero tool evidence is the
+ * false-success trap — the harness saw no `mcp__claudexor__*` tools and may
+ * have answered from its own native subagent with no Claudexor sub-run.
+ */
+export const DelegationBeltEvidence = z
+  .object({
+    requested: z
+      .boolean()
+      .default(false)
+      .describe("A Claudexor delegation belt MCP server was injected into this attempt's sandbox."),
+    server_name: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The injected belt MCP server name (as the harness reports it); null when unknown.",
+      ),
+    ready: z
+      .boolean()
+      .default(false)
+      .describe("The harness reported the injected belt MCP server as connected/ready."),
+    failed: z
+      .boolean()
+      .default(false)
+      .describe("The harness reported the injected belt MCP server as failed to start."),
+    tool_evidence: z
+      .boolean()
+      .default(false)
+      .describe("At least one belt tool (mcp__<server>__*) was actually invoked in this attempt."),
+  })
+  .describe(
+    "Runtime readiness receipt for the injected Claudexor delegation belt on one attempt (QA-024).",
+  );
+export type DelegationBeltEvidence = z.infer<typeof DelegationBeltEvidence>;
+
+/**
+ * QA-040: runtime browser-MCP evidence for one attempt. `requested` is set when
+ * the engine armed the Playwright browser injection for this lane (the injected
+ * server name is known — a fixed `browser` namespace). `attempted`/`satisfied`/
+ * `failed` flip from the run's tool events matched to that injected server, so a
+ * successful browser navigation is recognized as trusted live-web activity even
+ * though the adapter normalizes browser calls as `kind:"mcp"` (codex/claude both
+ * do). `unused` discloses an armed-but-never-called browser (a generic
+ * web_search satisfied instead) WITHOUT failing the run — disclosure only.
+ */
+export const BrowserEvidenceRecord = z
+  .object({
+    requested: z
+      .boolean()
+      .default(false)
+      .describe("The engine armed (injected) the browser MCP for this attempt."),
+    server_name: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("The injected browser MCP server name; null when not armed."),
+    attempted: z
+      .boolean()
+      .default(false)
+      .describe("At least one browser MCP tool call (matched to the injected server) occurred."),
+    satisfied: z
+      .boolean()
+      .default(false)
+      .describe("At least one browser MCP tool call succeeded (trusted live-web activity)."),
+    failed: z
+      .boolean()
+      .default(false)
+      .describe("A browser MCP tool call failed and was not superseded by a success."),
+    unused: z
+      .boolean()
+      .default(false)
+      .describe(
+        "The browser was armed but never called while generic web evidence satisfied the run (disclosure only; not a failure).",
+      ),
+  })
+  .describe("Runtime browser-MCP evidence for one attempt (QA-040).");
+export type BrowserEvidenceRecord = z.infer<typeof BrowserEvidenceRecord>;
+
+export const AttemptTelemetryRecord = z
+  .object({
+    request_refusal: HarnessRequestRefusal.optional(),
+    effort_resolution: EffortResolution.optional(),
+    processing: ProcessingReceipt.optional(),
+    processing_cost_basis: ProcessingCostBasis.optional(),
+    usage_cost: UsageCostSummary.optional(),
+    attempt_id: Id.describe("Attempt id."),
+    harness_id: Id.describe("Harness that ran the attempt."),
+    observed_model: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Model the harness stream actually reported; null when never disclosed (rendered as unverified, never guessed).",
+      ),
+    /**
+     * Auth route the attempt ACTUALLY ran under (route evidence, like
+     * observed_model): adapters disclose their chosen route as a typed
+     * `auth_route` payload on the started event, sourced from the credential
+     * material itself (codex: the seeded auth.json's own auth_mode; claude:
+     * the selected credentials/OAuth/api-key route). Null when never
+     * disclosed — subscription-vs-API quota attribution must treat that as
+     * unknown, never guess from manifests.
+     */
+    auth_mode: AuthMode.nullable()
+      .default(null)
+      .describe(
+        "Auth route the attempt actually ran under (local_session subscription vs api_key), disclosed by the adapter's typed started payload; null when never disclosed (treated as unknown, never guessed).",
+      ),
+    /** Concrete credential source the attempt disclosed alongside its route
+     * (route evidence; null = undisclosed, never guessed). */
+    auth_source: AuthSourceKind.nullable()
+      .default(null)
+      .describe(
+        "Concrete credential source the attempt disclosed (native_session/api_key_env/...); null when never disclosed.",
+      ),
+    /** Credential profile the attempt ACTUALLY ran under (INV-135), from the
+     * adapter's per-event stamp; rotation makes this differ from the run's
+     * requested id. Null = engine-default credentials or never disclosed. */
+    profile_id: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Credential profile the attempt actually ran under (adapter-stamped); null = engine default or undisclosed.",
+      ),
+    /** Model hint the engine actually SENT this attempt (requested side of the
+     * model x route truth; observed_model is the disclosed side). */
+    requested_model: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Model hint the engine sent the attempt; null when the route ran on its default."),
+    request_requirements: z
+      .array(RequestRequirementResolution)
+      .default([])
+      .describe(
+        "Per-lane requested/effective capability receipts computed at preflight; never inferred by surfaces.",
+      ),
+    web: WebEvidenceRecord,
+    /** Bounded by the writer (most recent first when truncated; `tool_errors_total` keeps the true count). */
+    tool_errors: z
+      .array(ToolErrorRecord)
+      .default([])
+      .describe(
+        "Tool errors, bounded by the writer (most recent first when truncated; tool_errors_total keeps the true count).",
+      ),
+    tool_errors_total: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("True total count of tool errors."),
+    unrecovered_tool_errors: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Tool errors with no later successful recovery."),
+    /** tool_result events that arrived WITHOUT a status field (never treated as ok). */
+    statusless_tool_results: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("tool_result events that arrived without a status field (never treated as ok)."),
+    /** Native lines/events the adapter could not parse or did not recognize (never silently zero). */
+    dropped_events: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe(
+        "Native lines/events the adapter could not parse or did not recognize (never silently zero).",
+      ),
+    /** Adapter-declared transient failures that informed bounded retry policy. */
+    transient_failures: z
+      .array(TransientFailureRecord)
+      .default([])
+      .describe("Adapter-declared transient failures that informed bounded retry policy."),
+    /** Contract/outcome projection for this attempt. */
+    outcome: AttemptOutcome.default({}),
+    /** Delegation-belt runtime readiness (QA-024); present only when a belt was
+     * injected into this attempt. Absent on non-delegate attempts. */
+    delegation_belt: DelegationBeltEvidence.optional(),
+    /** Browser-MCP runtime evidence (QA-040); present only when the browser was
+     * armed for this attempt. Absent when the browser was not injected. */
+    browser: BrowserEvidenceRecord.optional(),
+    /** Token usage summed across this attempt's usage events. */
+    usage: AttemptTokenUsage.default({}),
+  })
+  .describe(
+    "Telemetry for one attempt: route evidence, web evidence, tool errors, dropped events, and outcome.",
+  );
+export type AttemptTelemetryRecord = z.infer<typeof AttemptTelemetryRecord>;
+
+export const RunTelemetry = z
+  .object({
+    schema_version: SchemaVersion,
+    run_id: Id.describe("Run the telemetry belongs to."),
+    task_id: Id.describe("Task the run belongs to."),
+    mode: ModeKind,
+    requested_access: RecordedAccessProfile.describe("Access profile the caller requested."),
+    effective_access: RecordedAccessProfile.describe("Access profile enforced by the engine."),
+    external_context_policy: ExternalContextPolicy.describe("Requested web policy for the run."),
+    effective_web_mode: ExternalContextPolicy.describe(
+      "Web policy actually executed by the selected route.",
+    ),
+    web_required: z.boolean().default(false).describe("Explicit stored web requirement."),
+    final_attempt_id: Id.nullable()
+      .default(null)
+      .describe(
+        "Attempt whose output became the final answer/patch; null when no attempt succeeded.",
+      ),
+    web: WebEvidenceRecord.describe(
+      "Run-level web evidence: the final attempt's evidence, else the most severe attempt evidence.",
+    ),
+    attempts: z
+      .array(AttemptTelemetryRecord)
+      .default([])
+      .describe("Per-attempt telemetry records."),
+    request_requirements: z
+      .array(RequestRequirementResolution)
+      .default([])
+      .describe("All selected-lane capability receipts for this run."),
+    delegation: RunDelegationInfo.nullable()
+      .default(null)
+      .describe(
+        "Run-level Delegate receipt aggregated from engine injection and typed tool evidence; null on legacy artifacts that did not record it.",
+      ),
+    tool_warnings_total: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Sum of attempt tool warnings; rendered separately from terminal state."),
+    usage_totals: AttemptTokenUsage.default({}),
+    /** The run's auth ROUTE RECEIPT (INV-061 disclosure): requested preference,
+     * the effective route/source the deciding attempt disclosed, and a
+     * deterministic reason — computed ONCE here; summary/CLI project it
+     * verbatim. Null only on legacy artifacts written before this field. */
+    auth_route: z
+      .object({
+        requested: AuthPreference,
+        effective: AuthMode.nullable().default(null),
+        source: AuthSourceKind.nullable().default(null),
+        reason: AuthRouteReason,
+        harness_id: z.string().nullable().default(null),
+        attempt_id: z.string().nullable().default(null),
+        /** Credential profile the deciding attempt ran under (INV-135);
+         * null = engine-default credentials. */
+        profile_id: z
+          .string()
+          .nullable()
+          .default(null)
+          .describe(
+            "Credential profile the deciding attempt ran under; null = engine-default credentials.",
+          ),
+        /** Typed model mismatch on the deciding attempt (Quiz-2a): the engine
+         * SENT `requested` (the processing receipt's final native id when one
+         * was prepared, else the hint) but the stream DISCLOSED observed. Null
+         * when they match or either side is unknown — never inferred. */
+        model_mismatch: z
+          .object({
+            requested: z.string(),
+            observed: z.string(),
+          })
+          .nullable()
+          .default(null)
+          .describe(
+            "Requested-vs-observed model mismatch on the deciding attempt; null when they match or either side is unknown.",
+          ),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "Auth route receipt: requested preference, disclosed effective route/source, deterministic reason, and the disclosing attempt; surfaces project it verbatim.",
+      ),
+    /** Typed routing rationale (QA-034) recorded ONCE at pool ordering: the
+     * ordered/dropped pool, the decisive reason, and per-candidate billing/cost
+     * tuples. Run evidence, not an event. Null on legacy artifacts and on runs
+     * with an explicit single-harness pool where no ranking was computed. */
+    routing_rationale: RouteRankingRationale.nullable()
+      .default(null)
+      .describe(
+        "Typed routing rationale recorded once at pool ordering (QA-034); null on legacy artifacts or when no ranking was computed.",
+      ),
+    deep_scan_synthesis: DeepScanSynthesis.nullable()
+      .default(null)
+      .describe("Deep-scan reducer outcome (#27); null on non-deep-scan/legacy runs."),
+    run_facts: RunFacts.nullable()
+      .default(null)
+      .describe("Exact validated terminal receipt; null before terminalization or on legacy runs."),
+    generated_at: IsoTimestamp.describe("When the telemetry artifact was generated."),
+  })
+  .describe(
+    "Run telemetry artifact (final/telemetry.yaml), the single computed source of web/tool evidence; surfaces project it and never re-derive evidence from raw events.",
+  );
+export type RunTelemetry = z.infer<typeof RunTelemetry>;

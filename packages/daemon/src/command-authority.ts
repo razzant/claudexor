@@ -1,18 +1,21 @@
-import type { CommandStore } from "./command-store.js";
+import type { CommandStorePort, CommandQueries } from "./store-contracts.js";
 
 export interface CommandAuthority {
-  current?(): CommandStore;
-  forRequest?(params: unknown): CommandStore;
-  all?(): CommandStore[];
-  findById?(id: string): CommandStore | undefined;
+  current?(): CommandStorePort;
+  forRequest?(params: unknown): CommandStorePort;
+  findById?(id: string): CommandStorePort | undefined;
 }
 
-export function commandStores(authority: CommandAuthority): CommandStore[] {
-  if (authority.all) return authority.all();
-  return authority.current ? [authority.current()] : [];
+/** A complete command boundary; SQL never supplies a legacy enumeration fallback. */
+export interface CommandBackend extends CommandAuthority {
+  readonly queries: CommandQueries;
+  pruneHistory(cap: number, retentionMs: number, now: number): string[];
 }
 
-export function commandStoreForRequest(authority: CommandAuthority, params: unknown): CommandStore {
+export function commandStoreForRequest(
+  authority: CommandAuthority,
+  params: unknown,
+): CommandStorePort {
   const store = authority.forRequest?.(params) ?? authority.current?.();
   if (!store) throw new Error("command authority cannot route the request");
   return store;
@@ -21,6 +24,9 @@ export function commandStoreForRequest(authority: CommandAuthority, params: unkn
 export function commandStoreForId(
   authority: CommandAuthority,
   id: string,
-): CommandStore | undefined {
-  return authority.findById?.(id) ?? commandStores(authority).find((store) => store.get(id));
+): CommandStorePort | undefined {
+  const addressed = authority.findById?.(id);
+  if (addressed) return addressed;
+  const current = authority.current?.();
+  return current?.get(id) ? current : undefined;
 }

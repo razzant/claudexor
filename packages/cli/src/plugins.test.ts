@@ -310,7 +310,8 @@ describe("plugin lifecycle", () => {
               .split("\n")
               .filter(
                 (line) =>
-                  line.includes("claudexor:managed host-plugin-lifecycle") ||
+                  (line.includes("claudexor:managed host-plugin-lifecycle") &&
+                    !line.includes("env CLAUDEXOR_MANAGED=")) ||
                   line.includes('"CLAUDEXOR_CONFIG_DIR"') ||
                   line.includes('"skills"') ||
                   line.includes('"mcpServers"') ||

@@ -1,6 +1,11 @@
+/** Historical replay/file contract against the sealed legacy reference.
+ * SQL serving behavior is covered by store/retention.test.ts. */
 import { describe, expect, it } from "vitest";
 import type { JobRecord } from "./server.js";
-import { MAX_RETAINED_COMMAND_PARAMS_BYTES, prunableCommandIds } from "./command-retention.js";
+import {
+  MAX_RETAINED_COMMAND_PARAMS_BYTES,
+  prunableCommandIds,
+} from "./store/test-support/fixtures/legacy/daemon/command-retention.js";
 
 function rec(over: Partial<JobRecord> & { id: string }): JobRecord {
   return {

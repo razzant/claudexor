@@ -1,3 +1,4 @@
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 /**
  * The durable maintenance OPERATION over a real CommandStore journal and the
  * real spawnProcess owner, driving a fake CLI child (a tiny node script that
@@ -16,8 +17,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnProcess } from "@claudexor/core";
-import { CommandStore } from "@claudexor/daemon";
-import { DurableJournal } from "@claudexor/journal";
 import { accountObservations } from "./account-observations.js";
 import { createHarnessMaintenance } from "./harness-maintenance-service.js";
 
@@ -62,8 +61,9 @@ const UPDATED = {
 };
 
 const roots: string[] = [];
+const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
 const pids = new Set<number>();
-afterEach(() => {
+afterEach(async () => {
   for (const pid of pids) {
     try {
       process.kill(pid, "SIGKILL");
@@ -72,10 +72,11 @@ afterEach(() => {
     }
   }
   pids.clear();
+  for (const sql of stores.splice(0)) await sql.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnProcess) {
+async function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnProcess) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-maint-op-")));
   roots.push(root);
   const script = join(root, "fake-cli.mjs");
@@ -88,9 +89,9 @@ function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnProcess
       JSON.stringify({ log, all: ["codex"], latest: "7.7.7", row: ROW, update: UPDATED, ...patch }),
     );
   write(config);
-  const store = new CommandStore(
-    new DurableJournal({ rootDir: join(root, "journal"), partition: "global" }),
-  );
+  const sql = await sqlFixture(root);
+  stores.push(sql);
+  const store = sql.graph.commands.current();
   let next = 0;
   const controllers = new Map<string, AbortController>();
   const client = {
@@ -113,7 +114,8 @@ function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnProcess
   const spawnArgs: Array<{ args: string[]; resultAtSpawn: unknown }> = [];
   const readiness = { invalidate: vi.fn() };
   const maintenance = createHarnessMaintenance({
-    commands: { current: () => store },
+    commands: sql.graph.commands,
+    maintenanceQueries: sql.graph.commands.queries,
     client,
     readiness: () => readiness,
     cli: { command: process.execPath, args: [script, configPath] },
@@ -121,7 +123,7 @@ function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnProcess
     spawn: ((command: string, argv: string[], options: never) => {
       spawnArgs.push({
         args: argv.slice(2),
-        resultAtSpawn: structuredClone(store.records().at(-1)?.result ?? null),
+        resultAtSpawn: structuredClone(sql.records().at(-1)?.result ?? null),
       });
       return spawn(command, argv, options);
     }) as typeof spawnProcess,
@@ -165,7 +167,7 @@ describe("harness maintenance operation", () => {
       const captured = new Promise<void>((resolve) => (started = resolve));
       let version = "1.0.0";
       let inspections = 0;
-      const w = harnessWorld({}, async function* (_command, args) {
+      const w = await harnessWorld({}, async function* (_command, args) {
         const [, , , verb, ...rest] = args;
         if (verb === "inspect") {
           const ids = rest[0]?.startsWith("--") ? ["codex", "claude"] : [rest[0]!];
@@ -226,7 +228,7 @@ describe("harness maintenance operation", () => {
   );
 
   it("one key + same body rejoins the same operation; a different body conflicts", async () => {
-    const w = harnessWorld();
+    const w = await harnessWorld();
     const first = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     const again = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     expect(again.id).toBe(first.id);
@@ -241,7 +243,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("resolves latest once and records the proved before + exact target BEFORE mutating", async () => {
-    const w = harnessWorld();
+    const w = await harnessWorld();
     const observations = vi.spyOn(accountObservations, "invalidateHarness");
     const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     const done = await w.run(id);
@@ -276,7 +278,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("a failed first update keeps its before fact, and Return targets that exact version", async () => {
-    const w = harnessWorld({
+    const w = await harnessWorld({
       update: { ok: false, code: "install_verification_failed", mutation: "unknown" },
     });
     const { id } = await w.maintenance.routes.createMaintenanceOperation(
@@ -298,7 +300,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("previous stays unknown without retained evidence instead of becoming the baseline", async () => {
-    const w = harnessWorld();
+    const w = await harnessWorld();
     await expect(
       w.maintenance.routes.createMaintenanceOperation(
         { harness: "codex", target: { kind: "previous" } },
@@ -309,7 +311,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("cancel stops the child tree and reports an uncertain effect, not a clean rollback", async () => {
-    const w = harnessWorld({ sleepMs: 30_000 });
+    const w = await harnessWorld({ sleepMs: 30_000 });
     const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     const running = w.run(id);
     await vi.waitFor(() => expect(w.calls().map((call) => call.verb)).toContain("update"), {
@@ -327,7 +329,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("cancel during preparation stops its child before any update starts", async () => {
-    const w = harnessWorld({ inspectSleepMs: 30_000 });
+    const w = await harnessWorld({ inspectSleepMs: 30_000 });
     const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     const running = w.run(id);
     await vi.waitFor(() => expect(w.calls()).toHaveLength(1), { timeout: 10_000 });
@@ -344,7 +346,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("keeps the daemon event loop responsive while the installer child runs", async () => {
-    const w = harnessWorld({ sleepMs: 600 });
+    const w = await harnessWorld({ sleepMs: 600 });
     const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     let ticks = 0;
     const timer = setInterval(() => (ticks += 1), 20);
@@ -357,7 +359,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("an interrupted operation after the install began reads as unknown, not as the old version", async () => {
-    const w = harnessWorld();
+    const w = await harnessWorld();
     const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     w.store.update(id, {
       state: "interrupted",
@@ -385,7 +387,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("reading inventory only inspects: no update, install or login child", async () => {
-    const w = harnessWorld();
+    const w = await harnessWorld();
     const codex = { harnessIds: ["codex"] };
     await w.maintenance.routes.maintenanceInventory(codex);
     await w.maintenance.routes.maintenanceInventory(codex);
@@ -397,7 +399,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("refuses a cached not-maintainable installation before acceptance", async () => {
-    const w = harnessWorld({
+    const w = await harnessWorld({
       row: { ...ROW, maintainable: false, targets: [], remedy: "unset CLAUDEXOR_CODEX_BIN" },
     });
     await w.maintenance.routes.maintenanceInventory({});
@@ -411,7 +413,7 @@ describe("harness maintenance operation", () => {
   });
 
   it("an active operation is disclosed on the readiness row instead of an auth/quota cause", async () => {
-    const w = harnessWorld();
+    const w = await harnessWorld();
     const { id } = await w.maintenance.routes.createMaintenanceOperation(latest, "k1");
     const list = w.maintenance.decorateHarnessList(async () => ({
       harnesses: [

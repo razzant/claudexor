@@ -1,6 +1,11 @@
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { estimateCodexCostUsd } from "./pricing.js";
-import { codexTranscriptModel, codexTranscriptRateLimits } from "./transcript.js";
+import {
+  type CodexRateLimitCursor,
+  codexRateLimitCursor,
+  codexTranscriptModel,
+  codexTranscriptRateLimits,
+} from "./transcript.js";
 
 export type CodexEventDecoration = {
   spec: HarnessRunSpec;
@@ -11,6 +16,8 @@ export type CodexEventDecoration = {
   model: string | null;
   nativeThreadId?: string;
   transcriptModel?: string;
+  /** Where this run's rollout rate-limit reading left off. */
+  rateLimits?: CodexRateLimitCursor;
 };
 
 export function decorateCodexEvent(
@@ -67,7 +74,11 @@ export function decorateCodexEvent(
     }
   }
   if (event.type === "usage" && !event.quota && spec.evidence_policy !== "stream_only") {
-    const quota = codexTranscriptRateLimits(context.env["CODEX_HOME"], context.nativeThreadId);
+    const quota = codexTranscriptRateLimits(
+      context.env["CODEX_HOME"],
+      context.nativeThreadId,
+      (context.rateLimits ??= codexRateLimitCursor()),
+    );
     if (quota) event.quota = quota;
   }
   if (event.quota && profile && event.quota.subject_id == null) {

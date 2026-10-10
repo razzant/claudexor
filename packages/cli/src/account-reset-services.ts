@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import {
   AccountResets,
   type AccountResetBinding,
-  type CommandStore,
+  type CommandStorePort,
   type QuotaRegistry,
 } from "@claudexor/daemon";
 import type {
@@ -67,7 +67,7 @@ async function nativeIdentity(target: AccountTarget) {
 }
 
 export function accountResetServices(
-  commands: { current(): CommandStore },
+  commands: { current(): CommandStorePort },
   quota: { current(): QuotaRegistry },
 ) {
   const operations = new AccountResets({

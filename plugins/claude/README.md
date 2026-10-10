@@ -5,7 +5,7 @@ distributed directly from the Claudexor GitHub repository.
 
 Before enabling it, make the preinstalled `claudexor` command available on
 Claude Code's PATH and configure the existing Claudexor daemon/account route.
-Use macOS or Linux with Node.js 20.19 or newer. This package contains no runtime,
+Use macOS or Linux with Node.js 24.15 or newer. This package contains no runtime,
 credentials, hooks, status-line collector, or automatic setup. Do not enable it
 alongside an existing generated Claudexor integration in the same host.
 

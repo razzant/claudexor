@@ -1,12 +1,13 @@
 import type { AdapterRegistry, ModelAdapter } from "@claudexor/core";
 import { credentialProfilePolicyState } from "@claudexor/core";
-import { loadConfig } from "@claudexor/config";
+import { loadConfigCached } from "@claudexor/config";
 import {
   ModelOperations,
   ModelSubstitutionLedger,
   type CredentialUnusableLedger,
   type DaemonClient,
   type ModelOperationDependencies,
+  type ModelOperationPersistence,
   type QuotaRegistry,
 } from "@claudexor/daemon";
 import { createCodexModelAdapter, describeCodexClientVersion } from "@claudexor/harness-codex";
@@ -27,6 +28,7 @@ import {
   type CredentialProfile,
   type ModelAccountChoice,
   type ModelCallResult,
+  type JobAdmission,
 } from "@claudexor/schema";
 import { errorCode, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
 import { accountsMigrationGate } from "./accounts-unified-migration.js";
@@ -35,6 +37,7 @@ import { credentialUnusableLedger } from "./run-orchestrator.js";
 import type { RetentionRunner } from "./retention-service.js";
 import { catalogProfiles, enumerateAccountCatalogs } from "./account-catalog.js";
 import { bindModelAccountEvidence } from "./model-account-evidence.js";
+import { modelOperationControlServices } from "./model-operation-control.js";
 
 /**
  * Daemon-lifetime model-substitution observations: in-memory and bounded, like
@@ -49,16 +52,18 @@ interface ModelSource {
   credentialHarness: string;
 }
 
-interface Dependencies extends Pick<ModelOperationDependencies, "commands" | "resources" | "warn"> {
-  client: Pick<DaemonClient, "enqueue" | "cancel">;
-  quota: () => QuotaRegistry;
-  config?: () => GlobalConfig;
-  registry?: AdapterRegistry;
-  sources?: readonly ModelSource[];
-  unusable?: CredentialUnusableLedger;
-  substitutions?: ModelSubstitutionLedger;
-  migrationGate?: typeof accountsMigrationGate;
-}
+type Dependencies = ModelOperationPersistence &
+  Pick<ModelOperationDependencies, "resources" | "warn"> & {
+    client: Pick<DaemonClient, "enqueue" | "cancel">;
+    admission?: (id: string) => JobAdmission | null;
+    quota: () => QuotaRegistry;
+    config?: () => GlobalConfig;
+    registry?: AdapterRegistry;
+    sources?: readonly ModelSource[];
+    unusable?: CredentialUnusableLedger;
+    substitutions?: ModelSubstitutionLedger;
+    migrationGate?: typeof accountsMigrationGate;
+  };
 
 function modelError(code: string, message: string, status = 409): Error {
   return Object.assign(new Error(message), { code, status, retryable: false });
@@ -71,7 +76,7 @@ export function createModelServices(deps: Dependencies) {
     { adapter: createCodexModelAdapter(), label: "Codex", credentialHarness: "codex" },
   ];
   const registry = deps.registry ?? buildRegistry({ includeFakes: false });
-  const config = deps.config ?? (() => loadConfig(noProjectRepoRoot()).global);
+  const config = deps.config ?? (() => loadConfigCached(noProjectRepoRoot()).global);
   const unusable = deps.unusable ?? credentialUnusableLedger;
   const substitutions = deps.substitutions ?? modelSubstitutionLedger;
   const quotaEvidence = () => ({ ...deps.quota().read(), honored: unusable.honored() });
@@ -342,6 +347,7 @@ export function createModelServices(deps: Dependencies) {
 
   const operations = new ModelOperations({
     commands: deps.commands,
+    resourceQueries: deps.resourceQueries,
     resources: deps.resources,
     warn: deps.warn,
     enqueue: ({ request, ...options }) => deps.client.enqueue(request, options),
@@ -489,12 +495,7 @@ export function createModelServices(deps: Dependencies) {
           partial: accounts.some((entry) => entry.catalog === null),
         });
       },
-      createModelOperation: operations.create.bind(operations),
-      getModelOperation: async (id: string) => operations.inspect(id),
-      readModelResult: async (id: string) => operations.readResult(id),
-      acknowledgeModelResult: async (id: string, sha256: string) =>
-        operations.acknowledge(id, sha256),
-      cancelModelOperation: operations.cancel.bind(operations),
+      ...modelOperationControlServices(operations, deps.admission),
     },
     withRetention:
       (run: RetentionRunner): RetentionRunner =>

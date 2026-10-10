@@ -700,6 +700,10 @@ import Testing
         let body = try JSONEncoder().encode(ProjectRootRequest(root: "/next"))
         let object = try JSONSerialization.jsonObject(with: body) as? [String: String]
         #expect(object?["root"] == "/next")
+        // POST /v2/projects also answers `created`; the app's DTO tolerates it.
+        let registered = #"{"schemaVersion":2,"id":"prj-1","root":"/p","createdAt":"t","updatedAt":"t","nesting":[],"created":false}"#
+        let project = try JSONDecoder().decode(RegisteredProject.self, from: Data(registered.utf8))
+        #expect(project.id == "prj-1")
     }
 
     @Test func threadApplyResponseDecodes() throws {

@@ -30,19 +30,20 @@ it.each(["agent", "ask", "plan"] as const)(
       credential_profile_id: "account-a",
     });
     const runner = createDaemonAgentRunner({
-      threads: {
-        all: () => [
-          {
-            records: () => [
-              {
+      commands: {
+        getByRunId: (id) =>
+          id === "prior"
+            ? {
+                id: "job-prior",
+                createdAt: "2026-10-08T00:00:00.000Z",
                 runId: "prior",
                 runDir,
                 state: "cancelled",
                 params: { prompt: "original work", scope: { kind: "project", root: repoRoot } },
-              },
-            ],
-          },
-        ],
+              }
+            : undefined,
+      },
+      threads: {
         assertKnownIds: () => ({ threadId: thread.id, turnId: "turn-next" }),
         getThread: () => thread,
         getTurn: () => ({ created_at: "2026-10-08T00:01:00.000Z", attachments: [] }),

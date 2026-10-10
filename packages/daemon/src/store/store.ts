@@ -1,13 +1,14 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
-import { isBusyFailure, mapStoreError, StoreError } from "./errors.js";
+import { isBusyFailure, mapStoreError, StoreCorruptError, StoreError } from "./errors.js";
 import { FlusherController, type FlusherFacts } from "./flusher.js";
 import type { FlusherHooks, FlusherPassReport } from "./flusher-protocol.js";
 import { OwnerGenerations } from "./owner-generations.js";
 import { applyPragmas, MAIN_CONNECTION_PRAGMAS } from "./pragmas.js";
 import { loadEngineRuntime, type EngineRuntime, type EngineRuntimeProbe } from "./runtime.js";
 import { assertSchemaServable, ensureSchema, readSchemaIdentity } from "./schema.js";
+import { observeStatement } from "./statement-observer.js";
 
 export interface EngineStoreOptions {
   /** The daemon data root; the store lives at `<daemonDir>/engine.sqlite`. */
@@ -17,6 +18,8 @@ export interface EngineStoreOptions {
   flusherHooks?: FlusherHooks;
   now?: () => Date;
   log?: (line: string) => void;
+  /** Synchronous physical-fault notification; the caller owns serving admission. */
+  onCorrupt?: (problem: StoreCorruptError) => void;
   runtime?: EngineRuntimeProbe;
 }
 
@@ -36,7 +39,7 @@ export interface StoreFacts {
   interval_ms: number;
   wal_bytes: number | null;
   busy_waits: number;
-  obligations_open: number;
+  obligations_open: number | null;
   integrity: "pending" | "ok" | "failed";
   /** Filled by the importer (PR-D); the store core never migrates. */
   migration: null;
@@ -67,12 +70,13 @@ export class EngineStore {
   private busyWaits = 0;
   private integrityState: StoreFacts["integrity"] = "pending";
   private closed = false;
+  private closing: Promise<void> | null = null;
 
   private constructor(
     runtime: EngineRuntime,
     paths: EngineStorePaths,
     connection: DatabaseSync,
-    options: EngineStoreOptions,
+    private readonly options: EngineStoreOptions,
   ) {
     this.runtime = runtime;
     this.paths = paths;
@@ -83,6 +87,7 @@ export class EngineStore {
       ...(options.workerEntry ? { workerEntry: options.workerEntry } : {}),
       ...(options.flusherHooks ? { hooks: options.flusherHooks } : {}),
       ...(options.log ? { log: options.log } : {}),
+      onError: (error) => void this.failure(error, "flusher worker"),
       onSynced: (generation, report) => {
         for (const listener of this.syncedListeners) listener(generation, report);
       },
@@ -135,7 +140,9 @@ export class EngineStore {
     const cached = this.statements.get(sql);
     if (cached) return cached;
     try {
-      const statement = this.connection.prepare(sql);
+      const statement = observeStatement(this.connection.prepare(sql), (error, context) =>
+        this.failure(error, context),
+      );
       this.statements.set(sql, statement);
       return statement;
     } catch (error) {
@@ -239,16 +246,30 @@ export class EngineStore {
   }
 
   /** Recorded by the maintenance controller after its integrity check. */
-  recordIntegrity(state: Exclude<StoreFacts["integrity"], "pending">): void {
-    this.integrityState = state;
+  recordIntegrity(
+    state: Exclude<StoreFacts["integrity"], "pending">,
+    detail = "engine store integrity check failed",
+  ): void {
+    if (state === "failed") this.failure(new StoreCorruptError(detail), "checking integrity");
+    // An older in-flight check cannot clear a physical fault observed meanwhile.
+    // A repaired/replaced store opens a new observation lifetime.
+    else if (this.integrityState !== "failed") this.integrityState = state;
   }
 
   facts(): StoreFacts {
     this.assertOpen();
     const flusher = this.flusher.facts();
-    const open = this.prepare("SELECT count(*) AS n FROM effect_obligation").get() as {
-      n: number | bigint;
-    };
+    let open: number | null = null;
+    if (this.integrityState !== "failed") {
+      try {
+        const row = this.prepare("SELECT count(*) AS n FROM effect_obligation").get() as {
+          n: number | bigint;
+        };
+        open = Number(row.n);
+      } catch (error) {
+        if (!(error instanceof StoreCorruptError)) throw error;
+      }
+    }
     return {
       flusher,
       flush_lag_ms: flusher.flush_lag_ms,
@@ -256,7 +277,7 @@ export class EngineStore {
       interval_ms: flusher.interval_ms,
       wal_bytes: flusher.last_pass?.wal_bytes ?? null,
       busy_waits: this.busyWaits,
-      obligations_open: Number(open.n),
+      obligations_open: open,
       integrity: this.integrityState,
       migration: null,
     };
@@ -271,23 +292,53 @@ export class EngineStore {
     return this.closed;
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    if (this.closed) return Promise.resolve();
     this.syncedListeners.clear();
-    await this.flusher.stop();
-    this.statements.clear();
-    this.connection.close();
+    this.closing = this.closeConnections().finally(() => {
+      this.closed = !this.connection.isOpen;
+      this.closing = null;
+    });
+    return this.closing;
   }
 
-  private failure(error: unknown, context: string): unknown {
+  private async closeConnections(): Promise<void> {
+    let stopFailed = false;
+    try {
+      await this.flusher.stop();
+    } catch (error) {
+      stopFailed = true;
+      throw error;
+    } finally {
+      this.statements.clear();
+      try {
+        if (this.connection.isOpen) this.connection.close();
+      } catch (error) {
+        // Keep the first failure, while closed still reflects the native state.
+        if (!stopFailed) throw error;
+      }
+    }
+  }
+
+  /** The request thread and private worker channels share one error owner. */
+  failure(error: unknown, context: string): unknown {
     const mapped = mapStoreError(error, context);
     if (isBusyFailure(mapped)) this.busyWaits += 1;
+    if (mapped instanceof StoreCorruptError && this.integrityState !== "failed") {
+      this.integrityState = "failed";
+      try {
+        this.options.onCorrupt?.(mapped);
+      } catch {
+        // Notification cannot replace the original typed SQL error or recurse
+        // through storage-dependent diagnostics. Admission is the caller's owner.
+      }
+    }
     return mapped;
   }
 
   private assertOpen(): void {
-    if (this.closed) {
+    if (this.closed || this.closing) {
       throw new StoreError("store_closed", 503, false, "engine store is closed");
     }
   }

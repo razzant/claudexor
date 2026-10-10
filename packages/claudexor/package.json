@@ -1,6 +1,6 @@
 {
   "name": "claudexor",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "description": "Local-first multi-harness control plane for Claude Code, Codex, Cursor, and OpenCode with quota-aware rotation across multiple Claude Code and Codex subscriptions.",
   "mcpName": "io.github.razzant/claudexor",
   "type": "module",
@@ -47,7 +47,7 @@
   },
   "license": "MIT",
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"

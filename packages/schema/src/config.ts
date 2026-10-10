@@ -1,5 +1,5 @@
 import { z } from "zod/v3";
-import { RuntimeConcurrencyCaps } from "./runtime-concurrency.js";
+import { RuntimeConcurrencyCaps, RuntimeConcurrencySources } from "./runtime-concurrency.js";
 import {
   AccessProfile,
   AuthPreference,
@@ -462,6 +462,7 @@ export const ResolvedConfig = z
     project: ProjectConfig,
     trust: TrustConfig,
     global: GlobalConfig,
+    runtimeConcurrencySources: RuntimeConcurrencySources.optional(),
     sources: z
       .array(z.string())
       .default([])

@@ -1,5 +1,26 @@
 # @claudexor/orchestrator
 
+## 4.0.0
+
+### Patch Changes
+
+- Updated dependencies [2fbf7c9]
+  - @claudexor/schema@4.0.0
+  - @claudexor/event-log@4.0.0
+  - @claudexor/util@4.0.0
+  - @claudexor/config@4.0.0
+  - @claudexor/arbitration@4.0.0
+  - @claudexor/budget@4.0.0
+  - @claudexor/context@4.0.0
+  - @claudexor/core@4.0.0
+  - @claudexor/delivery@4.0.0
+  - @claudexor/gateway@4.0.0
+  - @claudexor/policy@4.0.0
+  - @claudexor/review@4.0.0
+  - @claudexor/workspace@4.0.0
+  - @claudexor/artifact-store@4.0.0
+  - @claudexor/synthesis@4.0.0
+
 ## 3.25.1
 
 ### Patch Changes

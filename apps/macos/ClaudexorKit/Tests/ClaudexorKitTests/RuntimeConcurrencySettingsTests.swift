@@ -31,7 +31,7 @@ import Testing
         }
         """)
         let concurrency = try #require(decoded.runtime?.concurrency)
-        #expect(concurrency.configured.maxConcurrent == 24)
+        #expect(concurrency.configured.maxConcurrent == .finite(24))
         #expect(concurrency.configured.maxParallelCandidates == 12)
         #expect(concurrency.configured.maxDeepScanWidth == 32)
         #expect(concurrency.configured.maxCouncilMembers == 8)
@@ -58,14 +58,41 @@ import Testing
         }
         """)
         let concurrency = try #require(decoded.runtime?.concurrency)
-        #expect(concurrency.configured.maxConcurrent == 48)
+        #expect(concurrency.configured.maxConcurrent == .finite(48))
         #expect(concurrency.configured.maxParallelCandidates == 16)
         #expect(concurrency.configured.maxDeepScanWidth == 64)
         #expect(concurrency.configured.maxCouncilMembers == 12)
-        #expect(concurrency.effective.maxConcurrent == 24)
+        #expect(concurrency.effective.maxConcurrent == .finite(24))
         #expect(concurrency.effective.maxParallelCandidates == 4)
         #expect(concurrency.effective.maxDeepScanWidth == 8)
         #expect(concurrency.effective.maxCouncilMembers == 4)
         #expect(concurrency.restartRequired)
+    }
+
+    @Test func unlimitedKeepsStrategyWidthsAndSourceDistinctFromAbsence() throws {
+        let decoded = try snapshot(concurrency: """
+        {
+          "configured": { "maxConcurrent": "unlimited", "maxConcurrentNonModelJobs": 24, "maxConcurrentModelOperations": "unlimited", "maxParallelCandidates": 4, "maxDeepScanWidth": 8, "maxCouncilMembers": 8, "sources": { "max_concurrent": "config", "max_concurrent_model_operations": "default" } },
+          "effective": { "maxConcurrent": 24, "maxParallelCandidates": 4, "maxDeepScanWidth": 8, "maxCouncilMembers": 8 },
+          "restartRequired": true
+        }
+        """)
+        let concurrency = try #require(decoded.runtime?.concurrency)
+        #expect(concurrency.configured.maxConcurrent == .unlimited)
+        #expect(concurrency.configured.maxConcurrentNonModelJobs == .finite(24))
+        #expect(concurrency.configured.sources?["max_concurrent"] == .config)
+        #expect(concurrency.configured.sources?["max_concurrent_model_operations"] == .default)
+        #expect(concurrency.effective.maxConcurrentModelOperations == nil)
+        #expect(concurrency.effective.sources == nil)
+        #expect(concurrency.configured.maxCouncilMembers == 8)
+        #expect(try JSONDecoder().decode(SettingsSnapshot.self, from: JSONEncoder().encode(decoded)) == decoded)
+    }
+
+    @Test func invalidCapacityDoesNotBecomeUnlimited() {
+        for invalid in ["0", "-1", "1.5", "true", "\"unknown\"", "9007199254740992"] {
+            #expect(throws: (any Error).self) {
+                try JSONDecoder().decode(ConcurrencyLimit.self, from: Data(invalid.utf8))
+            }
+        }
     }
 }

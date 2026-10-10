@@ -10,12 +10,7 @@ import { hashJson, newId, nowIso } from "@claudexor/util";
 import { idempotencyWireProjection } from "./idempotency-wire-projection.js";
 import type { CreateThreadInput, CreateTurnInput, UpdateThreadInput } from "./threads.js";
 
-/**
- * Pure ThreadStore support: the journal mutation codec and the idempotency
- * digests. Extracted from `threads.ts` so the store file stays under the
- * new-file complexity cap (INV-124); no behavior lives here — only parsing,
- * hashing, and collection upkeep.
- */
+/** Shared thread mutation parsing, exact idempotency digests and input defaults. */
 
 export interface ThreadMutation {
   threads?: Thread[];
@@ -134,81 +129,6 @@ export function turnRunConflict(turnId: string, boundRunId: string, runId: strin
     new Error(`turn ${turnId} is already bound to run ${boundRunId}, not ${runId}`),
     { code: "turn_run_conflict", status: 409, retryable: false },
   );
-}
-
-export function findIdempotentTurn(
-  index: ReadonlyMap<string, { turnId: string; requestDigest: string }>,
-  getTurn: (id: string) => ThreadTurn | undefined,
-  input: ThreadMutation["idempotency"],
-): ThreadTurn | undefined {
-  if (!input) return undefined;
-  const prior = index.get(input.keyDigest);
-  if (!prior) return undefined;
-  if (prior.requestDigest !== input.requestDigest) throw idempotencyConflict();
-  const turn = getTurn(prior.turnId);
-  if (!turn) throw new Error(`idempotency record points to missing turn ${prior.turnId}`);
-  return turn;
-}
-
-export function findIdempotentThread(
-  index: ReadonlyMap<string, { threadId: string; requestDigest: string }>,
-  getThread: (id: string) => Thread | undefined,
-  input: ThreadMutation["threadCreation"],
-  exactRequestOnly = false,
-): Thread | undefined {
-  if (!input) return undefined;
-  const prior = index.get(input.keyDigest);
-  if (!prior) return undefined;
-  if (prior.requestDigest !== input.requestDigest) {
-    if (exactRequestOnly) return undefined;
-    throw idempotencyConflict();
-  }
-  const thread = getThread(prior.threadId);
-  if (!thread) throw new Error(`idempotency record points to missing thread ${prior.threadId}`);
-  return thread;
-}
-
-export function applyThreadIdempotency(
-  mutation: ThreadMutation,
-  turnIdByKey: Map<string, { turnId: string; requestDigest: string }>,
-  threadIdByKey: Map<string, { threadId: string; requestDigest: string }>,
-): void {
-  if (mutation.idempotency) {
-    const { keyDigest, requestDigest, turnId } = mutation.idempotency;
-    const prior = turnIdByKey.get(keyDigest);
-    if (prior && (prior.turnId !== turnId || prior.requestDigest !== requestDigest)) {
-      throw new Error("conflicting thread idempotency history");
-    }
-    turnIdByKey.set(keyDigest, { turnId, requestDigest });
-  }
-  if (mutation.threadCreation) {
-    const { keyDigest, requestDigest, threadId } = mutation.threadCreation;
-    const prior = threadIdByKey.get(keyDigest);
-    if (prior && (prior.threadId !== threadId || prior.requestDigest !== requestDigest)) {
-      throw new Error("conflicting thread creation idempotency history");
-    }
-    threadIdByKey.set(keyDigest, { threadId, requestDigest });
-  }
-}
-
-export function upsert<T extends { id: string }>(
-  items: T[],
-  value: T,
-  indexById?: Map<string, number>,
-): void {
-  const index = indexById
-    ? (indexById.get(value.id) ?? -1)
-    : items.findIndex((item) => item.id === value.id);
-  if (index < 0) {
-    indexById?.set(value.id, items.length);
-    items.push(value);
-  } else items[index] = value;
-}
-
-export function assertUnique(items: Array<{ id: string }>, kind: string): void {
-  if (new Set(items.map((item) => item.id)).size !== items.length) {
-    throw new Error(`duplicate ${kind} id in journal projection`);
-  }
 }
 
 /** Construct a NEW thread from its create input (defaults documented inline). */

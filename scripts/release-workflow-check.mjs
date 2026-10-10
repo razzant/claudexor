@@ -423,8 +423,8 @@ const delayedWindowsFixtureCi = ci
     "",
   )
   .replace(
-    "          packages/journal/src/index.test.ts\n",
-    "          packages/journal/src/index.test.ts\n\n      - name: Build native ConPTY fixture\n        run: pnpm --filter @claudexor/core build:win32-fixtures\n",
+    "          packages/daemon/src/store/store.test.ts\n",
+    "          packages/daemon/src/store/store.test.ts\n\n      - name: Build native ConPTY fixture\n        run: pnpm --filter @claudexor/core build:win32-fixtures\n",
   );
 for (const [label, mutated] of [
   [
@@ -469,7 +469,7 @@ for (const [label, mutated] of [
   [
     "authority Node floor drift",
     release.replace(
-      "          node-version: 20.19.0\n\n      - name: Initialize pinned x64 MSVC environment",
+      "          node-version: 24.15.0\n\n      - name: Initialize pinned x64 MSVC environment",
       "          node-version: 24.16.0\n\n      - name: Initialize pinned x64 MSVC environment",
     ),
   ],
@@ -552,7 +552,7 @@ for (const [label, mutated] of [
   [
     "Windows 2022 Node compatibility floor drift",
     ci.replace(
-      "          - runner: windows-2022\n            node-version: 20.19.0",
+      "          - runner: windows-2022\n            node-version: 24.15.0",
       "          - runner: windows-2022\n            node-version: 24.16.0",
     ),
   ],
@@ -567,6 +567,10 @@ for (const [label, mutated] of [
   [
     "deleted portable platform-auth declaration test",
     ci.replace("          packages/schema/src/platform-auth-policy.test.ts\n", ""),
+  ],
+  [
+    "deleted SQLite store boundary tests",
+    ci.replace("          packages/daemon/src/store/store.test.ts\n", ""),
   ],
   ["Windows agy acceptance ordered before native fixture build", delayedWindowsFixtureCi],
   [
@@ -992,8 +996,8 @@ function windowsPrLegFindings(workflow) {
     );
   }
   requirePattern(
-    "windows-2022 must run Node 20.19.0 and windows-latest must run Node 24.16.0",
-    /- runner: windows-2022\n\s*node-version: 20\.19\.0\n\s*- runner: windows-latest\n\s*node-version: 24\.16\.0/,
+    "windows-2022 must run Node 24.15.0 and windows-latest must run Node 24.16.0",
+    /- runner: windows-2022\n\s*node-version: 24\.15\.0\n\s*- runner: windows-latest\n\s*node-version: 24\.16\.0/,
   );
   requirePattern(
     "Windows PR legs must initialize the x64 MSVC environment",
@@ -1014,6 +1018,10 @@ function windowsPrLegFindings(workflow) {
   requirePattern(
     "Windows PR legs must run portable platform-auth declaration and consumer tests",
     /platform-auth-policy\.test\.ts[\s\S]*?capabilities\.test\.ts[\s\S]*?harness-agy\/src\/conformance\.test\.ts[\s\S]*?setup-login-capability\.test\.ts/,
+  );
+  requirePattern(
+    "Windows PR legs must exercise SQLite store, runtime, flush and file-owner boundaries",
+    /store\/store\.test\.ts[\s\S]*?store\/runtime\.test\.ts[\s\S]*?store\/flusher\.test\.ts[\s\S]*?store\/blob-files\.test\.ts[\s\S]*?store\/obligations\.test\.ts[\s\S]*?store\/maintenance\.test\.ts/,
   );
   const build = windows.indexOf("      - name: Build\n        run: pnpm build");
   const nativeFixture = windows.indexOf("pnpm --filter @claudexor/core build:win32-fixtures");
@@ -1048,8 +1056,8 @@ function windowsConptyCustodyFindings(workflow) {
     authority,
   );
   requirePattern(
-    "Windows ConPTY authority must use the Node 20.19 compatibility floor",
-    /node-version:\s*20\.19\.0/,
+    "Windows ConPTY authority must use the Node 24.15 compatibility floor",
+    /node-version:\s*24\.15\.0/,
     authority,
   );
   requirePattern(

@@ -1,3 +1,4 @@
+import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 /**
  * Addressed daemon command reads (`claudexor.list` with a query).
  *
@@ -14,12 +15,12 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { MAX_DELEGATED_CHILDREN } from "@claudexor/schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
-import { CommandStore } from "./command-store.js";
-import type { CommandAuthority } from "./command-authority.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
+type LegacyCommandAuthority = Parameters<typeof legacyCommandFixture>[0];
 import { DaemonServer, type JobRecord } from "./server.js";
 
 const TOKEN = "addressed-read-token";
@@ -61,7 +62,7 @@ function child(id: string, parentRunId: string, createdAtMs: number): JobRecord 
 
 /** Command authority over a fixed record set — the projection path under test
  * is the daemon's, not the store's, and this keeps large rosters cheap. */
-function staticAuthority(records: readonly JobRecord[]): CommandAuthority {
+function staticAuthority(records: readonly JobRecord[]): LegacyCommandAuthority {
   const store = {
     records: () => [...records],
     get: (id: string) => records.find((entry) => entry.id === id),
@@ -72,14 +73,14 @@ function staticAuthority(records: readonly JobRecord[]): CommandAuthority {
 
 async function withDaemon(
   name: string,
-  commands: CommandAuthority,
+  commands: LegacyCommandAuthority,
   fn: (ctx: { socketPath: string; client: DaemonClient }) => Promise<void>,
 ): Promise<void> {
   const socketPath = join(tempDir(name), "daemon.sock");
   const server = new DaemonServer({
     socketPath,
     token: TOKEN,
-    commands,
+    commands: legacyCommandFixture(commands),
     // The roster must survive startup retention: this suite is about reads.
     maxHistory: 100_000,
     runner: async () => ({ lifecycle: "succeeded" }),

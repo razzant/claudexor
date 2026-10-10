@@ -1,3 +1,4 @@
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,7 +59,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const manager of managers.splice(0)) {
     await manager.shutdown();
-    manager._store.journal.close();
+    (manager._store as SetupJobStore).journal.close();
   }
   vi.restoreAllMocks();
   if (oldConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
@@ -102,6 +103,7 @@ function fixture(input: { onOpen?: () => void; verify?: () => Promise<void> } = 
     };
   });
   const manager = createSetupJobManager({
+    store: new SetupJobStore(join(root, `daemon-${managers.length}`)),
     rootDir: join(root, `daemon-${managers.length}`),
     platform: "darwin",
     runnerPath: join(root, "unused-runner.js"),

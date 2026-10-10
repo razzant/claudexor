@@ -1,3 +1,4 @@
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
@@ -154,6 +155,7 @@ async function withFixture(
   const cursor = createCursorAdapter();
   const token = ensureToken();
   const manager = createSetupJobManager({
+    store: new SetupJobStore(daemonDir()),
     rootDir: daemonDir(),
     runnerPath: RUNNER,
     monitorPollMs: 50,
@@ -213,7 +215,7 @@ async function withFixture(
       await until("fixture login drain", () => manager.list({ active: true }).length === 0);
     } finally {
       await manager.shutdown();
-      manager._store.journal.close();
+      (manager._store as SetupJobStore).journal.close();
       await server.stop();
       await new Promise<void>((done) => health.close(() => done()));
       for (const key of keys) {

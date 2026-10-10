@@ -237,7 +237,10 @@ describe("mcp daemon body mapping", () => {
     const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon");
     try {
       await expect(
-        mcpSurfaceRunner({ requireExistingDaemon: true })({ mode: "agent", prompt: "go" }),
+        mcpSurfaceRunner({ requireExistingDaemon: true, delegationParentRunId: "parent-test" })({
+          mode: "agent",
+          prompt: "go",
+        }),
       ).rejects.toThrow("cannot reach its parent daemon");
       expect(connectSpy).toHaveBeenCalledOnce();
       expect(ensureSpy).not.toHaveBeenCalled();
@@ -254,7 +257,9 @@ describe("mcp daemon body mapping", () => {
     const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon");
     try {
       await expect(
-        mcpSurfaceRunner({ requireExistingDaemon: true })({ mode: "__status" }),
+        mcpSurfaceRunner({ requireExistingDaemon: true, delegationParentRunId: "parent-test" })({
+          mode: "__status",
+        }),
       ).rejects.toThrow(/cannot reach its parent daemon/);
       expect(connectSpy).toHaveBeenCalledOnce();
       expect(ensureSpy).not.toHaveBeenCalled();
@@ -304,7 +309,10 @@ describe("mcp daemon body mapping", () => {
     const daemonRun = await import("./daemon-run.js");
     const connectSpy = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue(null);
     try {
-      const result = (await mcpSurfaceRunner({ requireExistingDaemon: true })({
+      const result = (await mcpSurfaceRunner({
+        requireExistingDaemon: true,
+        delegationParentRunId: "parent-test",
+      })({
         mode: "__run_status",
         runId: "run-child",
       })) as { summary: string };
@@ -353,7 +361,7 @@ describe("mcp daemon body mapping", () => {
     );
     try {
       await expect(
-        mcpSurfaceRunner({ requireExistingDaemon: true })({
+        mcpSurfaceRunner({ requireExistingDaemon: true, delegationParentRunId: "parent-test" })({
           mode: "__run_status",
           runId: "smoke-missing-run",
         }),
@@ -749,7 +757,7 @@ describe("mcp daemon body mapping", () => {
       expect(ensureSpy).not.toHaveBeenCalled();
       connectSpy.mockResolvedValueOnce(null);
       await expect(
-        mcpSurfaceRunner({ requireExistingDaemon: true })({
+        mcpSurfaceRunner({ requireExistingDaemon: true, delegationParentRunId: "parent-test" })({
           mode: "__thread_read",
           threadId: "th-1",
         }),

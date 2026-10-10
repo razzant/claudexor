@@ -1,10 +1,11 @@
+import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { afterAll, describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
-import { CommandStore } from "./command-store.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { DaemonServer } from "./server.js";
 import { recoveryOnlyRefusal, servingModeOf, type DaemonServingMode } from "./serving-admission.js";
 
@@ -49,7 +50,7 @@ describe("DaemonServer recovery-only admission (issue #165 D5)", () => {
       socketPath,
       token: "token",
       servingMode: () => mode,
-      commands: {
+      commands: legacyCommandFixture({
         current: () => {
           // The registry must stay untouched while product admission is
           // closed: the journal projections are not activated yet (D5).
@@ -59,7 +60,7 @@ describe("DaemonServer recovery-only admission (issue #165 D5)", () => {
           }
           return store;
         },
-      },
+      }),
       runner: async () => ({ lifecycle: "succeeded" }),
     });
     await server.start();
@@ -106,7 +107,7 @@ describe("DaemonServer recovery-only admission (issue #165 D5)", () => {
       socketPath,
       token: "token",
       servingMode: () => "recovery_only",
-      commands: { current: () => store },
+      commands: legacyCommandFixture({ current: () => store }),
       onShutdownRequested: async () => {
         shutdownRequested += 1;
         await server.stop();

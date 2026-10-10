@@ -5,7 +5,7 @@ This package contains no runtime, credentials, hooks, or automatic setup.
 
 Before enabling it, make the preinstalled `claudexor` command available on
 Cursor's PATH and configure the existing Claudexor daemon/account route. Use
-macOS or Linux with Node.js 20.19 or newer. Do not enable this alongside an
+macOS or Linux with Node.js 24.15 or newer. Do not enable this alongside an
 existing generated Claudexor integration in the same host.
 
 The repository's `.cursor-plugin/marketplace.json` points to this package. It

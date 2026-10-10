@@ -27,6 +27,7 @@ export { buildRunFacts };
 
 export interface PreparedRunFactsReceipt {
   facts: RunFacts;
+  telemetry: RunTelemetry | null;
   /** Publish telemetry compatibility + the canonical receipt commit marker. */
   commit: () => void;
   /** Restore the exact pre-commit marker/telemetry bytes after event failure. */
@@ -143,7 +144,7 @@ function persistPreparedRunFacts(
     writeYamlAtomically(ctx, receiptPath, facts);
     committed = true;
   };
-  return { facts, commit, rollback };
+  return { facts, telemetry: embedded, commit, rollback };
 }
 
 /**

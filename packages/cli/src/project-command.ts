@@ -2,6 +2,7 @@ import {
   ControlProject,
   ControlProjectListResponse,
   ControlProjectOutputsResponse,
+  ControlProjectRegisterResponse,
   ControlProjectRemoveReceipt,
   type ControlProject as ControlProjectType,
 } from "@claudexor/schema";
@@ -33,7 +34,7 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
       if (!root || args._.length !== 3) {
         return printUsageError(json, "usage: claudexor project register <absolute-root>");
       }
-      return mutateProject(json, "/projects", { root });
+      return mutateProject(json, "/projects", { root }, true);
     }
     if (action === "relink") {
       const id = args._[2];
@@ -130,7 +131,12 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
   }
 }
 
-async function mutateProject(json: boolean, path: string, body: unknown): Promise<number> {
+async function mutateProject(
+  json: boolean,
+  path: string,
+  body: unknown,
+  register = false,
+): Promise<number> {
   const { addr } = await ensureDaemon();
   const response = await controlApiFetch(addr, path, {
     method: "POST",
@@ -139,10 +145,21 @@ async function mutateProject(json: boolean, path: string, body: unknown): Promis
   });
   const data = await responseJson(response);
   if (!response.ok) return failure(json, response.status, data);
-  const project = ControlProject.parse(data);
+  const project = (register ? ControlProjectRegisterResponse : ControlProject).parse(data);
   if (json) printJson(project);
-  else printProject(project);
+  else for (const line of projectRegistrationLines(project)) print(line);
   return 0;
+}
+
+/** Human lines for a register/relink answer: a registration leads with whether
+ * it `created` the project or found it `existing`, then the project lines. */
+export function projectRegistrationLines(
+  project: ControlProjectType | ControlProjectRegisterResponse,
+): string[] {
+  const [first = "", ...rest] = projectListLines(project);
+  return "created" in project
+    ? [`${project.created ? "created" : "existing"}  ${first}`, ...rest]
+    : [first, ...rest];
 }
 
 /** Human `project list` lines for one project: the id/root row plus a disclosed

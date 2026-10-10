@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
+import { controlApiAddress, type ControlApiAddress } from "./control-api-address.js";
+export { controlApiAddress, type ControlApiAddress } from "./control-api-address.js";
 import { laneOf, truncate } from "./live-format.js";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { daemonDir, readToken } from "@claudexor/daemon";
 import type { InteractionQuestion } from "@claudexor/schema";
 import type { RunOutcomeFacts } from "@claudexor/schema";
 import {
@@ -227,57 +226,10 @@ export function createRunEventLineFormatter(): (ev: Record<string, unknown>) => 
   };
 }
 
-export interface ControlApiAddress {
-  baseUrl: string;
-  token: string;
-}
-
 // SSOT: the negotiated major lives in the schema; the re-export keeps the
 // existing CLI/MCP/ACP import path stable.
 import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
 export { CONTROL_PROTOCOL_MAJOR };
-
-export function controlApiAddress(): ControlApiAddress {
-  const pointer = join(daemonDir(), "control-api.json");
-  const absence = (): Error =>
-    new Error("daemon control API is not available (run: claudexor daemon start)");
-  // Corrupt local state must be LOUD (#93 R1/R2): a pointer that exists but is
-  // unreadable, unparsable, or structurally invalid ({} / null / wrong host or
-  // port types) is never "daemon not running". Bounded — the path and a short
-  // cause only, no raw dump of the file.
-  const invalid = (cause: string): CliError =>
-    new CliError(
-      "operational",
-      `daemon control-api pointer ${pointer} is ${cause}; ` +
-        "run `claudexor daemon stop` and rerun so a healthy daemon rewrites it",
-      { code: "control_pointer_invalid", retryable: false, context: { pointer } },
-    );
-  let raw: string;
-  try {
-    raw = readFileSync(pointer, "utf8").trim();
-  } catch (err) {
-    const errno = (err as NodeJS.ErrnoException).code;
-    if (errno === "ENOENT" || errno === "ENOTDIR") throw absence();
-    throw invalid(`unreadable${errno ? ` (${errno})` : ""}`);
-  }
-  // An EMPTY (or whitespace-only) pointer stays ABSENCE: the daemon's pointer
-  // write has an open-truncate→write window, and a racing reader must keep
-  // polling, never fail loud on the transient zero-byte state.
-  if (raw === "") throw absence();
-  let info: { host?: unknown; port?: unknown };
-  try {
-    info = (JSON.parse(raw) ?? {}) as { host?: unknown; port?: unknown };
-  } catch {
-    throw invalid("not valid JSON");
-  }
-  const { host, port } = info;
-  if (typeof host !== "string" || host === "") throw invalid("structurally invalid (bad host)");
-  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)
-    throw invalid("structurally invalid (bad port)");
-  const token = readToken();
-  if (!token) throw absence();
-  return { baseUrl: `http://${host}:${port}`, token };
-}
 
 /** One control-plane transport boundary for CLI, MCP and ACP projections. */
 export function controlApiFetch(

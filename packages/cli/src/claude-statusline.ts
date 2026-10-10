@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { QuotaRefreshResult } from "@claudexor/daemon";
 import { QuotaSnapshot as QuotaSnapshotSchema, type QuotaSnapshot } from "@claudexor/schema";
 import { ensureDir, readJsonSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
+import { launchShellCommand, type PluginLaunchRuntime } from "./plugin-runtime.js";
 import { readAccountsMigrationFile } from "./accounts-unified-migration.js";
 
 const SOURCE = "claude_statusline" as const;
@@ -26,11 +27,8 @@ export interface ClaudeStatuslineResultSink {
   errors: string[];
 }
 
-export interface ClaudeStatuslineRuntime {
+export interface ClaudeStatuslineRuntime extends PluginLaunchRuntime {
   home: string;
-  configDir: string;
-  nodePath: string;
-  cliPath: string;
   dryRun: boolean;
 }
 
@@ -128,7 +126,11 @@ export function manageClaudeStatusline(
     const statePath = join(runtime.configDir, "plugins", "claude-statusline.json");
     const settings = readSettings(settingsPath);
     const current = statusLine(settings["statusLine"]);
-    const state = readState(statePath);
+    const state =
+      readState(statePath) ??
+      (runtime.previousConfigDir
+        ? readState(join(runtime.previousConfigDir, "plugins", "claude-statusline.json"))
+        : null);
     if (verb !== "uninstall" && settings["disableAllHooks"] === true) {
       sink.errors.push(
         "Claude disableAllHooks=true disables statusLine; subscription quota remains unavailable",
@@ -225,7 +227,12 @@ function desiredStatusLine(runtime: ClaudeStatuslineRuntime, previous?: StatusLi
   const encoded = previous ? ` ${Buffer.from(previous.command, "utf8").toString("base64url")}` : "";
   return {
     type: "command",
-    command: `${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)} quota ingest-claude-statusline ${CLAUDE_STATUSLINE_MANAGED_ARG}${encoded}`,
+    command: launchShellCommand(
+      runtime,
+      `quota ingest-claude-statusline ${CLAUDE_STATUSLINE_MANAGED_ARG}${encoded}`,
+      process.platform,
+      true,
+    ),
     ...(previous?.padding === undefined ? {} : { padding: previous.padding }),
   };
 }
@@ -293,10 +300,6 @@ function statusLine(value: unknown): StatusLine | undefined {
 
 function hashStatusLine(value: StatusLine | undefined): string {
   return sha256(JSON.stringify(value ?? null));
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function object(value: unknown): Record<string, unknown> | null {

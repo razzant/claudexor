@@ -228,7 +228,7 @@ describe("fsyncDirectory win32 tolerance", () => {
     expect(flush.closed).toHaveLength(0);
   });
 
-  it("is the only owner of the directory-flush mechanism in the monorepo", () => {
+  it("keeps one serving directory-flush owner beside the sealed legacy oracle", () => {
     runDirectoryFlushOwnershipCheck();
   });
 });
@@ -301,5 +301,9 @@ function runDirectoryFlushOwnershipCheck(): void {
     }
   };
   walk(packages);
-  expect(owners).toEqual(["util/src/index.ts"]);
+  // The immutable legacy oracle is test-only; every other copy is still a defect.
+  expect(owners.sort()).toEqual([
+    "daemon/src/store/test-support/fixtures/legacy/util/index.ts",
+    "util/src/index.ts",
+  ]);
 }

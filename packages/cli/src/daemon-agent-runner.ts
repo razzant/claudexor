@@ -2,9 +2,10 @@ import { mkdirSync } from "node:fs";
 import type {
   InteractionRegistry,
   LiveInputRegistry,
-  ProjectPartitions,
+  ProjectThreadPort,
+  CommandQueries,
   QuotaRegistry,
-  ResourceStore,
+  ResourceStorePort,
   RunEventBus,
   RunnerFn,
 } from "@claudexor/daemon";
@@ -35,12 +36,18 @@ import { continuationForRun } from "./continue-from-run.js";
 export function createDaemonAgentRunner(deps: {
   delegationBudgetAuthority: DelegationBudgetAuthority;
   quotaStore: () => QuotaRegistry;
-  threads: ProjectPartitions;
+  threads: ProjectThreadPort;
+  commands: Pick<CommandQueries, "getByRunId">;
   interactions: InteractionRegistry;
   liveInputs: LiveInputRegistry;
-  resources: () => ResourceStore;
+  resources: () => ResourceStorePort;
   bus: RunEventBus;
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
+  terminalPersistence?: (
+    jobId: string,
+  ) => NonNullable<
+    Parameters<ReturnType<typeof buildRunOrchestrator>["run"]>[0]["onTerminalPersist"]
+  >;
 }): RunnerFn {
   const {
     delegationBudgetAuthority,
@@ -60,7 +67,7 @@ export function createDaemonAgentRunner(deps: {
     const p = restoreRecordedRunReviewRequest(
       normalizeRunStartRequest(params, { deferExecutionWorkspaceAvailability: threadBound }),
     );
-    const continuation = continuationForRun(p, threads);
+    const continuation = continuationForRun(p, deps.commands);
     const mode = p.mode;
     const noProjectAsk = mode === "ask" && p.scope.kind === "none";
     const repoRoot = p.scope.kind === "project" ? p.scope.root : NO_PROJECT_ROOT;
@@ -176,6 +183,7 @@ export function createDaemonAgentRunner(deps: {
     const delegationBelt = delegationBeltForRun(p.delegate === true, p.paidBudget);
     return orchestrator
       .run({
+        onTerminalPersist: deps.terminalPersistence?.(ctx.jobId),
         onEventPersist: (event) => {
           // The owning journal partition is the durable terminal
           // authority. EventLog runs this before committing RunFacts.

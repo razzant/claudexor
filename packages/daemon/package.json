@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/daemon",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Managed local daemon: Unix-socket JSON-RPC, token auth, task queue. Runner injected (no second scheduler).",
   "type": "module",
@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@claudexor/core": "workspace:*",
-    "@claudexor/journal": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*",
     "@claudexor/workspace": "workspace:*",
@@ -37,9 +36,12 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "zod": "4.6.5"
   }
 }

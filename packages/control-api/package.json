@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/control-api",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Loopback HTTP+SSE control surface for GUI/service clients: token-auth, Host/Origin guard, live run event stream with Last-Event-ID replay. Runner injected (no second scheduler).",
   "type": "module",
@@ -38,7 +38,7 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"

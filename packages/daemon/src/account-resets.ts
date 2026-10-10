@@ -5,7 +5,7 @@ import {
   type AccountTarget,
   type ControlAccountResourcesResponse,
 } from "@claudexor/schema";
-import type { CommandStore } from "./command-store.js";
+import type { CommandStorePort } from "./store-contracts.js";
 import type { JobRecord } from "./server.js";
 
 /** Host-private immutable target, stored before dispatch. No bearer material. */
@@ -23,7 +23,7 @@ type AcceptedReset = {
   binding: AccountResetBinding;
 };
 export interface AccountResetDependencies {
-  commands: () => CommandStore;
+  commands: () => CommandStorePort;
   resolve: (request: ControlAccountResetRequest) => Promise<AccountResetBinding>;
   verify: (binding: AccountResetBinding, target: AccountTarget) => Promise<void>;
   consume: (
@@ -142,6 +142,20 @@ export class AccountResets {
       await this.deps.verify(accepted.binding, accepted.request.target);
       receipt = { ...receipt, state: "running", completed_at: null, outcome: "pending" };
       this.save(receipt); // durable dispatch intent, before native I/O
+      try {
+        await this.deps.commands().flushed();
+      } catch {
+        receipt = {
+          ...receipt,
+          state: "completed",
+          completed_at: this.now(),
+          outcome: "unavailable",
+          detail: "store_flush_unavailable",
+          readback: { state: "failed", attempted_at: null, detail: "store_flush_unavailable" },
+        };
+        this.save(receipt);
+        return receipt;
+      }
       try {
         const outcome = await this.deps.consume(accepted.binding);
         receipt = { ...receipt, ...outcome };

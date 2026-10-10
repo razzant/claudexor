@@ -11,31 +11,28 @@ import {
   isTerminalLifecycle,
   type CancelReasonCode,
   type RuntimeConcurrencyCaps,
+  type DaemonStoreFacts,
+  type ConcurrencyLimit,
+  type JobAdmission,
 } from "@claudexor/schema";
-import { daemonHealth, daemonConcurrencyLimit } from "./daemon-health.js";
+import { daemonHealth, daemonConcurrencyCaps } from "./daemon-health.js";
 import { RpcFollowers } from "./rpc-followers.js";
 import { assertNoInlineSecretValues, newId, nowIso, pathExists } from "@claudexor/util";
 import {
   commandStoreForId,
   commandStoreForRequest,
-  commandStores,
-  type CommandAuthority,
+  type CommandBackend,
 } from "./command-authority.js";
 import {
   commandAcceptanceReceipt,
+  admitCommandRequest,
   findAcceptedCommand,
   publicAcceptedCommand,
 } from "./command-rpc.js";
-import { prunableCommandIds } from "./command-retention.js";
-import { publicCommandList } from "./command-list-projection.js";
+import { parseCommandListQuery } from "./command-list-select.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
+import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
 import {
-  admitDelegatedRequest,
-  isDelegatedChildRecord,
-  type DelegationAdmissionAuthority,
-} from "./delegation-admission.js";
-import {
-  JOB_STATES,
   jobStateFromResult,
   publicJobRecord,
   resultReason,
@@ -43,7 +40,13 @@ import {
   type JobRecord,
 } from "./job-record.js";
 import { settleJobError } from "./job-settlement.js";
-import { admitContinuationRequest } from "./continuation-admission.js";
+import {
+  admissionActivity,
+  admissionJob,
+  eligibleJobIndex,
+  queuedAdmission,
+  type AdmissionJob,
+} from "./job-admission.js";
 import {
   daemonTokenMatches,
   recoveryOnlyRefusal,
@@ -53,7 +56,7 @@ import {
 import { socketAlive } from "./socket-probe.js";
 import { isWindowsPipePath } from "./token.js";
 import { dispatchShutdownRpc, type RuntimeReplacementAuthority } from "./daemon-shutdown-rpc.js";
-export { JOB_STATES, jobStateFromResult, socketAlive, type JobRecord };
+export { jobStateFromResult, socketAlive, type JobRecord };
 
 export interface RunContext {
   jobId: string;
@@ -67,10 +70,11 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   socketPath: string;
   token: string;
   runner: RunnerFn;
-  maxConcurrent?: number;
-  /** Startup-frozen strategy caps; absent embedders retain historical defaults. */
+  maxConcurrent?: ConcurrencyLimit;
+  /** Startup-frozen admission and strategy caps; omission has no finite admission ceiling. */
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
-  commands: CommandAuthority;
+  storeFacts?: () => DaemonStoreFacts;
+  commands: CommandBackend;
   delegationAuthority?: DelegationAdmissionAuthority;
   maxHistory?: number;
   idempotencyRetentionMs?: number;
@@ -102,12 +106,16 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
 export class DaemonServer {
   private server?: Server;
   private readonly followers = new RpcFollowers();
-  private readonly queue: string[] = [];
+  private readonly queue: AdmissionJob[] = [];
+  private readonly activeJobs = new Map<string, AdmissionJob>();
   private readonly cancelled = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
-  private active = 0;
+  private readonly commands: CommandBackend;
+  private get active(): number {
+    return this.activeJobs.size;
+  }
   private readonly startedAt = Date.now();
   private stopping = false;
   private startPromise?: Promise<void>;
@@ -118,7 +126,8 @@ export class DaemonServer {
   });
 
   constructor(private readonly opts: DaemonOptions) {
-    this.maxConcurrent = daemonConcurrencyLimit(opts);
+    this.concurrency = daemonConcurrencyCaps(opts);
+    this.commands = opts.commands;
   }
 
   async start(): Promise<void> {
@@ -154,9 +163,7 @@ export class DaemonServer {
     }
     await this.opts.startupBarrier?.("before_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled before listen");
-    // With product admission closed (issue #165 D5 stage 3) the command
-    // projections are not activated yet; the registry materializes (and its
-    // history is pruned) once normal admission opens — see pruneHistory().
+    // The recovery plane can listen before SQL opens; prune only after admission.
     if (servingModeOf(this.opts.servingMode) === "normal") this.pruneHistory();
     await this.opts.startupBarrier?.("after_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled after registry load");
@@ -172,7 +179,15 @@ export class DaemonServer {
     return this.stopPromise;
   }
 
-  private async stopOnce(): Promise<void> {
+  /** Physical store recovery may settle storage-only terminal failures once
+   * every runner has exited; process/runner failures still refuse replacement. */
+  stopForStoreRecovery(): Promise<void> {
+    this.stopping = true;
+    this.stopPromise ??= this.stopOnce(true);
+    return this.stopPromise;
+  }
+
+  private async stopOnce(recoverStore = false): Promise<void> {
     for (const controller of this.controllers.values()) {
       try {
         controller.abort("host_cancelled" satisfies CancelReasonCode);
@@ -185,7 +200,11 @@ export class DaemonServer {
     const rejected = settled.filter(
       (entry): entry is PromiseRejectedResult => entry.status === "rejected",
     );
-    if (rejected.length > 0 || this.taskFailures.length > 0 || this.active !== 0) {
+    const failures = [...rejected.map((entry) => entry.reason), ...this.taskFailures];
+    if (
+      this.active !== 0 ||
+      failures.some((error) => !recoverStore || !storageOnlyFailure(error))
+    ) {
       const first =
         rejected[0]?.reason ??
         this.taskFailures[0] ??
@@ -234,9 +253,7 @@ export class DaemonServer {
   }
 
   private onConnection(sock: Socket): void {
-    this.followers.attach(sock, (line) => {
-      void this.handle(line, sock);
-    });
+    this.followers.attach(sock, (line) => void this.handle(line, sock));
   }
 
   private send(sock: Socket, obj: unknown): void {
@@ -264,12 +281,14 @@ export class DaemonServer {
     }
   }
 
-  private async dispatch(method: string, params: any): Promise<unknown> {
+  /** The one RPC dispatcher: the token-checked socket handler and the daemon's
+   * in-process `DaemonLocalClient` both enter here with JSON wire values. */
+  async dispatch(method: string, params: any): Promise<unknown> {
     const shutdown = dispatchShutdownRpc(
       method,
       params,
       this.queue.length + this.active + this.activeTasks.size,
-      () => this.allRecords(),
+      () => this.commands.queries.active(),
       this.opts.onShutdownRequested ?? (() => this.stop()),
       this.opts.onRuntimeReplacementRequested,
       this.opts.runtimeIdentity,
@@ -278,18 +297,18 @@ export class DaemonServer {
     if (shutdown) return shutdown;
     const servingMode = servingModeOf(this.opts.servingMode);
     if (method === "claudexor.health") {
-      return daemonHealth(
+      const health = daemonHealth(
         this.startedAt,
         this.queue.length,
         this.active,
-        servingMode === "normal"
-          ? commandStores(this.opts.commands).reduce((n, s) => n + s.count, 0)
-          : 0,
+        servingMode === "normal" ? this.commands.queries.count() : 0,
         this.stopping,
         servingMode,
-        this.maxConcurrent,
-        this.opts.runtimeConcurrencyCaps,
+        this.concurrency,
+        admissionActivity(this.activeJobs.values(), this.queue),
+        this.opts.runtimeConcurrencyCaps !== undefined,
       );
+      return this.opts.storeFacts ? { ...health, store: this.opts.storeFacts() } : health;
     }
     // Issue #165 D5: with product admission closed, every product RPC gets
     // one typed refusal; health above and the shutdown RPCs stay reachable.
@@ -318,14 +337,14 @@ export class DaemonServer {
         // must keep returning its durable job even after the parent is fenced
         // or its monotonic eight-child allowance is full. A different request
         // under the same key still conflicts inside find().
-        const replay = findAcceptedCommand(this.opts.commands, envelope);
+        const replay = findAcceptedCommand(this.commands, envelope);
         if (replay) return commandAcceptanceReceipt(replay, true);
         // Journal-owned belt admission spans retries/processes; ordinary
         // parentRunId alone never establishes delegated lineage.
-        const request = admitDelegatedRequest(
-          admitContinuationRequest(rawRequest, this.allRecords()),
+        const request = admitCommandRequest(
+          this.commands,
+          rawRequest,
           operation,
-          this.allRecords(),
           this.opts.delegationAuthority,
         );
         const delegatedFrom = delegatedParentOf(request);
@@ -339,7 +358,7 @@ export class DaemonServer {
         if (!accepted.reused && delegatedFrom) {
           this.opts.delegationAuthority!.noteChildAccepted(delegatedFrom, accepted.record.id);
         }
-        if (!accepted.reused) this.queue.push(accepted.record.id);
+        if (!accepted.reused) this.queue.push(admissionJob(accepted.record));
         void this.drain();
         return commandAcceptanceReceipt(accepted.record, accepted.reused);
       }
@@ -349,16 +368,16 @@ export class DaemonServer {
         return publicJobRecord(rec);
       }
       case "claudexor.findAccepted": {
-        return publicAcceptedCommand(this.opts.commands, params);
+        return publicAcceptedCommand(this.commands, params);
       }
       case "claudexor.list":
-        return publicCommandList(this.allRecords(), params?.query);
+        return this.commands.queries.publicList(parseCommandListQuery(params?.query));
       case "claudexor.cancel": {
         return this.cancelJob(String(params?.id), normalizeCancelReasonCode(params?.reason_code));
       }
       case "claudexor.delegationFence": {
         const runId = String(params?.runId ?? "");
-        const rec = this.allRecords().find((record) => record.runId === runId);
+        const rec = this.commands.queries.getByRunId(runId);
         if (!rec || rec.state !== "running") {
           throw Object.assign(new Error(`no running Delegate parent run ${runId}`), {
             code: "delegation_parent_invalid",
@@ -379,7 +398,18 @@ export class DaemonServer {
     }
   }
 
-  private readonly maxConcurrent: number;
+  private readonly concurrency: RuntimeConcurrencyCaps;
+
+  /** One synchronous observation for the exact operation; never inferred by a
+   * client from aggregate health. Missing means this scheduler owns no live job. */
+  admission(id: string): JobAdmission | null {
+    const running = this.activeJobs.get(id);
+    if (running) return { class: running.class, phase: "active", blockers: [] };
+    const queued = this.queue.find((job) => job.id === id);
+    return queued
+      ? queuedAdmission(queued, this.activeJobs.values(), this.concurrency, this.stopping)
+      : null;
+  }
 
   /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
    * barrier. It is safe to repeat and preserves queued-admission cleanup. */
@@ -389,6 +419,8 @@ export class DaemonServer {
     this.cancelled.add(jid);
     if (rec.state === "queued") {
       this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
+      const index = this.queue.findIndex((job) => job.id === jid);
+      if (index !== -1) this.queue.splice(index, 1);
       const delegatedFrom = delegatedParentOf(rec.params);
       if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
@@ -406,15 +438,11 @@ export class DaemonServer {
 
   /** Age/cap and params-byte command retention: at normal admission and after every terminal. */
   pruneHistory(): void {
-    const removed = prunableCommandIds(
-      this.allRecords(),
+    const removed = this.commands.pruneHistory(
       this.opts.maxHistory ?? 500,
       this.opts.idempotencyRetentionMs ?? 30 * 24 * 60 * 60 * 1_000,
       (this.opts.now ?? (() => new Date()))().getTime(),
     );
-    for (const store of commandStores(this.opts.commands)) {
-      store.prune(removed.filter((id) => store.get(id)));
-    }
     for (const id of removed) this.cancelled.delete(id);
   }
 
@@ -425,7 +453,7 @@ export class DaemonServer {
     idempotencyParams?: unknown,
     operation?: string,
   ) {
-    const store = commandStoreForRequest(this.opts.commands, params);
+    const store = commandStoreForRequest(this.commands, params);
     const parsed = ControlRunStartRequest.safeParse(params);
     const acceptedParams =
       parsed.success && parsed.data.mode === "agent"
@@ -442,16 +470,12 @@ export class DaemonServer {
     });
   }
 
-  private allRecords(): JobRecord[] {
-    return commandStores(this.opts.commands).flatMap((store) => store.records());
-  }
-
   private getRecord(id: string): JobRecord | undefined {
-    return commandStoreForId(this.opts.commands, id)?.get(id);
+    return commandStoreForId(this.commands, id)?.get(id);
   }
 
   private updateRecord(record: JobRecord, patch: Partial<JobRecord>): JobRecord {
-    const store = commandStoreForId(this.opts.commands, record.id);
+    const store = commandStoreForId(this.commands, record.id);
     if (!store) throw new Error(`command authority lost job ${record.id}`);
     const next = store.update(record.id, patch);
     if (isTerminalLifecycle(next.state) && !isTerminalLifecycle(record.state)) {
@@ -465,58 +489,24 @@ export class DaemonServer {
     return p && typeof p.threadId === "string" ? p.threadId : undefined;
   }
 
-  /**
-   * Schedule queued jobs up to the concurrency limit (non-blocking), plus the
-   * single Delegate-child overflow lane documented below.
-   *
-   * One active run per thread: a thread is a linear conversation and an in-place
-   * turn mutates the live tree, so two concurrent turns on the same thread would
-   * race the same files. We pick the first queued job whose thread is idle rather
-   * than always taking the head; thread-less jobs (CLI/MCP) keep running in
-   * parallel as before. drain() re-runs on every completion, so a thread's next
-   * turn starts as soon as its previous one settles.
-   */
+  /** Admit eligible jobs with one runner per thread and the existing single
+   * Delegate overflow. Completion retries admission without head-of-line blocking. */
   private drain(): void {
-    if (this.stopping) return;
+    if (this.stopping || servingModeOf(this.opts.servingMode) !== "normal") return;
     while (this.queue.length > 0) {
-      const records = this.allRecords();
-      const running = records.filter((record) => record.state === "running");
-      const busyThreads = new Set(
-        running.map((r) => this.threadIdOf(r)).filter((t): t is string => !!t),
-      );
-      const regularSlotAvailable = this.active < this.maxConcurrent;
-      // A Delegate parent can synchronously wait for its belt child. If every
-      // regular slot is occupied by such parents, a FIFO-only pool deadlocks.
-      // Admit exactly one already-validated child as overflow while no child is
-      // running; delegated children themselves have Delegate disabled, so this
-      // cannot recurse into an unbounded overflow tree.
-      const delegatedOverflowAvailable =
-        !regularSlotAvailable && !running.some((record) => isDelegatedChildRecord(record));
-      if (!regularSlotAvailable && !delegatedOverflowAvailable) break;
-
-      const eligible = (index: number): boolean => {
-        const rec = this.getRecord(this.queue[index]);
-        const tid = rec ? this.threadIdOf(rec) : undefined;
-        return !rec || !tid || !busyThreads.has(tid);
-      };
-      // Children go first so a parent waiting inside a regular slot makes
-      // progress. Ordinary work may use only a regular slot.
-      let pickIdx = this.queue.findIndex((id, index) => {
-        const rec = this.getRecord(id);
-        return !!rec && isDelegatedChildRecord(rec) && eligible(index);
-      });
-      if (pickIdx === -1 && regularSlotAvailable) {
-        pickIdx = this.queue.findIndex((_id, index) => eligible(index));
-      }
-      if (pickIdx === -1) break; // every queued job waits on a busy thread
-      const id = this.queue.splice(pickIdx, 1)[0];
-      const rec = this.getRecord(id);
+      // Existing child precedence and one overflow remain; a blocked ordinary
+      // class never prevents the next eligible job of another class from running.
+      const pickIdx = eligibleJobIndex(this.queue, this.activeJobs.values(), this.concurrency);
+      if (pickIdx === -1) break;
+      const job = this.queue.splice(pickIdx, 1)[0];
+      const id = job.id,
+        rec = this.getRecord(id);
       if (!rec) continue;
       if (this.cancelled.has(id)) {
         this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
         continue;
       }
-      this.active += 1;
+      this.activeJobs.set(id, job);
       const task = this.runJob(id, rec);
       this.activeTasks.add(task);
       void task.then(
@@ -558,12 +548,12 @@ export class DaemonServer {
         thrown,
         record: rec,
         aborted: controller.signal.aborted,
-        commands: this.opts.commands,
+        commands: this.commands,
         update: (record, patch) => this.updateRecord(record, patch),
       });
     } finally {
       this.controllers.delete(id);
-      this.active -= 1;
+      this.activeJobs.delete(id);
       // An admitted child can fail before the orchestrator attaches its
       // task-scoped ledger (contract/preflight/artifact setup). Clear that
       // pending admission at the daemon-owned job boundary; after attachment
@@ -604,4 +594,12 @@ export class DaemonServer {
       if (!this.stopping) this.drain();
     }
   }
+}
+
+function storageOnlyFailure(error: unknown): boolean {
+  if (error instanceof AggregateError)
+    return error.errors.length > 0 && error.errors.every(storageOnlyFailure);
+  return ["store_corrupt", "store_flush_unavailable"].includes(
+    (error as { code?: string })?.code ?? "",
+  );
 }

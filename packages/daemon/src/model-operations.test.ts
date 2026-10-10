@@ -1,10 +1,10 @@
+import { sqlFixture } from "./store/test-support/sql-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
 import type { ModelAdapter } from "@claudexor/core";
 import {
   ControlModelOperationDetail,
@@ -14,10 +14,8 @@ import {
   ModelOperationParams,
   type ModelPayloadRef,
 } from "@claudexor/schema";
-import { CommandStore } from "./command-store.js";
 import { DaemonClient } from "./client.js";
 import { DaemonServer } from "./server.js";
-import { ResourceStore } from "./resource-store.js";
 import { ModelOperations } from "./model-operations.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 import { createCodexModelAdapter } from "../../harness-codex/src/model.js";
@@ -58,10 +56,10 @@ async function fixture(
 ) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-mo-")));
   let clock = new Date();
-  const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
-  const store = new CommandStore(journal, () => clock);
-  const commands = { current: () => store };
-  const resources = new ResourceStore(join(root, "resources"));
+  const sql = await sqlFixture(root, () => clock);
+  const store = sql.graph.commands.current();
+  const commands = sql.graph.commands;
+  const resources = sql.graph.resources;
   const socket =
     process.platform === "win32" ? `\\\\.\\pipe\\cx-mo-${randomUUID()}` : join(root, "daemon.sock");
   const client = new DaemonClient(socket, "fixture-control");
@@ -86,6 +84,7 @@ async function fixture(
   });
   const operations = new ModelOperations({
     commands,
+    resourceQueries: commands.queries,
     resources: () => resources,
     now: () => clock,
     enqueue: (envelope) => client.call("claudexor.enqueue", envelope),
@@ -105,7 +104,7 @@ async function fixture(
   cleanup.push(async () => {
     await server.stop();
     operations.close();
-    journal.close();
+    await sql.close();
     rmSync(root, { recursive: true, force: true });
   });
   const upload = (body = request()): ModelPayloadRef =>
@@ -119,7 +118,8 @@ async function fixture(
   };
   return {
     root,
-    journal,
+    sql,
+    records: sql.records,
     store,
     resources,
     operations,
@@ -156,7 +156,7 @@ describe("model operations over the existing daemon command substrate", () => {
         }),
       fetch: async (_url, init) => {
         if (init?.method !== "POST") return Response.json({ models: [{ slug: "test-model" }] });
-        const running = f.store.records()[0]!;
+        const running = f.records()[0]!;
         expect(f.operations.inspect(running.id).dispatch).toMatchObject({
           state: "started",
           startedAt: expect.any(String),
@@ -364,12 +364,12 @@ describe("model operations over the existing daemon command substrate", () => {
       await api.stop();
       await f.server.stop();
       f.operations.close();
-      f.journal.close();
-      const journal = new DurableJournal({ rootDir: join(f.root, "journal"), partition: "global" });
-      const store = new CommandStore(journal);
-      const resources = new ResourceStore(join(f.root, "resources"));
+      await f.sql.close();
+      const sql = await sqlFixture(f.root);
+      const resources = sql.graph.resources;
       const reopened = new ModelOperations({
-        commands: { current: () => store },
+        commands: sql.graph.commands,
+        resourceQueries: sql.graph.commands.queries,
         resources: () => resources,
         enqueue: async () => {
           throw new Error("replay cannot enqueue");
@@ -383,7 +383,7 @@ describe("model operations over the existing daemon command substrate", () => {
       });
       cleanup.push(async () => {
         reopened.close();
-        journal.close();
+        await sql.close();
       });
       expect(reopened.readResult(created.id).bytes.equals(bytes)).toBe(true);
       expect(
@@ -523,21 +523,22 @@ describe("model operations over the existing daemon command substrate", () => {
     expect(Buffer.from(captured.failureEvidence!.bodyBase64, "base64").equals(wire)).toBe(true);
     expect(captured.failureEvidence!.errors[0].name).toBe("SyntaxError");
     expect(JSON.stringify(done)).not.toContain("private-wire-marker");
-    expect(JSON.stringify(f.store.records())).not.toContain(captured.failureEvidence!.bodyBase64);
+    expect(JSON.stringify(f.records())).not.toContain(captured.failureEvidence!.bodyBase64);
     expect(f.resources.listModelResources()).toHaveLength(1);
     expect((await f.operations.create(f.upload(), "large-failure", true)).id).toBe(created.id);
     expect(f.operations.readResult(created.id).bytes.equals(bytes)).toBe(true);
     await api.stop();
     await f.server.stop();
     f.operations.close();
-    f.journal.close();
+    await f.sql.close();
 
-    const journal = new DurableJournal({ rootDir: join(f.root, "journal"), partition: "global" });
-    const store = new CommandStore(journal);
-    const resources = new ResourceStore(join(f.root, "resources"));
+    const sql = await sqlFixture(f.root);
+    const store = sql.graph.commands.current();
+    const resources = sql.graph.resources;
     let now = new Date();
     const reopened = new ModelOperations({
-      commands: { current: () => store },
+      commands: sql.graph.commands,
+      resourceQueries: sql.graph.commands.queries,
       resources: () => resources,
       now: () => now,
       enqueue: async () => {
@@ -552,7 +553,7 @@ describe("model operations over the existing daemon command substrate", () => {
     });
     cleanup.push(async () => {
       reopened.close();
-      journal.close();
+      await sql.close();
     });
     expect(reopened.readResult(created.id).bytes.equals(bytes)).toBe(true);
     expect(reopened.reconcileResources().released).toEqual([]);
@@ -709,7 +710,7 @@ describe("model operations over the existing daemon command substrate", () => {
     const created = await f.operations.create(ref, "turn-state-rejoin");
     const done = await f.terminal(created.id);
     expect(JSON.stringify(done)).not.toContain("private-turn-token");
-    expect(JSON.stringify(f.store.records())).not.toContain("private-turn-token");
+    expect(JSON.stringify(f.records())).not.toContain("private-turn-token");
     const first = f.operations.readResult(created.id);
     expect(JSON.parse(first.bytes.toString()).nativeContinuation).toEqual(nativeContinuation);
     expect((await f.operations.create(ref, "turn-state-rejoin")).id).toBe(created.id);
@@ -758,7 +759,7 @@ describe("model operations over the existing daemon command substrate", () => {
       const problem = await response.json();
       expect(problem).toMatchObject({ code: "model_request_invalid", retryable: false });
       expect(JSON.stringify(problem)).not.toContain("private caller content");
-      expect(f.store.records()).toEqual([]);
+      expect(f.records()).toEqual([]);
       expect(f.sends).not.toHaveBeenCalled();
       const absent = await fetch(`${endpoint}/not-created`, { headers });
       expect(absent.status).toBe(404);
@@ -786,7 +787,7 @@ describe("model operations over the existing daemon command substrate", () => {
         id: created.id,
         response: { state: "acknowledged" },
       });
-      expect(f.store.records()).toHaveLength(1);
+      expect(f.records()).toHaveLength(1);
       expect(f.sends).toHaveBeenCalledTimes(1);
     },
   );
@@ -798,8 +799,8 @@ describe("model operations over the existing daemon command substrate", () => {
     expect(done.state).toBe("succeeded");
     expect(done.dispatch.state).toBe("response_received");
     expect(f.sends).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(f.store.records())).not.toContain("private-model-marker");
-    expect(JSON.stringify(f.store.records()).length).toBeLessThan(5000);
+    expect(JSON.stringify(f.records())).not.toContain("private-model-marker");
+    expect(JSON.stringify(f.records()).length).toBeLessThan(5000);
     expect(() => f.resources.readModel(ref)).toThrowError(
       expect.objectContaining({ code: "resource_not_found" }),
     );
@@ -829,7 +830,7 @@ describe("model operations over the existing daemon command substrate", () => {
     expect(a.id).toBe(b.id);
     await f.terminal(a.id);
     expect(f.sends).toHaveBeenCalledTimes(1);
-    expect(f.store.records()).toHaveLength(1);
+    expect(f.records()).toHaveLength(1);
     expect(() => f.resources.readModel(first)).toThrow();
     expect(() => f.resources.readModel(second)).toThrow();
     const replayRef = f.upload();
@@ -872,7 +873,7 @@ describe("model operations over the existing daemon command substrate", () => {
     f.operations.acknowledge(first.id, f.operations.readResult(first.id).sha256);
     const second = await f.operations.create(f.upload(request("other")), "retained-second");
     await f.terminal(second.id);
-    expect(f.store.records()).toHaveLength(2);
+    expect(f.records()).toHaveLength(2);
     expect((await f.operations.create(f.upload(), "retained-first")).id).toBe(first.id);
     expect(f.operations.inspect(first.id).response.state).toBe("acknowledged");
     expect(f.sends).toHaveBeenCalledTimes(2);
@@ -889,12 +890,11 @@ describe("model operations over the existing daemon command substrate", () => {
         return { ...result(), outcome: "failed", message: null };
       }
     });
-    const update = f.store.update.bind(f.store);
-    vi.spyOn(f.store, "update").mockImplementation((id, patch) => {
-      if ((patch.result as { dispatch?: { state?: string } })?.dispatch?.state === "started")
-        throw new Error("fixture journal write failed");
-      return update(id, patch);
-    });
+    f.sql.store.transaction(() =>
+      f.sql.store.exec(`CREATE TRIGGER dispatch_write_fault BEFORE UPDATE ON command
+      WHEN (SELECT json_extract(CAST(inline AS TEXT),'$.dispatch.state') FROM blob WHERE sha256=NEW.result_sha)='started'
+      BEGIN SELECT RAISE(ABORT,'fixture SQL write failed'); END`),
+    );
     const created = await f.operations.create(f.upload(), "dispatch-write-failed");
     const done = await f.terminal(created.id);
     expect(done.state).toBe("failed");
@@ -954,7 +954,7 @@ describe("model operations over the existing daemon command substrate", () => {
         "ordinary-op",
       ),
     ).rejects.toMatchObject({ code: "resource_purpose_mismatch" });
-    expect(f.store.records()).toEqual([]);
+    expect(f.records()).toEqual([]);
     expect(f.sends).not.toHaveBeenCalled();
   });
 
@@ -974,7 +974,7 @@ describe("model operations over the existing daemon command substrate", () => {
         retryable: false,
       });
     }
-    expect(f.store.records()).toEqual([]);
+    expect(f.records()).toEqual([]);
     expect(f.sends).not.toHaveBeenCalled();
   });
 
@@ -986,7 +986,7 @@ describe("model operations over the existing daemon command substrate", () => {
       throw failure;
     });
     await expect(f.operations.create(ref, "io-error")).rejects.toBe(failure);
-    expect(f.store.records()).toEqual([]);
+    expect(f.records()).toEqual([]);
     expect(f.sends).not.toHaveBeenCalled();
   });
 
@@ -1002,7 +1002,7 @@ describe("model operations over the existing daemon command substrate", () => {
     expect(replay.id).toBe(created.id);
     expect(replay.response.state).toBe("acknowledged");
     expect(read).not.toHaveBeenCalled();
-    expect(f.store.records()).toHaveLength(1);
+    expect(f.records()).toHaveLength(1);
     expect(f.sends).toHaveBeenCalledTimes(1);
   });
 

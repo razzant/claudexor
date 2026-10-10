@@ -1,16 +1,13 @@
+import { legacyCommandFixture } from "../../daemon/src/store/test-support/legacy-command-fixture.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterRegistry, HarnessAdapter } from "@claudexor/core";
-import {
-  CommandStore,
-  DaemonClient,
-  DaemonServer,
-  ThreadStore,
-  type JobRecord,
-} from "@claudexor/daemon";
+import { CommandStore } from "../../daemon/src/store/test-support/fixtures/legacy/daemon/command-store.js";
+import { DaemonClient, DaemonServer, type JobRecord } from "@claudexor/daemon";
+import { ThreadStore } from "../../daemon/src/store/test-support/fixtures/legacy/daemon/threads.js";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js";
 import {
   Attachment,
   ControlRunStartRequest,
@@ -149,7 +146,7 @@ describe("durable thread Git preflight", () => {
     const daemon = new DaemonServer({
       socketPath,
       token,
-      commands: { current: () => commands },
+      commands: legacyCommandFixture({ current: () => commands }),
       onTurnEnqueueFailed: (turnId, problem) => threads.setTurnEnqueueError(turnId, problem),
       runner: async (raw, context) => {
         const request = normalizeRunStartRequest(raw);

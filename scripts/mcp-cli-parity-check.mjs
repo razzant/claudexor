@@ -200,6 +200,8 @@ const BOOLEAN_FLAG_MAP = {
 // CLI run-control flags with NO MCP argument: each needs a stated reason.
 // (Non-run-control CLI flags — subcommand plumbing — are structurally exempt.)
 const CLI_ONLY_EXEMPT = {
+  "host-binding-json":
+    "plugin installation/repair binding, not a run control; MCP tools do not rebind their host integration",
   "vendor-version":
     "harness update install target, exposed by the maintenance control API; not an Agent run control",
   instructions:

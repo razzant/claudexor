@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/event-log",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Append-only JSONL run-event log (a projection-friendly evidence ledger).",
   "type": "module",
@@ -33,7 +33,7 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "publishConfig": {
     "access": "public"

@@ -1,18 +1,25 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  commandActivityRecords,
-  type ProjectPartitions,
-  type ProjectStore,
-} from "@claudexor/daemon";
+import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
+import { sqlActivityRecords } from "./sql-daemon-queries.js";
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
 import { createRetentionRunner, scheduleStartupRetention } from "./retention-service.js";
 import { threadPurgeOwner } from "./thread-purge.js";
 
 const roots: string[] = [];
+const sqlStores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
 let previousConfigDir: string | undefined;
 let previousHome: string | undefined;
 
@@ -30,7 +37,8 @@ beforeEach(() => {
   writeFileSync(join(configDir, "config.yaml"), "retention:\n  keep_last_runs_per_project: 0\n");
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const sql of sqlStores.splice(0).reverse()) await sql.close();
   if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
   else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
   if (previousHome === undefined) delete process.env.HOME;
@@ -86,7 +94,7 @@ function deps(input: {
 }) {
   const projects = {
     list: () => input.projectRoots.map((root, i) => ({ id: `p${i}`, root })),
-  } as unknown as ProjectStore;
+  } as unknown as ProjectStorePort;
   let rows: FakeThread[] =
     input.threads ?? (input.threadRunIds ? [{ id: "t1", run_ids: input.threadRunIds }] : []);
   const threads = {
@@ -96,7 +104,7 @@ function deps(input: {
     listThreads: () => rows.filter((thread) => thread.state !== "purged"),
     listPurgedThreads: () => rows.filter((thread) => thread.state === "purged"),
     turnsFor: () => [],
-  } as unknown as ProjectPartitions;
+  } as unknown as ProjectThreadPort;
   return {
     projects: () => projects,
     threads,
@@ -296,18 +304,21 @@ describe("expired trash purge in the retention pass (owner decision E2)", () => 
   });
 
   it("sees a live turn through the in-process activity projection the daemon feeds it", async () => {
-    // claudexord.ts feeds retention commandActivityRecords(...), not full records:
-    // the projection must keep the thread id the trash fence matches on.
-    const turn = (state: "running" | "succeeded") =>
-      commandActivityRecords([
-        {
-          id: "job-turn",
-          runId: "run-turn",
-          state,
-          createdAt: "2026-10-08T00:00:00Z",
-          params: { threadId: "t-expired", mode: "ask", scope: { kind: "none" }, prompt: "p" },
-        },
-      ]);
+    const sqlRoot = realpathSync(mkdtempSync(join(tmpdir(), "retention-sql-")));
+    roots.push(sqlRoot);
+    const sql = await sqlFixture(sqlRoot);
+    sqlStores.push(sql);
+    const commands = sql.graph.commands.current();
+    commands.accept({
+      id: "job-turn",
+      params: { threadId: "t-expired", mode: "ask", scope: { kind: "none" }, prompt: "p" },
+      idempotencyKey: "turn",
+      clientId: "fixture",
+    });
+    const turn = (state: "running" | "succeeded") => {
+      commands.update("job-turn", { runId: "run-turn", state });
+      return sqlActivityRecords(sql.store);
+    };
     const purged: string[] = [];
     const kept = await createRetentionRunner(
       deps({

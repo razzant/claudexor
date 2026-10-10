@@ -41,26 +41,125 @@
           "type": "object",
           "properties": {
             "maxConcurrent": {
-              "type": "integer",
-              "minimum": -9007199254740991,
-              "maximum": 9007199254740991,
-              "exclusiveMinimum": 0
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "string",
+                  "const": "unlimited"
+                }
+              ]
+            },
+            "maxConcurrentNonModelJobs": {
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
+            },
+            "maxConcurrentModelOperations": {
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
             },
             "maxParallelCandidates": {
-              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent/anyOf/0"
             },
             "maxDeepScanWidth": {
-              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent/anyOf/0"
             },
             "maxCouncilMembers": {
               "type": "integer",
               "minimum": 2,
               "maximum": 9007199254740991,
               "exclusiveMinimum": 0
+            },
+            "sources": {
+              "type": "object",
+              "properties": {
+                "max_concurrent": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "config",
+                    "environment",
+                    "embedder",
+                    "unknown"
+                  ]
+                },
+                "max_concurrent_non_model_jobs": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_concurrent_model_operations": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_parallel_candidates": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_deep_scan_width": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_council_members": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                }
+              },
+              "required": [
+                "max_concurrent",
+                "max_concurrent_non_model_jobs",
+                "max_concurrent_model_operations",
+                "max_parallel_candidates",
+                "max_deep_scan_width",
+                "max_council_members"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
             "maxConcurrent"
+          ],
+          "additionalProperties": false
+        },
+        "admission": {
+          "type": "object",
+          "properties": {
+            "active": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "non_model": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "model",
+                "non_model"
+              ],
+              "additionalProperties": false
+            },
+            "queued": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "non_model": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "model",
+                "non_model"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "active",
+            "queued"
           ],
           "additionalProperties": false
         },
@@ -129,6 +228,434 @@
             "sampledAt"
           ],
           "additionalProperties": false
+        },
+        "store": {
+          "type": "object",
+          "properties": {
+            "flusher": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "starting",
+                        "up",
+                        "down"
+                      ]
+                    },
+                    "interval_ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "generation": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "acknowledged_generation": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "pending_registrations": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "pending_waiters": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "flush_lag_ms": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                    },
+                    "last_barrier_at": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "ISO-8601 timestamp string."
+                    },
+                    "last_pass": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "at": {
+                              "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                            },
+                            "pass_ms": {
+                              "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                            },
+                            "barrier_ms": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "dirty": {
+                              "type": "boolean"
+                            },
+                            "barrier": {
+                              "type": "boolean"
+                            },
+                            "wal_bytes": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "checkpoint": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "busy": {
+                                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                                    },
+                                    "log": {
+                                      "type": "integer"
+                                    },
+                                    "checkpointed": {
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "busy",
+                                    "log",
+                                    "checkpointed"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "at",
+                            "pass_ms",
+                            "barrier_ms",
+                            "dirty",
+                            "barrier",
+                            "wal_bytes",
+                            "checkpoint"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "counters": {
+                      "type": "object",
+                      "properties": {
+                        "passes": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "barriers": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "dirSyncs": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "busyPassive": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "walReopens": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "restarts": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        },
+                        "deaths": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                        }
+                      },
+                      "required": [
+                        "passes",
+                        "barriers",
+                        "dirSyncs",
+                        "busyPassive",
+                        "walReopens",
+                        "restarts",
+                        "deaths"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "state",
+                    "interval_ms",
+                    "generation",
+                    "acknowledged_generation",
+                    "pending_registrations",
+                    "pending_waiters",
+                    "flush_lag_ms",
+                    "last_barrier_at",
+                    "last_pass",
+                    "counters"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "flush_lag_ms": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "last_barrier_at": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO-8601 timestamp string."
+            },
+            "interval_ms": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "wal_bytes": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "busy_waits": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "obligations_open": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "integrity": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "ok",
+                    "failed"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "migration": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "phase": {
+                      "type": "string",
+                      "enum": [
+                        "reading",
+                        "importing",
+                        "verifying",
+                        "complete",
+                        "publishing",
+                        "failed"
+                      ]
+                    },
+                    "completedPartitions": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "totalPartitions": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "currentPartition": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "processedBytes": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    },
+                    "totalBytes": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/generation"
+                    }
+                  },
+                  "required": [
+                    "phase",
+                    "completedPartitions",
+                    "totalPartitions",
+                    "currentPartition",
+                    "processedBytes",
+                    "totalBytes"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "flusher",
+            "flush_lag_ms",
+            "last_barrier_at",
+            "interval_ms",
+            "wal_bytes",
+            "busy_waits",
+            "obligations_open",
+            "integrity",
+            "migration"
+          ],
+          "additionalProperties": false
+        },
+        "loop": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "windowMs": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "How long the window lasted. Windows roll every ten seconds; a stalled loop rolls late, so a longer window is itself evidence of a stall."
+                },
+                "windowEndedAt": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                },
+                "delay": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "resolutionMs": {
+                          "type": "number",
+                          "minimum": 0,
+                          "description": "Sampling interval. Each sample is the time between two sampling ticks, so an idle loop's p50 sits near this value, not near zero."
+                        },
+                        "samples": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "p50Ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "p99Ms": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                        },
+                        "maxMs": {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                        }
+                      },
+                      "required": [
+                        "resolutionMs",
+                        "samples",
+                        "p50Ms",
+                        "p99Ms",
+                        "maxMs"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Event-loop delay percentiles over the window (perf_hooks.monitorEventLoopDelay, reset each window); null when the window recorded no sample."
+                },
+                "utilization": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Share of the window the loop spent busy (performance.eventLoopUtilization delta); null for a window too short to measure."
+                },
+                "gc": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "totalMs": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                    },
+                    "maxMs": {
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "totalMs",
+                    "maxMs"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Garbage-collection pauses observed in the window: count, summed and longest."
+                }
+              },
+              "required": [
+                "windowMs",
+                "windowEndedAt",
+                "delay",
+                "utilization",
+                "gc"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last completed event-loop window; null until the first window completes."
         }
       },
       "required": [
@@ -141,7 +668,8 @@
         "stopping",
         "servingMode",
         "capacity",
-        "memory"
+        "memory",
+        "loop"
       ],
       "additionalProperties": false
     }

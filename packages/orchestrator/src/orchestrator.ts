@@ -300,7 +300,7 @@ import { liveAttempt, type LiveAttemptContext, type LiveAttemptHook } from "./li
 import { gateSpecsFromContract, renderTestsEvidence } from "./contract-gates.js";
 import { buildTaskContract } from "./task-contract-builder.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
-import type { EventLog } from "@claudexor/event-log";
+import type { EventLog, TerminalPersistenceHook } from "@claudexor/event-log";
 import {
   buildContextPack,
   rawContextForEnvelope,
@@ -566,8 +566,8 @@ export interface RunInput {
   onContinuityResolved?: (turnId: string, disclosure: ContinuityDisclosureResult) => void;
   /** Best-effort live sink for every RunEvent, called after durable persistence. */
   onEvent?: (event: RunEvent) => void;
-  /** Durable RunEvent sink owned by the daemon journal; failures fail the run. */
   onEventPersist?: (event: RunEvent) => void;
+  onTerminalPersist?: TerminalPersistenceHook;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
   onHarnessEvent?: (event: HarnessEvent) => void;
   /** Called once when the run id/dir are known, before any harness work begins. */

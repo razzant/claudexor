@@ -10,7 +10,7 @@
  * after the purge was journaled.
  */
 import { join } from "node:path";
-import type { ProjectPartitions, ProjectStore } from "@claudexor/daemon";
+import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import type { ControlGcReceipt, ControlGcRequest, Thread } from "@claudexor/schema";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
@@ -24,8 +24,8 @@ import { sweepOrphanLanes } from "@claudexor/workspace";
 import { logLine } from "./daemon-lifecycle.js";
 
 export interface RetentionRunnerDeps {
-  projects: () => ProjectStore;
-  threads: ProjectPartitions;
+  projects: () => ProjectStorePort;
+  threads: ProjectThreadPort;
   daemonJobs: () =>
     | Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>
     | Promise<Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>>;

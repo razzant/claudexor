@@ -1,10 +1,11 @@
+import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { afterAll, describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
-import { CommandStore } from "./command-store.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { DaemonServer, type JobRecord } from "./server.js";
 
 const dirs: string[] = [];
@@ -65,7 +66,7 @@ describe("continueFrom admission in the daemon enqueue RPC", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: first.slot,
+      commands: legacyCommandFixture(first.slot),
       runner,
     });
     await server.start();
@@ -106,7 +107,7 @@ describe("continueFrom admission in the daemon enqueue RPC", () => {
     const restarted = new DaemonServer({
       socketPath,
       token: "token",
-      commands: second.slot,
+      commands: legacyCommandFixture(second.slot),
       runner: async () => ({ lifecycle: "succeeded" }),
     });
     await restarted.start();
@@ -135,7 +136,7 @@ describe("continueFrom admission in the daemon enqueue RPC", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: commands.slot,
+      commands: legacyCommandFixture(commands.slot),
       runner: async () => ({ lifecycle: "succeeded" }),
     });
     await server.start();

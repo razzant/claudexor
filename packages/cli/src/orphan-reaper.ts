@@ -6,6 +6,7 @@
  * on the next start, only the same leader birth identity may be signalled.
  */
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { rename, rm, writeFile } from "node:fs/promises";
 import {
   defaultProcessGroupService,
   liveChildProcesses,
@@ -32,6 +33,53 @@ export function writePidsSnapshot(path: string): void {
     renameSync(tmp, path);
   } catch {
     /* best-effort bookkeeping; never fail a run over it */
+  }
+}
+
+/**
+ * The periodic pids.json writer: asynchronous, one write at a time, and only
+ * when the set of live children changed since its last successful write, so an
+ * unchanged set costs one in-memory comparison per tick and no file I/O. A
+ * failed write leaves the old answer stale and the next tick tries again;
+ * like the synchronous snapshot it is best-effort and never fails a run.
+ */
+export class PidsSnapshotWriter {
+  private written: string | null = null;
+  private inflight: Promise<void> | null = null;
+
+  constructor(
+    private readonly path: string,
+    private readonly children: () => readonly unknown[] = liveChildProcesses,
+  ) {}
+
+  refresh(): Promise<void> {
+    if (this.inflight) return this.inflight;
+    const pids = this.children();
+    const body = pids.length === 0 ? "" : JSON.stringify({ pids }, null, 2);
+    if (body === this.written) return Promise.resolve();
+    const write: Promise<void> = this.write(body).finally(() => {
+      if (this.inflight === write) this.inflight = null;
+    });
+    this.inflight = write;
+    return write;
+  }
+
+  /** Resolves once no write is in flight. */
+  async settled(): Promise<void> {
+    await this.inflight;
+  }
+
+  private async write(body: string): Promise<void> {
+    try {
+      if (body === "") await rm(this.path, { force: true });
+      else {
+        await writeFile(`${this.path}.tmp`, body, { mode: 0o600 });
+        await rename(`${this.path}.tmp`, this.path);
+      }
+      this.written = body;
+    } catch {
+      /* best-effort bookkeeping; the next tick retries */
+    }
   }
 }
 

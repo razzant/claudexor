@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { EventLog, appendRunEvent, lastSeqInFile } from "./index.js";
+import { EventLog, appendRunEvent, lastRunEventSeq, lastSeqInFile } from "./index.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -493,5 +493,123 @@ describe("appendRunEvent single-counter invariant", () => {
     const second = new EventLog(path, "run-1", "task-1");
     expect(appendRunEvent(path, "run-1", "task-1", "control.requested", {}).seq).toBe(2);
     expect(second.emit("run.completed", {}).seq).toBe(3);
+  });
+});
+
+/** The full-parse answer `lastSeqInFile` must keep: the highest per-line value,
+ * where a line's value is its numeric seq, else its position among non-blank
+ * lines (legacy and malformed lines count by position). */
+function fullParseLastSeq(path: string): number {
+  if (!existsSync(path)) return 0;
+  let last = 0;
+  let lineNo = 0;
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    lineNo += 1;
+    try {
+      const seq = (JSON.parse(trimmed) as { seq?: unknown }).seq;
+      last = Math.max(last, typeof seq === "number" && Number.isFinite(seq) ? seq : lineNo);
+    } catch {
+      last = Math.max(last, lineNo);
+    }
+  }
+  return last;
+}
+
+function eventLine(seq: number | null, pad = 0): string {
+  return JSON.stringify({
+    ...(seq === null ? {} : { seq }),
+    ts: "2026-10-10T00:00:00.000Z",
+    run_id: "run-1",
+    task_id: "task-1",
+    type: "harness.event",
+    payload: { text: "ж".repeat(pad) },
+  });
+}
+
+describe("lastSeqInFile reads the tail, answering exactly like the full parse", () => {
+  const TAIL = 64 * 1024;
+  const cases: Array<[string, string | null]> = [
+    ["missing file", null],
+    ["empty file", ""],
+    ["blank lines only", "\n  \n\r\n"],
+    ["monotonic seq lines", [1, 2, 3].map((n) => eventLine(n)).join("\n") + "\n"],
+    ["no trailing newline", [1, 2, 3].map((n) => eventLine(n)).join("\n")],
+    ["trailing blank lines", [1, 2].map((n) => eventLine(n)).join("\n") + "\n\n \n"],
+    ["CRLF line endings", [1, 2, 3].map((n) => eventLine(n)).join("\r\n") + "\r\n"],
+    [
+      "truncated last line valued by its position",
+      [1, 2, 3].map((n) => eventLine(n)).join("\n") + "\n" + eventLine(4).slice(0, 25),
+    ],
+    [
+      "legacy lines continued with seq",
+      [null, null, 3, 4].map((n) => eventLine(n)).join("\n") + "\n",
+    ],
+    ["legacy last line", [1, 2, null].map((n) => eventLine(n)).join("\n") + "\n"],
+    ["non-object last line", [1, 2].map((n) => eventLine(n)).join("\n") + "\nnull\n"],
+    ["a single line longer than the tail", eventLine(1, TAIL) + "\n"],
+    [
+      "a last line longer than the tail",
+      [1, 2].map((n) => eventLine(n)).join("\n") + "\n" + eventLine(3, TAIL) + "\n",
+    ],
+    [
+      "multibyte text across the window start",
+      Array.from({ length: 400 }, (_, i) => eventLine(i + 1, 97)).join("\n") + "\n",
+    ],
+  ];
+
+  it.each(cases)("%s", (_name, content) => {
+    const path = join(reapMk(join(tmpdir(), "claudexor-lastseq-")), "events.jsonl");
+    if (content !== null) writeFileSync(path, content);
+    expect(lastSeqInFile(path)).toBe(fullParseLastSeq(path));
+  });
+
+  it("answers exactly at every window boundary of a growing log", () => {
+    const path = join(reapMk(join(tmpdir(), "claudexor-lastseq-")), "events.jsonl");
+    let content = "";
+    for (let seq = 1; content.length < TAIL + 4096; seq += 1) {
+      content += eventLine(seq, seq % 7) + (seq % 5 === 0 ? "\r\n" : "\n");
+      if (content.length > TAIL - 4096) {
+        writeFileSync(path, content);
+        expect(lastSeqInFile(path)).toBe(fullParseLastSeq(path));
+      }
+    }
+  });
+
+  it("decides from the tail alone when its last line carries a seq", () => {
+    // A head the full parse would value by position (malformed lines) proves
+    // the tail answered without reading it; a tail that cannot decide scans.
+    const path = join(reapMk(join(tmpdir(), "claudexor-lastseq-")), "events.jsonl");
+    const head = Array.from({ length: 20_000 }, () => "not json").join("\n");
+    writeFileSync(path, `${head}\n${eventLine(7)}\n`);
+    expect(fullParseLastSeq(path)).toBe(20_000);
+    expect(lastSeqInFile(path)).toBe(7);
+    writeFileSync(path, `${head}\n${eventLine(7)}\n{"seq": 8, "ts"`);
+    expect(lastSeqInFile(path)).toBe(20_002);
+  });
+});
+
+describe("lastRunEventSeq: live writer counter vs finished file tail", () => {
+  it("answers a live run from its writer's counter and a finished run from the file", () => {
+    const path = join(reapMk(join(tmpdir(), "claudexor-lastseq-live-")), "events.jsonl");
+    const log = new EventLog(path, "run-1", "task-1");
+    log.emit("run.created");
+    log.emit("harness.event", { text: "a" });
+    log.emit("harness.event", { text: "b" });
+    expect(lastRunEventSeq(path)).toBe(3);
+    // The live answer never reads the file: emptied behind the writer's back,
+    // the file says 0 while the one seq owner still says 3.
+    writeFileSync(path, "");
+    expect(lastSeqInFile(path)).toBe(0);
+    expect(lastRunEventSeq(path)).toBe(3);
+    expect(log.emit("harness.event", { text: "c" }).seq).toBe(4);
+    expect(lastRunEventSeq(path)).toBe(4);
+    // The terminal releases the writer; the finished run answers from the file.
+    log.emit("run.completed", {});
+    expect(lastRunEventSeq(path)).toBe(lastSeqInFile(path));
+    expect(lastRunEventSeq(path)).toBe(5);
+    appendRunEvent(path, "run-1", "task-1", "control.requested", {});
+    expect(lastRunEventSeq(path)).toBe(6);
   });
 });

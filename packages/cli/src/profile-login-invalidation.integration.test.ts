@@ -1,3 +1,4 @@
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
@@ -135,6 +136,7 @@ async function withDaemon<T>(
   const quota = { noteCredentialChange: () => {} };
   const build = () =>
     createSetupJobManager({
+      store: new SetupJobStore(root),
       rootDir: root,
       runnerPath: RUNNER,
       monitorPollMs: 20,
@@ -192,7 +194,7 @@ async function withDaemon<T>(
       // Logins survive an ordinary daemon stop (v3.0.3 S5).
       bound = null;
       await manager.shutdown();
-      manager._store.journal.close();
+      (manager._store as SetupJobStore).journal.close();
       await beforeStart?.();
       manager = build();
       await manager.start();
@@ -205,7 +207,7 @@ async function withDaemon<T>(
     bindCredentialMutationWindow(null);
     for (const job of manager.list({ active: true })) await manager.cancel({ jobId: job.jobId });
     await manager.shutdown();
-    manager._store.journal.close();
+    (manager._store as SetupJobStore).journal.close();
     await server.stop();
   }
 }

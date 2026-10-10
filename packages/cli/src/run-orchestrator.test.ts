@@ -2,7 +2,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js";
 import { QuotaRegistry } from "@claudexor/daemon";
 import type { CredentialExecutionObserverFactory } from "@claudexor/core";
 import type { HarnessEvent } from "@claudexor/schema";

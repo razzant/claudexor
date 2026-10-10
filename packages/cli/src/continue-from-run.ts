@@ -15,13 +15,15 @@ import { RunScope, type ControlRunStartRequest } from "@claudexor/schema";
 import type { RunInput } from "@claudexor/orchestrator";
 import { retainedEnvelopeInChain } from "@claudexor/workspace";
 
-interface CommandRecords {
-  all(): ReadonlyArray<{
-    records(): ReadonlyArray<{ runId?: string; runDir?: string; state: string; params: unknown }>;
-  }>;
+interface ChainRecord {
+  runId?: string;
+  runDir?: string;
+  state: string;
+  params: unknown;
 }
-
-type ChainRecord = ReturnType<ReturnType<CommandRecords["all"]>[number]["records"]>[number];
+interface CommandRecords {
+  getByRunId(runId: string): ChainRecord | undefined;
+}
 
 function paramsOf(record: ChainRecord): Record<string, unknown> {
   return record.params && typeof record.params === "object"
@@ -30,10 +32,7 @@ function paramsOf(record: ChainRecord): Record<string, unknown> {
 }
 
 /** Head first, with cycle protection for malformed historical links. */
-function predecessorChain(
-  records: readonly ChainRecord[],
-  predecessor: ChainRecord,
-): ChainRecord[] {
+function predecessorChain(records: CommandRecords, predecessor: ChainRecord): ChainRecord[] {
   const chain: ChainRecord[] = [];
   const seen = new Set<string>();
   for (
@@ -43,7 +42,7 @@ function predecessorChain(
     seen.add(record.runId);
     chain.push(record);
     const parent: unknown = paramsOf(record)["continueFrom"];
-    record = typeof parent === "string" ? records.find((r) => r.runId === parent) : undefined;
+    record = typeof parent === "string" ? records.getByRunId(parent) : undefined;
   }
   return chain;
 }
@@ -54,8 +53,7 @@ export function continuationForRun(
 ): NonNullable<RunInput["continuation"]> {
   const retain = !p.delegatedFromRunId;
   if (!p.continueFrom) return { retain };
-  const records = commands.all().flatMap((store) => store.records());
-  const predecessor = records.find((record) => record.runId === p.continueFrom);
+  const predecessor = commands.getByRunId(p.continueFrom);
   let sourceAvailable = false;
   try {
     sourceAvailable = !!predecessor?.runDir && statSync(predecessor.runDir).isDirectory();
@@ -72,7 +70,7 @@ export function continuationForRun(
     });
   }
   // An explicit live root or another project runs elsewhere: the kept envelope stays kept.
-  const chain = predecessorChain(records, predecessor);
+  const chain = predecessorChain(commands, predecessor);
   const sources = chain.flatMap((record) => {
     if (!record.runId || !record.runDir) return [];
     const scope = RunScope.safeParse(paramsOf(record)["scope"]).data;

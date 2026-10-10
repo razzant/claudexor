@@ -1,12 +1,24 @@
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { type Server as NetServer, createServer as createNetServer } from "node:net";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeOutcomeFacts } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CliError } from "./cli-error.js";
+import * as daemonApi from "@claudexor/daemon";
+import * as daemonLaunch from "./daemon-launch.js";
+import { daemonCommand } from "./ops-commands.js";
+import { parseArgs } from "./args.js";
 import { ENGINE_STOP_REMEDY, observedEngineSkew, recordEngineSkew } from "./engine-skew.js";
 import {
   DAEMON_CONTROL_API_FRESH_START_TAIL_MS,
@@ -426,7 +438,7 @@ describe("absence vs refusal discrimination (#93)", () => {
   let httpServer: HttpServer | null = null;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(realpathSync(tmpdir()), "claudexor-daemon-run-"));
+    dir = mkdtempSync(join(realpathSync(tmpdir()), "cx-dr-"));
     prevConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     prevSock = process.env.CLAUDEXOR_DAEMON_SOCK;
     prevEntry = process.env.CLAUDEXOR_DAEMON_ENTRY;
@@ -437,6 +449,8 @@ describe("absence vs refusal discrimination (#93)", () => {
 
   afterEach(async () => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     if (socketServer) await new Promise<void>((r) => socketServer!.close(() => r()));
     if (httpServer) await new Promise<void>((r) => httpServer!.close(() => r()));
     socketServer = null;
@@ -465,6 +479,78 @@ describe("absence vs refusal discrimination (#93)", () => {
   it("connectDaemonIfRunning: absence (no daemon at all) is null, never a spawn", async () => {
     expect(await connectDaemonIfRunning()).toBeNull();
   });
+
+  it("external ownership refuses absent ordinary actions before root/token/spawn and lifecycle changes", async () => {
+    vi.stubEnv("CLAUDEXOR_DAEMON_OWNER", "external");
+    const missingRoot = join(dir, "missing");
+    process.env.CLAUDEXOR_CONFIG_DIR = missingRoot;
+    vi.stubEnv("CLAUDEXOR_DAEMON_ENTRY", join(dir, "absent-fixture-entry.mjs"));
+    const token = vi.spyOn(daemonApi, "ensureToken");
+    const launch = vi.spyOn(daemonLaunch, "launchDetachedDaemon");
+    const fetch = vi.spyOn(globalThis, "fetch");
+    for (const action of [
+      () => ensureDaemon(),
+      ...["start", "stop", "rotate-token"].map(
+        (verb) => () => daemonCommand(parseArgs(["daemon", verb]), true),
+      ),
+    ])
+      await expect(action()).rejects.toMatchObject({
+        code: expect.stringMatching(/daemon_(unavailable|lifecycle_external)/),
+      });
+    expect(token).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(existsSync(missingRoot)).toBe(false);
+  });
+
+  it.each([NORMAL_200, RECOVERY_ONLY_200])(
+    "external attachment preserves the serving mode and ignores stale socket overrides",
+    async (handshake) => {
+      vi.stubEnv("CLAUDEXOR_DAEMON_OWNER", "external");
+      const api = await fakeControlApi(handshake);
+      httpServer = api.server;
+      writeDaemonFixture(api.port);
+      socketServer = await fakeDaemonSocket(daemonApi.canonicalDefaultSocketPath());
+      const token = vi.spyOn(daemonApi, "ensureToken");
+      const launch = vi.spyOn(daemonLaunch, "launchDetachedDaemon");
+      const connection = await ensureDaemon(1);
+      expect(connection.engine.servingMode).toBe(JSON.parse(handshake().body).servingMode);
+      expect(token).not.toHaveBeenCalled();
+      expect(launch).not.toHaveBeenCalled();
+      rmSync(join(dir, "daemon", "control-api.json"));
+      await expect(ensureDaemon(1)).rejects.toMatchObject({ code: "daemon_unavailable" });
+      expect(launch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, "standalone"])(
+    "standalone custom-root auto-start (%s) still creates its token and reaches normal admission",
+    async (owner) => {
+      vi.stubEnv("CLAUDEXOR_DAEMON_OWNER", owner);
+      vi.stubEnv("CLAUDEXOR_MANAGED", "claudexor:managed host-plugin-lifecycle");
+      const api = await fakeControlApi(NORMAL_200);
+      httpServer = api.server;
+      const launch = vi.spyOn(daemonLaunch, "launchDetachedDaemon").mockImplementation(() => {
+        writeFileSync(
+          join(dir, "daemon", "control-api.json"),
+          JSON.stringify({ host: "127.0.0.1", port: api.port }),
+        );
+        void fakeDaemonSocket(process.env.CLAUDEXOR_DAEMON_SOCK as string).then((server) => {
+          socketServer = server;
+        });
+        return {
+          pid: null,
+          failure: () => null,
+          waitForFailure: () => new Promise(() => {}),
+          markReady: () => {},
+          callerError: () => new CliError("operational", "fixture failed"),
+        };
+      });
+      expect((await ensureDaemon(5_000)).engine.servingMode).toBe("normal");
+      expect(launch).toHaveBeenCalledOnce();
+      expect(existsSync(join(dir, "daemon", "token"))).toBe(true);
+    },
+  );
 
   it("pins the control-API fresh-start tail as a NAMED slice of the start budget (C10)", () => {
     // ensureDaemon waits this bounded tail for the control-api pointer AFTER

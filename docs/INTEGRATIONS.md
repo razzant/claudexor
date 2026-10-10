@@ -158,7 +158,8 @@ The public [Ouroboros runtime pin](https://github.com/razzant/ouroboros/blob/our
 is a working example of that exact-version, exact-build, and checksum contract.
 
 The host owns install location, daemon config root, process lifecycle, and
-rollback. Start, handshake, and stop must address the same config root/socket.
+compatible rollback/recovery. Start, handshake, and stop must address the same
+config root/socket; an older runtime cannot bypass the migrated store's semantic floor.
 Portable extraction alone is not a platform-support claim: Windows support
 also requires a native extract, exact-Node probe, isolated daemon handshake,
 and graceful-stop smoke; individual harness and login capabilities keep their
@@ -508,8 +509,10 @@ and a finite `interaction_timeout_ms` lets an unanswered question decline
 benignly; `null` disables only that automatic expiry. Answers, cancellation,
 outer run deadlines, terminal cleanup, and daemon restart still release the
 wait. Pending and resolved interaction projections are
-fsynced in the run's journal partition; daemon restart terminalizes unresolved
-questions instead of presenting a stale prompt as live.
+committed in the run's partition generation; daemon restart terminalizes
+unresolved questions instead of presenting a stale prompt as live. Storage
+acknowledgement and power-loss barriers follow the
+[engine-store contract](ARCHITECTURE.md#sqlite-engine-store).
 
 Live messages into a RUNNING attempt are the separate `POST /v2/runs/:id/messages`
 verb (protocol major stays 3; clients discover the route by its row in
@@ -742,6 +745,41 @@ modes) run `node scripts/cursor-itest.mjs`; the real-harness battery covers
 (phases 10-12, filterable via `CLAUDEXOR_BATTERY_PHASES=10,11,12`). Use `claudexor doctor` for Codex/Claude/Cursor/
 OpenCode harness availability and smoke status.
 
+### Externally owned host integrations
+
+An embedding application can register its existing stable runtime command and
+complete data root when installing or repairing a host plugin:
+
+```bash
+claudexor plugin install all --host-binding-json '{"schemaVersion":1,"command":["/opt/example/bin/managed-claudexor"],"configDir":"/var/lib/example/claudexor","daemonOwner":"external"}'
+```
+
+`command` is an absolute executable followed by optional prefix arguments, not a
+shell expression. The application owns selection of its current CLI and Node;
+Claudexor adds no runtime updater or locator. The existing plugin ledger retains
+this binding per host. Install/repair, including `--force` from another CLI or
+root, keeps it. A complete owned MCP source can recover a lost ledger, disclosed
+in the receipt; a surviving ledger rebuilds a missing source. When neither
+contains the binding, register it explicitly instead of guessing another root.
+An explicit new binding changes the selected command/root. Generated host caches
+still require the host's normal reload or reinstall from that canonical source.
+
+The ordinary full MCP and acting CLI attach only to that application's daemon.
+Absence returns `daemon_unavailable` without creating a root/token, launching a
+replacement or triggering authentication. Recovery-only admission stays visible;
+recovery reads remain available. Operator `daemon start`, `stop` and
+`rotate-token` refuse with `daemon_lifecycle_external`; the owning application's
+own lifecycle entrypoints remain available. A custom root alone does not select
+external ownership: standalone installations retain ordinary startup behavior.
+
+MCP, CLI fallback examples, plugin doctor and Claude statusline share the command,
+root and ownership projection. Shell examples use POSIX syntax or explicitly
+named PowerShell syntax on Windows. The manifest retains its actual generator
+version. Dynamic launches validate binding format `1` rather than an exact
+runtime version, so the stable command can follow an application runtime update.
+Unknown formats refuse with `host_binding_unsupported`. Fixed-runtime plugins
+keep their existing exact-version skew check.
+
 ### Portable Agent Skill and host packages
 
 `plugins/copilot` owns the canonical portable `skills/claudexor/SKILL.md` and
@@ -756,7 +794,7 @@ npm install -g claudexor
 copilot plugin install razzant/claudexor:plugins/copilot
 ```
 
-The portable path supports macOS and Linux with Node.js 20.19 or newer. Windows
+The portable path supports macOS and Linux with Node.js 24.15 or newer. Windows
 is not supported. Copilot owns installation, caching, enable/disable, update,
 and uninstall for this plugin; `claudexor plugin install` does not add a fifth
 managed Copilot host. Generated Claude Code, Codex, Cursor, and OpenCode
@@ -1308,11 +1346,34 @@ Known traps (class → CURRENT rule → pin):
 
 ## Storage
 
-Project runs write under the external per-project namespace
-`~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; the target repository's
-`.claudexor/` remains user-owned config. No-project Ask runs use a synthetic cwd
-and write artifacts under `~/.claudexor/v3/runs/`. See `docs/ARCHITECTURE.md` for
-the full current layout.
+One `daemon/engine.sqlite` under the selected config root owns command,
+project, thread and event state. Project run artifacts retain the external
+`~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/` namespace; the target
+repository's `.claudexor/` remains user-owned config. No-project Ask uses a
+synthetic cwd and writes artifacts under `~/.claudexor/v3/runs/`. An explicitly
+bound host data root keeps its own location.
+
+The 4.0 migration requires Node 24.15.0 or newer with supported bundled SQLite.
+Desktop application 4.0 is required before engine 4.0; the existing updater
+keeps the working engine and requests the app update first. Protocol major
+remains 3, but that alone does not make an older finite-only capacity decoder
+compatible. An explicit existing `max_concurrent: N` remains a global cap across
+model and non-model jobs; omission now has no finite ceiling. See
+[the admission contract](ARCHITECTURE.md#6-main-execution-paths).
+
+The first startup imports the old journal with recovery-only admission and
+visible status progress. It preserves original ids, request keys, epochs and
+sparse cursors, then retains the original journal as `journal-legacy/`. Account
+and credential bytes are not relocated or deleted by this storage migration.
+Unreplayed upload keys still depend on the preserved
+`resource-store/idempotency/` directory; removing it can change a later replay.
+The data-root floor prevents an older engine reopening migrated state: use a
+compatible forward fix, not an automatic rollback or legacy reimport. Logical
+partition recovery and whole-store physical recovery remain distinct. See
+[Legacy import and recovery](ARCHITECTURE.md#legacy-import-and-recovery) for
+publication order and diagnostic export limits, and the
+[event-stream contract](ARCHITECTURE.md#event-streaming-contract-snapshot-then-subscribe)
+for retained-stream changes.
 
 ## Stability Rules
 
@@ -1379,6 +1440,8 @@ subscription sessions are always preferred.
 | Variable | Owner | Effect |
 |---|---|---|
 | `CLAUDEXOR_CONFIG_DIR` | util | Relocates the whole config/state root (default `~/.claudexor/v3`; tests and CI use a disposable absolute path). |
+| `CLAUDEXOR_DAEMON_OWNER` | CLI | Explicit `standalone` (default) or `external` lifecycle; external requires an absolute root. See [external host integrations](#externally-owned-host-integrations). |
+| `CLAUDEXOR_HOST_BINDING_VERSION` | plugins / mcp-server | Declared dynamic binding format, independently of the manifest's generator version; see [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_BUILD_SHA` | util | Build-time stamp of the engine's git commit SHA (packaging sets it); without it a dev checkout reads `git rev-parse HEAD` and packaged builds report `unknown`. Reported in the handshake build identity. |
 | `CLAUDEXOR_DISABLE_STORED_SECRETS` | secrets | Ignore v2 file-stored secret refs entirely (hermetic runs; native sessions still work). |
 | `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` / `CLAUDEXOR_AGY_BIN` / `CLAUDEXOR_COPILOT_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
@@ -1397,14 +1460,15 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_REMOTE_RUNTIME` | remote runtime wrapper / core | Internal `1` marker set by signed remote-runtime wrappers. It adds the app-owned remote vendor CLI directory to harness discovery ahead of inherited PATH entries; users do not set it. |
 | `CLAUDEXOR_DOCTOR_TTL_MS` / `CLAUDEXOR_DOCTOR_NON_OK_TTL_MS` | doctor | Cache TTLs for ok / non-ok doctor probes. |
 | `CLAUDEXOR_CLI_PATH` / `CLAUDEXOR_NODE_PATH` | plugins | Paths baked into generated host-plugin MCP configs (set by the installer, rarely by hand). |
-| `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by generated host configs; a mismatch with the CLI version is a hard `mcp serve` refusal (`plugin_artifact_skew`) whose message names `claudexor plugin repair all`. |
-| `CLAUDEXOR_ROOT_MODE` | plugins / mcp-server | Provenance marker (`explicit`) the installer stamps ALONGSIDE a serialized `CLAUDEXOR_CONFIG_DIR` only for an operator-chosen non-default root; its absence next to a frozen non-default root is treated as legacy skew and refused. Default-root installs serialize neither. Never set by hand. |
-| `CLAUDEXOR_MANAGED` | plugins | Ownership marker the installer writes into generated host MCP configs (never set by hand). |
+| `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by fixed-runtime host configs; a mismatch with the CLI version is a hard `mcp serve` refusal (`plugin_artifact_skew`) whose message names `claudexor plugin repair all`. |
+| `CLAUDEXOR_ROOT_MODE` | plugins / mcp-server | Provenance marker (`explicit`) alongside an operator-chosen or externally owned `CLAUDEXOR_CONFIG_DIR`; its absence next to a frozen non-default root is treated as legacy skew and refused. Standalone default-root installs serialize neither. |
+| `CLAUDEXOR_MANAGED` | plugins | Generated-artifact ownership marker; does not select daemon lifecycle ownership. |
 | `CLAUDEXOR_DELEGATION_PARENT_RUN_ID` / `CLAUDEXOR_DELEGATION_REPO_ROOT` / `CLAUDEXOR_DELEGATION_DEPTH` / `CLAUDEXOR_DELEGATION_MAX_SUBRUNS` / `CLAUDEXOR_DELEGATION_BUDGET` | mcp-server (delegation belt) | Injected by the daemon into the `agent --delegate` belt process (`claudexor mcp serve-belt`); carry the parent run id, the original normalized user-project root, nesting depth (belt refuses depth>0), the per-parent sub-run cap, and the resolved parent budget used to bind children to one live daemon-owned paid-budget authority. The bound root prevents a child from falling into the parent harness envelope or being redirected by a raw tool argument. These bootstrap values seed a conservative process-local refusal ledger so the belt can fail closed between daemon responses; daemon family accounting remains the authoritative cap, every child reports its own spend, and the parent reports the aggregate. Never set by hand. |
 | `CLAUDEXOR_DELEGATION_PROCESSING_PREFERENCE` / `CLAUDEXOR_DELEGATION_WORKSPACE_KIND` / `CLAUDEXOR_DELEGATION_SCOPE_PATHS` | orchestrator / mcp-server (delegation belt) | Injected captured Processing preference, workspace kind and JSON array of selected relative paths. The belt carries them into child requests with the parent's bound project; omission preserves the legacy request. These are internal transport fields, never user-set overrides. |
 | `CLAUDEXOR_REVIEWER_TIMEOUT_MS` | config | Per-reviewer timeout override for review panels. |
 | `CLAUDEXOR_REVIEW_WAVE_ID` | release review | Operator-generated UUID identifying one release review wave; each operator reviewer artifact's metadata must carry it, and the sealed release attestation refuses mixed or sequential wave artifacts. |
 | `CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS` | config | Inactivity window before a silent harness stream is failed (not a wall-clock cap). |
 | `CLAUDEXOR_TRANSIENT_RETRY_MAX` / `CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS` / `CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS` | config | Transient-error retry budget and backoff for harness launches. |
-| `CLAUDEXOR_MAX_CONCURRENT` / `CLAUDEXOR_MAX_PARALLEL_CANDIDATES` / `CLAUDEXOR_MAX_DEEP_SCAN_WIDTH` / `CLAUDEXOR_MAX_COUNCIL_MEMBERS` | config | Process-local overrides for the four startup-frozen concurrency caps; values must be finite positive safe integers (Council must be at least 2). |
+| `CLAUDEXOR_MAX_CONCURRENT` / `CLAUDEXOR_MAX_CONCURRENT_NON_MODEL_JOBS` / `CLAUDEXOR_MAX_CONCURRENT_MODEL_OPERATIONS` | config | Startup-frozen global and per-class admission limits: positive safe integer or `unlimited`. Omission has no implicit finite ceiling; an explicit global cap includes both classes. |
+| `CLAUDEXOR_MAX_PARALLEL_CANDIDATES` / `CLAUDEXOR_MAX_DEEP_SCAN_WIDTH` / `CLAUDEXOR_MAX_COUNCIL_MEMBERS` | config | Startup-frozen strategy caps: finite positive safe integers (Council at least 2), independently of unlimited admission. |
 | `CLAUDEXOR_CODEX_PRICE_INPUT` / `CLAUDEXOR_CODEX_PRICE_OUTPUT` / `CLAUDEXOR_CODEX_PRICE_CACHED` | codex adapter | Explicit estimate rates (USD per 1M tokens). Every used input, output, or cached-input category needs its own rate; otherwise Codex cost stays unknown. No model-name or generic tariff fallback. |

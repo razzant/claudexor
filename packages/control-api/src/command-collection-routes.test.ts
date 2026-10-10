@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CommandListQuery } from "@claudexor/schema";
-import { publicCommandList } from "../../daemon/src/command-list-projection.js";
+import { publicCommandList } from "../../daemon/src/store/test-support/fixtures/legacy/daemon/command-list-projection.js";
 import { publicJobRecord, type JobRecord } from "../../daemon/src/job-record.js";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
 import { chainIdleRunMutation } from "./thread-mutation.js";

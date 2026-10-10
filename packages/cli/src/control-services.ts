@@ -2,12 +2,12 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import {
   type OperatorDecisionRecord,
-  JournalManager,
+  PartitionControlPort,
   InteractionRegistry,
   LiveInputRegistry,
-  ProjectPartitions,
-  ProjectStore,
-  ResourceStore,
+  ProjectControlPort,
+  ProjectStorePort,
+  ResourceStorePort,
   QuotaRegistry,
 } from "@claudexor/daemon";
 import { loadConfig } from "@claudexor/config";
@@ -48,7 +48,7 @@ import {
   type CredentialMutationSubject,
 } from "./credential-status-invalidation.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { SetupJobStore } from "./setup-job-store.js";
+import type { SetupJobStorePort } from "./setup-job-projection.js";
 import { activeProfileLoginJob } from "./setup-job-support.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
@@ -56,13 +56,17 @@ import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { threadRunStartRequiresGit } from "./thread-execution-workspace.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
 import { assertCredentialProfileCompatibility } from "./profile-compatibility.js";
+import { recoveryControlServices } from "./recovery-control-services.js";
 import { remoteFilesystemServices } from "./remote-filesystem.js";
 import { projectRunApplicability } from "./run-applicability.js";
 import { threadTurnServices } from "./thread-turn-services.js";
-import { threadPurgeOwner } from "./thread-purge.js";
+import { threadPurgeOwner, type ThreadPurgeDurability } from "./thread-purge.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
-type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
+type SetupBinding = Pick<
+  SetupLifecycleBinding<SetupJobStorePort, SetupJobManager>,
+  "current" | "isBoundToCurrentGeneration" | "replaceAfter"
+>;
 /**
  * The project ROOT a non-terminal job runs against (project-remove active-run
  * fence), or null when it holds no project. Parsed via the typed `RunScope`
@@ -87,17 +91,18 @@ function activeRunProjectRoot(job: { runId?: string; params?: unknown }): string
 export function controlServices(
   interactions: InteractionRegistry,
   liveInputs: LiveInputRegistry,
-  projects: () => ProjectStore,
-  threads: ProjectPartitions,
+  projects: () => ProjectStorePort,
+  threads: ProjectControlPort,
   setupBinding: SetupBinding,
-  journalManager: JournalManager,
+  journalManager: PartitionControlPort,
   authReadiness: AuthReadinessService,
   /** Lazy accessor (C5b): the store mkdirs on construction and only product
    * routes touch it, so the recovery plane must never materialize it. */
-  resources: () => ResourceStore,
+  resources: () => ResourceStorePort,
   quotaRegistry: () => QuotaRegistry,
   daemonJobs: () => Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>,
   effectiveConcurrencyCaps?: RuntimeConcurrencyCaps,
+  purgeDurability?: ThreadPurgeDurability,
 ) {
   const secretStore = new SecretStore();
   const listHarnesses = async (input?: HarnessListInput) => {
@@ -117,7 +122,7 @@ export function controlServices(
   });
   const bustStatusCaches = (subject?: CredentialMutationSubject) =>
     bustCredentialStatusCaches(quotaRegistry, subject);
-  const journalPartition = (partition: string): JournalManager =>
+  const journalPartition = (partition: string): PartitionControlPort =>
     partition === "global" ? journalManager : threads.journal(partition);
   const setupJobs = (): SetupJobManager => {
     try {
@@ -136,7 +141,7 @@ export function controlServices(
     }
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
-  const lazyResources: Pick<ResourceStore, "resolve"> = {
+  const lazyResources: Pick<ResourceStorePort, "resolve"> = {
     resolve: (refs) => resources().resolve(refs),
   };
   const runStartRequiresGit = (request: ControlRunStartRequest): boolean => {
@@ -159,9 +164,12 @@ export function controlServices(
     { requiresGit: runStartRequiresGit },
     { git: "durable_job" },
   );
-  // The ONE owner of thread byte deletion, shared by the purge route and the
-  // retention pass (expired trash, and purges whose cleanup failed).
-  const { purgeThread, hasPurgeLeftovers } = threadPurgeOwner(threads, NO_PROJECT_ROOT);
+  // Routes and retention share one thread purge and durability owner.
+  const { purgeThread, hasPurgeLeftovers } = threadPurgeOwner(
+    threads,
+    NO_PROJECT_ROOT,
+    purgeDurability,
+  );
   return {
     preflightRunRequirements,
     preflightThreadRunRequirements,
@@ -186,20 +194,13 @@ export function controlServices(
       purgeThread,
       hasPurgeLeftovers,
     }),
-    // F3 nested-project disclosure: each project carries its recomputed
-    // nesting relations — surfaces disclose "nested inside <root>", never refuse.
-    listProjects: async () => {
-      const store = projects();
-      return {
-        projects: store.list().map((p) => ({ ...p, nesting: store.nestingFor(p.id) })) as unknown[],
-      };
-    },
-    // QA-067: filesystem routes are a remote-runtime-only surface — the local
-    // daemon never serves them (the routes answer 501 without these services).
+    // Nested projects are disclosed, never refused.
+    listProjects: async () => ({ projects: projects().listWithNesting() as unknown[] }),
+    // Filesystem routes are available only on the remote runtime.
     ...remoteFilesystemServices(projects),
-    registerProject: async (input: Parameters<ProjectStore["register"]>[0]) => {
-      const project = threads.registerProject(input);
-      return { ...project, nesting: projects().nestingFor(project.id) };
+    registerProject: async (input: Parameters<ProjectStorePort["register"]>[0]) => {
+      const { project, created } = threads.registerProject(input);
+      return { ...project, nesting: projects().nestingFor(project.id), created };
     },
     relinkProject: async (id: string, root: string) => {
       const project = threads.relinkProject(id, root);
@@ -207,7 +208,7 @@ export function controlServices(
     },
     // QA-049 minimal project remove: retire the durable registry entry + archive
     // the journal partition, fenced against non-purged threads and live/queued
-    // runs. The thread fence lives in ProjectPartitions; the active-run set is
+    // runs. The thread fence lives in ProjectControlPort; the active-run set is
     // read in process with no await before removal (project-scoped, non-terminal runs),
     // canonicalized to match the store's realpath'd roots.
     removeProject: async (id: string) => {
@@ -225,7 +226,7 @@ export function controlServices(
       return threads.removeProject(id, activeRunRoots);
     },
     createThread: async (input: unknown) => {
-      const request = (input ?? {}) as Parameters<ProjectPartitions["createThread"]>[0];
+      const request = (input ?? {}) as Parameters<ProjectControlPort["createThread"]>[0];
       assertCredentialProfileCompatibility(
         request.credentialProfileId,
         request.primaryHarness,
@@ -340,23 +341,7 @@ export function controlServices(
     runApplicability: async (input: { repoRoot: string }) =>
       projectRunApplicability(input.repoRoot),
     ...setupJobControlServices(setupJobs),
-    journalEvents: async (partition: string, afterCursor?: string) =>
-      journalPartition(partition).events(afterCursor),
-    recoveryInspectPartition: async (partition: string) => journalPartition(partition).inspect(),
-    recoveryValidatePartition: async (partition: string) => journalPartition(partition).validate(),
-    recoveryExportPartition: async (partition: string) =>
-      journalPartition(partition).exportRecovery(),
-    recoveryQuarantinePartition: async (partition: string, input: unknown) => {
-      const request = input as Parameters<JournalManager["quarantineAndStartFresh"]>[0];
-      if (partition !== "global") {
-        return journalPartition(partition).quarantineAndStartFresh(request);
-      }
-      const preflight = journalManager.preflightQuarantine(request);
-      if (preflight.disposition === "completed" && setupBinding.isBoundToCurrentGeneration()) {
-        return preflight.receipt;
-      }
-      return setupBinding.replaceAfter(() => journalManager.quarantineAndStartFresh(request));
-    },
+    ...recoveryControlServices({ partition: journalPartition, setup: () => setupBinding }),
     ...settingsControlServices(NO_PROJECT_ROOT, effectiveConcurrencyCaps, bustStatusCaches),
     ...quotaControlServices(quotaRegistry),
     // INV-135: durable registry + live doctor projection, one probe per

@@ -1,25 +1,11 @@
 #!/usr/bin/env node
-import { accountResetServices } from "./account-reset-services.js";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
-  DaemonClient,
-  commandActivityRecords,
-  commandProjection,
-  commandExecutionRoots,
-  commandScopeRoots,
-  interactionProjection,
-  operatorDecisionProjection,
-  runEventProjection,
-  JournalManager,
-  JournalMaintenance,
+  DaemonLocalClient,
   DaemonServer,
-  InteractionRegistry,
-  ProjectPartitions,
-  projectProjection,
   RunEventBus,
-  ResourceStore,
   quotaPacerFileStore,
-  quotaProjection,
   daemonDir,
   defaultSocketPath,
   acquireRootAuthority,
@@ -27,36 +13,33 @@ import {
   ensureDaemonRuntimeRoot,
   logPath,
   socketAlive,
-  LiveInputRegistry,
+  loadEngineRuntime,
+  recordAdmissionMemory,
+  processMemoryFields,
+  recoveryOnlyRefusal,
+  type createSqlDaemonServices,
 } from "@claudexor/daemon";
-import { DaemonControlApiServer } from "@claudexor/control-api";
-import {
-  createDaemonQuotaPoller,
-  createStartupAdmissionRuntime,
-  openStartupDiagnostics,
-  registerDaemonThreadProjection,
-} from "./daemon-admission-runtime.js";
-import { armDaemonLifecycle, logLine } from "./daemon-lifecycle.js";
+import { DaemonControlApiServer, type DaemonControlApiOptions } from "@claudexor/control-api";
+import { createDaemonQuotaPoller, openStartupDiagnostics } from "./daemon-admission-runtime.js";
+import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
 import {
   bindRecoveryTransport,
-  controlApiEnabledForStartup,
   DaemonStartupAdmission,
   proveRecoveryTransport,
   quarantineGhostProjectsAtStartup,
-  recoveryBlockedPartitions,
 } from "./daemon-startup.js";
 import { engineBuildIdentity, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
-import { loadConfig } from "@claudexor/config";
-import { runtimeConcurrencyCaps } from "@claudexor/schema";
+import { loadRuntimeConcurrencyCaps, sweepRetiredConfigKeysAtStartup } from "@claudexor/config";
 import { scheduleStartupRetention } from "./retention-service.js";
 import { controlServices } from "./control-services.js";
+import { recoveryControlServices } from "./recovery-control-services.js";
 import { AuthReadinessService } from "@claudexor/gateway";
 import { bindCredentialMutationWindow } from "@claudexor/core";
 import { buildGateway } from "./registry.js";
 import { createSetupJobManager } from "./setup-jobs.js";
 import { bustLoginCredentialState } from "./credential-status-invalidation.js";
-import { SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
+import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
 import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
 import { quotaRefreshers } from "./quota-refreshers.js";
 import {
@@ -68,338 +51,357 @@ import { createDelegationDaemonBinding } from "./delegation-daemon-binding.js";
 import { quotaSubjectUniverseFromConfig } from "./quota-subject-universe.js";
 import { runStartupAccountsMigration } from "./accounts-unified-migration.js";
 import { runStopIfRequested } from "./runtime-replacement-stop.js";
-import { createDaemonAgentRunner } from "./daemon-agent-runner.js";
-import { createModelServices } from "./model-services.js";
-import { daemonHarnessMaintenance } from "./harness-maintenance-service.js";
-import { isModelOperation } from "@claudexor/schema";
+import { createSqlDaemonExecutors } from "./sql-daemon-runtime.js";
+import { SqlDaemonStorage } from "./sql-daemon-storage.js";
+import { deferredCommands, sqlActivityRecords, sqlStartupRoots } from "./sql-daemon-queries.js";
+import { threadPurgeEffect } from "./thread-purge.js";
+import { accountResetServices } from "./account-reset-services.js";
+
+type Graph = ReturnType<typeof createSqlDaemonServices>;
 
 export async function main(): Promise<void> {
-  // Probe and identity-proven stop must run before any durable startup.
   if (runProbeIfRequested(process.argv.slice(2))) return;
   if (await runStopIfRequested(process.argv.slice(2))) return;
-  const servingIdentity = engineBuildIdentity();
+  // Refuse unsupported Node/SQLite before touching the root or lease.
+  await loadEngineRuntime();
+  const identity = engineBuildIdentity();
   ensureDaemonRuntimeRoot();
   const socketPath = defaultSocketPath();
-  // D5 stage 1: permanent barrier (epoch/floor refusals) before ANY recovery.
-  const rootAuthority = acquireRootAuthority({ socketPath, version: servingIdentity.version });
-  // C8: private diagnostics open right after the authority win (never control lifecycle).
-  const startupDiagnostics = openStartupDiagnostics(servingIdentity);
-  let shutdownRuntime: DaemonRuntimeShutdown | null = null;
-  // Release wave round-12 BLOCK: the single-writer lease may only be released
-  // after a CLEAN shutdown — a failed/partial shutdown keeps components that
-  // can still write, and releasing would let a successor acquire ownership
-  // beside them. On failure the lease dies with the process instead.
-  let releaseWriterLease = true;
+  const authority = acquireRootAuthority({ socketPath, version: identity.version });
+  const diagnostics = openStartupDiagnostics(identity);
+  const log = (message: string) => diagnostics.log("sql_runtime", message);
+  const admission = new DaemonStartupAdmission();
+  const abort = new AbortController();
+  let cleanShutdown = true;
+  let shutdown: DaemonRuntimeShutdown | null = null;
   let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
-  let quotaPoller: ReturnType<typeof createDaemonQuotaPoller> | null = null;
-  // Maintenance failures, typed declines and `journal.records_retired`
-  // receipts land in the daemon log and the startup diagnostics record.
-  const journalMaintenance = new JournalMaintenance(daemonDir(), (message) =>
-    startupDiagnostics.log("journal_maintenance", message),
-  );
-  try {
-    const token = ensureToken();
-    const startupConfig = loadConfig(noProjectRepoRoot()).global;
-    const startupConcurrencyCaps = runtimeConcurrencyCaps(startupConfig);
-
-    if (await socketAlive(socketPath)) {
-      throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
-    }
-
-    const bus = new RunEventBus();
-    const { authority: delegationBudgetAuthority, bind: bindDelegationDaemon } =
-      createDelegationDaemonBinding();
-    const journalManager = new JournalManager(daemonDir(), {
-      requestMaintenance: journalMaintenance.request,
-    });
-    const commandStoreSlot = journalManager.registerProjection(commandProjection());
-    const interactionStoreSlot = journalManager.registerProjection(interactionProjection());
-    const operatorDecisionStoreSlot = journalManager.registerProjection(
-      operatorDecisionProjection(),
-    );
-    const runEventStoreSlot = journalManager.registerProjection(runEventProjection());
-    const projectStoreSlot = journalManager.registerProjection(projectProjection());
-    const quotaStoreSlot = journalManager.registerProjection(
-      quotaProjection(
-        quotaRefreshers((record) =>
-          logLine(logPath(), `quota.observation ${JSON.stringify(record)}`),
-        ),
-        quotaSubjectUniverseFromConfig,
-        undefined,
-        // Daemon-private subject and legacy vendor floors (never in the journal).
-        quotaPacerFileStore(daemonDir()),
-      ),
-    );
-    const { threadStoreSlot, threadHeadPing } = registerDaemonThreadProjection(journalManager, () =>
-      commandStoreSlot.current().records(),
-    );
-    const setupStoreSlot = journalManager.registerProjection({
-      name: "setup",
-      create: (journal) => new SetupJobStore(daemonDir(), { journal }),
-      validate: (store) => store.validateProjection(),
-    });
-    // D5 stage 2: read-only prepare + validate; zero recovery writes.
-    const globalPreparation = journalManager.prepare();
-    const admission = new DaemonStartupAdmission();
-    quotaPoller = createDaemonQuotaPoller(() => {
-      try {
-        void quotaStoreSlot.current().pollStale();
-      } catch {}
-    });
-    const threads = new ProjectPartitions(
-      daemonDir(),
-      projectStoreSlot,
-      commandStoreSlot,
-      interactionStoreSlot,
-      operatorDecisionStoreSlot,
-      runEventStoreSlot,
-      threadStoreSlot,
-      threadHeadPing,
-      journalMaintenance.request,
-    );
-    const partitionsPreparation = threads.prepare();
-    const startupBlockedPartitions = recoveryBlockedPartitions({
-      globalPreparation,
-      partitionsPreparation,
-    });
-    const interactions = new InteractionRegistry({
-      forRequest: (params) => threads.interactionsForRequest(params),
-      all: () => threads.interactionStores(),
-    });
-    // Live-input targets (POST /v2/runs/:id/messages): in-process only, fed by
-    // the agent runner per attempt; a pending question blocks a send (INV-048).
-    const liveInputs = new LiveInputRegistry({
-      pendingForRun: (runId) => interactions.pendingForRun(runId),
-    });
-    // C5b: construction mkdirs under the daemon dir and the recovery plane
-    // serves no resources — the store materializes on first product use.
-    let resourceStore: ResourceStore | null = null;
-    const resources = (): ResourceStore =>
-      (resourceStore ??= new ResourceStore(join(daemonDir(), "resource-store")));
-
-    const selfClient = new DaemonClient(socketPath, token);
-    const models = createModelServices({
-      commands: threads,
-      resources,
-      client: selfClient,
-      quota: () => quotaStoreSlot.current(),
-      warn: (message) => logLine(logPath(), message),
-    });
-    const maintenance = daemonHarnessMaintenance(threads, selfClient, () => authReadiness);
-    const agentRunner = createDaemonAgentRunner({
-      delegationBudgetAuthority,
-      quotaStore: () => quotaStoreSlot.current(),
-      threads,
-      interactions,
-      liveInputs,
-      resources,
-      bus,
-      runtimeConcurrencyCaps: startupConcurrencyCaps,
-    });
-
-    const server = new DaemonServer({
-      socketPath,
-      token,
-      commands: threads,
-      runtimeConcurrencyCaps: startupConcurrencyCaps,
-      servingMode: admission.snapshot,
-      delegationAuthority: delegationBudgetAuthority,
-      onCommandTerminal: (record) => models.operations.onCommandTerminal(record),
-      onRunTerminal: (runId, threadId) => {
-        interactions.dropForRun(runId);
-        liveInputs.dropForRun(runId);
-        // Run-terminal is the one W12 path with no thread-store mutation to
-        // ride — the terminal changes the thread's presented state, so ping.
-        if (threadId) threads.pingThreadHead(threadId);
-      },
-      onTurnEnqueueFailed: (turnId, problem) => threads.setTurnEnqueueError(turnId, problem),
-      onShutdownRequested: () =>
-        shutdownRuntime?.beginShutdown("socket-rpc stop") ??
-        Promise.reject(new Error("daemon shutdown coordinator is not initialized")),
-      onRuntimeReplacementRequested: () => {
-        if (!shutdownRuntime) {
-          throw Object.assign(new Error("daemon shutdown coordinator is not initialized"), {
-            code: "runtime_activity_unknown",
-            status: 503,
-            retryable: true,
-          });
-        }
-        return shutdownRuntime.beginRuntimeReplacement();
-      },
-      runtimeIdentity: { version: servingIdentity.version, buildSha: servingIdentity.sha },
-      runtimeLeaseOwner: rootAuthority.lease.owner,
-      runner: (params, ctx) =>
-        isModelOperation(params)
-          ? models.operations.execute(params, ctx)
-          : maintenance.owns(params)
-            ? maintenance.execute(params, ctx)
-            : agentRunner(params, ctx),
-    });
-    bindDelegationDaemon(server);
-
-    const authReadiness = new AuthReadinessService(buildGateway({ includeFakes: false }), {
-      cwd: noProjectRepoRoot(),
-    });
-    const setupBinding = new SetupLifecycleBinding(setupStoreSlot, (store) =>
+  let control: DaemonControlApiServer | null = null;
+  let opening: Promise<void> | null = null;
+  let storage: SqlDaemonStorage;
+  let setup: ReturnType<typeof setupFor> | null = null;
+  let executors: ReturnType<typeof createSqlDaemonExecutors> | null = null;
+  let server: DaemonServer;
+  let listening = false;
+  let admissionFlight: Promise<void> | null = null;
+  let dutiesFor: Graph | null = null;
+  const graph = () => storage.graph();
+  const quotaPoller = createDaemonQuotaPoller(() => {
+    if (admission.snapshot() !== "normal") return;
+    void Promise.resolve()
+      .then(() => graph().quota.pollStale())
+      .catch((error) => log(`quota poll: ${String(error)}`));
+  });
+  let readiness: AuthReadinessService;
+  function setupFor(value: Graph) {
+    return new SetupLifecycleBinding(new SqlSetupLifecycleSlot(daemonDir(), value), (store) =>
       createSetupJobManager({
         rootDir: daemonDir(),
         store,
         onCredentialStateMayHaveChanged: (harness) =>
-          bustLoginCredentialState(() => quotaStoreSlot.current(), authReadiness, harness),
+          bustLoginCredentialState(() => value.quota, readiness, harness),
       }),
     );
-    // #363: every process-local credential observer reads the login window from
-    // the durable setup lifecycle; an unbound or recovering generation reads open.
-    bindCredentialMutationWindow((harness) =>
-      setupBinding.current().credentialMutationOpen(harness),
-    );
-    let control: DaemonControlApiServer | null = null;
-    shutdownRuntime = new DaemonRuntimeShutdown({
+  }
+  try {
+    readiness = new AuthReadinessService(buildGateway({ includeFakes: false }), {
+      cwd: noProjectRepoRoot(),
+    });
+    const token = ensureToken();
+    const caps = loadRuntimeConcurrencyCaps(noProjectRepoRoot());
+    if (await socketAlive(socketPath))
+      throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
+    const bus = new RunEventBus();
+    const delegation = createDelegationDaemonBinding();
+    const selfClient = new DaemonLocalClient(() => server);
+    const services: NonNullable<DaemonControlApiOptions["services"]> = {};
+    const makeServer = () => {
+      const next = new DaemonServer({
+        socketPath,
+        token,
+        commands: deferredCommands(() => graph().commands),
+        runtimeConcurrencyCaps: caps,
+        servingMode: admission.snapshot,
+        storeFacts: () => storage!.facts(),
+        delegationAuthority: delegation.authority,
+        runtimeIdentity: { version: identity.version, buildSha: identity.sha },
+        runtimeLeaseOwner: authority.lease.owner,
+        onCommandTerminal: (record) => executors?.onCommandTerminal(record),
+        onRunTerminal: (runId, threadId) => executors?.onRunTerminal(runId, threadId),
+        onTurnEnqueueFailed: (turnId, problem) => executors?.onTurnEnqueueFailed(turnId, problem),
+        onShutdownRequested: () => shutdown!.beginShutdown("socket-rpc stop"),
+        onRuntimeReplacementRequested: () => shutdown!.beginRuntimeReplacement(),
+        runner: (params, ctx) => {
+          if (!executors) throw recoveryOnlyRefusal("runner");
+          return executors.runner(params, ctx);
+        },
+      });
+      delegation.bind(next);
+      return next;
+    };
+    server = makeServer();
+    const partition = (name: string) => storage!.partition(name);
+    const recovery = recoveryControlServices({
+      partition,
+      setup: () => setup,
+      onValidated: (name, result) => {
+        if (result.status === "recovery_required" && name === "global")
+          admission.enterRecoveryOnly();
+      },
+      afterQuarantine: async () => {
+        try {
+          await completeAdmission();
+        } catch (error) {
+          admission.enterRecoveryOnly();
+          log(`recovery completed; reopening failed: ${String(error)}`);
+        }
+      },
+    });
+    const attach = (value: Graph) => {
+      if (!listening) server = makeServer();
+      setup = setupFor(value);
+      executors = createSqlDaemonExecutors(value, {
+        client: selfClient,
+        authority: delegation.authority,
+        admission: (id) => server.admission(id),
+        authReadiness: () => readiness,
+        bus,
+        runtimeConcurrencyCaps: caps,
+        warn: log,
+      });
+      const threads = Object.assign(value.threads, { journal: partition });
+      const product = controlServices(
+        value.interactions,
+        value.liveInputs,
+        () => value.projects,
+        threads,
+        setup,
+        partition("global"),
+        readiness,
+        () => value.resources,
+        () => value.quota,
+        () => sqlActivityRecords(value.store),
+        caps,
+        value.purgeFiles,
+      );
+      const retention = executors.models.withRetention(product.runRetention);
+      product.runRetention = async (request) => {
+        const result = await retention(request);
+        if (!request.dry_run) value.resources.pruneUploadBindings();
+        return result;
+      };
+      executors.harnessMaintenance.bind(product);
+      Object.assign(
+        services,
+        product,
+        executors.models.routes,
+        accountResetServices(
+          { current: () => value.commands.current() },
+          { current: () => value.quota },
+        ),
+        recovery,
+      );
+    };
+    storage = new SqlDaemonStorage({
+      rootDir: daemonDir(),
+      advanceFloor: () => authority.advanceFloor(),
+      graph: {
+        purgeFiles: threadPurgeEffect(noProjectRepoRoot()),
+        log,
+        refreshers: quotaRefreshers((record) => log(`quota.observation ${JSON.stringify(record)}`)),
+        subjects: quotaSubjectUniverseFromConfig,
+        pacerStore: quotaPacerFileStore(daemonDir()),
+      },
+      log,
+      onOpen: attach,
+      onCorrupt: (error) => {
+        admission.enterRecoveryOnly();
+        quotaPoller.stop();
+        log(`engine store recovery required: ${error.message}`);
+        void ensureRecoveryControl().catch((problem) =>
+          log(`recovery transport unavailable: ${String(problem)}`),
+        );
+      },
+      beforeClose: async () => {
+        admission.enterRecoveryOnly();
+        quotaPoller.stop();
+        setup?.beginDrain();
+        executors?.models.close();
+        await Promise.all([server.stopForStoreRecovery(), setup?.shutdown()]);
+        listening = false;
+        setup = null;
+        executors = null;
+        dutiesFor = null;
+      },
+    });
+    Object.assign(services, recovery);
+    bindCredentialMutationWindow((harness) => {
+      if (!setup) throw recoveryOnlyRefusal("setup");
+      return setup.current().credentialMutationOpen(harness);
+    });
+    let address: { host: string; port: number } | null = null;
+    let controlStarting: Promise<void> | null = null;
+    const makeControl = () =>
+      new DaemonControlApiServer({
+        token,
+        daemon: selfClient,
+        port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
+        servingMode: admission.snapshot,
+        bus,
+        services,
+        terminalFilesPending: (id) => graph().terminalFiles.pending(id),
+      });
+    async function ensureRecoveryControl(): Promise<void> {
+      if (shutdown?.requested()) return;
+      if (controlStarting) return controlStarting;
+      if (control) return;
+      control = makeControl();
+      log("recovery-required SQL state overrides CLAUDEXOR_NO_CONTROL_API=1 for recovery access");
+      controlStarting = bindRecoveryTransport({
+        server,
+        control,
+        requested: () => shutdown!.requested(),
+        daemonDir: daemonDir(),
+        logPath: logPath(),
+        socketPath,
+      }).then((value) => {
+        address = value;
+      });
+      await controlStarting;
+    }
+    const importing =
+      !existsSync(join(daemonDir(), "engine.sqlite")) && existsSync(join(daemonDir(), "journal"));
+    if (process.env.CLAUDEXOR_NO_CONTROL_API !== "1" || importing) control = makeControl();
+    shutdown = new DaemonRuntimeShutdown({
       daemon: {
         stop: async () => {
-          const maintenanceDrain = journalMaintenance.stop();
-          models.close();
-          await Promise.all([server.stop(), maintenanceDrain]);
+          abort.abort();
+          executors?.models.close();
+          await server.stop();
+          await opening?.catch(() => {});
         },
       },
-      setup: setupBinding,
+      setup: {
+        hasActiveWork: () => {
+          if (!setup) throw recoveryOnlyRefusal("setup activity");
+          return setup.hasActiveWork();
+        },
+        beginDrain: () => setup?.beginDrain(),
+        shutdown: async () => {
+          await setup?.shutdown();
+        },
+      },
       control: () => control,
       journal: {
-        close: () => {
-          quotaPoller?.stop();
-          threads.close();
-          journalManager.close();
+        close: async () => {
+          quotaPoller.stop();
+          await storage?.close();
         },
       },
-      log: (message) => logLine(logPath(), message),
+      log,
     });
-    // Services and retention read all partition activity directly, without self-RPC.
-    const services = controlServices(
-      interactions,
-      liveInputs,
-      () => projectStoreSlot.current(),
-      threads,
-      setupBinding,
-      journalManager,
-      authReadiness,
-      resources,
-      () => quotaStoreSlot.current(),
-      () => commandActivityRecords(threads.all().flatMap((store) => store.records())),
-      startupConcurrencyCaps,
-    );
-    services.runRetention = models.withRetention(services.runRetention);
-    const accountControls = accountResetServices(commandStoreSlot, quotaStoreSlot);
-    Object.assign(services, models.routes, accountControls);
-    maintenance.bind(services);
-    control = !controlApiEnabledForStartup({
-      disabledByEnv: process.env.CLAUDEXOR_NO_CONTROL_API === "1",
-      blockedPartitions: startupBlockedPartitions,
-      log: (message) => logLine(logPath(), message),
-    })
-      ? null
-      : new DaemonControlApiServer({
-          token,
-          daemon: new DaemonClient(socketPath, token),
-          port: Number(process.env.CLAUDEXOR_CONTROL_PORT ?? 0),
-          servingMode: admission.snapshot,
-          bus,
-          services,
-        });
     lifecycle = armDaemonLifecycle({
       daemonDir: daemonDir(),
       logPath: logPath(),
-      ...(startupDiagnostics.diagnostics ? { diagnostics: startupDiagnostics.diagnostics } : {}),
-      beginShutdown: (reason) => shutdownRuntime!.beginShutdown(reason),
+      ...(diagnostics.diagnostics ? { diagnostics: diagnostics.diagnostics } : {}),
+      beginShutdown: (reason) => shutdown!.beginShutdown(reason),
     });
-
-    const { runAdmissionCompletion, wrapQuarantineWithReopen } = createStartupAdmissionRuntime({
-      admission,
-      grant: rootAuthority,
-      global: journalManager,
-      partitions: threads,
-      diagnostics: startupDiagnostics,
-      knownProjectRoots: () => {
-        const commands = commandStoreSlot.prepared();
-        return [...commandScopeRoots(commands.records()), ...commands.prunedScopeRoots()];
-      },
-      // Delegated runs (thread turns live in project partitions) keep their
-      // runtime scratch under the caller-owned execution root.
-      knownExecutionRoots: () => [
-        ...commandExecutionRoots(commandStoreSlot.prepared().records()),
-        ...threads.preparedExecutionRoots(),
-      ],
-      normalPlane: {
-        requested: () => shutdownRuntime!.requested(),
-        armQuotaPolling: () => quotaPoller!.arm(),
-        beginPidSnapshots: () => lifecycle!.beginPidSnapshots(),
-        migrateAccounts: () =>
-          runStartupAccountsMigration(threads, quotaStoreSlot.current(), (m) =>
-            logLine(logPath(), redactSecrets(m)),
-          ),
-        startSetup: () => setupBinding.start(),
-        quarantineGhosts: () =>
-          quarantineGhostProjectsAtStartup(threads, (message) => logLine(logPath(), message)),
-        scheduleRetention: () =>
-          scheduleStartupRetention(services.runRetention, {
-            logPath: logPath(),
-            shuttingDown: () => shutdownRuntime!.requested(),
-          }),
-        pruneCommandHistory: () => server.pruneHistory(),
-        armJournalMaintenance: () => journalMaintenance.arm(),
-      },
-    });
-    services.recoveryQuarantinePartition = wrapQuarantineWithReopen(
-      services.recoveryQuarantinePartition,
-    );
-
-    // D5 stage 3: bind the REAL transport with product admission CLOSED, then
-    // prove self-health/exact identity through it before anything destructive.
-    const controlAddr = await bindRecoveryTransport({
+    address = await bindRecoveryTransport({
       server,
       control,
-      requested: () => shutdownRuntime!.requested(),
+      requested: () => shutdown!.requested(),
       daemonDir: daemonDir(),
       logPath: logPath(),
       socketPath,
     });
-    if (!shutdownRuntime.requested()) {
-      await proveRecoveryTransport({
-        socket: selfClient,
-        identity: servingIdentity,
-        token,
-        control: controlAddr,
-      });
-      // D5 stage 4: floor advance + destructive recovery + normal admission —
-      // or stay recovery-only with the floor unchanged and cleanup off. The
-      // normal-plane side effects run inside the single-flight completion.
-      await runAdmissionCompletion(() => startupBlockedPartitions);
-    }
-    await shutdownRuntime.wait();
-    lifecycle.finalize();
-    logLine(logPath(), "claudexord shut down");
-    startupDiagnostics.recordStage("shutdown_complete", "claudexord shut down");
-  } catch (error) {
-    // logLine is already best-effort; a failed diagnostic write never masks
-    // the lifecycle failure itself.
-    logLine(
-      logPath(),
-      `daemon lifecycle FAILED: ${redactSecrets(
-        error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-      )}`,
-    );
-    startupDiagnostics.recordFailure("daemon lifecycle FAILED", error);
-    if (shutdownRuntime) {
+    listening = !shutdown.requested();
+    async function completeAdmission(): Promise<void> {
+      if (admissionFlight) return admissionFlight;
+      if (shutdown!.requested() || admission.snapshot() === "normal") return;
+      const value = graph();
+      const blocked = storage!.blockedPartitions();
+      if (blocked.length) {
+        admission.enterRecoveryOnly();
+        log(`recovery required: ${blocked.join(", ")}`);
+        await ensureRecoveryControl();
+        return;
+      }
+      const work = async () => {
+        if (!listening) {
+          await server.start();
+          listening = true;
+          await proveRecoveryTransport({ socketPath, identity, token, control: address });
+        }
+        if (dutiesFor !== value) {
+          await value.recoverAfterStartup();
+          const roots = sqlStartupRoots(value.store);
+          await runStartupCrashGc({
+            daemonDir: daemonDir(),
+            logPath: logPath(),
+            knownProjectRoots: roots.projects,
+            knownExecutionRoots: roots.execution,
+            ...(diagnostics.diagnostics ? { diagnostics: diagnostics.diagnostics } : {}),
+          });
+          if (shutdown!.requested()) return;
+          for (const sweep of sweepRetiredConfigKeysAtStartup())
+            log(`swept retired config keys from ${sweep.path}: ${sweep.removed.join(", ")}`);
+          runStartupAccountsMigration(value.threads, value.quota, (message) =>
+            log(redactSecrets(message)),
+          );
+          server.pruneHistory();
+          await setup!.start();
+          quarantineGhostProjectsAtStartup(value.threads, log);
+          if (shutdown!.requested()) return;
+          dutiesFor = value;
+        }
+        admission.openNormal();
+        recordAdmissionMemory();
+        quotaPoller.arm();
+        lifecycle!.beginPidSnapshots();
+        scheduleStartupRetention(services.runRetention!, {
+          logPath: logPath(),
+          shuttingDown: () => shutdown!.requested() || admission.snapshot() !== "normal",
+        });
+        void value.maintenance
+          .integrityCheck()
+          .then(async (result) => {
+            if (result.ok && admission.snapshot() === "normal")
+              await value.maintenance.sweepOrphans();
+          })
+          .catch((error) => log(`store maintenance: ${String(error)}`));
+        log(`startup admission: normal product admission open (${processMemoryFields()})`);
+      };
+      admissionFlight = work();
       try {
-        await shutdownRuntime.beginShutdown("startup failure");
-        lifecycle?.finalize();
+        await admissionFlight;
+      } finally {
+        admissionFlight = null;
+      }
+    }
+    if (!shutdown.requested()) {
+      await proveRecoveryTransport({ socketPath, identity, token, control: address });
+      opening = storage.open(abort.signal).then(completeAdmission);
+      try {
+        await opening;
+      } catch (error) {
+        admission.enterRecoveryOnly();
+        log(`SQL startup remains recovery-only: ${redactSecrets(String(error))}`);
+        diagnostics.recordFailure("SQL startup remains recovery-only", error);
+        if (!shutdown.requested()) await ensureRecoveryControl();
+      }
+    }
+    await shutdown.wait();
+    await lifecycle.finalize();
+    log("claudexord shut down");
+    diagnostics.recordStage("shutdown_complete", "claudexord shut down");
+  } catch (error) {
+    log(`daemon lifecycle FAILED: ${redactSecrets(String(error))}`);
+    diagnostics.recordFailure("daemon lifecycle FAILED", error);
+    if (shutdown) {
+      try {
+        await shutdown.beginShutdown("startup failure");
+        await lifecycle?.finalize();
       } catch (shutdownError) {
-        logLine(
-          logPath(),
-          `shutdown FAILED: ${redactSecrets(
-            shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
-          )}`,
-        );
-        releaseWriterLease = false;
+        cleanShutdown = false;
         throw new AggregateError(
           [error, shutdownError],
           "claudexord failed and could not complete shutdown",
@@ -408,17 +410,13 @@ export async function main(): Promise<void> {
     }
     throw error;
   } finally {
-    await journalMaintenance.stop();
-    quotaPoller?.stop();
-    startupDiagnostics.close();
-    // Drops only the live writer claim; the barrier itself persists (D1).
-    if (releaseWriterLease) rootAuthority.release();
+    quotaPoller.stop();
+    diagnostics.close();
+    if (cleanShutdown) authority.release();
   }
 }
 
-/** Explicit entry preserves import-side-effect freedom for daemon probes. */
 export function runClaudexordEntry(): void {
   dispatchClaudexordEntry(main);
 }
-
 runIfDirectEntry(import.meta.url, runClaudexordEntry);

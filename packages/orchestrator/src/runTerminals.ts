@@ -267,6 +267,7 @@ export async function guardAnnouncedRun(
                   run_facts: prepared.facts,
                 },
                 commit: prepared.commit,
+                telemetry: prepared.telemetry,
                 rollback: () => {
                   prepared.rollback();
                   canonicalOutcome = null;
@@ -316,6 +317,7 @@ export async function guardAnnouncedRun(
                     ...(failureRefWritten ? { failure_ref: "final/failure.yaml" } : {}),
                   },
                   commit: prepared.commit,
+                  telemetry: prepared.telemetry,
                   rollback: () => {
                     prepared.rollback();
                     canonicalOutcome = null;

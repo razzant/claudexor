@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { loadConfig } from "@claudexor/config";
+import { loadConfigCached } from "@claudexor/config";
 import { harnessBinaryIdentity, harnessRuntimeEnv, providerScrubEnv } from "@claudexor/core";
 import type { QuotaRefreshCycle, QuotaRefreshResult } from "@claudexor/daemon";
 import {
@@ -166,7 +166,7 @@ function codexQuotaCandidates(
     !target && readAccountsMigrationFile()["codex"] === undefined
       ? [{ subjectId: null, home: defaultNativeCodexHome() }]
       : [];
-  for (const profile of loadConfig(noProjectRepoRoot()).global.credential_profiles) {
+  for (const profile of loadConfigCached(noProjectRepoRoot()).global.credential_profiles) {
     if (
       profile.harness_id !== "codex" ||
       (target

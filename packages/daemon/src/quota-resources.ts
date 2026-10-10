@@ -1,4 +1,4 @@
-import type { DurableJournal } from "@claudexor/journal";
+import type { EventLedger } from "./store-contracts.js";
 import { RESOURCES_OBSERVED } from "./quota-registry-replay.js";
 import { sha256 } from "@claudexor/util";
 import {
@@ -214,7 +214,7 @@ export function applyResourceObservation(
 /** The existing quota journal stores a complete resource row so its fold slot
  * cannot lose an older independently observed facet. */
 export function recordAccountResourceObservation(
-  journal: DurableJournal,
+  journal: EventLedger,
   resources: Map<string, AccountResourceSnapshot>,
   observation: AccountResourceObservation,
 ): void {

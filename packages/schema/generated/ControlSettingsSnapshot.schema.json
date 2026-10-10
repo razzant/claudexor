@@ -214,22 +214,75 @@
                   "type": "object",
                   "properties": {
                     "maxConcurrent": {
-                      "type": "integer",
-                      "minimum": -9007199254740991,
-                      "maximum": 9007199254740991,
-                      "exclusiveMinimum": 0
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991,
+                          "exclusiveMinimum": 0
+                        },
+                        {
+                          "type": "string",
+                          "const": "unlimited"
+                        }
+                      ]
+                    },
+                    "maxConcurrentNonModelJobs": {
+                      "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/maxConcurrent"
+                    },
+                    "maxConcurrentModelOperations": {
+                      "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/maxConcurrent"
                     },
                     "maxParallelCandidates": {
-                      "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/maxConcurrent"
+                      "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/maxConcurrent/anyOf/0"
                     },
                     "maxDeepScanWidth": {
-                      "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/maxConcurrent"
+                      "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/maxConcurrent/anyOf/0"
                     },
                     "maxCouncilMembers": {
                       "type": "integer",
                       "minimum": 2,
                       "maximum": 9007199254740991,
                       "exclusiveMinimum": 0
+                    },
+                    "sources": {
+                      "type": "object",
+                      "properties": {
+                        "max_concurrent": {
+                          "type": "string",
+                          "enum": [
+                            "default",
+                            "config",
+                            "environment",
+                            "embedder",
+                            "unknown"
+                          ]
+                        },
+                        "max_concurrent_non_model_jobs": {
+                          "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/sources/properties/max_concurrent"
+                        },
+                        "max_concurrent_model_operations": {
+                          "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/sources/properties/max_concurrent"
+                        },
+                        "max_parallel_candidates": {
+                          "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/sources/properties/max_concurrent"
+                        },
+                        "max_deep_scan_width": {
+                          "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/sources/properties/max_concurrent"
+                        },
+                        "max_council_members": {
+                          "$ref": "#/definitions/ControlSettingsSnapshot/properties/runtime/properties/concurrency/properties/configured/properties/sources/properties/max_concurrent"
+                        }
+                      },
+                      "required": [
+                        "max_concurrent",
+                        "max_concurrent_non_model_jobs",
+                        "max_concurrent_model_operations",
+                        "max_parallel_candidates",
+                        "max_deep_scan_width",
+                        "max_council_members"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [

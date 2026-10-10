@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import type { QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
 import { BudgetLedger } from "../../budget/src/ledger.js";
 import { profileQuotaBlock } from "../../orchestrator/src/credential-cooldown.js";

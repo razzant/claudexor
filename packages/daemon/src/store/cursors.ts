@@ -1,4 +1,5 @@
 import type { ControlJournalEvent } from "@claudexor/schema";
+import { BlobFiles } from "./blob-files.js";
 import { StoreError } from "./errors.js";
 import { currentGeneration, type PartitionGeneration } from "./partitions.js";
 import type { EngineStore } from "./store.js";
@@ -82,15 +83,19 @@ export function readJournalEvents(
   store: EngineStore,
   partition: string,
   afterCursor?: string | null,
+  blobs: Pick<BlobFiles, "read"> = new BlobFiles(store),
 ): ControlJournalEvent[] {
   const { generation, afterSeq } = resolveJournalCursor(store, partition, afterCursor);
   const rows = store
-    .prepare("SELECT seq, time, type, payload FROM event WHERE pid = ? AND seq > ? ORDER BY seq")
+    .prepare(
+      "SELECT seq, time, type, payload, payload_sha FROM event WHERE pid = ? AND seq > ? ORDER BY seq",
+    )
     .all(generation.pid, afterSeq) as Array<{
     seq: number | bigint;
     time: string;
     type: string;
     payload: Uint8Array;
+    payload_sha: string | null;
   }>;
   return rows.map((row) => ({
     schemaVersion: 1,
@@ -98,6 +103,16 @@ export function readJournalEvents(
     partition,
     type: row.type,
     observedAt: row.time,
-    payload: JSON.parse(Buffer.from(row.payload).toString("utf8")) as unknown,
+    payload: readStoredEventPayload(row, blobs),
   }));
+}
+
+/** Both cursor/SSE and reducer reads hydrate the same logical payload. A digest
+ * reference is authoritative; missing or corrupt bytes remain typed failures. */
+export function readStoredEventPayload(
+  row: { payload: Uint8Array; payload_sha: string | null },
+  blobs: Pick<BlobFiles, "read">,
+): unknown {
+  const bytes = row.payload_sha === null ? Buffer.from(row.payload) : blobs.read(row.payload_sha);
+  return JSON.parse(bytes.toString("utf8")) as unknown;
 }

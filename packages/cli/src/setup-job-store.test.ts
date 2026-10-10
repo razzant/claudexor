@@ -14,9 +14,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js";
 import type { ControlSetupJob } from "@claudexor/schema";
-import { SetupJobStore } from "./setup-job-store.js";
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 
 let root: string;
 const job = (jobId: string, phase: ControlSetupJob["phase"] = "preparing"): ControlSetupJob => ({

@@ -1,4 +1,4 @@
 {
-  "minAppVersion": "3.11.0",
-  "rationale": "Directory results can report unknown noChanges and require the corresponding Swift decoder shipped in Claudexor.app 3.11.0. The signed manifest floor prevents an older app from adopting a wire contract it cannot read. This is the existing app compatibility floor, not the engine journal reader policy."
+  "minAppVersion": "4.0.0",
+  "rationale": "Engine 4.0 represents concurrency limits as positive integers or unlimited and separates model and long-session admission. Claudexor.app 4.0 reads the updated concurrency contract. The existing appUpdateRequired path preserves the previous working engine until the application is updated; this floor does not install a desktop app for externally managed hosts."
 }

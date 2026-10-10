@@ -82,14 +82,20 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "command_expiry",
         "command_list",
         "command_list_state",
+        "command_maintenance_harness",
         "command_prunable",
         "command_result",
+        "command_request_resource",
+        "command_response_resource",
         "command_terminal",
         "event_group",
+        "event_command_age",
         "event_payload",
         "event_slot",
         "interaction_pending",
+        "interaction_partition_pending",
         "project_root_active",
+        "project_current_pid",
         "turn_run",
         "upload_finalize",
       ].sort(),
@@ -115,6 +121,47 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
     expect(assertSchemaServable(identity)).toBe("fresh");
     ensureSchema(db);
     expect(assertSchemaServable(readSchemaIdentity(db))).toBe("current");
+  });
+
+  it("keeps stable session entities when profile migration makes their lanes equal", async () => {
+    const db = await connect();
+    ensureSchema(db);
+    const insert = db.prepare(
+      "INSERT INTO session(id,thread_id,harness_id,profile_id,pid,insertion_ordinal,body) VALUES(?,'thread','codex',?,1,?,x'7b7d')",
+    );
+    insert.run("session-default", "", 1);
+    insert.run("session-named", "named", 2);
+    db.prepare("UPDATE session SET profile_id='named' WHERE id='session-default'").run();
+    expect(
+      db
+        .prepare(
+          "SELECT id FROM session WHERE thread_id='thread' AND harness_id='codex' AND profile_id='named' ORDER BY insertion_ordinal",
+        )
+        .all(),
+    ).toEqual([{ id: "session-default" }, { id: "session-named" }]);
+  });
+
+  it("addresses partition transitions and continuity scans through their pid indexes", async () => {
+    const db = await connect();
+    ensureSchema(db);
+    for (const [query, index] of [
+      ["UPDATE command SET live=0 WHERE pid=1", "command_partition"],
+      ["SELECT body FROM session WHERE pid=1 ORDER BY insertion_ordinal", "session_partition"],
+      [
+        "SELECT body FROM lane_checkpoint WHERE pid=1 ORDER BY insertion_ordinal",
+        "lane_checkpoint_partition",
+      ],
+      [
+        "SELECT DISTINCT run_id FROM interaction WHERE pid=1 AND state='pending'",
+        "interaction_partition_pending",
+      ],
+    ]) {
+      const plan = (db.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as Array<{ detail: string }>)
+        .map((row) => row.detail)
+        .join("\n");
+      expect(plan).toContain(index);
+      expect(plan).not.toMatch(/SCAN (command|session|lane_checkpoint|interaction)|TEMP B-TREE/);
+    }
   });
 
   it("reopening a current schema writes nothing", async () => {

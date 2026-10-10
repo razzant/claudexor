@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import {
   RunEvent,
   SCHEMA_VERSION,
@@ -10,7 +10,7 @@ import {
   validateRunFactsInvariants,
 } from "@claudexor/schema";
 import { afterEach, describe, expect, it } from "vitest";
-import { CommandStore } from "./command-store.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 
 const roots: string[] = [];
 afterEach(() => {

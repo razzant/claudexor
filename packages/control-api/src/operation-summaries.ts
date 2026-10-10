@@ -9,7 +9,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "DELETE /v2/uploads/:id": "Abort and discard an in-progress upload session.",
   "POST /v2/uploads/:id/finalize": "Finalize an upload into a durable attachment resource.",
   "POST /v2/handshake": "Negotiate the control protocol major before product calls.",
-  "GET /v2/daemon/status": "Read daemon activity, capacity and current/admission memory facts.",
+  "GET /v2/daemon/status":
+    "Read daemon activity, capacity, current/admission memory and event-loop window facts.",
   "GET /v2/operations": "List the implemented operations (this catalog).",
   "POST /v2/maintenance/gc": "Run retention GC over expired run trees and expired trash threads.",
   "GET /v2/agent-capabilities": "List the agent capability catalog this engine advertises.",

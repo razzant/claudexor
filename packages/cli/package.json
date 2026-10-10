@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/cli",
-  "version": "3.25.1",
+  "version": "4.0.0",
   "license": "MIT",
   "description": "Claudexor CLI (claudexor). Thin surface over the orchestrator.",
   "type": "module",
@@ -30,7 +30,6 @@
     "@claudexor/harness-fake": "workspace:*",
     "@claudexor/harness-opencode": "workspace:*",
     "@claudexor/harness-raw-api": "workspace:*",
-    "@claudexor/journal": "workspace:*",
     "@claudexor/mcp-server": "workspace:*",
     "@claudexor/orchestrator": "workspace:*",
     "@claudexor/review": "workspace:*",
@@ -50,7 +49,7 @@
     "url": "https://github.com/razzant/claudexor/issues"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": ">=24.15.0"
   },
   "exports": {
     ".": "./dist/cli.js",

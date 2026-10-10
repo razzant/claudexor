@@ -75,7 +75,7 @@ describe("loadConfig", () => {
       expect(cfg.global.routing.goal).toBe("auto");
       expect(cfg.global.routing.paid_fallback).toBe("when_unavailable");
       expect(cfg.global.runtime.reviewer_timeout_ms).toBe(600_000);
-      expect(cfg.global.runtime.max_concurrent).toBe(24);
+      expect(cfg.global.runtime.max_concurrent).toBe("unlimited");
       expect(cfg.global.runtime.max_parallel_candidates).toBe(4);
       expect(cfg.global.runtime.max_deep_scan_width).toBe(8);
       expect(cfg.global.runtime.max_council_members).toBe(4);

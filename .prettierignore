@@ -11,3 +11,6 @@ apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/wire/
 docs/reference/endpoints.json
 # Immutable published release-attestation bytes (archive-verification fixture; never reformat)
 packages/cli/fixtures/review-attestation-v3.2.0-schema5.json
+
+# Hash-sealed baseline evidence; only import rewrites are permitted.
+packages/daemon/src/store/test-support/fixtures/legacy

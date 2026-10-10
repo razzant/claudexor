@@ -1,0 +1,82 @@
+{
+  "$ref": "#/definitions/ControlProjectRegisterResponse",
+  "definitions": {
+    "ControlProjectRegisterResponse": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 2,
+          "description": "Schema version of the artifact; bumped on breaking ABI changes."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "createdAt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ISO-8601 timestamp string."
+        },
+        "updatedAt": {
+          "$ref": "#/definitions/ControlProjectRegisterResponse/properties/createdAt"
+        },
+        "nesting": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "relation": {
+                "type": "string",
+                "enum": [
+                  "inside",
+                  "contains"
+                ],
+                "description": "How this project overlaps the other."
+              },
+              "root": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The other registered project's root."
+              },
+              "projectId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The other registered project's id."
+              }
+            },
+            "required": [
+              "relation",
+              "root",
+              "projectId"
+            ],
+            "additionalProperties": false,
+            "description": "A disclosed (never refused) nesting relation with another registered project."
+          },
+          "default": [],
+          "description": "Disclosed nesting relations with other registered projects (F3) — informational, never a refusal."
+        },
+        "created": {
+          "type": "boolean",
+          "description": "True when this registration created the project; false when the root was already registered. An Idempotency-Key replay repeats its original answer."
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "id",
+        "root",
+        "createdAt",
+        "updatedAt",
+        "created"
+      ],
+      "additionalProperties": false,
+      "description": "A registered project and whether this registration created it."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
