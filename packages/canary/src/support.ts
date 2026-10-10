@@ -57,7 +57,7 @@ function failureDetail(error: unknown): { message: string; code?: string } {
   };
 }
 
-function inspectSandboxLease(env: NodeJS.ProcessEnv, cwd: string): LeaseObservation {
+export function inspectSandboxLease(env: NodeJS.ProcessEnv, cwd: string): LeaseObservation {
   const result = spawnSync(process.execPath, ["--input-type=module", "--eval", LEASE_PROBE], {
     env,
     cwd,
