@@ -82,6 +82,8 @@ describe("startup-frozen concurrency projection", () => {
       }));
       const snapshot = settingsSnapshot("/tmp/no-project", {
         max_concurrent: 24,
+        max_concurrent_non_model_jobs: "unlimited",
+        max_concurrent_model_operations: "unlimited",
         max_parallel_candidates: 4,
         max_deep_scan_width: 8,
         max_council_members: 4,

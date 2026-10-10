@@ -12,8 +12,10 @@ import {
   type CancelReasonCode,
   type RuntimeConcurrencyCaps,
   type DaemonStoreFacts,
+  type ConcurrencyLimit,
+  type JobAdmission,
 } from "@claudexor/schema";
-import { daemonHealth, daemonConcurrencyLimit } from "./daemon-health.js";
+import { daemonHealth, daemonConcurrencyCaps } from "./daemon-health.js";
 import { RpcFollowers } from "./rpc-followers.js";
 import { assertNoInlineSecretValues, newId, nowIso, pathExists } from "@claudexor/util";
 import {
@@ -31,10 +33,7 @@ import {
 import { parseCommandListQuery } from "./command-list-select.js";
 import { legacyCommandBackend } from "./store/legacy-read-adapter.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
-import {
-  isDelegatedChildRecord,
-  type DelegationAdmissionAuthority,
-} from "./delegation-admission.js";
+import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
 import {
   JOB_STATES,
   jobStateFromResult,
@@ -44,6 +43,13 @@ import {
   type JobRecord,
 } from "./job-record.js";
 import { settleJobError } from "./job-settlement.js";
+import {
+  admissionActivity,
+  admissionJob,
+  eligibleJobIndex,
+  queuedAdmission,
+  type AdmissionJob,
+} from "./job-admission.js";
 import {
   daemonTokenMatches,
   recoveryOnlyRefusal,
@@ -67,8 +73,8 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   socketPath: string;
   token: string;
   runner: RunnerFn;
-  maxConcurrent?: number;
-  /** Startup-frozen strategy caps; absent embedders retain historical defaults. */
+  maxConcurrent?: ConcurrencyLimit;
+  /** Startup-frozen admission and strategy caps; omission has no finite admission ceiling. */
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
   storeFacts?: () => DaemonStoreFacts;
   commands: LegacyCommandAuthority | CommandBackend;
@@ -103,13 +109,16 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
 export class DaemonServer {
   private server?: Server;
   private readonly followers = new RpcFollowers();
-  private readonly queue: string[] = [];
+  private readonly queue: AdmissionJob[] = [];
+  private readonly activeJobs = new Map<string, AdmissionJob>();
   private readonly cancelled = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
   private readonly commands: CommandBackend;
-  private active = 0;
+  private get active(): number {
+    return this.activeJobs.size;
+  }
   private readonly startedAt = Date.now();
   private stopping = false;
   private startPromise?: Promise<void>;
@@ -120,7 +129,7 @@ export class DaemonServer {
   });
 
   constructor(private readonly opts: DaemonOptions) {
-    this.maxConcurrent = daemonConcurrencyLimit(opts);
+    this.concurrency = daemonConcurrencyCaps(opts);
     this.commands =
       "queries" in opts.commands ? opts.commands : legacyCommandBackend(opts.commands);
   }
@@ -289,8 +298,9 @@ export class DaemonServer {
         servingMode === "normal" ? this.commands.queries.count() : 0,
         this.stopping,
         servingMode,
-        this.maxConcurrent,
-        this.opts.runtimeConcurrencyCaps,
+        this.concurrency,
+        admissionActivity(this.activeJobs.values(), this.queue),
+        this.opts.runtimeConcurrencyCaps !== undefined,
       );
       return this.opts.storeFacts ? { ...health, store: this.opts.storeFacts() } : health;
     }
@@ -342,7 +352,7 @@ export class DaemonServer {
         if (!accepted.reused && delegatedFrom) {
           this.opts.delegationAuthority!.noteChildAccepted(delegatedFrom, accepted.record.id);
         }
-        if (!accepted.reused) this.queue.push(accepted.record.id);
+        if (!accepted.reused) this.queue.push(admissionJob(accepted.record));
         void this.drain();
         return commandAcceptanceReceipt(accepted.record, accepted.reused);
       }
@@ -382,7 +392,18 @@ export class DaemonServer {
     }
   }
 
-  private readonly maxConcurrent: number;
+  private readonly concurrency: RuntimeConcurrencyCaps;
+
+  /** One synchronous observation for the exact operation; never inferred by a
+   * client from aggregate health. Missing means this scheduler owns no live job. */
+  admission(id: string): JobAdmission | null {
+    const running = this.activeJobs.get(id);
+    if (running) return { class: running.class, phase: "active", blockers: [] };
+    const queued = this.queue.find((job) => job.id === id);
+    return queued
+      ? queuedAdmission(queued, this.activeJobs.values(), this.concurrency, this.stopping)
+      : null;
+  }
 
   /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
    * barrier. It is safe to repeat and preserves queued-admission cleanup. */
@@ -392,6 +413,8 @@ export class DaemonServer {
     this.cancelled.add(jid);
     if (rec.state === "queued") {
       this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
+      const index = this.queue.findIndex((job) => job.id === jid);
+      if (index !== -1) this.queue.splice(index, 1);
       const delegatedFrom = delegatedParentOf(rec.params);
       if (delegatedFrom) this.opts.delegationAuthority?.cancelAcceptedChild(delegatedFrom, rec.id);
     }
@@ -474,44 +497,19 @@ export class DaemonServer {
   private drain(): void {
     if (this.stopping) return;
     while (this.queue.length > 0) {
-      const records = this.commands.queries.active();
-      const running = records.filter((record) => record.state === "running");
-      const busyThreads = new Set(
-        running.map((r) => this.threadIdOf(r)).filter((t): t is string => !!t),
-      );
-      const regularSlotAvailable = this.active < this.maxConcurrent;
-      // A Delegate parent can synchronously wait for its belt child. If every
-      // regular slot is occupied by such parents, a FIFO-only pool deadlocks.
-      // Admit exactly one already-validated child as overflow while no child is
-      // running; delegated children themselves have Delegate disabled, so this
-      // cannot recurse into an unbounded overflow tree.
-      const delegatedOverflowAvailable =
-        !regularSlotAvailable && !running.some((record) => isDelegatedChildRecord(record));
-      if (!regularSlotAvailable && !delegatedOverflowAvailable) break;
-
-      const eligible = (index: number): boolean => {
-        const rec = this.getRecord(this.queue[index]);
-        const tid = rec ? this.threadIdOf(rec) : undefined;
-        return !rec || !tid || !busyThreads.has(tid);
-      };
-      // Children go first so a parent waiting inside a regular slot makes
-      // progress. Ordinary work may use only a regular slot.
-      let pickIdx = this.queue.findIndex((id, index) => {
-        const rec = this.getRecord(id);
-        return !!rec && isDelegatedChildRecord(rec) && eligible(index);
-      });
-      if (pickIdx === -1 && regularSlotAvailable) {
-        pickIdx = this.queue.findIndex((_id, index) => eligible(index));
-      }
-      if (pickIdx === -1) break; // every queued job waits on a busy thread
-      const id = this.queue.splice(pickIdx, 1)[0];
-      const rec = this.getRecord(id);
+      // Existing child precedence and one overflow remain; a blocked ordinary
+      // class never prevents the next eligible job of another class from running.
+      const pickIdx = eligibleJobIndex(this.queue, this.activeJobs.values(), this.concurrency);
+      if (pickIdx === -1) break;
+      const job = this.queue.splice(pickIdx, 1)[0];
+      const id = job.id,
+        rec = this.getRecord(id);
       if (!rec) continue;
       if (this.cancelled.has(id)) {
         this.updateRecord(rec, { state: "cancelled", finishedAt: nowIso() });
         continue;
       }
-      this.active += 1;
+      this.activeJobs.set(id, job);
       const task = this.runJob(id, rec);
       this.activeTasks.add(task);
       void task.then(
@@ -558,7 +556,7 @@ export class DaemonServer {
       });
     } finally {
       this.controllers.delete(id);
-      this.active -= 1;
+      this.activeJobs.delete(id);
       // An admitted child can fail before the orchestrator attaches its
       // task-scoped ledger (contract/preflight/artifact setup). Clear that
       // pending admission at the daemon-owned job boundary; after attachment

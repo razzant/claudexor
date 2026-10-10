@@ -51,7 +51,7 @@ export function settingsSnapshot(
       ...(effectiveConcurrencyCaps
         ? {
             concurrency: concurrencyState(
-              runtimeConcurrencyCaps(cfg.global),
+              runtimeConcurrencyCaps(cfg.global, cfg.runtimeConcurrencySources),
               effectiveConcurrencyCaps,
             ),
           }

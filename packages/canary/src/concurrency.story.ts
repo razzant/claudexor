@@ -222,13 +222,15 @@ describe("startup concurrency acceptance", () => {
   });
 
   it(
-    "default product cap admits 24 fake workers and queues the 25th",
+    "default product admission has no hidden cap at the twenty-fifth fake worker",
     async () => {
       sandbox = makeConcurrencySandbox();
       const api = startDaemon(sandbox);
       const health = status(sandbox);
       expect(health.capacity).toMatchObject({
-        maxConcurrent: 24,
+        maxConcurrent: "unlimited",
+        maxConcurrentNonModelJobs: "unlimited",
+        maxConcurrentModelOperations: "unlimited",
         maxParallelCandidates: 4,
         maxDeepScanWidth: 8,
         maxCouncilMembers: 4,
@@ -238,9 +240,9 @@ describe("startup concurrency acceptance", () => {
       const pending = Array.from({ length: 25 }, (_, index) =>
         enqueueProbe(api, `${prefix}${index}`),
       );
-      const snapshot = await waitForSnapshot(api, prefix, { running: 24, queued: 1 }, pending);
-      expect(snapshot.filter((run) => run.state === "running")).toHaveLength(24);
-      expect(snapshot.filter((run) => run.state === "queued")).toHaveLength(1);
+      const snapshot = await waitForSnapshot(api, prefix, { running: 25, queued: 0 }, pending);
+      expect(snapshot.filter((run) => run.state === "running")).toHaveLength(25);
+      expect(snapshot.filter((run) => run.state === "queued")).toHaveLength(0);
       await cancelProbeFamily(api, prefix, pending);
       expect(status(sandbox)).toMatchObject({ active: 0, queue: 0 });
     },

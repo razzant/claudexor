@@ -254,11 +254,19 @@ function printSettings(settings: ReturnType<typeof ControlSettingsSnapshot.parse
   const concurrency = settings.runtime.concurrency;
   if (concurrency) {
     print(
-      `runtime.concurrency.configured: regular=${concurrency.configured.maxConcurrent} candidates=${concurrency.configured.maxParallelCandidates} deep_scan=${concurrency.configured.maxDeepScanWidth} council=${concurrency.configured.maxCouncilMembers}`,
+      `runtime.concurrency.configured: global=${concurrency.configured.maxConcurrent} non_model=${concurrency.configured.maxConcurrentNonModelJobs ?? "unknown"} model=${concurrency.configured.maxConcurrentModelOperations ?? "unknown"} candidates=${concurrency.configured.maxParallelCandidates} deep_scan=${concurrency.configured.maxDeepScanWidth} council=${concurrency.configured.maxCouncilMembers}`,
     );
     print(
-      `runtime.concurrency.effective: regular=${concurrency.effective.maxConcurrent} candidates=${concurrency.effective.maxParallelCandidates} deep_scan=${concurrency.effective.maxDeepScanWidth} council=${concurrency.effective.maxCouncilMembers} restart_required=${concurrency.restartRequired}`,
+      `runtime.concurrency.effective: global=${concurrency.effective.maxConcurrent} non_model=${concurrency.effective.maxConcurrentNonModelJobs ?? "unknown"} model=${concurrency.effective.maxConcurrentModelOperations ?? "unknown"} candidates=${concurrency.effective.maxParallelCandidates} deep_scan=${concurrency.effective.maxDeepScanWidth} council=${concurrency.effective.maxCouncilMembers} restart_required=${concurrency.restartRequired}`,
     );
+    print(
+      `runtime.concurrency.configured_sources: ${concurrency.configured.sources ? JSON.stringify(concurrency.configured.sources) : "unknown"}`,
+    );
+    print(
+      `runtime.concurrency.effective_sources: ${concurrency.effective.sources ? JSON.stringify(concurrency.effective.sources) : "unknown"}`,
+    );
+  } else {
+    print("runtime.concurrency: unknown (not disclosed by this engine)");
   }
   print(`runtime.transient_retry.max_retries: ${settings.runtime.transientRetry.maxRetries}`);
   print(

@@ -1572,36 +1572,61 @@ interactive REPL enters through the managed daemon and `/v2`; the CLI starts it
 when needed and fails loudly if it cannot. There is no second in-process CLI
 run/thread authority. The daemon remains the single scheduler and journal
 writer while the mode pipelines below retain their distinct mutability.
-The daemon admits `runtime.max_concurrent` regular jobs per data root (default
-24). Agents and model operations share this pool; internal candidate and review
-processes are not additional daemon jobs. The same startup snapshot owns
-`runtime.max_parallel_candidates` (default 4 active best-of candidates or scouts),
-`runtime.max_deep_scan_width` (default 8 scouts), and `runtime.max_council_members`
-(default 4 distinct members, minimum 2). These settings accept safe integers
-without a product upper ceiling. They limit capacity, not the requested work:
-request widths and their defaults remain separate. Same-thread turns stay
-serialized; nested Delegate retains its eight-child, depth-one, single-overflow
-contracts. Raising regular capacity does not change those contracts or quotas.
+The existing queue distinguishes `model` operations from `non_model` jobs
+(Ask, Plan, Agent, maintenance and other commands). Admission has three axes:
+`runtime.max_concurrent` is a GLOBAL cap across both classes;
+`runtime.max_concurrent_non_model_jobs` and
+`runtime.max_concurrent_model_operations` constrain their respective classes.
+Each accepts a positive safe integer or `unlimited`. An absent key has no
+implicit finite ceiling, including for library embedders; `0`, negatives,
+fractions, unsafe integers and `null` are invalid. A previously saved finite
+`max_concurrent` or explicit embedder `maxConcurrent` keeps its global meaning.
+It is never silently converted to an Agent-only limit or discarded as an old default.
 
-Set the four keys under `runtime` in the user-global `config.yaml` (the selected
-`CLAUDEXOR_CONFIG_DIR`), or use the corresponding environment overrides in
+One queue and runner lifecycle remain. The scheduler selects the next eligible
+job when another class or thread is blocked, preserving ordinary eligible order
+and existing Delegate-child precedence. Same-thread turns stay serialized;
+Delegate retains its eight-child, depth-one, single-overflow contract under both
+class and global saturation. Compact queued/active identities carry only the id,
+class, thread and Delegate fact; admission never scans retained command history.
+Every runner, including a model's route preparation, dispatch and result
+settlement, remains in total activity and the shutdown/replacement drain.
+Cancelling a running operation does not release its permit before settlement.
+
+Strategy width remains independent: `runtime.max_parallel_candidates` defaults
+to 4 active best-of candidates or scouts, `runtime.max_deep_scan_width` to 8
+scouts, and `runtime.max_council_members` to 4 distinct members (minimum 2).
+These three settings remain finite positive safe integers. Removing an admission
+ceiling does not change requested strategy widths, account quotas or provider
+retry policy, and it is not a physical resource guarantee or an automatic governor.
+
+All six keys live in user-global `config.yaml` (the selected
+`CLAUDEXOR_CONFIG_DIR`); their environment overrides are listed in
 [INTEGRATIONS](INTEGRATIONS.md#environment-reference). Environment wins over YAML.
-Caps are read once at startup; changing the file never resizes or preempts live
-work. `GET /v2/settings` and `settings show` report `runtime.concurrency` with
-configured values resolved from YAML and the current process environment,
-startup-frozen effective values, and `restartRequired`. An older engine omits
-this block; clients must not substitute defaults. Daemon status health reports
-effective `capacity`. Runtime keys remain file/environment settings, not writable
-through `POST /v2/settings`. Use managed replacement after work drains to apply
-changes. An environment change outside the running process is visible only at
-its next launch.
+Caps and their source are captured once at startup. Config changes do not resize,
+preempt or cancel running work. Settings and CLI report `runtime.concurrency`
+configured/effective values, source (`default`, `config`, `environment`,
+`embedder`, or unknown when a reader lacks evidence), and `restartRequired`.
+`default` identifies absence; a saved or environment `unlimited` is explicit.
+An older engine's missing class/source fields remain unknown, never zero or 24.
+The independent strategy widths remain present even when admission is unlimited.
 
-Unrelated settings writes omit newly materialized concurrency defaults, while
-explicit YAML keys survive (including values equal to defaults). For rollback
-to an engine predating these keys, remove the explicit concurrency keys from
-YAML first; older strict parsers reject them. Environment-only overrides do not
-introduce unknown YAML keys. Library embedders omitting `DaemonServer` capacity
-retain the historical twelve-job fallback.
+Daemon status preserves total `active`, `queue` and `running`, adds class counts
+under `admission`, and reports effective `capacity`. A model operation's optional
+`admission` is a synchronous observation of that exact job: queued/active and
+known global-limit, class-limit, busy-thread or stopping blockers. It is not a
+provider-dispatch claim or a durable receipt. After runner settlement the live
+admission observation is null; older engines omit the field. The CLI control-service
+projection reads it alongside the current operation state without another poller.
+
+Runtime caps remain file/environment settings, not writable through
+`POST /v2/settings`. Unrelated settings writes preserve absent keys and every
+explicit value, including old 24 and explicit unlimited. Use managed replacement
+after work drains to adopt changed caps; external environment changes are visible
+only at next launch. The number-or-unlimited payload requires a compatible client;
+protocol major 3 alone does not make a finite-only decoder compatible. Updating
+first-party clients is coordinated with the engine release and its existing app
+update floor; no numeric sentinel hides unlimited from an old client.
 
 `claudexor doctor`, `models`, and `auth status` are also thin projections of the
 daemon's typed `/v2/harnesses` and `/v2/harnesses/:id/models` readiness services;
@@ -2030,9 +2055,10 @@ named, so a turn another model answered is not replayed under the requested
 model either, and an unknown model leaves it unbound.
 
 `ModelOperations` uses the existing daemon command store, idempotency lookup,
-queue capacity, cancellation and terminal boundary. Models and Agents share the
-regular slots described in [Main Execution Paths](#6-main-execution-paths); a
-running model generation occupies one until it settles or is cancelled. Model commands do not appear
+queue capacity, cancellation and terminal boundary. Model runners use their class
+limit and any explicit global limit described in [Main Execution Paths](#6-main-execution-paths).
+Their permit remains occupied until runner settlement, including cancellation;
+waiting for a client's result-digest ACK does not hold it. Model commands do not appear
 as Agent Runs. The journal contains content hashes and resource references, not
 the full conversation. A model-purpose upload uses `ResourceStore`'s atomic
 finalization; its contents are not filtered for secret-like text, and it cannot

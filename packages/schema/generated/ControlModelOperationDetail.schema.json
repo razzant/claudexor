@@ -21,6 +21,109 @@
           ],
           "description": "Run lifecycle: queued, running, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks, review, delivery) is orthogonal."
         },
+        "admission": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "enum": [
+                    "model",
+                    "non_model"
+                  ]
+                },
+                "phase": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "active"
+                  ]
+                },
+                "blockers": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "global_limit"
+                          },
+                          "limit": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991,
+                            "exclusiveMinimum": 0
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "limit"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "class_limit"
+                          },
+                          "limit": {
+                            "$ref": "#/definitions/ControlModelOperationDetail/properties/admission/anyOf/0/properties/blockers/items/anyOf/0/properties/limit"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "limit"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "thread_busy"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "stopping"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "class",
+                "phase",
+                "blockers"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Current scheduler observation for this operation; absent on engines without admission disclosure."
+        },
         "createdAt": {
           "type": "string",
           "minLength": 1,

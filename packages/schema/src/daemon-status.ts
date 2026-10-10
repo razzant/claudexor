@@ -1,6 +1,6 @@
 import { z } from "zod/v3";
 import { IsoTimestamp } from "./primitives.js";
-import { RuntimeConcurrencyState } from "./runtime-concurrency.js";
+import { RuntimeConcurrencyState, JobAdmissionActivity } from "./runtime-concurrency.js";
 import { DaemonStoreFacts } from "./store-status.js";
 
 const bytes = z.number().int().nonnegative();
@@ -62,6 +62,7 @@ export const ControlDaemonStatus = z.object({
   stopping: z.boolean(),
   servingMode: z.enum(["normal", "recovery_only"]),
   capacity: RuntimeConcurrencyState.shape.effective.partial().required({ maxConcurrent: true }),
+  admission: JobAdmissionActivity.optional(),
   memory: DaemonMemoryFacts,
   store: DaemonStoreFacts.optional(),
   loop: DaemonLoopFacts.nullable().describe(

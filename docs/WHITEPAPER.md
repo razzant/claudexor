@@ -461,8 +461,11 @@ Not a SaaS, no accounts of its own, no telemetry beyond public download
 counts, no autonomous self-modification, no privileged harness, no second
 source of truth beside the engine.
 
-Operator capacity and strategy width are independent: a daemon-wide job pool
-limits simultaneously admitted work, while per-run candidate, scout and Council
-limits govern fan-out within a job. These capacities are user-configurable and
-fixed for the daemon lifetime. Settings distinguish configured values from
-currently effective capacity, so pending changes never look already applied.
+Operator capacity and strategy width are independent. One daemon queue admits
+raw model operations and other jobs under optional class and global limits,
+without an implicit finite admission ceiling. An explicit global limit includes
+both classes, while the queue can pass eligible work from an unblocked class.
+Candidate, scout and Council limits continue to govern fan-out within each job.
+Capacity stays fixed for the daemon lifetime, including full ownership of active
+work through cancellation and settlement. Settings distinguish configured and
+effective values so pending changes never look already applied.

@@ -9,6 +9,7 @@ import { ControlProblem } from "./problem.js";
 import { RunLifecycle } from "./status-projection.js";
 import { TokenUsage } from "./telemetry.js";
 import { ProcessingCapability, ProcessingPreference, ProcessingReceipt } from "./processing.js";
+import { JobAdmission } from "./runtime-concurrency.js";
 
 export const ModelPayloadRef = z
   .object({
@@ -444,6 +445,11 @@ export const ControlModelOperationDetail = z
   .object({
     id: Id,
     state: RunLifecycle,
+    admission: JobAdmission.nullable()
+      .optional()
+      .describe(
+        "Current scheduler observation for this operation; absent on engines without admission disclosure.",
+      ),
     createdAt: IsoTimestamp,
     startedAt: IsoTimestamp.nullable(),
     finishedAt: IsoTimestamp.nullable(),

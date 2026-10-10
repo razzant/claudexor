@@ -47,8 +47,7 @@ import {
   recoveryBlockedPartitions,
 } from "./daemon-startup.js";
 import { engineBuildIdentity, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
-import { loadConfig } from "@claudexor/config";
-import { runtimeConcurrencyCaps } from "@claudexor/schema";
+import { loadRuntimeConcurrencyCaps } from "@claudexor/config";
 import { scheduleStartupRetention } from "./retention-service.js";
 import { controlServices } from "./control-services.js";
 import { AuthReadinessService } from "@claudexor/gateway";
@@ -100,8 +99,7 @@ export async function main(): Promise<void> {
   );
   try {
     const token = ensureToken();
-    const startupConfig = loadConfig(noProjectRepoRoot()).global;
-    const startupConcurrencyCaps = runtimeConcurrencyCaps(startupConfig);
+    const startupConcurrencyCaps = loadRuntimeConcurrencyCaps(noProjectRepoRoot());
 
     if (await socketAlive(socketPath)) {
       throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
@@ -181,6 +179,7 @@ export async function main(): Promise<void> {
       commands: threads,
       resources,
       client: selfClient,
+      admission: (id) => server.admission(id),
       quota: () => quotaStoreSlot.current(),
       warn: (message) => logLine(logPath(), message),
     });

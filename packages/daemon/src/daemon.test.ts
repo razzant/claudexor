@@ -274,6 +274,8 @@ describe("DaemonServer", () => {
       commands: authority.slot,
       runtimeConcurrencyCaps: {
         max_concurrent: 24,
+        max_concurrent_non_model_jobs: "unlimited",
+        max_concurrent_model_operations: "unlimited",
         max_parallel_candidates: 6,
         max_deep_scan_width: 10,
         max_council_members: 5,
@@ -1556,8 +1558,8 @@ describe("DaemonServer", () => {
     expect(() => commandAuthority(dir)).toThrow(/duplicate|multiple terminal events/);
   });
 
-  it("defaults to twelve regular concurrent jobs and queues the thirteenth", async () => {
-    const dir = tempDir("c12");
+  it("omitted embedder capacity admits the twenty-fifth regular job", async () => {
+    const dir = tempDir("c-unlimited");
     const authority = commandAuthority(dir);
     const socketPath = join(dir, "daemon.sock");
     let active = 0;
@@ -1593,15 +1595,15 @@ describe("DaemonServer", () => {
     let jobs: Array<{ id: string }> = [];
     try {
       jobs = await Promise.all(
-        Array.from({ length: 13 }, (_, index) => client.enqueue({ id: index + 1 })),
+        Array.from({ length: 25 }, (_, index) => client.enqueue({ id: index + 1 })),
       );
-      expect(started).toBe(12);
-      await expect(client.health()).resolves.toMatchObject({ active: 12, queue: 1 });
+      expect(started).toBe(25);
+      await expect(client.health()).resolves.toMatchObject({ active: 25, queue: 0 });
 
       releaseRuns();
       const records = await Promise.all(jobs.map((job) => terminal(client, job.id)));
-      expect(records.map((record) => record.state)).toEqual(Array(13).fill("succeeded"));
-      expect(maxActive).toBe(12);
+      expect(records.map((record) => record.state)).toEqual(Array(25).fill("succeeded"));
+      expect(maxActive).toBe(25);
     } finally {
       releaseRuns();
       if (jobs.length > 0) {

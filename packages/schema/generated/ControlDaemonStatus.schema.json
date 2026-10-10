@@ -41,26 +41,125 @@
           "type": "object",
           "properties": {
             "maxConcurrent": {
-              "type": "integer",
-              "minimum": -9007199254740991,
-              "maximum": 9007199254740991,
-              "exclusiveMinimum": 0
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "string",
+                  "const": "unlimited"
+                }
+              ]
+            },
+            "maxConcurrentNonModelJobs": {
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
+            },
+            "maxConcurrentModelOperations": {
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
             },
             "maxParallelCandidates": {
-              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent/anyOf/0"
             },
             "maxDeepScanWidth": {
-              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent"
+              "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/maxConcurrent/anyOf/0"
             },
             "maxCouncilMembers": {
               "type": "integer",
               "minimum": 2,
               "maximum": 9007199254740991,
               "exclusiveMinimum": 0
+            },
+            "sources": {
+              "type": "object",
+              "properties": {
+                "max_concurrent": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "config",
+                    "environment",
+                    "embedder",
+                    "unknown"
+                  ]
+                },
+                "max_concurrent_non_model_jobs": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_concurrent_model_operations": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_parallel_candidates": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_deep_scan_width": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                },
+                "max_council_members": {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/capacity/properties/sources/properties/max_concurrent"
+                }
+              },
+              "required": [
+                "max_concurrent",
+                "max_concurrent_non_model_jobs",
+                "max_concurrent_model_operations",
+                "max_parallel_candidates",
+                "max_deep_scan_width",
+                "max_council_members"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [
             "maxConcurrent"
+          ],
+          "additionalProperties": false
+        },
+        "admission": {
+          "type": "object",
+          "properties": {
+            "active": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "non_model": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "model",
+                "non_model"
+              ],
+              "additionalProperties": false
+            },
+            "queued": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "non_model": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "model",
+                "non_model"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "active",
+            "queued"
           ],
           "additionalProperties": false
         },

@@ -28,6 +28,7 @@ import {
   type CredentialProfile,
   type ModelAccountChoice,
   type ModelCallResult,
+  type JobAdmission,
 } from "@claudexor/schema";
 import { errorCode, noProjectRepoRoot, redactSecrets } from "@claudexor/util";
 import { accountsMigrationGate } from "./accounts-unified-migration.js";
@@ -36,6 +37,7 @@ import { credentialUnusableLedger } from "./run-orchestrator.js";
 import type { RetentionRunner } from "./retention-service.js";
 import { catalogProfiles, enumerateAccountCatalogs } from "./account-catalog.js";
 import { bindModelAccountEvidence } from "./model-account-evidence.js";
+import { modelOperationControlServices } from "./model-operation-control.js";
 
 /**
  * Daemon-lifetime model-substitution observations: in-memory and bounded, like
@@ -53,6 +55,7 @@ interface ModelSource {
 type Dependencies = ModelOperationPersistence &
   Pick<ModelOperationDependencies, "resources" | "warn"> & {
     client: Pick<DaemonClient, "enqueue" | "cancel">;
+    admission?: (id: string) => JobAdmission | null;
     quota: () => QuotaRegistry;
     config?: () => GlobalConfig;
     registry?: AdapterRegistry;
@@ -493,12 +496,7 @@ export function createModelServices(deps: Dependencies) {
           partial: accounts.some((entry) => entry.catalog === null),
         });
       },
-      createModelOperation: operations.create.bind(operations),
-      getModelOperation: async (id: string) => operations.inspect(id),
-      readModelResult: async (id: string) => operations.readResult(id),
-      acknowledgeModelResult: async (id: string, sha256: string) =>
-        operations.acknowledge(id, sha256),
-      cancelModelOperation: operations.cancel.bind(operations),
+      ...modelOperationControlServices(operations, deps.admission),
     },
     withRetention:
       (run: RetentionRunner): RetentionRunner =>

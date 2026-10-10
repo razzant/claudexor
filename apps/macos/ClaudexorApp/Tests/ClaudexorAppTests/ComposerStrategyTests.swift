@@ -81,6 +81,25 @@ import ClaudexorKit
         #expect(resolve(.plan, council: true, members: 6, maxMembers: maxMembers).councilN == 4)
     }
 
+    @Test func unlimitedAdmissionPreservesEightMemberCouncilOnTheWire() throws {
+        let current = try settings(councilConfigured: 8, councilEffective: 8)
+        var wire = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
+        var runtime = try #require(wire["runtime"] as? [String: Any])
+        var concurrency = try #require(runtime["concurrency"] as? [String: Any])
+        for key in ["configured", "effective"] {
+            var caps = try #require(concurrency[key] as? [String: Any])
+            caps["maxConcurrent"] = "unlimited"
+            concurrency[key] = caps
+        }
+        runtime["concurrency"] = concurrency
+        wire["runtime"] = runtime
+        let updated = try JSONDecoder().decode(SettingsSnapshot.self, from: JSONSerialization.data(withJSONObject: wire))
+        let r = resolve(.plan, council: true, members: 8, maxMembers: composerCouncilMemberLimit(updated))
+        let body = ThreadTurnRequest(prompt: "plan it", mode: r.mode.apiValue, n: r.councilN, council: r.council)
+        let request = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any])
+        #expect(request["n"] as? Int == 8)
+    }
+
     @Test func legacySettingsOmissionKeepsFourMemberRange() throws {
         let current = try settings(councilConfigured: 6, councilEffective: 6)
         var wire = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any])
