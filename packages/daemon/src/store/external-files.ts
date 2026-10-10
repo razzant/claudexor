@@ -26,6 +26,14 @@ export interface ExternalFileReceipt {
   written: boolean;
 }
 
+/** Node does not expose the POSIX O_DSYNC name on Windows, but passes numeric
+ * open flags to libuv. UV_FS_O_DSYNC maps to FILE_FLAG_WRITE_THROUGH there
+ * (deps/uv/include/uv/win.h in the supported Node runtime). */
+export function externalWriteFlags(access: number): number {
+  const sync = process.platform === "win32" ? 0x04000000 : constants.O_DSYNC;
+  return access | sync | (constants.O_NOFOLLOW ?? 0);
+}
+
 /**
  * Write an external file the SYNTHESIS_R5 §4.4 way: a sibling `.tmp` opened
  * `O_DSYNC` (the data is at the drive when `write` returns, 0.05–0.4 ms for
@@ -48,11 +56,7 @@ export function writeExternalFile(
   try {
     fd = openSync(
       temp,
-      constants.O_WRONLY |
-        constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_NOFOLLOW |
-        constants.O_DSYNC,
+      externalWriteFlags(constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL),
       0o600,
     );
     let offset = 0;

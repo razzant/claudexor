@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ensureDirectory,
+  externalWriteFlags,
   linkExternalFile,
   unlinkExternalFile,
   writeExternalFile,
@@ -43,6 +44,20 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
+  it("translates the Windows write-through bit without relying on POSIX flag exports", () => {
+    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...original, value: "win32" });
+    try {
+      // Pure flag translation only; the file-writing test exercises the actual
+      // host path, including in the native Windows CI lane.
+      const flags = externalWriteFlags(2);
+      expect(flags & 0x04000000).toBe(0x04000000); // libuv UV_FS_O_DSYNC
+      expect(flags & 2).toBe(2); // preserve the caller's read/write access
+    } finally {
+      Object.defineProperty(process, "platform", original);
+    }
+  });
+
   it("writes through an O_DSYNC temp, renames, registers the directory, leaves no temp", async () => {
     const { constants } = await import("node:fs");
     const dir = join(root, "final");
@@ -59,9 +74,11 @@ describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
     const tempOpen = openSpy.mock.calls.find(([path]) => String(path).endsWith(".tmp"));
     expect(tempOpen, "temp file opened").toBeDefined();
     const flags = Number(tempOpen![1]);
-    expect(flags & constants.O_DSYNC).toBe(constants.O_DSYNC);
+    const sync = process.platform === "win32" ? 0x04000000 : constants.O_DSYNC;
+    expect(flags & sync).toBe(sync);
     expect(flags & constants.O_EXCL).toBe(constants.O_EXCL);
-    expect(flags & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
+    if (constants.O_NOFOLLOW !== undefined)
+      expect(flags & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
   });
 
   it("replaces by default and keeps an existing content-addressed file", () => {

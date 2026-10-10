@@ -3240,8 +3240,9 @@ What the core is:
   releases, after which `journal_size_limit` truncates the file; the first
   such checkpoint after a long pinned read copies the accumulated backlog in
   one longer stop on the request thread. The request thread itself calls no
-  Node storage-sync primitive: external files are written through an
-  `O_DSYNC` temp and renamed, and the directory is handed to the flusher via
+  Node storage-sync primitive: external files use `O_DSYNC` on POSIX and
+  libuv's write-through open flag on Windows, where Node does not export the
+  POSIX constant. The temp is renamed and its directory goes to the flusher via
   `registerExternal`. Registrations and `flushed()` waiters carry monotonic
   generations; a pass acknowledges every generation it received before it
   started, a dead worker rejects its earlier waiters typed
