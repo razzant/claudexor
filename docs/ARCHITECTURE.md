@@ -239,7 +239,7 @@ at every wire boundary.
   see the lifecycle section below. Projection reads select exact record types
   before payload copying; every read sees the retained set, and sequence
   numbers and cursors are the original ones.
-- `packages/daemon`: durable local queue (Unix socket on POSIX, named pipe on win32) and journal projections for commands, projects, and threads.
+- `packages/daemon`: durable local queue (Unix socket on POSIX, named pipe on win32), the in-process facade client its own control API uses, and journal projections for commands, projects, and threads.
   Project projections select their own record types; run-event history is validated
   once per projection creation through its descriptor. Direct RunEventStore
   construction still validates by default. Preparation and post-open activation
@@ -2176,7 +2176,13 @@ percent-encoding in the path with a typed `400 malformed_request_path` (never a
 `500`), projects request-schema violations into structured `fieldErrors`
 (JSON Pointer → messages) with a single-line human summary rather than a raw
 validator dump, and validates the per-run SSE cursor as a nonnegative integer
-`seq` before opening the stream.
+`seq` before opening the stream. Its HTTP server keeps idle keep-alive sockets
+for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
+would otherwise race the server's close), allows 66 s for request headers, and
+does not bound the receipt of a request body, so a large upload during a busy
+period is not cut; none of these limits applies to responses or SSE streams.
+Once stopping, it closes each kept-alive socket as soon as its response finishes,
+so the longer keep-alive window never delays shutdown.
 
 An admitted continuation whose predecessor record or run directory disappears
 before execution fails with `continuation_predecessor_unavailable` (404, not
@@ -2187,7 +2193,15 @@ current memory facts (heap used/limit, RSS, external bytes, effective heap args)
 plus the first normal-admission snapshot. It is also available in recovery-only
 mode, where admission memory is null until normal admission has opened. Sampling
 does not force GC or traverse retained commands; job counts use store sizes.
-The protocol handshake remains unchanged. No memory thresholds affect admission.
+`loop` carries the last completed ten-second window of event-loop facts: delay
+p50/p99/max from `monitorEventLoopDelay` (sampled at 10 ms, so an idle loop's
+p50 sits near 10 ms, and reset every window), the `eventLoopUtilization` busy
+share, and the GC pauses a `PerformanceObserver` saw (count, total, longest).
+It is null until the first window completes; a stalled loop rolls its window
+late, so `windowMs` grows with the stall. `claudexor daemon status` prints the
+same window as one line. The status route reaches the daemon in process, so it
+answers while the loop is merely slow. The protocol handshake remains unchanged.
+No memory or loop thresholds affect admission.
 
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
 - `GET /healthz`
@@ -2286,12 +2300,19 @@ The protocol handshake remains unchanged. No memory thresholds affect admission.
 
 Endpoint semantics beyond the inventory:
 
-Local daemon RPC timeouts retain the ten-second transport bound and answer
-`503 daemon_busy`; connection failures, closed sockets and invalid responses
-answer `503 daemon_unavailable`. Both are retryable and preserve an unknown
-mutation outcome. Daemon-authored refusals keep their status, code, safe context
-and required actions through RPC and HTTP, including continuation chain heads.
-Request validation remains a typed 400; transport does not retry automatically.
+The control API, model operations and harness maintenance run inside the
+daemon process and reach its RPC dispatcher in process (`DaemonLocalClient`):
+there is no socket round trip and no transport timer, so a busy event loop makes
+such a call slow rather than failed. Params, results and problems keep the
+socket's JSON value semantics, and both transports rebuild problems through one
+projection. Socket clients (the CLI, the stdio bridges, runtime replacement and
+the startup transport proof, which dials the socket itself) keep the ten-second
+transport bound: a timeout answers `503 daemon_busy`; connection failures, closed
+sockets and invalid responses answer `503 daemon_unavailable`. Both are retryable
+and preserve an unknown mutation outcome. Daemon-authored refusals keep their
+status, code, safe context and required actions through RPC and HTTP, including
+continuation chain heads. Request validation remains a typed 400; transport does
+not retry automatically.
 
 - `POST /v2/runs` with `continueFrom: <runId>` continues a terminal run of this
   daemon — stopped, limited, cancelled, interrupted or finished — as a new
@@ -2752,7 +2773,9 @@ LIFECYCLE after restart, never token-level progress. A journal sink failure for 
 journaled event fails the producer/run instead of being swallowed as a live-only
 gap; an event outside the journaled set is never a sink failure.
 `GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
-already reflected in that snapshot — so a client subscribes to
+already reflected in that snapshot, read from the live writer's in-memory counter
+or, for a finished run, from the log's last line (a full scan only when that line
+cannot decide) — so a client subscribes to
 `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
 no gaps and no duplicates. The per-run stream replays from the run's
 `events.jsonl` — the one complete per-run event record; the journal partition
@@ -3032,7 +3055,15 @@ nonterminal command to `interrupted_unknown`; mutating commands are never
 auto-replayed.
 The deliberately empty-on-v2-start registry is global. `GET/POST /v2/projects`
 list/register canonical local roots and
-`POST /v2/projects/:id/relink` moves an existing stable project id.
+`POST /v2/projects/:id/relink` moves an existing stable project id. A
+registration answer carries `created`: true only when that registration made the
+project, false when the root was already registered; an `Idempotency-Key` replay
+repeats its first answer, derived from journal order across restarts, so a
+caller can tell a project it created from one it merely found (`claudexor
+project register` prints `created` or `existing`). Each project
+discloses its nesting relations with other registered roots (`inside` /
+`contains`, never a refusal); the list computes them for the whole registry in
+one pass, each root checked only against its own registered ancestors.
 `DELETE /v2/projects/:id` retires a project — it removes the registry entry and
 ARCHIVES the project's journal partition (renamed out of the active journal
 tree, never deleted, the same non-destructive move the quarantine path uses),
@@ -3113,7 +3144,9 @@ start from the project base even if their predecessor holds a retained envelope;
 they do not adopt or retain it. In-place runs and race/synthesis/review envelopes
 keep their ordinary lifecycle.
 While running it snapshots its live harness child process groups to
-`daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
+`daemon/pids.json` (checked every two seconds, written asynchronously and only
+when the set of children changed; shutdown waits for that write before its final
+synchronous snapshot); the NEXT startup reaps recorded orphans that survived a
 crash (pid liveness + command-name recycling guard) and sweeps workspace
 debris under daemon-known project roots. The reap is not a stop proof: it sends
 SIGTERM to each recorded group, deletes the record, and only schedules SIGKILL

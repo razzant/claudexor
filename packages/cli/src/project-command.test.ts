@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ControlProject } from "@claudexor/schema";
-import { failure, projectListLines } from "./project-command.js";
+import { ControlProject, ControlProjectRegisterResponse } from "@claudexor/schema";
+import { failure, projectListLines, projectRegistrationLines } from "./project-command.js";
 
 // QA-072: the daemon returns disclosed nesting relations, and the CLI parses
 // them, but human `project list` printed only id/root — the overlap was
@@ -30,6 +30,37 @@ describe("project list nesting disclosure (QA-072)", () => {
       nesting: [],
     });
     expect(projectListLines(project)).toEqual(["pr-solo  /solo"]);
+  });
+});
+
+// `project register` states whether this registration created the project or
+// found it already registered; relink answers stay plain project lines.
+describe("project register created/existing disclosure", () => {
+  const now = new Date().toISOString();
+  const project = {
+    schemaVersion: 2 as const,
+    createdAt: now,
+    updatedAt: now,
+    id: "pr-a",
+    root: "/repo/a",
+    nesting: [{ relation: "inside" as const, root: "/repo", projectId: "pr-repo" }],
+  };
+
+  it("leads with created or existing from the daemon's answer", () => {
+    const created = ControlProjectRegisterResponse.parse({ ...project, created: true });
+    const existing = ControlProjectRegisterResponse.parse({ ...project, created: false });
+    expect(projectRegistrationLines(created)[0]).toBe("created  pr-a  /repo/a");
+    expect(projectRegistrationLines(existing)[0]).toBe("existing  pr-a  /repo/a");
+    expect(projectRegistrationLines(existing).slice(1)).toEqual(
+      projectListLines(ControlProject.parse(project)).slice(1),
+    );
+  });
+
+  it("keeps relink answers without the fact and refuses a registration without it", () => {
+    expect(projectRegistrationLines(ControlProject.parse(project))).toEqual(
+      projectListLines(ControlProject.parse(project)),
+    );
+    expect(ControlProjectRegisterResponse.safeParse(project).success).toBe(false);
   });
 });
 

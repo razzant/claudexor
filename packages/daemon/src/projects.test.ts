@@ -2,8 +2,9 @@ import { mkdtempSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
+import { SCHEMA_VERSION } from "@claudexor/schema";
 import { describe, expect, it, vi } from "vitest";
-import { ProjectStore } from "./projects.js";
+import { ProjectStore, projectNesting } from "./projects.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -32,7 +33,7 @@ function fixture() {
 describe("ProjectStore", () => {
   it("selects registry record types before copies while retaining mixed full history", () => {
     const f = fixture();
-    const project = f.store.register({
+    const { project } = f.store.register({
       root: f.firstRoot,
       idempotencyKey: "filter",
       clientId: "test",
@@ -56,25 +57,55 @@ describe("ProjectStore", () => {
     const f = fixture();
     expect(f.store.list()).toEqual([]);
     const input = { root: f.firstRoot, idempotencyKey: "register-1", clientId: "test" };
-    const project = f.store.register(input);
-    expect(f.store.register(input).id).toBe(project.id);
+    const { project } = f.store.register(input);
+    expect(f.store.register(input).project.id).toBe(project.id);
     expect(() => f.store.register({ ...input, root: f.secondRoot })).toThrow(/different request/);
     f.journal.close();
     const reloaded = new ProjectStore(
       new DurableJournal({ rootDir: f.journalRoot, partition: "global" }),
     );
     expect(reloaded.list()).toEqual([project]);
-    expect(reloaded.register(input).id).toBe(project.id);
+    expect(reloaded.register(input).project.id).toBe(project.id);
+  });
+
+  it("answers whether a registration created the project; a key replay repeats its first answer across restart", () => {
+    const f = fixture();
+    const first = { root: f.firstRoot, idempotencyKey: "created-1", clientId: "test" };
+    expect(f.store.register(first).created).toBe(true);
+    // The same key and request repeats the ORIGINAL answer, not "now it exists".
+    expect(f.store.register(first).created).toBe(true);
+    // A new key for an already-registered root (another spelling) finds it.
+    const second = {
+      root: `${f.base}/first/..//first`,
+      idempotencyKey: "created-2",
+      clientId: "test",
+    };
+    expect(f.store.register(second)).toMatchObject({
+      created: false,
+      project: { root: realpathSync(f.firstRoot) },
+    });
+    f.journal.close();
+    const reloaded = new ProjectStore(
+      new DurableJournal({ rootDir: f.journalRoot, partition: "global" }),
+    );
+    expect(reloaded.register(first).created).toBe(true);
+    expect(reloaded.register(second).created).toBe(false);
+    // Removal retires the key bindings: the root registers as a new project.
+    const { project } = reloaded.register(first);
+    reloaded.unregister(project.id);
+    const again = reloaded.register(first);
+    expect(again.created).toBe(true);
+    expect(again.project.id).not.toBe(project.id);
   });
 
   it("deduplicates canonical roots and relinks one stable project id", () => {
     const f = fixture();
-    const project = f.store.register({
+    const { project } = f.store.register({
       root: f.firstRoot,
       idempotencyKey: "register-1",
       clientId: "test",
     });
-    const same = f.store.register({
+    const { project: same } = f.store.register({
       root: `${f.base}/first/..//first`,
       idempotencyKey: "register-2",
       clientId: "test",
@@ -102,7 +133,11 @@ describe("ProjectStore", () => {
       ).toThrow(/inside the Claudexor runtime tree/);
       // relink is guarded too — the ok project lives OUTSIDE the owned tree.
       const okRoot = realpathSync(reapMk(join(tmpdir(), "claudexor-ok-")));
-      const ok = f.store.register({ root: okRoot, idempotencyKey: "ok", clientId: "test" });
+      const { project: ok } = f.store.register({
+        root: okRoot,
+        idempotencyKey: "ok",
+        clientId: "test",
+      });
       expect(() => f.store.relink(ok.id, ghostRoot)).toThrow(/inside the Claudexor runtime tree/);
     } finally {
       if (prev === undefined) delete process.env["CLAUDEXOR_CONFIG_DIR"];
@@ -115,10 +150,18 @@ describe("ProjectStore", () => {
     const outer = f.firstRoot;
     const inner = join(outer, "packages", "inner");
     mkdirSync(inner, { recursive: true });
-    const outerProj = f.store.register({ root: outer, idempotencyKey: "o", clientId: "t" });
+    const { project: outerProj } = f.store.register({
+      root: outer,
+      idempotencyKey: "o",
+      clientId: "t",
+    });
     // Registering the inner project SUCCEEDS (no refusal) and both sides
     // disclose the overlap.
-    const innerProj = f.store.register({ root: inner, idempotencyKey: "i", clientId: "t" });
+    const { project: innerProj } = f.store.register({
+      root: inner,
+      idempotencyKey: "i",
+      clientId: "t",
+    });
     expect(f.store.list()).toHaveLength(2);
     expect(f.store.nestingFor(innerProj.id)).toEqual([
       { relation: "inside", root: realpathSync(outer), projectId: outerProj.id },
@@ -127,14 +170,18 @@ describe("ProjectStore", () => {
       { relation: "contains", root: realpathSync(inner), projectId: innerProj.id },
     ]);
     // A disjoint project has no nesting.
-    const other = f.store.register({ root: f.secondRoot, idempotencyKey: "s", clientId: "t" });
+    const { project: other } = f.store.register({
+      root: f.secondRoot,
+      idempotencyKey: "s",
+      clientId: "t",
+    });
     expect(f.store.nestingFor(other.id)).toEqual([]);
   });
 
   it("unregisters a project and forgets its root + idempotency bindings, surviving restart (F2 cleanup)", () => {
     const f = fixture();
     const input = { root: f.firstRoot, idempotencyKey: "reg", clientId: "test" };
-    const project = f.store.register(input);
+    const { project } = f.store.register(input);
     expect(f.store.unregister(project.id)?.id).toBe(project.id);
     expect(f.store.list()).toEqual([]);
     // The root frees up and re-registration mints a fresh id (no dangling index).
@@ -145,5 +192,112 @@ describe("ProjectStore", () => {
     );
     expect(reloaded.list()).toEqual([]);
     expect(reloaded.unregister("prj-missing")).toBeUndefined();
+  });
+});
+
+/** A registry replayed from synthetic registrations (roots need not exist). */
+function syntheticRegistry(roots: readonly string[]) {
+  const journal = new DurableJournal({
+    rootDir: join(realpathSync(reapMk(join(tmpdir(), "claudexor-nesting-"))), "state"),
+    partition: "global",
+  });
+  const at = new Date(0).toISOString();
+  journal.appendBatch(
+    roots.map((root, index) => ({
+      type: "project.registered",
+      payload: {
+        project: {
+          schema_version: SCHEMA_VERSION,
+          id: `prj-${String(index).padStart(6, "0")}`,
+          root,
+          created_at: at,
+          updated_at: at,
+        },
+      },
+    })),
+  );
+  return { journal, store: new ProjectStore(journal) };
+}
+
+/** The pre-batch projection: one `nestingFor` scan per project. */
+function perProject(store: ProjectStore) {
+  return store.list().map((project) => ({ ...project, nesting: store.nestingFor(project.id) }));
+}
+
+/** 2035 roots: workspaces with nested packages and prefix-but-not-parent siblings. */
+function liveSizedRoots(): string[] {
+  const roots: string[] = [];
+  for (let user = 0; roots.length < 2035; user += 1) {
+    roots.push(`/Users/u${user}`);
+    for (let p = 0; p < 20 && roots.length < 2035; p += 1) {
+      roots.push(`/Users/u${user}/work/p${p}`);
+      if (roots.length < 2035) roots.push(`/Users/u${user}/work/p${p}x`);
+      if (p % 3 === 0 && roots.length < 2035) {
+        roots.push(`/Users/u${user}/work/p${p}/packages/core`);
+      }
+    }
+  }
+  return roots;
+}
+
+describe("whole-registry nesting (one pass)", () => {
+  it("equals per-project nestingFor on nested, sibling and prefix-but-not-parent roots", () => {
+    const { journal, store } = syntheticRegistry([
+      "/w/a/b/c",
+      "/w",
+      "/w/a",
+      "/w/ab", // a prefix of nothing: "/w/a" is not its parent
+      "/w/a b", // sorts between "/w/a" and "/w/a/b"
+      "/w/a/b",
+      "/w/a/bc",
+      "/w/a/..dots", // `relative` reads this name as "..", so nestingFor leaves it out
+      "/w/sibling-1",
+      "/w/sibling-2",
+      "/w/a/b/c/d/e/f",
+      "/w/é",
+      "/elsewhere/x",
+      "/",
+    ]);
+    const batch = store.listWithNesting();
+    expect(batch).toStrictEqual(perProject(store));
+    const nesting = (root: string) => batch.find((project) => project.root === root)?.nesting;
+    expect(nesting("/w/ab")?.map((n) => `${n.relation} ${n.root}`)).toEqual([
+      "inside /",
+      "inside /w",
+    ]);
+    expect(nesting("/w/a/bc")?.map((n) => n.root)).toEqual(["/", "/w", "/w/a"]);
+    expect(
+      nesting("/w/a")
+        ?.filter((n) => n.relation === "contains")
+        .map((n) => n.root),
+    ).toEqual(["/w/a/b", "/w/a/b/c", "/w/a/b/c/d/e/f", "/w/a/bc"]);
+    journal.close();
+  });
+
+  it("equals per-project nestingFor at 2035 roots while testing each root only against its ancestors", () => {
+    const roots = liveSizedRoots();
+    expect(roots).toHaveLength(2035);
+    const { journal, store } = syntheticRegistry(roots);
+    const nestingFor = vi.spyOn(store, "nestingFor");
+    const batch = store.listWithNesting();
+    expect(nestingFor).not.toHaveBeenCalled();
+    nestingFor.mockRestore();
+    expect(batch).toStrictEqual(perProject(store));
+    expect(batch.reduce((count, project) => count + project.nesting.length, 0)).toBeGreaterThan(
+      2035,
+    );
+    // Complexity: the containment predicate runs once per (root, registered
+    // ancestor) candidate, not once per pair of projects (2035² ≈ 4.1M).
+    let tests = 0;
+    const counted = projectNesting(store.list(), (child, parent) => {
+      tests += 1;
+      return child !== parent && child.startsWith(parent === "/" ? "/" : `${parent}/`);
+    });
+    expect(tests).toBeLessThan(4 * roots.length);
+    expect(tests).toBeGreaterThan(0);
+    expect([...counted.values()].flat().length).toBe(
+      batch.reduce((count, project) => count + project.nesting.length, 0),
+    );
+    journal.close();
   });
 });

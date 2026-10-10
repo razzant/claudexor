@@ -1,9 +1,19 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  codexRateLimitCursor,
   codexTranscriptModel,
   codexTranscriptRateLimits,
   codexTranscriptVendorFailure,
@@ -102,6 +112,83 @@ describe("codexTranscriptRateLimits (quota)", () => {
     expect(rl?.constraints[1]?.resets_at).toBe(new Date(1782387153 * 1000).toISOString());
     // Missing rollout -> null (fail-honest, no signal).
     expect(codexTranscriptRateLimits(home, "unknown-thread")).toBeNull();
+    rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe("codexTranscriptRateLimits reads the rollout incrementally", () => {
+  const threadId = "0199bbbb-cccc-dddd-eeee-ffff00001111";
+  const record = (primaryUsed: number) =>
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        rate_limits: { primary: { used_percent: primaryUsed, window_minutes: 300 } },
+      },
+    }) + "\n";
+  const other = (text: string) =>
+    JSON.stringify({ type: "event_msg", payload: { type: "agent_message", text } }) + "\n";
+  function rollout(): { home: string; file: string } {
+    const home = mkdtempSync(join(tmpdir(), "codex-incremental-"));
+    const day = join(home, "sessions", "2026", "10", "10");
+    mkdirSync(day, { recursive: true });
+    const file = join(day, `rollout-2026-10-10T00-00-00-${threadId}.jsonl`);
+    writeFileSync(file, "");
+    return { home, file };
+  }
+  const used = (quota: ReturnType<typeof codexTranscriptRateLimits>) =>
+    quota?.constraints[0]?.used_ratio ?? null;
+
+  it("answers like a whole-file read at every step of a growing rollout", () => {
+    const { home, file } = rollout();
+    const cursor = codexRateLimitCursor();
+    const steps: Array<[string, number | null]> = [
+      [other("hello"), null],
+      [record(10), 0.1],
+      [other("ж".repeat(40)), 0.1],
+      [record(20).slice(0, 30), 0.1], // torn: codex is mid-write
+      [record(20).slice(30), 0.2], // the same record completes
+      [record(35).trimEnd(), 0.35], // whole but not yet newline-terminated
+      ["\n" + other("after"), 0.35],
+    ];
+    for (const [bytes, expected] of steps) {
+      appendFileSync(file, bytes);
+      const incremental = codexTranscriptRateLimits(home, threadId, cursor);
+      expect(used(incremental)).toBe(expected);
+      expect(incremental).toEqual(codexTranscriptRateLimits(home, threadId));
+    }
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("reads only the bytes appended since the last call", () => {
+    const { home, file } = rollout();
+    const cursor = codexRateLimitCursor();
+    writeFileSync(file, record(10) + other("x"));
+    expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.1);
+    // Rewrite the consumed bytes in place (same size and file): a whole-file
+    // read no longer sees the record, the cursor never reads those bytes again.
+    const consumed = readFileSync(file, "utf8");
+    writeFileSync(file, " ".repeat(Buffer.byteLength(consumed)), { flag: "r+" });
+    appendFileSync(file, other("y"));
+    expect(codexTranscriptRateLimits(home, threadId)).toBeNull();
+    expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.1);
+    appendFileSync(file, record(55));
+    expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.55);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("starts over on a replaced or truncated rollout, and for another thread", () => {
+    const { home, file } = rollout();
+    const cursor = codexRateLimitCursor();
+    writeFileSync(file, record(40) + record(41));
+    expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.41);
+    const replacement = `${file}.next`;
+    writeFileSync(replacement, other("fresh") + record(5));
+    renameSync(replacement, file);
+    expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.05);
+    writeFileSync(file, record(7)); // truncated below the consumed offset
+    expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.07);
+    expect(codexTranscriptRateLimits(home, "other-thread", cursor)).toBeNull();
     rmSync(home, { recursive: true, force: true });
   });
 });

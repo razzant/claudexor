@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   commandProjection,
+  DaemonServer,
   memoryFacts,
   interactionProjection,
   JournalManager,
@@ -201,10 +202,29 @@ describe("two-stage startup admission ordering (issue #165 D5)", () => {
 });
 
 describe("recovery transport proof (issue #165 D5 stage 3)", () => {
+  /** A REAL daemon socket serving `mode`; the proof must dial it itself. */
+  async function servingSocket(mode: "normal" | "recovery_only"): Promise<string> {
+    const socketPath = join(tempRoot("tp"), "d.sock");
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      servingMode: () => mode,
+      commands: { all: () => [] },
+      runner: async () => ({}),
+    });
+    await server.start();
+    stopServers.push(() => server.stop());
+    return socketPath;
+  }
+  const stopServers: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    for (const stop of stopServers.splice(0)) await stop();
+  });
+
   it("accepts a recovery-only socket health report without a control plane", async () => {
     await expect(
       proveRecoveryTransport({
-        socket: { health: async () => ({ ok: true, servingMode: "recovery_only" }) },
+        socketPath: await servingSocket("recovery_only"),
         identity: { version: "3.4.0", sha: "a".repeat(40) },
         token: "token",
         control: null,
@@ -215,12 +235,33 @@ describe("recovery transport proof (issue #165 D5 stage 3)", () => {
   it("refuses a socket that does not prove the recovery-only serving daemon", async () => {
     await expect(
       proveRecoveryTransport({
-        socket: { health: async () => ({ ok: true, servingMode: "normal" }) },
+        socketPath: await servingSocket("normal"),
         identity: { version: "3.4.0", sha: "a".repeat(40) },
         token: "token",
         control: null,
       }),
     ).rejects.toThrow(/transport proof failed/);
+  });
+
+  it("dials the socket itself: a missing or wrong-token socket fails the proof", async () => {
+    // Nothing else can stand in for the socket: an absent endpoint is a
+    // transport failure, and a live one still demands the daemon token.
+    await expect(
+      proveRecoveryTransport({
+        socketPath: join(tempRoot("tp-absent"), "d.sock"),
+        identity: { version: "3.4.0", sha: "a".repeat(40) },
+        token: "token",
+        control: null,
+      }),
+    ).rejects.toMatchObject({ code: "daemon_unavailable" });
+    await expect(
+      proveRecoveryTransport({
+        socketPath: await servingSocket("recovery_only"),
+        identity: { version: "3.4.0", sha: "a".repeat(40) },
+        token: "not-the-token",
+        control: null,
+      }),
+    ).rejects.toThrow(/unauthorized/);
   });
 
   it("proves exact identity through the REAL control handshake and refuses a mismatch", async () => {
@@ -247,11 +288,12 @@ describe("recovery transport proof (issue #165 D5 stage 3)", () => {
         cleanup.push(() => server.close());
       });
 
+    const socketPath = await servingSocket("recovery_only");
     const matching = await serve(identity);
     const matchingPort = (matching.address() as { port: number }).port;
     await expect(
       proveRecoveryTransport({
-        socket: { health: async () => ({ ok: true, servingMode: "recovery_only" }) },
+        socketPath,
         identity,
         token: "token",
         control: { host: "127.0.0.1", port: matchingPort },
@@ -262,7 +304,7 @@ describe("recovery transport proof (issue #165 D5 stage 3)", () => {
     const foreignPort = (foreign.address() as { port: number }).port;
     await expect(
       proveRecoveryTransport({
-        socket: { health: async () => ({ ok: true, servingMode: "recovery_only" }) },
+        socketPath,
         identity,
         token: "token",
         control: { host: "127.0.0.1", port: foreignPort },
@@ -289,7 +331,7 @@ describe("copied-journal startup admission integration", () => {
           root: projectRoot,
           idempotencyKey: `register-${index}`,
           clientId: "id-startup-test",
-        }).id,
+        }).project.id,
     );
     for (const projectId of projectIds) {
       const projectJournal = new DurableJournal({

@@ -1,6 +1,15 @@
 import type { RunEvent, RunEventType } from "@claudexor/schema";
 import { RunEvent as RunEventSchema } from "@claudexor/schema";
-import { existsSync, statSync, truncateSync, unlinkSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  statSync,
+  truncateSync,
+  unlinkSync,
+} from "node:fs";
 import { appendLine, nowIso, readTextSafe, redactSecrets } from "@claudexor/util";
 export { RETAINED_OUTPUT_PATH, retainedOutput, writeRetainedOutput } from "./retained-output.js";
 
@@ -123,6 +132,11 @@ export class EventLog {
   /** Whether this writer has durably committed its exactly-once terminal. */
   terminalCommitted(): boolean {
     return this.terminalCommittedFlag;
+  }
+
+  /** Highest seq this writer has appended: its in-memory counter, no file read. */
+  lastSeq(): number {
+    return this.nextSeq - 1;
   }
 
   /** Append a typed run event. Validates against the schema before writing. */
@@ -370,11 +384,69 @@ export function appendRunEvent(
 }
 
 /**
+ * The run's highest event `seq` for snapshot fencing. A live writer answers from
+ * its in-memory counter (the one seq owner; its file holds exactly the events up
+ * to that seq); any other log answers from its file through `lastSeqInFile`.
+ */
+export function lastRunEventSeq(path: string): number {
+  const live = activeEventLogs.get(path);
+  return live && !live.releaseRecoveredTerminalFence() ? live.lastSeq() : lastSeqInFile(path);
+}
+
+/** How much of a log's end `lastSeqInFile` reads before it scans the whole file. */
+const LAST_SEQ_TAIL_BYTES = 64 * 1024;
+
+/**
  * Highest `seq` already present in an events.jsonl file (0 for missing/empty).
  * Legacy lines without seq count by position so a continued log never reuses
  * a line number an SSE replayer may have already served as a fallback id.
+ *
+ * Seqs only grow within a log (its writer is the one owner and continues from
+ * the tail when reopened), so the last line carries the highest one. When the
+ * last 64 KiB hold that whole line and it carries a numeric seq, the tail
+ * answers; a legacy or torn last line (valued by its position), a last line
+ * longer than the window, or a read failure takes the full scan.
  */
 export function lastSeqInFile(path: string): number {
+  try {
+    return lastSeqFromTail(path) ?? lastSeqByScan(path);
+  } catch {
+    return lastSeqByScan(path);
+  }
+}
+
+/** The last non-blank line's numeric seq, or null when only a scan can tell. */
+function lastSeqFromTail(path: string): number | null {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - LAST_SEQ_TAIL_BYTES);
+    const window = Buffer.alloc(size - start);
+    let end = readSync(fd, window, 0, window.length, start);
+    for (;;) {
+      const newline = end > 0 ? window.lastIndexOf(0x0a, end - 1) : -1;
+      // Without a newline in the window the line may begin before it.
+      if (newline < 0 && start > 0) return null;
+      const line = window.toString("utf8", newline + 1, end).trim();
+      if (line) return finiteSeq(line);
+      if (newline < 0) return 0;
+      end = newline;
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function finiteSeq(line: string): number | null {
+  try {
+    const seq = (JSON.parse(line) as { seq?: unknown }).seq;
+    return typeof seq === "number" && Number.isFinite(seq) ? seq : null;
+  } catch {
+    return null;
+  }
+}
+
+function lastSeqByScan(path: string): number {
   const text = readTextSafe(path);
   if (text === null) return 0;
   let last = 0;

@@ -10,6 +10,7 @@ import { DaemonServer } from "./server.js";
 import { DaemonClient } from "./client.js";
 import { CommandStore } from "./command-store.js";
 import { recordAdmissionMemory } from "./memory-facts.js";
+import { loopFacts, startLoopFacts } from "./loop-facts.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 
 it("authenticates status, samples real memory without reading commands, and keeps handshake unchanged", async () => {
@@ -61,7 +62,22 @@ it("authenticates status, samples real memory without reading commands, and keep
       servingMode: "recovery_only",
       jobs: 0,
       memory: { atAdmission: null },
+      loop: null,
     });
+    // Loop facts are served from the last completed window, in recovery-only
+    // mode too, without reading history.
+    const stopLoopFacts = startLoopFacts(20);
+    try {
+      for (let i = 0; i < 250 && loopFacts() === null; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const measured = await read();
+      expect(measured.loop?.windowMs).toBeGreaterThan(0);
+      expect(measured.loop?.gc.count).toBeGreaterThanOrEqual(0);
+    } finally {
+      stopLoopFacts();
+    }
+    expect((await read()).loop).toBeNull();
     recordAdmissionMemory();
     mode = "normal";
     const status = await read();

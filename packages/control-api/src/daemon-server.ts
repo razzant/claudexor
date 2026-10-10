@@ -22,7 +22,7 @@ import {
   validateApplyGate,
   verifyAndDeliver,
 } from "@claudexor/delivery";
-import { lastSeqInFile } from "@claudexor/event-log";
+import { lastRunEventSeq } from "@claudexor/event-log";
 import { isVanishedErrno, safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
@@ -220,6 +220,7 @@ import {
 
 import { resolveControlProtocol, type ControlServingMode } from "./control-protocol.js";
 import { readControlRequestBody } from "./request-body.js";
+import { withControlHttpTimeouts } from "./http-server-options.js";
 import {
   assertNoInlineSecretValues,
   errorCode,
@@ -559,7 +560,7 @@ export class DaemonControlApiServer {
     const host = this.opts.host ?? "127.0.0.1";
     const port = this.opts.port ?? 0;
     await new Promise<void>((resolve, reject) => {
-      this.server = createServer((req, res) => this.onRequest(req, res));
+      this.server = withControlHttpTimeouts(createServer((req, res) => this.onRequest(req, res)));
       this.server.once("error", reject);
       this.server.listen(port, host, () => resolve());
     });
@@ -847,7 +848,7 @@ export class DaemonControlApiServer {
       if (!rec) return this.json(res, 404, { error: "no such run" });
       // Fence order: cursor FIRST, every projection (pending interactions
       // included) after it — see the detailFor doc comment.
-      const lastSeq = rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0;
+      const lastSeq = rec.runDir ? lastRunEventSeq(join(rec.runDir, "events.jsonl")) : 0;
       const parentRunId = rec.runId ?? rec.id;
       // Addressed child read: the daemon selects this parent's direct children
       // before it projects, so parent detail never pays for the params of every
@@ -2636,7 +2637,7 @@ function detailFor(
   // that cursor would never see it). A pre-projection cursor errs the other
   // way: an in-between event is both reflected AND replayed, which clients
   // absorb (event application is reconciled against the newer snapshot).
-  const lastSeq = cursor ?? (rec.runDir ? lastSeqInFile(join(rec.runDir, "events.jsonl")) : 0);
+  const lastSeq = cursor ?? (rec.runDir ? lastRunEventSeq(join(rec.runDir, "events.jsonl")) : 0);
   const failure = readFailure(rec);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   const operatorDecisionRaw = operator

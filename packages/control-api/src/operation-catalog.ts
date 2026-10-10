@@ -171,9 +171,14 @@ const operations: ControlOperationDescriptor[] = [
   }),
   j("GET", "/v2/projects", "read_only", null, "ControlProjectListResponse"),
   ...REMOTE_OPERATION_DRAFTS.map(descriptor),
-  j("POST", "/v2/projects", "mutating", "ControlProjectRegisterRequest", "ControlProject", {
-    idempotency: "key_required",
-  }),
+  j(
+    "POST",
+    "/v2/projects",
+    "mutating",
+    "ControlProjectRegisterRequest",
+    "ControlProjectRegisterResponse",
+    { idempotency: "key_required" },
+  ),
   j(
     "POST",
     "/v2/projects/:id/relink",

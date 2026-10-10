@@ -14,6 +14,7 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  DaemonClient,
   type DaemonServingMode,
   type JournalManagerPreparation,
   type ProjectPartitionsPreparation,
@@ -112,14 +113,15 @@ export async function bindRecoveryTransport(input: {
 }
 
 /** Stage 3 proof: prove self-health and exact identity through the REAL
- * transport while product admission is still closed. */
+ * transport while product admission is still closed. The proof dials the
+ * socket itself: the daemon's in-process client cannot stand in for it. */
 export async function proveRecoveryTransport(input: {
-  socket: { health(): Promise<unknown> };
+  socketPath: string;
   identity: { version: string; sha: string };
   token: string;
   control: { host: string; port: number } | null;
 }): Promise<void> {
-  const health = (await input.socket.health()) as {
+  const health = (await new DaemonClient(input.socketPath, input.token).health()) as {
     ok?: unknown;
     servingMode?: unknown;
   } | null;

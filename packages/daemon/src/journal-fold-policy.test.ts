@@ -113,8 +113,16 @@ function buildFixture() {
     });
 
   // Registry: one kept project, one relinked then unregistered.
-  const p1 = projects.register({ root: projectRoots[0]!, idempotencyKey: "reg-1", clientId: "t" });
-  const p2 = projects.register({ root: projectRoots[1]!, idempotencyKey: "reg-2", clientId: "t" });
+  const { project: p1 } = projects.register({
+    root: projectRoots[0]!,
+    idempotencyKey: "reg-1",
+    clientId: "t",
+  });
+  const { project: p2 } = projects.register({
+    root: projectRoots[1]!,
+    idempotencyKey: "reg-2",
+    clientId: "t",
+  });
   projects.relink(p2.id, projectRoots[2]!);
   projects.unregister(p2.id);
 

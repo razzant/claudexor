@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { loopFacts } from "@claudexor/daemon";
 import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -58,7 +59,11 @@ describe("armDaemonLifecycle", () => {
       // survive every snapshot interval AND the shutdown finalizer.
       vi.advanceTimersByTime(10_000);
       expect(readFileSync(pidsPath, "utf8")).toBe(previousLife);
-      lifecycle.finalize();
+      // The armed lifecycle measures loop windows from the start, and its
+      // finalizer stops them.
+      expect(loopFacts()).not.toBeNull();
+      await lifecycle.finalize();
+      expect(loopFacts()).toBeNull();
       expect(readFileSync(pidsPath, "utf8")).toBe(previousLife);
       // The later NORMAL start's crash-GC consumes the reap list.
       await runStartupCrashGc({
@@ -94,7 +99,7 @@ describe("armDaemonLifecycle", () => {
     signals.emit("SIGTERM");
     await new Promise<void>((resolve) => setImmediate(resolve));
     lifecycle.beginPidSnapshots();
-    lifecycle.finalize();
+    await lifecycle.finalize();
 
     expect(records).toEqual(
       expect.arrayContaining([
@@ -137,11 +142,52 @@ describe("armDaemonLifecycle", () => {
     const log = readFileSync(join(root, "daemon.log"), "utf8");
     expect(log).toContain("SIGTERM received; stopping daemon");
     lifecycle.beginPidSnapshots();
-    lifecycle.finalize();
-    lifecycle.finalize();
+    await lifecycle.finalize();
+    await lifecycle.finalize();
     expect(signals.listenerCount("SIGTERM")).toBe(0);
     expect(signals.listenerCount("SIGINT")).toBe(0);
     expect(snapshots).toBe(1);
+  });
+
+  it("snapshots children off the loop, and finalizes only after an in-flight write settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = reapMk(join(tmpdir(), "claudexor-lifecycle-"));
+      const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
+      const order: string[] = [];
+      let settle!: () => void;
+      const inflight = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      const lifecycle = armDaemonLifecycle({
+        daemonDir: root,
+        logPath: join(root, "daemon.log"),
+        signals,
+        snapshot: () => order.push("final"),
+        pidsWriter: {
+          refresh: () => {
+            order.push("refresh");
+            return inflight;
+          },
+          settled: () => inflight.then(() => void order.push("settled")),
+        },
+        beginShutdown: async () => {},
+      });
+      lifecycle.beginPidSnapshots();
+      vi.advanceTimersByTime(4_000);
+      expect(order).toEqual(["refresh", "refresh"]);
+      const finalized = lifecycle.finalize();
+      await Promise.resolve();
+      // The final synchronous snapshot waits for the periodic write in flight.
+      expect(order).toEqual(["refresh", "refresh"]);
+      settle();
+      await finalized;
+      expect(order).toEqual(["refresh", "refresh", "settled", "final"]);
+      vi.advanceTimersByTime(4_000);
+      expect(order).toHaveLength(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not let diagnostic log or snapshot failures suppress shutdown", async () => {
@@ -164,6 +210,6 @@ describe("armDaemonLifecycle", () => {
     signals.emit("SIGTERM");
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(entered).toBe(true);
-    expect(() => lifecycle.finalize()).not.toThrow();
+    await expect(lifecycle.finalize()).resolves.toBeUndefined();
   });
 });

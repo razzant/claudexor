@@ -8,8 +8,9 @@
  */
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { startLoopFacts } from "@claudexor/daemon";
 import { safeProblemMessage } from "@claudexor/util";
-import { reapRecordedOrphans, writePidsSnapshot } from "./orphan-reaper.js";
+import { PidsSnapshotWriter, reapRecordedOrphans, writePidsSnapshot } from "./orphan-reaper.js";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
 import type {
   DaemonStartupDiagnosticRecord,
@@ -25,7 +26,10 @@ interface LifecycleDeps {
   /** Enter the shutdown state machine (DaemonRuntimeShutdown.beginShutdown). */
   beginShutdown: (reason: string) => Promise<void>;
   signals?: Pick<NodeJS.Process, "on" | "off">;
+  /** The final, synchronous snapshot written by the finalizer. */
   snapshot?: (path: string) => void;
+  /** The periodic, change-only asynchronous snapshots. */
+  pidsWriter?: Pick<PidsSnapshotWriter, "refresh" | "settled">;
 }
 
 export const logLine = (path: string, message: string): void => {
@@ -83,8 +87,11 @@ export async function runStartupCrashGc(
 
 /**
  * Post-start: periodic live-children snapshots (the reap list a crash leaves
- * behind) and SIGTERM/SIGINT -> the shutdown state machine (abort children,
- * persist, close, bounded escalation). Returns the finalizer for main()'s tail.
+ * behind; written off the event loop and only when the children changed),
+ * windowed event-loop facts for daemon status, and SIGTERM/SIGINT -> the
+ * shutdown state machine (abort children, persist, close, bounded escalation).
+ * Returns the finalizer for main()'s tail; it awaits any in-flight periodic
+ * write before the final snapshot, so the final snapshot is the last word.
  *
  * The snapshot timer is NOT armed here: with zero live children a snapshot
  * DELETES pids.json, and until stage-4 crash-GC has consumed the previous
@@ -95,11 +102,12 @@ export async function runStartupCrashGc(
  */
 export function armDaemonLifecycle(deps: LifecycleDeps): {
   beginPidSnapshots: () => void;
-  finalize: () => void;
+  finalize: () => Promise<void>;
 } {
   const pidsPath = join(deps.daemonDir, "pids.json");
   const signals = deps.signals ?? process;
   const snapshot = deps.snapshot ?? writePidsSnapshot;
+  const pidsWriter = deps.pidsWriter ?? new PidsSnapshotWriter(pidsPath);
   const writeSnapshot = (): void => {
     try {
       snapshot(pidsPath);
@@ -132,14 +140,15 @@ export function armDaemonLifecycle(deps: LifecycleDeps): {
   const onSigint = () => onShutdownSignal("SIGINT");
   signals.on("SIGTERM", onSigterm);
   signals.on("SIGINT", onSigint);
+  const stopLoopFacts = startLoopFacts();
 
   return {
     beginPidSnapshots: () => {
       if (pidsTimer || finalized) return;
-      pidsTimer = setInterval(writeSnapshot, 2_000);
+      pidsTimer = setInterval(() => void pidsWriter.refresh(), 2_000);
       pidsTimer.unref?.();
     },
-    finalize: () => {
+    finalize: async () => {
       if (finalized) return;
       finalized = true;
       const snapshotsWereArmed = pidsTimer !== null;
@@ -147,11 +156,14 @@ export function armDaemonLifecycle(deps: LifecycleDeps): {
       pidsTimer = null;
       signals.off("SIGTERM", onSigterm);
       signals.off("SIGINT", onSigint);
+      stopLoopFacts();
       // Graceful stop aborted all children; one final snapshot records any
       // that survived the grace window (SIGKILL escalation may be in flight).
       // Without armed snapshots there were no children to record, and the
       // previous life's pids.json must stay byte-untouched (C2).
-      if (snapshotsWereArmed) writeSnapshot();
+      if (!snapshotsWereArmed) return;
+      await pidsWriter.settled();
+      writeSnapshot();
     },
   };
 }

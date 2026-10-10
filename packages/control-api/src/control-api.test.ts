@@ -2033,11 +2033,14 @@ describe("DaemonControlApiServer", () => {
       updated_at: now,
     };
     let registration: unknown;
+    let registrations = 0;
     const services: DaemonControlApiOptions["services"] = {
       listProjects: async () => ({ projects: [project] }),
       registerProject: async (input) => {
         registration = input;
-        return project;
+        registrations += 1;
+        // The producer's created fact: the first root registration created it.
+        return registrations === 3 ? project : { ...project, created: registrations === 1 };
       },
       relinkProject: async (id, root) => ({ ...project, id, root, updated_at: now }),
     };
@@ -2062,8 +2065,26 @@ describe("DaemonControlApiServer", () => {
           body: JSON.stringify({ root: firstRoot }),
         });
         expect(registered.status).toBe(200);
-        expect(await registered.json()).toMatchObject({ id: "prj-1", root: firstRoot });
+        expect(await registered.json()).toMatchObject({
+          id: "prj-1",
+          root: firstRoot,
+          created: true,
+        });
         expect(registration).toMatchObject({ root: firstRoot, clientId: "control-api" });
+        const existing = await apiFetch(`${base}/projects`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ root: firstRoot }),
+        });
+        expect(await existing.json()).toMatchObject({ id: "prj-1", created: false });
+        // A producer that omits the fact is a contract failure, never a default.
+        const unstated = await apiFetch(`${base}/projects`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ root: firstRoot }),
+        });
+        expect(unstated.status).toBe(500);
+        expect(await unstated.json()).toMatchObject({ code: "invalid_service_response" });
 
         const listed = await apiFetch(`${base}/projects`, {
           headers: { authorization: `Bearer ${token}` },
@@ -10120,6 +10141,7 @@ describe("DaemonControlApiServer", () => {
           root,
           created_at: now,
           updated_at: now,
+          created: true,
         };
       },
     };

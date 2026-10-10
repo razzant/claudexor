@@ -3,6 +3,7 @@ import {
   ControlProject,
   ControlProjectListResponse,
   ControlProjectRegisterRequest,
+  ControlProjectRegisterResponse,
   ControlProjectRelinkRequest,
   ControlProjectRemoveReceipt,
   ControlDirectoryListing,
@@ -105,7 +106,14 @@ export async function handleProjectRoute(
     const project = await routeValue(ctx, res, 500, () => service(input.value));
     if (!project.ok) return true;
     return serviceResponse(ctx, res, "registerProject", () =>
-      ctx.json(res, 200, projectWire(project.value)),
+      ctx.json(
+        res,
+        200,
+        ControlProjectRegisterResponse.parse({
+          ...projectWire(project.value),
+          created: (project.value as Record<string, unknown>)["created"],
+        }),
+      ),
     );
   }
 

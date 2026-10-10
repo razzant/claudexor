@@ -1,3 +1,4 @@
+import { cachedLoad } from "./config-cache.js";
 import { ConfigParseError } from "./config-error.js";
 import { concurrencyEnv, omitImplicitConcurrency } from "./concurrency.js";
 import { readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -304,6 +305,22 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   const trust = parseStrict(TrustConfig, trustRaw ?? {}, trustPath);
 
   return ResolvedConfigSchema.parse({ project, trust, global, sources });
+}
+
+/**
+ * `loadConfig` for per-request readers: parses again only when a source's
+ * identity or a CLAUDEXOR_* value changed (see `cachedLoad`).
+ */
+export function loadConfigCached(
+  repoRoot: string,
+  load: (repoRoot: string) => ResolvedConfig = loadConfig,
+): ResolvedConfig {
+  const paths = [
+    globalConfigPath(),
+    join(repoRoot, ".claudexor", "config.yaml"),
+    trustConfigPath(repoRoot),
+  ];
+  return cachedLoad(repoRoot, paths, () => load(repoRoot));
 }
 
 function positiveIntEnv(name: string): number | null {

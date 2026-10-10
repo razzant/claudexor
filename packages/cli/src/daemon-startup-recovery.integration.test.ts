@@ -112,7 +112,7 @@ function seedCopiedRoot(): {
         root: projectRoot,
         idempotencyKey: `register-${index}`,
         clientId: "startup-test",
-      }).id,
+      }).project.id,
   );
   for (const projectId of projectIds) {
     const projectJournal = new DurableJournal({

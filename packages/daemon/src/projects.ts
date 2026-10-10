@@ -1,7 +1,12 @@
 import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, relative } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { DurableJournal } from "@claudexor/journal";
-import { Project as ProjectSchema, SCHEMA_VERSION, type Project } from "@claudexor/schema";
+import {
+  Project as ProjectSchema,
+  SCHEMA_VERSION,
+  type Project,
+  type ProjectNesting,
+} from "@claudexor/schema";
 import { hashJson, isClaudexorOwnedRuntimePath, newId, nowIso } from "@claudexor/util";
 
 interface RegistrationBinding {
@@ -15,6 +20,14 @@ interface ProjectMutation {
   registration?: RegistrationBinding;
 }
 
+/** A registration's answer: the project, and whether THIS registration created
+ * it. Derived from journal order on replay, so a key replay after a restart
+ * still repeats its original answer. */
+export interface ProjectRegistration {
+  project: Project;
+  created: boolean;
+}
+
 const REGISTERED = "project.registered";
 const RELINKED = "project.relinked";
 const UNREGISTERED = "project.unregistered";
@@ -25,7 +38,7 @@ export class ProjectStore {
   private readonly projectIdByRoot = new Map<string, string>();
   private readonly registrationByKey = new Map<
     string,
-    { requestDigest: string; projectId: string }
+    { requestDigest: string; projectId: string; created: boolean }
   >();
 
   constructor(private readonly journal: DurableJournal) {
@@ -49,13 +62,10 @@ export class ProjectStore {
    * root overlaps `id`'s root — `inside` when `id` lives under it, `contains`
    * when it lives under `id`. Pure projection over current roots (recomputed as
    * the registry changes), never a refusal — legit monorepos nest. */
-  nestingFor(
-    id: string,
-  ): Array<{ relation: "inside" | "contains"; root: string; projectId: string }> {
+  nestingFor(id: string): ProjectNesting[] {
     const self = this.projects.get(id);
     if (!self) return [];
-    const relations: Array<{ relation: "inside" | "contains"; root: string; projectId: string }> =
-      [];
+    const relations: ProjectNesting[] = [];
     for (const other of this.projects.values()) {
       if (other.id === id) continue;
       if (pathStrictlyInside(self.root, other.root))
@@ -66,7 +76,14 @@ export class ProjectStore {
     return relations.sort((a, b) => a.root.localeCompare(b.root));
   }
 
-  register(input: { root: string; idempotencyKey: string; clientId: string }): Project {
+  /** The whole registry, `list()` order, each project with the relations
+   * `nestingFor` would report, computed in one pass (`projectNesting`). */
+  listWithNesting(): Array<Project & { nesting: ProjectNesting[] }> {
+    const nesting = projectNesting([...this.projects.values()]);
+    return this.list().map((project) => ({ ...project, nesting: nesting.get(project.id) ?? [] }));
+  }
+
+  register(input: { root: string; idempotencyKey: string; clientId: string }): ProjectRegistration {
     validateKey(input.idempotencyKey);
     const root = canonicalRoot(input.root);
     assertNotClaudexorOwned(root);
@@ -82,7 +99,7 @@ export class ProjectStore {
       if (prior.requestDigest !== requestDigest) throw conflict();
       const project = this.projects.get(prior.projectId);
       if (!project) throw new Error("project registration points to a missing project");
-      return project;
+      return { project, created: prior.created };
     }
     const existingId = this.projectIdByRoot.get(root);
     const existing = existingId ? this.projects.get(existingId) : undefined;
@@ -100,7 +117,7 @@ export class ProjectStore {
       project,
       registration: { keyDigest, requestDigest, projectId: project.id },
     });
-    return project;
+    return { project, created: !existing };
   }
 
   relink(id: string, rootInput: string): Project {
@@ -190,7 +207,10 @@ export class ProjectStore {
       if (prior && (prior.requestDigest !== requestDigest || prior.projectId !== projectId)) {
         throw new Error("conflicting project registration history");
       }
-      this.registrationByKey.set(keyDigest, { requestDigest, projectId });
+      // The first binding of a key decides its answer: it created the project
+      // exactly when no project with that id existed before this record.
+      if (!prior)
+        this.registrationByKey.set(keyDigest, { requestDigest, projectId, created: !previous });
     }
   }
 }
@@ -239,6 +259,50 @@ function assertNotClaudexorOwned(root: string): void {
 function pathStrictlyInside(child: string, parent: string): boolean {
   const rel = relative(parent, child);
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Every project's nesting relations in one pass. A root can only lie inside
+ * its own ancestors, so each root looks up just its ancestor chain in an index
+ * of resolved roots (the same normalization `relative` applies, case-folded
+ * where the platform's paths are) instead of testing every other project:
+ * O(projects × path depth) predicate tests plus sorting each project's relations
+ * (Σ Kᵢ log Kᵢ); only a deep chain of nested roots makes the OUTPUT itself quadratic.
+ * Each candidate pair is still decided by `pathStrictlyInside` (`inside`), and
+ * ties keep the iteration order, so the answer equals per-project `nestingFor`.
+ */
+export function projectNesting(
+  projects: readonly Project[],
+  inside: (child: string, parent: string) => boolean = pathStrictlyInside,
+): Map<string, ProjectNesting[]> {
+  const key = (root: string) =>
+    process.platform === "win32" ? resolve(root).toLowerCase() : resolve(root);
+  const order = new Map(projects.map((project, index) => [project.id, index]));
+  const byRoot = new Map<string, Project[]>();
+  for (const project of projects) {
+    const owners = byRoot.get(key(project.root));
+    if (owners) owners.push(project);
+    else byRoot.set(key(project.root), [project]);
+  }
+  const relations = new Map(projects.map((project) => [project.id, [] as ProjectNesting[]]));
+  const add = (to: Project, relation: ProjectNesting["relation"], other: Project) =>
+    relations.get(to.id)!.push({ relation, root: other.root, projectId: other.id });
+  for (const child of projects) {
+    let dir = resolve(child.root);
+    for (let parent = dirname(dir); parent !== dir; dir = parent, parent = dirname(dir)) {
+      for (const owner of byRoot.get(key(parent)) ?? []) {
+        if (owner.id === child.id || !inside(child.root, owner.root)) continue;
+        add(child, "inside", owner);
+        add(owner, "contains", child);
+      }
+    }
+  }
+  for (const list of relations.values()) {
+    list.sort(
+      (a, b) => a.root.localeCompare(b.root) || order.get(a.projectId)! - order.get(b.projectId)!,
+    );
+  }
+  return relations;
 }
 
 function parseMutation(value: unknown): ProjectMutation {
