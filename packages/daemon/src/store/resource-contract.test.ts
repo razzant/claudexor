@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResourceStorePort } from "../store-contracts.js";
-import { ResourceStore as FrozenResourceStore } from "./test-support/legacy/daemon/resource-store.js";
+import { ResourceStore as FrozenResourceStore } from "./test-support/fixtures/legacy/daemon/resource-store.js";
 import {
   chunks,
   resourceFixture,
@@ -29,6 +29,14 @@ vi.mock("node:fs", async (original) => {
 
 const ids = vi.hoisted(() => ({ counters: new Map<string, number>() }));
 vi.mock("@claudexor/util", async (original) => ({
+  ...(await original<object>()),
+  newId: (prefix: string) => {
+    const count = (ids.counters.get(prefix) ?? 0) + 1;
+    ids.counters.set(prefix, count);
+    return `${prefix}_fixture_${count}`;
+  },
+}));
+vi.mock("./test-support/fixtures/legacy/util/index.js", async (original) => ({
   ...(await original<object>()),
   newId: (prefix: string) => {
     const count = (ids.counters.get(prefix) ?? 0) + 1;
