@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { prepareAppendBatch } from "./append-batch.js";
+import { prepareAppendBatch } from "../test-support/fixtures/legacy/journal/append-batch.js";
 import {
   COMPACTED_SNAPSHOT,
   ZERO_HASH,

@@ -8,7 +8,7 @@ import {
   ControlJournalValidation,
   type ControlJournalEvent,
 } from "@claudexor/schema";
-import type { JournalRecoveryState } from "@claudexor/journal";
+import type { JournalRecoveryState } from "./errors.js";
 import { ensureCanonicalPrivateDirectory, fsyncDirectory } from "@claudexor/util";
 import {
   cloneRecovery,

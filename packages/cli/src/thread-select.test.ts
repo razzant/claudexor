@@ -2,8 +2,8 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ThreadStore } from "@claudexor/daemon";
-import { DurableJournal } from "@claudexor/journal";
+import { ThreadStore } from "../../daemon/src/store/test-support/fixtures/legacy/daemon/threads.js";
+import { DurableJournal } from "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js";
 import { ControlThread } from "@claudexor/schema";
 import { pickResumableThread } from "./thread-select.js";
 

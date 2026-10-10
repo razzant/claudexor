@@ -34,7 +34,7 @@ import {
   configDirLoginHarnessList,
   isConfigDirLoginHarness,
 } from "./config-dir-login-harnesses.js";
-import { ACTIVE_SETUP_STATES } from "./setup-job-store.js";
+import { ACTIVE_SETUP_STATES } from "./setup-job-projection.js";
 import type { SetupLoginRunnerState } from "./setup-login-protocol.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();

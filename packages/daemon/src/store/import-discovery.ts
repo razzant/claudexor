@@ -1,11 +1,7 @@
 import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import {
-  PREFIX_BYTES,
-  decodeFrameBody,
-  journalPartitionDirectory,
-  readFramePrefix,
-} from "@claudexor/journal";
+import { PREFIX_BYTES, decodeFrameBody, readFramePrefix } from "./legacy-journal/frame-codec.js";
+import { journalPartitionDirectory } from "./legacy-journal/journal-partition.js";
 import { importError } from "./import-context.js";
 import type { ImportPartitionSource } from "./import-source.js";
 

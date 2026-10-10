@@ -1,9 +1,14 @@
+/** Historical replay/file contract against the sealed legacy reference.
+ * SQL serving behavior is covered by store/thread-contract.test.ts. */
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { describe, expect, it, vi } from "vitest";
-import { ThreadStore, type ThreadHeadPingSink } from "./threads.js";
+import {
+  ThreadStore,
+  type ThreadHeadPingSink,
+} from "./store/test-support/fixtures/legacy/daemon/threads.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 

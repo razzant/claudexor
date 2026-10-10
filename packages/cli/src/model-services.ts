@@ -346,9 +346,8 @@ export function createModelServices(deps: Dependencies) {
   };
 
   const operations = new ModelOperations({
-    ...(deps.resourceQueries
-      ? { commands: deps.commands, resourceQueries: deps.resourceQueries }
-      : { commands: deps.commands, resourceQueries: undefined }),
+    commands: deps.commands,
+    resourceQueries: deps.resourceQueries,
     resources: deps.resources,
     warn: deps.warn,
     enqueue: ({ request, ...options }) => deps.client.enqueue(request, options),

@@ -8,7 +8,7 @@ import {
 } from "./setup-job-persistence.js";
 import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import { JournalRecoveryRequiredError, type JournalRecoveryState } from "@claudexor/journal";
+import { JournalRecoveryRequiredError, type JournalRecoveryState } from "@claudexor/daemon";
 import {
   ControlSetupJob as ControlSetupJobSchema,
   ControlSetupJobEvent,
@@ -414,3 +414,24 @@ function ensurePrivateRealDirectory(path: string, label: string): void {
 function cloneJob(job: ControlSetupJob): ControlSetupJob {
   return ControlSetupJobSchema.parse(JSON.parse(JSON.stringify(job)));
 }
+
+/** Setup's operational interface, without a concrete journal or private maps. */
+export type SetupJobStorePort = Pick<
+  SetupJobProjection,
+  | "rootDir"
+  | "artifactsDir"
+  | "paths"
+  | "recoveryState"
+  | "validateProjection"
+  | "create"
+  | "resolveCreate"
+  | "bindCreate"
+  | "update"
+  | "resolveExtend"
+  | "status"
+  | "list"
+  | "some"
+  | "snapshot"
+  | "events"
+  | "appendLog"
+>;

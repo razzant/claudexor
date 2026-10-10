@@ -1,10 +1,12 @@
+/** Historical replay/file contract against the sealed legacy reference.
+ * SQL serving behavior is covered by store/model-resource-retention.test.ts. */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ControlUploadCreateRequest, type ModelPayloadRef } from "@claudexor/schema";
-import { ResourceStore } from "./resource-store.js";
+import { ResourceStore } from "./store/test-support/fixtures/legacy/daemon/resource-store.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs")>();
@@ -164,8 +166,8 @@ describe("model-purpose resources", () => {
     const ordinaryUpload = await upload(store, bytes, "shared-attachment", false);
     const ordinary = store.finalize(ordinaryUpload.uploadId, digest(bytes), "final-shared");
     const blob = join(root, "blobs", first.sha256.slice(7));
-    store.expireModel(first, "2026-01-31T00:00:00.000Z");
-    store.expireModel(first, "2026-01-31T00:00:00.000Z");
+    store.releaseModel(first);
+    store.releaseModel(first);
     expect(store.readModel(second)).toEqual(bytes);
     store.releaseModel(second);
     expect(fs.existsSync(blob)).toBe(true);

@@ -1,5 +1,6 @@
-import type { DurableJournal } from "@claudexor/journal";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { sqlFixture } from "./store/test-support/sql-fixture.js";
+import type { ProjectThreadPort } from "./store-contracts.js";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,15 +9,6 @@ import {
   handleThreadCreate,
   type ThreadCreateRouteCtx,
 } from "../../control-api/src/thread-create-route.js";
-import { commandProjection } from "./command-store.js";
-import { interactionProjection } from "./interactions.js";
-import { JournalManager } from "./journal-manager.js";
-import { operatorDecisionProjection } from "./operator-decisions.js";
-import { ProjectPartitions } from "./project-partitions.js";
-import { projectProjection } from "./projects.js";
-import { runEventProjection } from "./run-events.js";
-import { threadHeadPingProjection } from "./thread-head-ping.js";
-import { threadProjection } from "./threads.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -33,47 +25,36 @@ __afterAllReap(() => {
 
 const roots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  for (const sql of stores.splice(0).reverse()) await sql.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(requestMaintenance?: (journal: DurableJournal) => void) {
+const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
+async function fixture() {
   const root = realpathSync(reapMk(join(tmpdir(), "claudexor-project-partitions-")));
   roots.push(root);
-  const manager = new JournalManager(root, { requestMaintenance });
-  const commands = manager.registerProjection(commandProjection());
-  const interactions = manager.registerProjection(interactionProjection());
-  const decisions = manager.registerProjection(operatorDecisionProjection());
-  const runEvents = manager.registerProjection(runEventProjection());
-  const projects = manager.registerProjection(projectProjection());
-  const headPingSlot = manager.registerProjection(threadHeadPingProjection());
-  const headPing = (ping: { threadId: string; projectId: string | null }) =>
-    headPingSlot.current().ping(ping);
-  const threads = manager.registerProjection(threadProjection(headPing));
-  manager.start();
+  return fixtureAt(root);
+}
+async function fixtureAt(root: string) {
+  const sql = await sqlFixture(root);
+  stores.push(sql);
+  await sql.graph.recoverAfterStartup();
   return {
     root,
-    manager,
-    projects,
-    partitions: new ProjectPartitions(
-      root,
-      projects,
-      commands,
-      interactions,
-      decisions,
-      runEvents,
-      threads,
-      headPing,
-      requestMaintenance,
-    ),
+    sql,
+    graph: sql.graph,
+    projects: sql.graph.projects,
+    partitions: sql.graph.threads,
+    close: sql.close,
   };
 }
 
-describe("ProjectPartitions", () => {
+describe("SqlCommandRouter", () => {
   it.each(["canonical", "symlink"])(
     "replays accepted POST /v2/threads from its partition after the %s author path disappears",
     async (spelling) => {
-      const f = fixture();
+      const f = await fixture();
       const author = join(f.root, "author");
       const other = join(f.root, "other");
       const workspaceRoot = join(f.root, "copy");
@@ -90,9 +71,9 @@ describe("ProjectPartitions", () => {
         headers: { "idempotency-key": "accepted-create" },
       } as unknown as IncomingMessage;
       const res = {} as ServerResponse;
-      async function post(partitions: ProjectPartitions, request = body) {
+      async function post(partitions: ProjectThreadPort, request = body) {
         const createThread = vi.fn(async (input: unknown) =>
-          partitions.createThread(input as Parameters<ProjectPartitions["createThread"]>[0]),
+          partitions.createThread(input as Parameters<ProjectThreadPort["createThread"]>[0]),
         );
         const json = vi.fn();
         const requestError = vi.fn();
@@ -101,7 +82,7 @@ describe("ProjectPartitions", () => {
             createThread,
             findThreadCreation: async (input) =>
               partitions.findThreadCreation(
-                input as Parameters<ProjectPartitions["findThreadCreation"]>[0],
+                input as Parameters<ProjectThreadPort["findThreadCreation"]>[0],
               ),
           },
           readBody: async () => request,
@@ -136,57 +117,22 @@ describe("ProjectPartitions", () => {
       expect(replay.requestError).not.toHaveBeenCalled();
       expect(replay.createThread).not.toHaveBeenCalled();
       expect(replay.json).toHaveBeenCalledExactlyOnceWith(res, 200, accepted);
-      f.partitions.close();
-      f.manager.close();
+      await f.close();
 
-      const restarted = fixtureAt(f.root);
+      const restarted = await fixtureAt(f.root);
       try {
         const recovered = await post(restarted.partitions);
         expect(recovered.requestError).not.toHaveBeenCalled();
         expect(recovered.createThread).not.toHaveBeenCalled();
         expect(recovered.json).toHaveBeenCalledExactlyOnceWith(res, 200, accepted);
       } finally {
-        restarted.partitions.close();
-        restarted.manager.close();
+        await restarted.close();
       }
     },
   );
 
-  it("wires maintenance into new, prepared and reopened project managers", () => {
-    const request = vi.fn<(journal: DurableJournal) => void>();
-    const f = fixture(request);
-    const projectRoot = join(f.root, "project");
-    mkdirSync(projectRoot);
-    const { project } = f.partitions.registerProject({
-      root: projectRoot,
-      idempotencyKey: "new",
-      clientId: "test",
-    });
-    expect(request.mock.calls.map(([journal]) => journal.options.partition)).toEqual([
-      "global",
-      `project:${project.id}`,
-    ]);
-    const old = request.mock.calls[1]![0];
-    expect(old.options.deferCompaction).toBe(true);
-    f.partitions.close();
-    f.manager.close();
-    expect(() => old.state()).toThrow(/closed/);
-    const reopened = fixtureAt(f.root, request);
-    reopened.partitions.prepare();
-    const before = request.mock.calls.length;
-    reopened.partitions.activatePrepared();
-    expect(request).toHaveBeenCalledTimes(before);
-    reopened.partitions.recoverAfterStartup();
-    const next = request.mock.calls.at(-1)![0];
-    expect(next).not.toBe(old);
-    expect(next.options.partition).toBe(`project:${project.id}`);
-    expect(next.options.deferCompaction).toBe(true);
-    reopened.partitions.close();
-    reopened.manager.close();
-  });
-
-  it("persists idempotent delivery receipts and rejects key reuse for another request", () => {
-    const f = fixture();
+  it("persists idempotent delivery receipts and rejects key reuse for another request", async () => {
+    const f = await fixture();
     const input = {
       key: "delivery-key",
       client: "test",
@@ -205,22 +151,20 @@ describe("ProjectPartitions", () => {
     expect(() => f.partitions.beginDelivery({}, { ...input, request: { runId: "run-2" } })).toThrow(
       /different request/,
     );
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
 
-    const restarted = fixtureAt(f.root);
+    const restarted = await fixtureAt(f.root);
     expect(restarted.partitions.beginDelivery({}, input)).toMatchObject({
       id: first.id,
       state: "succeeded",
       result: { applied: true, receipt: "receipt-1" },
       reused: true,
     });
-    restarted.partitions.close();
-    restarted.manager.close();
+    await restarted.close();
   });
 
-  it("redacts delivery failures before the command journal accepts them (INV-062)", () => {
-    const f = fixture();
+  it("redacts delivery failures before the command journal accepts them (INV-062)", async () => {
+    const f = await fixture();
     const token = `sk-${"a".repeat(48)}`;
     const delivery = f.partitions.beginDelivery(
       {},
@@ -237,17 +181,16 @@ describe("ProjectPartitions", () => {
       new Error(`provider rejected ${token} ${"diagnostic ".repeat(1_000)}`),
     );
 
-    const durable = JSON.stringify(f.manager.events());
+    const durable = JSON.stringify(f.graph.journalEvents("global"));
     const projected = f.partitions.findById(delivery.id)?.get(delivery.id)?.error;
     expect(durable).not.toContain(token);
     expect(projected).not.toContain(token);
     expect(projected?.length).toBeLessThanOrEqual(2_000);
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("routes registered project commands and threads through stable project partitions", () => {
-    const f = fixture();
+  it("routes registered project commands and threads through stable project partitions", async () => {
+    const f = await fixture();
     const projectA = join(f.root, "project-a");
     const projectB = join(f.root, "project-b");
     const projectB2 = join(f.root, "project-b-moved");
@@ -272,8 +215,12 @@ describe("ProjectPartitions", () => {
 
     const threadA = f.partitions.createThread({ repoRoot: projectA });
     const threadB = f.partitions.createThread({ repoRoot: projectB });
-    expect(f.partitions.forRequest({ threadId: threadA.id })).toBe(aCommands);
-    expect(f.partitions.forRequest({ threadId: threadB.id })).toBe(bCommands);
+    expect(f.partitions.forRequest({ threadId: threadA.id }).generation.pid).toBe(
+      aCommands.generation.pid,
+    );
+    expect(f.partitions.forRequest({ threadId: threadB.id }).generation.pid).toBe(
+      bCommands.generation.pid,
+    );
     const turnA = f.partitions.createTurn(threadA.id, "A", {
       idempotency: { key: "same", client: "test", request: { prompt: "A" } },
     });
@@ -320,10 +267,7 @@ describe("ProjectPartitions", () => {
       },
     );
     expect(
-      f.partitions
-        .journal(`project:${a.id}`)
-        .events()
-        .some((event) => event.type === "run.event"),
+      f.graph.journalEvents(`project:${a.id}`).some((event) => event.type === "run.event"),
     ).toBe(true);
     const decisionRequest = { runId: "run-a", action: "accept_risk" };
     const decisionIdempotency = {
@@ -375,18 +319,15 @@ describe("ProjectPartitions", () => {
 
     f.partitions.relinkProject(b.id, projectB2);
     expect(f.partitions.getThread(threadB.id)?.repo?.root).toBe(realpathSync(projectB2));
-    expect(f.projects.current().get(a.id)?.root).toBe(realpathSync(projectA));
-    f.partitions.close();
-    f.manager.close();
+    expect(f.projects.get(a.id)?.root).toBe(realpathSync(projectA));
+    await f.close();
 
-    const restarted = fixtureAt(f.root);
+    const restarted = await fixtureAt(f.root);
     expect(restarted.partitions.listThreads().map((thread) => thread.id)).toEqual(
       expect.arrayContaining([threadA.id, threadB.id]),
     );
     expect(restarted.partitions.getThread(threadB.id)?.repo?.root).toBe(realpathSync(projectB2));
-    expect(
-      restarted.partitions.interactionStores().flatMap((store) => store.pendingForRun("run-a")),
-    ).toEqual([]);
+    expect(restarted.graph.interactions.pendingForRun("run-a")).toEqual([]);
     expect(
       restarted.partitions.operatorDecision({ scope: { kind: "project", root: projectA } }, "run-a")
         ?.patchSha256,
@@ -399,20 +340,18 @@ describe("ProjectPartitions", () => {
       ),
     ).toEqual(recordedDecision.record);
     expect(
-      restarted.partitions
-        .journal(`project:${a.id}`)
-        .events()
+      restarted.graph
+        .journalEvents(`project:${a.id}`)
         .some(
           (event) =>
             event.type === "run.event" && (event.payload as { run_id?: string }).run_id === "run-a",
         ),
     ).toBe(true);
-    restarted.partitions.close();
-    restarted.manager.close();
+    await restarted.close();
   });
 
-  it("refuses an unregistered project instead of falling back to global", () => {
-    const f = fixture();
+  it("refuses an unregistered project instead of falling back to global", async () => {
+    const f = await fixture();
     const project = join(f.root, "unregistered");
     mkdirSync(project);
     expect(() => f.partitions.forRequest({ scope: { kind: "project", root: project } })).toThrow(
@@ -434,20 +373,19 @@ describe("ProjectPartitions", () => {
     });
     const thread = f.partitions.createThread({ repoRoot: project });
     expect(f.partitions.getThread(thread.id)?.repo?.root).toBe(realpathSync(project));
-    expect(f.projects.current().list()).toHaveLength(1);
-    f.partitions.close();
-    f.manager.close();
+    expect(f.projects.list()).toHaveLength(1);
+    await f.close();
   });
 
-  it("listThreadsResilient skips a project whose root vanished, disclosing a typed problem (F2)", () => {
-    const f = fixture();
+  it("listThreadsResilient skips a project whose root vanished, disclosing a typed problem (F2)", async () => {
+    const f = await fixture();
     const alive = join(f.root, "alive-project");
     const doomed = join(f.root, "doomed-project");
     mkdirSync(alive);
     mkdirSync(doomed);
     const aliveThread = f.partitions.createThread({ repoRoot: alive });
     f.partitions.createThread({ repoRoot: doomed });
-    const doomedId = f.projects.current().findByRoot(realpathSync(doomed))!.id;
+    const doomedId = f.projects.findByRoot(realpathSync(doomed))!.id;
     // The doomed project's root disappears from disk (swept ghost worktree).
     rmSync(doomed, { recursive: true, force: true });
     const { threads, problems } = f.partitions.listThreadsResilient();
@@ -461,12 +399,11 @@ describe("ProjectPartitions", () => {
         message: expect.stringContaining("project root no longer exists"),
       },
     ]);
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("quarantineGhostProjects retires owned-tree and permanently-missing roots, keeps healthy ones (F2 cleanup)", () => {
-    const f = fixture();
+  it("quarantineGhostProjects retires owned-tree and permanently-missing roots, keeps healthy ones (F2 cleanup)", async () => {
+    const f = await fixture();
     const prev = process.env["CLAUDEXOR_CONFIG_DIR"];
     // Survivor + missing live OUTSIDE f.root; the ghost lives UNDER f.root and
     // becomes "owned" only after we point CLAUDEXOR_CONFIG_DIR at f.root below.
@@ -503,38 +440,37 @@ describe("ProjectPartitions", () => {
       expect(byId.get(ghostProj.id)).toBe("root_inside_claudexor_runtime");
       expect(byId.get(missingProj.id)).toBe("root_permanently_missing");
       // The healthy survivor stays registered; the two ghosts are gone.
-      expect(f.projects.current().get(survivorProj.id)).toBeDefined();
-      expect(f.projects.current().get(ghostProj.id)).toBeUndefined();
-      expect(f.projects.current().get(missingProj.id)).toBeUndefined();
+      expect(f.projects.get(survivorProj.id)).toBeDefined();
+      expect(f.projects.get(ghostProj.id)).toBeUndefined();
+      expect(f.projects.get(missingProj.id)).toBeUndefined();
     } finally {
       if (prev === undefined) delete process.env["CLAUDEXOR_CONFIG_DIR"];
       else process.env["CLAUDEXOR_CONFIG_DIR"] = prev;
-      f.partitions.close();
-      f.manager.close();
+      await f.close();
     }
   });
 
-  it("pings thread.head.updated into the GLOBAL partition for project-thread mutations (W12)", () => {
-    const f = fixture();
+  it("pings thread.head.updated into the GLOBAL partition for project-thread mutations (W12)", async () => {
+    const f = await fixture();
     const project = join(f.root, "pinged-project");
     mkdirSync(project);
     const thread = f.partitions.createThread({ repoRoot: project });
-    const projectId = f.projects.current().findByRoot(realpathSync(project))!.id;
+    const projectId = f.projects.findByRoot(realpathSync(project))!.id;
 
     const globalPings = () =>
-      f.manager.events().filter((event) => event.type === "thread.head.updated");
-    // The mutation record stays in the OWNING project partition; the
-    // invalidation ping is the only thread trace on the global stream.
+      f.graph.journalEvents("global").filter((event) => event.type === "thread.head.updated");
+    // R5: entity bodies live in their owning rows; only the head ping is streamed.
     expect(
-      f.partitions
-        .journal(`project:${projectId}`)
-        .events()
+      f.graph
+        .journalEvents(`project:${projectId}`)
         .some((event) => event.type === "thread.entities_upserted"),
-    ).toBe(true);
+    ).toBe(false);
+    expect(f.sql.store.prepare("SELECT pid FROM thread WHERE id=?").get(thread.id)).toEqual({
+      pid: f.projects.partition(projectId)!.pid,
+    });
     expect(
-      f.partitions
-        .journal(`project:${projectId}`)
-        .events()
+      f.graph
+        .journalEvents(`project:${projectId}`)
         .some((event) => event.type === "thread.head.updated"),
     ).toBe(false);
     expect(globalPings().map((event) => event.payload)).toEqual([
@@ -556,12 +492,11 @@ describe("ProjectPartitions", () => {
       project_id: projectId,
       revision: 3,
     });
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("removes a project with no threads: unregisters it and archives its partition (QA-049)", () => {
-    const f = fixture();
+  it("removes a project with no threads: unregisters it and archives its partition (QA-049)", async () => {
+    const f = await fixture();
     const root = join(f.root, "removable");
     mkdirSync(root);
     const { project } = f.partitions.registerProject({
@@ -582,106 +517,17 @@ describe("ProjectPartitions", () => {
       activeRunCheck: "snapshot",
     });
     expect(typeof receipt.archivedPartitionPath).toBe("string");
-    expect(existsSync(receipt.archivedPartitionPath as string)).toBe(true);
+    expect(receipt.archivedPartitionPath).toMatch(/^partition:project:.*@/);
+    expect(
+      f.sql.store.prepare("SELECT status FROM partition WHERE name=?").get(`project:${project.id}`),
+    ).toEqual({ status: "archived" });
     // The durable registry no longer knows the project.
-    expect(f.projects.current().get(project.id)).toBeUndefined();
-    f.partitions.close();
-    f.manager.close();
+    expect(f.projects.get(project.id)).toBeUndefined();
+    await f.close();
   });
 
-  it("a failed partition archival leaves the registry entry intact (archive-before-unregister)", () => {
-    const f = fixture();
-    const root = join(f.root, "archive-fails");
-    mkdirSync(root);
-    const { project } = f.partitions.registerProject({
-      root,
-      idempotencyKey: "register-archive-fails",
-      clientId: "test",
-    });
-    // Materialize the partition so removeProject reaches the archival step.
-    f.partitions.forRequest({ scope: { kind: "project", root } });
-    // Inject an archival failure (a rename/fsync error). Archival runs BEFORE
-    // the registry unregister, so the throw must leave nothing half-removed.
-    const archiveSpy = vi
-      .spyOn(JournalManager.prototype, "archivePartition")
-      .mockImplementation(() => {
-        throw new Error("simulated archive rename failure");
-      });
-    try {
-      expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(/archive/);
-      // The durable registry STILL knows the project — no removed registration
-      // stranded against an unarchived partition.
-      expect(f.projects.current().get(project.id)?.id).toBe(project.id);
-      // And the partition is still routable.
-      expect(f.partitions.forRequest({ scope: { kind: "project", root } })).toBeDefined();
-    } finally {
-      archiveSpy.mockRestore();
-    }
-    f.partitions.close();
-    f.manager.close();
-  });
-
-  it("a failed unregister AFTER a successful archive rolls the archive back and surfaces the failure (Ф2)", () => {
-    const f = fixture();
-    const root = join(f.root, "unreg-fails");
-    mkdirSync(root);
-    const { project } = f.partitions.registerProject({
-      root,
-      idempotencyKey: "register-unreg-fails",
-      clientId: "test",
-    });
-    f.partitions.forRequest({ scope: { kind: "project", root } });
-    const registry = f.projects.current();
-    const spy = vi.spyOn(registry, "unregister").mockImplementation(() => {
-      throw new Error("simulated durable unregister failure");
-    });
-    try {
-      expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(/unregister failure/);
-      // Rollback restored consistency: the archive was moved back into the
-      // active tree (routable) and the project is still registered — not
-      // stranded archived-but-registered.
-      expect(registry.get(project.id)?.id).toBe(project.id);
-      expect(f.partitions.forRequest({ scope: { kind: "project", root } })).toBeDefined();
-    } finally {
-      spy.mockRestore();
-    }
-    f.partitions.close();
-    f.manager.close();
-  });
-
-  it("when the archive rollback ALSO fails, removeProject discloses the partial archived-but-registered state (Ф2)", () => {
-    const f = fixture();
-    const root = join(f.root, "rollback-fails");
-    mkdirSync(root);
-    const { project } = f.partitions.registerProject({
-      root,
-      idempotencyKey: "register-rollback-fails",
-      clientId: "test",
-    });
-    f.partitions.forRequest({ scope: { kind: "project", root } });
-    const registry = f.projects.current();
-    const unregSpy = vi.spyOn(registry, "unregister").mockImplementation(() => {
-      throw new Error("durable unregister failure");
-    });
-    const restoreSpy = vi
-      .spyOn(JournalManager.prototype, "restoreArchivedPartition")
-      .mockImplementation(() => {
-        throw new Error("rollback rename failure");
-      });
-    try {
-      expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(
-        /archived-but-registered|manual reconciliation/,
-      );
-    } finally {
-      unregSpy.mockRestore();
-      restoreSpy.mockRestore();
-    }
-    f.partitions.close();
-    f.manager.close();
-  });
-
-  it("lists the purged threads of every ready store for the retention pass", () => {
-    const f = fixture();
+  it("lists the purged threads of every ready store for the retention pass", async () => {
+    const f = await fixture();
     const root = join(f.root, "purge-project");
     mkdirSync(root);
     f.partitions.registerProject({ root, idempotencyKey: "register-purge", clientId: "test" });
@@ -699,12 +545,11 @@ describe("ProjectPartitions", () => {
         .map((thread) => thread.id)
         .sort(),
     ).toEqual([global.id, scoped.id].sort());
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("refuses to remove a project that still has a non-purged thread (QA-049)", () => {
-    const f = fixture();
+  it("refuses to remove a project that still has a non-purged thread (QA-049)", async () => {
+    const f = await fixture();
     const root = join(f.root, "referenced");
     mkdirSync(root);
     const { project } = f.partitions.registerProject({
@@ -716,12 +561,11 @@ describe("ProjectPartitions", () => {
     expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(/thread/);
     // Fence is closed: the project is still registered and its partition intact.
     expect(f.partitions.forRequest({ scope: { kind: "project", root } })).toBeDefined();
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("refuses to remove a project with a live/queued run referencing it (QA-049)", () => {
-    const f = fixture();
+  it("refuses to remove a project with a live/queued run referencing it (QA-049)", async () => {
+    const f = await fixture();
     const root = join(f.root, "busy");
     mkdirSync(root);
     const { project } = f.partitions.registerProject({
@@ -730,21 +574,19 @@ describe("ProjectPartitions", () => {
       clientId: "test",
     });
     expect(() => f.partitions.removeProject(project.id, new Set([root]))).toThrow(/live or queued/);
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("rejects removal of an unknown project id with a typed 404 (QA-049)", () => {
-    const f = fixture();
+  it("rejects removal of an unknown project id with a typed 404 (QA-049)", async () => {
+    const f = await fixture();
     expect(() => f.partitions.removeProject("prj-does-not-exist", new Set())).toThrow(
       /no such project/,
     );
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("serves an ephemeral project root from the global partition without registering it", () => {
-    const f = fixture();
+  it("serves an ephemeral project root from the global partition without registering it", async () => {
+    const f = await fixture();
     const root = join(f.root, "disposable-worktree");
     mkdirSync(root, { recursive: true });
 
@@ -754,7 +596,9 @@ describe("ProjectPartitions", () => {
     );
 
     const ephemeral = { scope: { kind: "project", root, ephemeral: true } };
-    expect(f.partitions.forRequest(ephemeral)).toBe(f.partitions.forRequest({}));
+    expect(f.partitions.forRequest(ephemeral).generation.pid).toBe(
+      f.partitions.forRequest({}).generation.pid,
+    );
     f.partitions.recordRunEvent(ephemeral, {
       seq: 1,
       ts: "2026-01-01T00:00:00.000Z",
@@ -765,15 +609,13 @@ describe("ProjectPartitions", () => {
     });
     // The whole point: nothing durable now names the disposable tree, so it is
     // not registry litter and never becomes a ghost-quarantine candidate.
-    expect(f.projects.current().list()).toEqual([]);
+    expect(f.projects.list()).toEqual([]);
     expect(f.partitions.quarantineGhostProjects()).toEqual([]);
-
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("creates a thread on an ephemeral root without registering it either", () => {
-    const f = fixture();
+  it("creates a thread on an ephemeral root without registering it either", async () => {
+    const f = await fixture();
     const root = join(f.root, "disposable-thread-tree");
     mkdirSync(root, { recursive: true });
 
@@ -781,39 +623,34 @@ describe("ProjectPartitions", () => {
 
     // Same promise the run route already keeps: nothing durable names the
     // disposable tree, so it is not registry litter or a ghost candidate.
-    expect(f.projects.current().list()).toEqual([]);
+    expect(f.projects.list()).toEqual([]);
     expect(f.partitions.quarantineGhostProjects()).toEqual([]);
     // And the thread is fully usable from the global no-project partition,
     // whose command authority its turns share.
     expect(f.partitions.getThread(thread.id)?.repo?.root).toBe(root);
     expect(f.partitions.listThreads().map((t) => t.id)).toContain(thread.id);
-    expect(f.partitions.forRequest({ threadId: thread.id })).toBe(f.partitions.forRequest({}));
-
-    f.partitions.close();
-    f.manager.close();
+    expect(f.partitions.forRequest({ threadId: thread.id }).generation.pid).toBe(
+      f.partitions.forRequest({}).generation.pid,
+    );
+    await f.close();
   });
 
-  it("still auto-registers a durable (non-ephemeral) thread root", () => {
-    const f = fixture();
+  it("still auto-registers a durable (non-ephemeral) thread root", async () => {
+    const f = await fixture();
     const root = join(f.root, "durable-project");
     mkdirSync(root, { recursive: true });
 
     const thread = f.partitions.createThread({ repoRoot: root });
 
-    expect(
-      f.projects
-        .current()
-        .list()
-        .map((p) => p.root),
-    ).toEqual([root]);
-    expect(f.partitions.forRequest({ threadId: thread.id })).not.toBe(f.partitions.forRequest({}));
-
-    f.partitions.close();
-    f.manager.close();
+    expect(f.projects.list().map((p) => p.root)).toEqual([root]);
+    expect(f.partitions.forRequest({ threadId: thread.id }).generation.pid).not.toBe(
+      f.partitions.forRequest({}).generation.pid,
+    );
+    await f.close();
   });
 
-  it("journals only lifecycle-significant run events and strips the run.created prompt (D1/D2)", () => {
-    const f = fixture();
+  it("journals only lifecycle-significant run events and strips the run.created prompt (D1/D2)", async () => {
+    const f = await fixture();
     const params = {};
     const prompt = "Summarize the release notes.";
     const base = { ts: "2026-01-01T00:00:00.000Z", run_id: "run-j", task_id: "task-j" };
@@ -832,25 +669,33 @@ describe("ProjectPartitions", () => {
     f.partitions.recordRunEvent(params, {
       ...base,
       seq: 3,
-      type: "run.completed",
-      payload: { lifecycle: "succeeded" },
+      type: "output.ready",
+      payload: { artifact: "final" },
     });
-    const journaled = f.manager
-      .events()
+    // SQL terminals have exactly one owner with command state and file obligation.
+    expect(() =>
+      f.partitions.recordRunEvent(params, {
+        ...base,
+        seq: 4,
+        type: "run.completed",
+        payload: { lifecycle: "succeeded" },
+      }),
+    ).toThrow("terminal events require the command terminal transaction");
+    const journaled = f.graph
+      .journalEvents("global")
       .filter((event) => event.type === "run.event")
       .map((event) => event.payload as { type: string; payload: Record<string, unknown> });
-    expect(journaled.map((event) => event.type)).toEqual(["run.created", "run.completed"]);
+    expect(journaled.map((event) => event.type)).toEqual(["run.created", "output.ready"]);
     expect(journaled[0]?.payload).toEqual({
       mode: "ask",
       prompt_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       prompt_bytes: Buffer.byteLength(prompt, "utf8"),
     });
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 
-  it("never fails the producer for a filtered event, even when no partition could take it", () => {
-    const f = fixture();
+  it("never fails the producer for a filtered event, even when no partition could take it", async () => {
+    const f = await fixture();
     const unregistered = { scope: { kind: "project", root: join(f.root, "nowhere") } };
     const delta = {
       ts: "2026-01-01T00:00:00.000Z",
@@ -865,32 +710,6 @@ describe("ProjectPartitions", () => {
     expect(() =>
       f.partitions.recordRunEvent(unregistered, { ...delta, type: "run.completed" }),
     ).toThrow(/project root does not exist|project is not registered/);
-    f.partitions.close();
-    f.manager.close();
+    await f.close();
   });
 });
-
-function fixtureAt(root: string, requestMaintenance?: (journal: DurableJournal) => void) {
-  const manager = new JournalManager(root, { requestMaintenance });
-  const commands = manager.registerProjection(commandProjection());
-  const interactions = manager.registerProjection(interactionProjection());
-  const decisions = manager.registerProjection(operatorDecisionProjection());
-  const runEvents = manager.registerProjection(runEventProjection());
-  const projects = manager.registerProjection(projectProjection());
-  const threads = manager.registerProjection(threadProjection());
-  manager.start();
-  return {
-    manager,
-    partitions: new ProjectPartitions(
-      root,
-      projects,
-      commands,
-      interactions,
-      decisions,
-      runEvents,
-      threads,
-      undefined,
-      requestMaintenance,
-    ),
-  };
-}

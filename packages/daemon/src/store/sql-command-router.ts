@@ -1,3 +1,4 @@
+import { isJournaledRunEvent } from "../journaled-run-events.js";
 import type { RunEvent, RunTelemetry } from "@claudexor/schema";
 import type { CommandBackend } from "../command-authority.js";
 import {
@@ -96,7 +97,11 @@ export class SqlCommandRouter
     return this.decisions(params).record(decision, input);
   }
   recordRunEvent(params: unknown, event: RunEvent): RunEvent {
-    return new SqlRunEventStore(this.ledger(this.generationForRequest(params))).record(event);
+    if (isJournaledRunEvent(event))
+      new SqlRunEventStore(this.ledger(this.generationForRequest(params))).record(event);
+    // The producer owns the original event for its file and live bus. A
+    // filtered event cannot fail merely because its old project is unavailable.
+    return event;
   }
   persistTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
     const owner = this.findById(jobId);

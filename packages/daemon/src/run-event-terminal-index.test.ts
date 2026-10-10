@@ -1,12 +1,14 @@
+/** Historical replay/file contract against the sealed legacy reference.
+ * SQL serving behavior is covered by store/terminal-contract.test.ts. */
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import type { RunEvent } from "@claudexor/schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CommandStore } from "./command-store.js";
-import { durableTerminalRunEvents } from "./run-event-terminal-index.js";
-import { RunEventStore } from "./run-events.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
+import { durableTerminalRunEvents } from "./store/test-support/fixtures/legacy/daemon/run-event-terminal-index.js";
+import { RunEventStore } from "./store/test-support/fixtures/legacy/daemon/run-events.js";
 
 const roots: string[] = [];
 const journals: DurableJournal[] = [];

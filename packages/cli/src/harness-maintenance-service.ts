@@ -10,7 +10,7 @@
  * Evidence (before/target/after/mutation) lives in the command record. The
  * proved `before` and the exact resolved target are written durably BEFORE
  * the first mutation; a restart leaves the command interrupted with that
- * evidence and never replays the install. A small in-memory index answers
+ * evidence and never replays the install. Addressed SQL summaries answer
  * per-harness reads without scanning history on every poll.
  */
 import { existsSync } from "node:fs";
@@ -20,10 +20,7 @@ import { spawnProcess } from "@claudexor/core";
 import {
   commandStoreForId,
   commandStoreForRequest,
-  commandStores,
-  type LegacyCommandAuthority,
   type CommandAuthority,
-  maintenanceCommandSummary,
   type MaintenanceCommandSummary,
   type DaemonClient,
   type JobRecord,
@@ -74,14 +71,10 @@ interface HarnessMaintenanceServices {
   now?: () => Date;
 }
 
-export type HarnessMaintenanceDependencies = HarnessMaintenanceServices &
-  (
-    | { commands: LegacyCommandAuthority; maintenanceQueries?: undefined }
-    | {
-        commands: CommandAuthority;
-        maintenanceQueries: { maintenanceForHarness(harness: string): MaintenanceCommandSummary[] };
-      }
-  );
+export type HarnessMaintenanceDependencies = HarnessMaintenanceServices & {
+  commands: CommandAuthority;
+  maintenanceQueries: { maintenanceForHarness(harness: string): MaintenanceCommandSummary[] };
+};
 
 function problem(code: string, message: string, retryable = false): ControlProblem {
   return ControlProblem.parse({ code, message: redactSecrets(message), retryable });
@@ -99,38 +92,9 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
   const inventoryGenerations = new Map<string, number>();
   const latestSeen = new Map<string, Pick<HarnessInspection, "available" | "availableProblem">>();
   const creating = new Set<string>();
-  let index: Map<string, string[]> | null = null;
-
-  const byHarness = (): Map<string, string[]> => {
-    if (index) return index;
-    index = new Map();
-    const records = (deps.maintenanceQueries ? [] : commandStores(deps.commands))
-      .flatMap((store) => store.records())
-      .filter((record) => isHarnessMaintenanceOperation(record.params))
-      .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
-    for (const record of records)
-      remember(record.id, (record.params as { harness: string }).harness);
-    return index;
-  };
-  const remember = (id: string, harness: string): void => {
-    const ids = index!.get(harness) ?? [];
-    if (!ids.includes(id)) index!.set(harness, [...ids, id]);
-  };
-  /** Newest first; ids pruned by ordinary retention drop out of the index. */
-  const operationsOf = (harness: string): MaintenanceCommandSummary[] => {
-    if (deps.maintenanceQueries) return deps.maintenanceQueries.maintenanceForHarness(harness);
-    const ids = byHarness().get(harness) ?? [];
-    const live = ids.flatMap((id) => commandStoreForId(deps.commands, id)?.get(id) ?? []);
-    if (live.length !== ids.length)
-      byHarness().set(
-        harness,
-        live.map((record) => record.id),
-      );
-    return live.reverse().flatMap((record) => {
-      const summary = maintenanceCommandSummary(record);
-      return summary ? [summary] : [];
-    });
-  };
+  /** Indexed retained maintenance summaries, newest first. */
+  const operationsOf = (harness: string): MaintenanceCommandSummary[] =>
+    deps.maintenanceQueries.maintenanceForHarness(harness);
   const evidenceOf = (record: JobRecord): Evidence | null => {
     const { lifecycle: _lifecycle, ...result } = (record.result ?? {}) as Record<string, unknown>;
     const parsed = HarnessMaintenanceEvidence.safeParse(result);
@@ -477,10 +441,6 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
           ...envelope,
           idempotencyRequest: request,
         });
-        if (!deps.maintenanceQueries) {
-          byHarness();
-          remember(id, harness);
-        }
         return detail(id);
       } finally {
         creating.delete(harness);
@@ -537,13 +497,4 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
       if (services.harnesses) services.harnesses = decorateHarnessList(services.harnesses);
     },
   };
-}
-
-/** The daemon's composition (claudexord.ts); readiness is bound lazily. */
-export function daemonHarnessMaintenance(
-  commands: LegacyCommandAuthority,
-  client: Pick<DaemonClient, "enqueue" | "cancel">,
-  readiness: () => Pick<AuthReadinessService, "invalidate">,
-) {
-  return createHarnessMaintenance({ commands, client, readiness });
 }

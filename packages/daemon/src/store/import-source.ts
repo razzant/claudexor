@@ -4,10 +4,10 @@ import { join } from "node:path";
 import {
   fingerprintPreparedJournal,
   inspectPreparedJournal,
-  readFrames,
-  type JournalRecord,
   type PreparedJournalInspection,
-} from "@claudexor/journal";
+} from "./legacy-journal/read-only-preparation.js";
+import { readFrames } from "./legacy-journal/frame-reader.js";
+import type { JournalRecord } from "./legacy-journal/frame-codec.js";
 import { hashJson } from "@claudexor/util";
 import { journalFoldPolicy } from "../journal-fold-policy.js";
 import { importError } from "./import-context.js";

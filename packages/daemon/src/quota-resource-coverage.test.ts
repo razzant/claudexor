@@ -1,8 +1,9 @@
+import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import {
   AccountResourceObservation,
   AccountResourceSnapshot,
@@ -11,7 +12,7 @@ import {
   type QuotaSnapshot,
 } from "@claudexor/schema";
 import { AccountResets } from "./account-resets.js";
-import { CommandStore } from "./command-store.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
 import { journalFoldPolicy } from "./journal-fold-policy.js";
 import { QuotaRegistry } from "./quota-registry.js";
 import { validatedRefreshBatches } from "./quota-refresh-batches.js";
@@ -135,7 +136,7 @@ describe("reset inventory coverage", () => {
     );
     const commands = new CommandStore(journal);
     const operations = new AccountResets({
-      commands: () => commands,
+      commands: () => legacyCommandFixture({ current: () => commands }).forRequest!({}),
       resolve: async () => ({
         harness: "claude",
         locator: "/fixture",

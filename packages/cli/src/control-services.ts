@@ -48,7 +48,7 @@ import {
   type CredentialMutationSubject,
 } from "./credential-status-invalidation.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import type { SetupJobStorePort } from "./setup-job-store.js";
+import type { SetupJobStorePort } from "./setup-job-projection.js";
 import { activeProfileLoginJob } from "./setup-job-support.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";

@@ -1,4 +1,4 @@
-import type { JournalRecord } from "@claudexor/journal";
+import type { JournalRecord } from "./legacy-journal/frame-codec.js";
 import { hashJson } from "@claudexor/util";
 import { parseMutation } from "../thread-store-support.js";
 import { sqlEventVerdict } from "./retention.js";

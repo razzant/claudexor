@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { JournalRecoveryRequiredError, type JournalRecoveryState } from "@claudexor/journal";
+import { JournalRecoveryRequiredError, type JournalRecoveryState } from "./errors.js";
 import { ControlJournalInspection, ControlJournalRecoveryState } from "@claudexor/schema";
 import { globalGeneration } from "./generations.js";
 import { partitionById, type PartitionGeneration } from "./partitions.js";

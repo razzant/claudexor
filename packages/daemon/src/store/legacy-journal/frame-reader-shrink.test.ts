@@ -11,10 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { prepareAppendBatch } from "./append-batch.js";
+import { prepareAppendBatch } from "../test-support/fixtures/legacy/journal/append-batch.js";
 import { ZERO_HASH } from "./frame-codec.js";
 import { readFrames } from "./frame-reader.js";
-import { DurableJournal, JournalAppendUncertainError } from "./index.js";
+import {
+  DurableJournal,
+  JournalAppendUncertainError,
+} from "../test-support/fixtures/legacy/journal/index.js";
 
 const hooks = vi.hoisted(() => ({ fd: -1, extraBytes: 0, captureWriter: false, failReads: false }));
 vi.mock("node:fs", async (original) => {

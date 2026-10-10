@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
 import type { ModelAdapter } from "@claudexor/core";
 import { loadRuntimeConcurrencyCaps } from "../../config/src/index.js";
 import {
@@ -16,11 +15,9 @@ import {
   isModelOperation,
   type ModelPayloadRef,
 } from "@claudexor/schema";
-import { CommandStore } from "./command-store.js";
 import { DaemonLocalClient } from "./daemon-local-client.js";
 import { DaemonServer, type DaemonOptions } from "./server.js";
 import { ModelOperations } from "./model-operations.js";
-import { ResourceStore } from "./resource-store.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 import { modelOperationControlServices } from "../../cli/src/model-operation-control.js";
 import { settingsSnapshot } from "../../cli/src/settings-service.js";
@@ -61,7 +58,7 @@ const answer = () =>
 /** In-process scheduler + real HTTP control boundary, no daemon process,
  * vendor CLI, account store, auth flow or live engine endpoint. */
 async function createFixture(
-  backend: "legacy" | "sql",
+  _backend: "sql",
   options: {
     caps?: Partial<RuntimeConcurrencyCaps>;
     maxConcurrent?: DaemonOptions["maxConcurrent"];
@@ -89,26 +86,17 @@ async function createFixture(
     writeFileSync(configFile, JSON.stringify({ runtime: options.caps ?? {} }));
     configuredCaps = loadRuntimeConcurrencyCaps(root);
   }
-  const sql =
-    backend === "sql"
-      ? await EngineStore.open({
-          daemonDir: join(root, "daemon"),
-          workerEntry: resolve(import.meta.dirname, "../dist/store/flusher-worker.js"),
-        })
-      : null;
-  if (sql) sql.transaction(() => setGlobalGenerationInTx(sql, createPartition(sql, "global").pid));
-  const graph = sql ? createSqlDaemonServices(sql, { purgeFiles: async () => [root] }) : null;
-  if (graph) graph.projects.register({ root, clientId: "fixture", idempotencyKey: "project" });
-  const journal = graph
-    ? null
-    : new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
-  const legacyStore = journal ? new CommandStore(journal) : null;
-  const store = graph ? graph.commands.current() : legacyStore!;
-  const commandPersistence = graph
-    ? { commands: graph.commands, resourceQueries: graph.commands.queries }
-    : { commands: { current: () => legacyStore! }, resourceQueries: undefined };
-  const commands = commandPersistence.commands;
-  const resources = graph?.resources ?? new ResourceStore(join(root, "resources"));
+  const sql = await EngineStore.open({
+    daemonDir: join(root, "daemon"),
+    workerEntry: resolve(import.meta.dirname, "../dist/store/flusher-worker.js"),
+  });
+  sql.transaction(() => setGlobalGenerationInTx(sql, createPartition(sql, "global").pid));
+  const graph = createSqlDaemonServices(sql, { purgeFiles: async () => [root] });
+  graph.projects.register({ root, clientId: "fixture", idempotencyKey: "project" });
+  const store = graph.commands.current();
+  const commandPersistence = { commands: graph.commands, resourceQueries: graph.commands.queries };
+  const commands = graph.commands;
+  const resources = graph.resources;
   const preparation = barrier(),
     modelResult = barrier();
   if (!options.holdPreparation) preparation.release();
@@ -266,7 +254,6 @@ async function createFixture(
     await server.stop();
     await api.stop();
     operations.close();
-    journal?.close();
     if (graph) await graph.close();
     if (sql) await sql.close();
     rmSync(root, { recursive: true, force: true });
@@ -275,7 +262,6 @@ async function createFixture(
     root,
     configFile,
     store,
-    legacyStore,
     graph,
     server,
     client,
@@ -303,7 +289,7 @@ async function createFixture(
   };
 }
 
-describe.each(["legacy", "sql"] as const)(
+describe.each(["sql"] as const)(
   "%s single scheduler admission through public control boundaries",
   (backend) => {
     const fixture = (options: Parameters<typeof createFixture>[1] = {}) =>
@@ -535,27 +521,23 @@ describe.each(["legacy", "sql"] as const)(
           finishedAt: new Date().toISOString(),
         });
       }
-      const all = f.legacyStore
-        ? vi.spyOn(f.legacyStore, "records")
-        : vi.spyOn(f.graph!.blobs, "read");
+      const all = vi.spyOn(f.graph.blobs, "read");
       await f.createAgent("one");
       await f.createAgent("two");
-      // Legacy count is a map size, and scheduler metadata is live-only.
+      // Scheduler metadata is live-only.
       all.mockClear();
       await f.health();
       const model = await f.createModel("raw");
       await f.done(model.id);
-      // Completion's existing legacy prune may enumerate history; admission itself must not.
+      // Admission and status cannot hydrate unrelated history.
       all.mockClear();
       await f.createAgent("three");
       await f.health();
-      if (f.legacyStore) expect(all).not.toHaveBeenCalled();
-      else
-        expect(all).not.toHaveBeenCalledWith(
-          createHash("sha256")
-            .update(JSON.stringify({ prompt: "retained" }))
-            .digest("hex"),
-        );
+      expect(all).not.toHaveBeenCalledWith(
+        createHash("sha256")
+          .update(JSON.stringify({ prompt: "retained" }))
+          .digest("hex"),
+      );
     });
 
     it.each([

@@ -1,9 +1,10 @@
+import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
-import { InteractionRegistry, InteractionStore } from "./interactions.js";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
+import { InteractionRegistry } from "./interactions.js";
 
 const roots: string[] = [];
 
@@ -12,7 +13,7 @@ function storeAndRegistry() {
   roots.push(root);
   const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
   const store = new InteractionStore(journal);
-  const registry = new InteractionRegistry({ forRequest: () => store, all: () => [store] });
+  const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
   return { journal, store, registry };
 }
 

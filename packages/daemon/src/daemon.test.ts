@@ -1,3 +1,5 @@
+import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
+import { legacyCommandFixture } from "./store/test-support/legacy-command-fixture.js";
 import {
   existsSync,
   mkdirSync,
@@ -12,7 +14,7 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { connect, type Socket } from "node:net";
 import { createInterface } from "node:readline";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import {
   RunEvent,
   RunTelemetry,
@@ -24,9 +26,8 @@ import {
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { DaemonClient } from "./client.js";
-import { CommandStore, commandProjection } from "./command-store.js";
-import { InteractionRegistry, InteractionStore } from "./interactions.js";
-import { JournalManager } from "./journal-manager.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
+import { InteractionRegistry } from "./interactions.js";
 import { DaemonServer, jobStateFromResult, type JobRecord } from "./server.js";
 import { acquireDaemonWriterLease } from "./writer-lease.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -172,7 +173,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async (params) => {
         observed.push(params);
         return { lifecycle: "succeeded" };
@@ -216,7 +217,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async () => ({ lifecycle: "succeeded" }),
     });
     try {
@@ -271,7 +272,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runtimeConcurrencyCaps: {
         max_concurrent: 24,
         max_concurrent_non_model_jobs: "unlimited",
@@ -323,7 +324,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: (_params, ctx) =>
         new Promise((resolve) => {
           ctx.signal.addEventListener("abort", () => {
@@ -371,13 +372,13 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: {
+      commands: legacyCommandFixture({
         current: () => authority.store,
         findById: () => {
           markStatusRead();
           return authority.store;
         },
-      },
+      }),
       runner: async () => ({ lifecycle: "succeeded" }),
     });
     const serverSockets = (server as unknown as { followers: { sockets: Set<Socket> } }).followers
@@ -451,7 +452,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async () => {
         calls += 1;
         return { lifecycle: "succeeded" };
@@ -483,7 +484,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async () => ({ lifecycle: "succeeded" }),
     });
     await server.start();
@@ -529,7 +530,7 @@ describe("DaemonServer", () => {
       const server = new DaemonServer({
         socketPath,
         token: "token",
-        commands: commands.slot,
+        commands: legacyCommandFixture(commands.slot),
         delegationAuthority: {
           assertCanAdmitChild: () => {
             if (!refuseNew) return;
@@ -590,7 +591,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: commands.slot,
+      commands: legacyCommandFixture(commands.slot),
       delegationAuthority: {
         assertCanAdmitChild: () => {},
         noteChildAccepted: (_parentRunId, admissionId) => pending.add(admissionId),
@@ -629,7 +630,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       maxHistory: 1,
       runner: async (params) => ({ lifecycle: "succeeded", echoed: params }),
     });
@@ -687,7 +688,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath: join(dir, "daemon.sock"),
       token: "token",
-      commands: recovered.slot,
+      commands: legacyCommandFixture(recovered.slot),
       runner: async () => {
         calls += 1;
         return { lifecycle: "succeeded" };
@@ -1110,18 +1111,17 @@ describe("DaemonServer", () => {
     first.journal.close();
     rmSync(runDir, { recursive: true, force: true });
 
-    const manager = new JournalManager(dir);
-    const slot = manager.registerProjection(commandProjection());
+    const recovered = commandAuthority(dir);
     try {
-      expect(manager.start().status).toBe("ready");
-      expect(slot.current().get("job-terminal-reclaimed")).toMatchObject({
+      expect(recovered.journal.state().status).toBe("ready");
+      expect(recovered.store.get("job-terminal-reclaimed")).toMatchObject({
         state: "failed",
         result: { lifecycle: "failed", runId: facts.run_id, taskId: facts.task_id },
       });
       // The journal is the authority: no filesystem repair resurrects the dir.
       expect(existsSync(runDir)).toBe(false);
     } finally {
-      manager.close();
+      recovered.journal.close();
     }
   });
 
@@ -1145,14 +1145,13 @@ describe("DaemonServer", () => {
     mkdirSync(runDir, { recursive: true });
     writeFileSync(join(runDir, "tombstone.yaml"), "reclaimed: true\n");
 
-    const manager = new JournalManager(dir);
-    const slot = manager.registerProjection(commandProjection());
+    const recovered = commandAuthority(dir);
     try {
-      expect(manager.start().status).toBe("ready");
-      expect(slot.current().get("job-terminal-tombstone")).toMatchObject({ state: "failed" });
+      expect(recovered.journal.state().status).toBe("ready");
+      expect(recovered.store.get("job-terminal-tombstone")).toMatchObject({ state: "failed" });
       expect(existsSync(join(runDir, "final"))).toBe(false);
     } finally {
-      manager.close();
+      recovered.journal.close();
     }
   });
 
@@ -1247,7 +1246,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath: join(dir, "daemon.sock"),
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async (_params, ctx) => {
         ctx.onRunStart({
           runId: facts.run_id,
@@ -1572,7 +1571,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async (params, ctx) => {
         active += 1;
         maxActive = Math.max(maxActive, active);
@@ -1623,7 +1622,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       maxConcurrent: 2,
       runner: async (params, ctx) => {
         active += 1;
@@ -1680,7 +1679,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       delegationAuthority: {
         assertCanAdmitChild: () => {
           if (!delegationAccepting) throw new Error("parent closing");
@@ -1764,7 +1763,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       maxConcurrent: 1,
       runner: async (_params, ctx) => {
         starts += 1;
@@ -1793,7 +1792,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       maxConcurrent: 1,
       onRuntimeReplacementRequested: async () => {
         shutdownRequests += 1;
@@ -1843,7 +1842,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       onRuntimeReplacementRequested: async () => {
         shutdownRequests += 1;
       },
@@ -1874,7 +1873,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runtimeIdentity: TEST_RUNTIME_IDENTITY,
       runtimeLeaseOwner: TEST_RUNTIME_LEASE,
       runner: async () => ({ lifecycle: "succeeded" }),
@@ -1904,7 +1903,7 @@ describe("DaemonServer", () => {
     server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       onRuntimeReplacementRequested: () => server.stop(),
       runtimeIdentity: TEST_RUNTIME_IDENTITY,
       runtimeLeaseOwner: TEST_RUNTIME_LEASE,
@@ -1931,7 +1930,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runtimeIdentity: TEST_RUNTIME_IDENTITY,
       runtimeLeaseOwner: TEST_RUNTIME_LEASE,
       onRuntimeReplacementRequested: async () => {
@@ -1969,7 +1968,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runtimeIdentity: TEST_RUNTIME_IDENTITY,
       runtimeLeaseOwner: TEST_RUNTIME_LEASE,
       onRuntimeReplacementRequested: async () => {
@@ -2006,7 +2005,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runtimeIdentity: TEST_RUNTIME_IDENTITY,
       runtimeLeaseOwner: TEST_RUNTIME_LEASE,
       onRuntimeReplacementRequested: async () => {
@@ -2037,7 +2036,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       onTurnEnqueueFailed: (...args) => failures.push(args),
       runner: async (params) => {
         if ((params as { fail?: boolean }).fail) {
@@ -2090,7 +2089,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async (params) => ({ lifecycle: (params as { lifecycle: string }).lifecycle }),
     });
     await server.start();
@@ -2113,7 +2112,7 @@ describe("DaemonServer", () => {
     const server = new DaemonServer({
       socketPath,
       token: "token",
-      commands: authority.slot,
+      commands: legacyCommandFixture(authority.slot),
       runner: async () => ({ lifecycle: "succeeded" }),
     });
     const starting = server.start();
@@ -2131,7 +2130,7 @@ describe("InteractionRegistry", () => {
       partition: "global",
     });
     const store = new InteractionStore(journal);
-    const registry = new InteractionRegistry({ forRequest: () => store, all: () => [store] });
+    const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
     const context = (runId: string) => ({
       runId,
       taskId: `task-${runId}`,
@@ -2163,7 +2162,7 @@ describe("InteractionRegistry", () => {
       partition: "global",
     });
     const store = new InteractionStore(journal);
-    const registry = new InteractionRegistry({ forRequest: () => store, all: () => [store] });
+    const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
     const pending = registry.register(
       {
         runId: "run",

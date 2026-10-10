@@ -1,10 +1,9 @@
+import { sqlFixture } from "./store/test-support/sql-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DaemonClient } from "./client.js";
-import { CommandStore } from "./command-store.js";
 import { DaemonLocalClient } from "./daemon-local-client.js";
 import { DaemonServer } from "./server.js";
 
@@ -20,14 +19,12 @@ async function daemon(options: { listen?: boolean } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "cx-local-")));
   disposers.push(() => rmSync(dir, { recursive: true, force: true }));
   const socketPath = join(dir, "d.sock");
-  const store = new CommandStore(
-    new DurableJournal({ rootDir: join(dir, "j"), partition: "global" }),
-  );
-  store.recoverAfterStartup();
+  const sql = await sqlFixture(dir);
+  disposers.push(() => sql.close());
   const server = new DaemonServer({
     socketPath,
     token: TOKEN,
-    commands: { current: () => store },
+    commands: sql.graph.commands,
     runner: async () => ({ lifecycle: "succeeded" }),
   });
   if (options.listen !== false) {

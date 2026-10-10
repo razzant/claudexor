@@ -1,5 +1,5 @@
 import { RunEvent } from "@claudexor/schema";
-import type { JournalRecord } from "@claudexor/journal";
+import type { JournalRecord } from "./legacy-journal/frame-codec.js";
 import type { JobRecord } from "../job-record.js";
 import { parseMutation } from "../thread-store-support.js";
 import { parseDecisionMutation } from "../operator-decisions.js";

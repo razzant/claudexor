@@ -1,14 +1,14 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CommandStore } from "../command-store.js";
+import { CommandStore } from "./test-support/fixtures/legacy/daemon/command-store.js";
 import { DaemonLocalClient } from "../daemon-local-client.js";
 import { DaemonServer } from "../server.js";
 import type { CommandBackend } from "../command-authority.js";
 import type { CommandStorePort } from "../store-contracts.js";
-import { legacyCommandBackend } from "./legacy-read-adapter.js";
+import { legacyCommandFixture as legacyCommandBackend } from "./test-support/legacy-command-fixture.js";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -97,7 +97,7 @@ describe("legacy command boundary", () => {
       prune: global.prune.bind(global),
       prunedScopeRoots: global.prunedScopeRoots.bind(global),
       recoverDurableTerminal: global.recoverDurableTerminal.bind(global),
-      flushed: global.flushed.bind(global),
+      flushed: async () => {},
     };
     const active = vi.fn(() => {
       throw new Error("admission history read forbidden");

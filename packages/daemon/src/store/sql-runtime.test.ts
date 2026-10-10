@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DaemonLocalClient } from "../daemon-local-client.js";
 import { DaemonServer, type RunnerFn } from "../server.js";

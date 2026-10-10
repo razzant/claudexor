@@ -20,7 +20,7 @@
  * anything a fenced observer saw during it, is void after it.
  */
 import type { ControlHarnessSetupHarness, ControlSetupJob } from "@claudexor/schema";
-import { ACTIVE_SETUP_STATES, type SetupJobStorePort } from "./setup-job-store.js";
+import { ACTIVE_SETUP_STATES, type SetupJobStorePort } from "./setup-job-projection.js";
 import { hasUnconfirmedSetupTermination } from "./setup-job-reducer.js";
 
 type WindowFacts = Pick<

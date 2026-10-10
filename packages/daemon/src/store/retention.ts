@@ -1,4 +1,4 @@
-import type { FoldRecord, FoldVerdict } from "@claudexor/journal";
+import type { FoldRecord, FoldVerdict } from "./legacy-journal/journal-fold.js";
 import { isHarnessMaintenanceOperation, isModelOperation } from "@claudexor/schema";
 import { journalFoldPolicy } from "../journal-fold-policy.js";
 import { requireTransaction, type SqlWriteContext } from "./mutation.js";

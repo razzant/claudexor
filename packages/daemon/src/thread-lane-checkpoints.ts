@@ -56,14 +56,6 @@ export function findLaneCheckpoint(
   return checkpoints.find((c) => c.id === id)?.turn_id ?? null;
 }
 
-/** All lane checkpoints of a thread (to locate the prior head's lane). */
-export function threadLaneCheckpoints(
-  checkpoints: readonly LaneCheckpoint[],
-  threadId: string,
-): LaneCheckpoint[] {
-  return checkpoints.filter((c) => c.thread_id === threadId);
-}
-
 /** Stamp a turn's continuity disclosure (validated), returning the next turn. */
 export function stampContinuity(turn: ThreadTurn, disclosure: ContinuityDisclosure): ThreadTurn {
   return ThreadTurnSchema.parse({

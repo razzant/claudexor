@@ -48,7 +48,8 @@ import {
   resolveSetupLoginRunnerPath,
 } from "./setup-job-support.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { SetupJobStore, type SetupJobStorePort } from "./setup-job-store.js";
+import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
+import { type SetupJobStorePort } from "./setup-job-projection.js";
 
 /** These shutdown tests inspect the actual legacy backing file, not a store port. */
 function legacyJournal(store: SetupJobStorePort) {
@@ -361,6 +362,7 @@ describe("setup jobs", () => {
   it("returns the existing active login and opens only one Terminal", () => {
     let opened = 0;
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store")),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -403,6 +405,7 @@ describe("setup jobs", () => {
     );
     let opened = 0;
     const manager = createSetupJobManager({
+      store: new SetupJobStore(storeRoot),
       rootDir: storeRoot,
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -418,6 +421,7 @@ describe("setup jobs", () => {
 
   it("terminalizes synchronous opener throws and asynchronous opener failures", () => {
     const throwing = createSetupJobManager({
+      store: new SetupJobStore(join(root, "throwing")),
       rootDir: join(root, "throwing"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -430,6 +434,7 @@ describe("setup jobs", () => {
     for (const failure of ["error", "exit"] as const) {
       const opener = fakeOpener();
       const manager = createSetupJobManager({
+        store: new SetupJobStore(join(root, failure)),
         rootDir: join(root, failure),
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -447,6 +452,7 @@ describe("setup jobs", () => {
     // failure: the operator must still see the exact command to run by hand
     // (DESIGN_SYSTEM setup contract, INV-093) — never a null command.
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "prelaunch-command")),
       rootDir: join(root, "prelaunch-command"),
       platform: "linux",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -465,6 +471,7 @@ describe("setup jobs", () => {
     // runner state on disk) has no living login to protect: a new create
     // cancels it and proceeds instead of refusing.
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "client-pty-supersede")),
       rootDir: join(root, "client-pty-supersede"),
       platform: "linux",
       runnerPath: resolveSetupLoginRunnerPath(),
@@ -488,6 +495,9 @@ describe("setup jobs", () => {
   it("keeps an unattached client_pty job alive past the runner launcher timeout", async () => {
     let nowMs = Date.parse("2026-07-25T00:00:00.000Z");
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "client-pty-awaiting-attach"), {
+        now: () => new Date(nowMs),
+      }),
       rootDir: join(root, "client-pty-awaiting-attach"),
       platform: "linux",
       runnerPath: resolveSetupLoginRunnerPath(),
@@ -534,6 +544,7 @@ describe("setup jobs", () => {
       const spawnProcess = vi.fn();
       let terminalOpens = 0;
       const manager = createSetupJobManager({
+        store: new SetupJobStore(join(root, `client-pty-${harness}`)),
         rootDir: join(root, `client-pty-${harness}`),
         platform: "linux",
         runnerPath: resolveSetupLoginRunnerPath(),
@@ -574,6 +585,9 @@ describe("setup jobs", () => {
     let nowMs = Date.parse("2026-07-25T00:00:00.000Z");
     const group = processGroupFixture({ leader: knownLeader(12) });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "client-pty-extended-attach"), {
+        now: () => new Date(nowMs),
+      }),
       rootDir: join(root, "client-pty-extended-attach"),
       platform: "linux",
       runnerPath: resolveSetupLoginRunnerPath(),
@@ -618,6 +632,9 @@ describe("setup jobs", () => {
     let nowMs = Date.parse("2026-07-25T00:00:00.000Z");
     const group = processGroupFixture({ leader: knownLeader(13) });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "client-pty-expired-attach"), {
+        now: () => new Date(nowMs),
+      }),
       rootDir: join(root, "client-pty-expired-attach"),
       platform: "linux",
       runnerPath: resolveSetupLoginRunnerPath(),
@@ -647,6 +664,7 @@ describe("setup jobs", () => {
   it("fences late opener callbacks and journal writes once shutdown begins", async () => {
     const opener = fakeOpener();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "late-opener")),
       rootDir: join(root, "late-opener"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -672,6 +690,7 @@ describe("setup jobs", () => {
   it("reaches a fully drained supervisor with an active login present (no termination on shutdown)", async () => {
     const opener = fakeOpener();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "shutdown-persistence-failure")),
       rootDir: join(root, "shutdown-persistence-failure"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -694,6 +713,7 @@ describe("setup jobs", () => {
     let ms = Date.now();
     const liveGroup = processGroupFixture({ leader: knownLeader(11), killOnTerm: true });
     const live = createSetupJobManager({
+      store: new SetupJobStore(join(root, "live"), { now: () => new Date(ms) }),
       rootDir: join(root, "live"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -716,6 +736,7 @@ describe("setup jobs", () => {
     await live.shutdown();
 
     const stalled = createSetupJobManager({
+      store: new SetupJobStore(join(root, "stalled"), { now: () => new Date(ms) }),
       rootDir: join(root, "stalled"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -734,6 +755,7 @@ describe("setup jobs", () => {
 
   it("keeps the Terminal script open after a nonzero runner exit", () => {
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "script")),
       rootDir: join(root, "script"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -754,6 +776,7 @@ describe("setup jobs", () => {
     process.env.OPENAI_API_KEY = "must-not-enter-terminal-script";
     try {
       const manager = createSetupJobManager({
+        store: new SetupJobStore(join(root, "environment-handoff")),
         rootDir: join(root, "environment-handoff"),
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -784,6 +807,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store"), { now: () => new Date(ms) }),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -858,6 +882,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture({ leader });
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "result-publication-race")),
       rootDir: join(root, "result-publication-race"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -889,6 +914,7 @@ describe("setup jobs", () => {
     let probeCalls = 0;
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "early-result")),
       rootDir: join(root, "early-result"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -932,6 +958,7 @@ describe("setup jobs", () => {
       let callbackSawDurableReceipt = false;
       let manager!: SetupManager;
       manager = createSetupJobManager({
+        store: new SetupJobStore(join(root, `capability-${reason}`)),
         rootDir: join(root, `capability-${reason}`),
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -992,6 +1019,9 @@ describe("setup jobs", () => {
       const invalidatedHarnesses: string[] = [];
       let probeCalls = 0;
       const manager = createSetupJobManager({
+        store: new SetupJobStore(
+          join(root, `credential-change-${commandStarted ? "started" : "not-started"}`),
+        ),
         rootDir: join(root, `credential-change-${commandStarted ? "started" : "not-started"}`),
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -1049,6 +1079,7 @@ describe("setup jobs", () => {
       probeAuthSource: async () => nativeReadiness(true),
     };
     const first = createSetupJobManager({
+      store: new SetupJobStore(storeRoot),
       ...baseOptions,
       onCredentialStateMayHaveChanged: (harness) => firstInvalidations.push(harness),
     });
@@ -1066,6 +1097,7 @@ describe("setup jobs", () => {
 
     const restartedInvalidations: string[] = [];
     const restarted = createSetupJobManager({
+      store: new SetupJobStore(storeRoot),
       ...baseOptions,
       onCredentialStateMayHaveChanged: (harness) => restartedInvalidations.push(harness),
     });
@@ -1083,6 +1115,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(), { hang: true });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "hung-capability")),
       rootDir: join(root, "hung-capability"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1118,6 +1151,7 @@ describe("setup jobs", () => {
     const hanging = capabilityVerifier(() => new Date(), { gate: capabilityGate });
     const storeRoot = join(root, "restart-running-capability");
     const first = createSetupJobManager({
+      store: new SetupJobStore(storeRoot),
       rootDir: storeRoot,
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1146,6 +1180,7 @@ describe("setup jobs", () => {
 
     const replacement = capabilityVerifier();
     const restarted = createSetupJobManager({
+      store: new SetupJobStore(storeRoot),
       rootDir: storeRoot,
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1169,6 +1204,7 @@ describe("setup jobs", () => {
     const firstCapability = capabilityVerifier();
     const storeRoot = join(root, "restart-completed-capability");
     const first = createSetupJobManager({
+      store: new SetupJobStore(storeRoot),
       rootDir: storeRoot,
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1199,6 +1235,7 @@ describe("setup jobs", () => {
 
     const replacement = capabilityVerifier();
     const restarted = createSetupJobManager({
+      store: new SetupJobStore(storeRoot),
       rootDir: storeRoot,
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1227,6 +1264,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture({ leader: knownLeader(61) });
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "fast-result")),
       rootDir: join(root, "fast-result"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1266,6 +1304,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store"), { now: () => new Date(ms) }),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1301,6 +1340,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "verify-window"), { now: () => new Date(ms) }),
       rootDir: join(root, "verify-window"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1344,6 +1384,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "hard-verify-ceiling"), { now: () => new Date(ms) }),
       rootDir: join(root, "hard-verify-ceiling"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1387,6 +1428,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "late-ready"), { now: () => new Date(ms) }),
       rootDir: join(root, "late-ready"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1424,6 +1466,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "retry"), { now: () => new Date(ms) }),
       rootDir: join(root, "retry"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1463,6 +1506,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "hung-native-probe")),
       rootDir: join(root, "hung-native-probe"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1489,6 +1533,7 @@ describe("setup jobs", () => {
 
   it("cancels safely before execution authorization without guessing a PID", async () => {
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store")),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1505,6 +1550,7 @@ describe("setup jobs", () => {
     const invalidatedHarnesses: string[] = [];
     const group = processGroupFixture();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "cancel-after-result")),
       rootDir: join(root, "cancel-after-result"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1553,6 +1599,7 @@ describe("setup jobs", () => {
     const leader = knownLeader(21, "darwin:1710000000:000021");
     const group = processGroupFixture({ leader });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "pid-reuse")),
       rootDir: join(root, "pid-reuse"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1617,6 +1664,7 @@ describe("setup jobs", () => {
       let ms = Date.now();
       const group = processGroupFixture({ leader: knownLeader(31) });
       const manager = createSetupJobManager({
+        store: new SetupJobStore(join(root, kind), { now: () => new Date(ms) }),
         rootDir: join(root, kind),
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -1681,6 +1729,9 @@ describe("setup jobs", () => {
       });
       const bumps: string[] = [];
       const manager = createSetupJobManager({
+        store: new SetupJobStore(join(root, `probe-grace-${kind}-${persistent}`), {
+          now: () => new Date(ms),
+        }),
         rootDir: join(root, `probe-grace-${kind}-${persistent}`),
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -1746,6 +1797,7 @@ describe("setup jobs", () => {
       },
     });
     manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "login-race"), { now: () => new Date(ms) }),
       rootDir: join(root, "login-race"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1783,14 +1835,17 @@ describe("setup jobs", () => {
       processGroups: group.service,
       sleep: async () => {},
     };
-    const first = createSetupJobManager(opts);
+    const first = createSetupJobManager({ ...opts, store: new SetupJobStore(join(root, "store")) });
     const job = first.create(LOGIN_REQUEST);
     writeRunnerStateV2(first, job.jobId, group.leader);
     // Deliberate crash fixture: no supervisor was started, so close the sole
     // journal writer without running graceful lifecycle reconciliation.
     first.beginDrain();
     legacyJournal(first._store).close();
-    const restarted = createSetupJobManager(opts);
+    const restarted = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "store")),
+    });
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId })).toMatchObject({
       state: "waiting_for_input",
@@ -1816,7 +1871,12 @@ describe("setup jobs", () => {
         nowMs += delay;
       },
     };
-    const first = createSetupJobManager(opts);
+    const first = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "expired-client-pty-restart"), {
+        now: () => new Date(nowMs),
+      }),
+    });
     const job = first.create({ ...LOGIN_REQUEST, transport: "client_pty" });
     const manifest = writeRunnerStateV2(
       first,
@@ -1847,7 +1907,12 @@ describe("setup jobs", () => {
     legacyJournal(first._store).close();
     nowMs = Date.parse(job.deadlineAt!) + 1;
 
-    const restarted = createSetupJobManager(opts);
+    const restarted = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "expired-client-pty-restart"), {
+        now: () => new Date(nowMs),
+      }),
+    });
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId })).toMatchObject({
       state: "timed_out",
@@ -1872,7 +1937,10 @@ describe("setup jobs", () => {
       authCapabilityVerifier: capability.verifier,
       probeAuthSource: async () => nativeReadiness(true),
     };
-    const first = createSetupJobManager(opts);
+    const first = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "device-code-restart-watcher")),
+    });
     await first.start();
     const job = first.create(DEVICE_CODE_REQUEST);
     const observedAt = new Date().toISOString();
@@ -1881,7 +1949,10 @@ describe("setup jobs", () => {
     // Crash BEFORE the sidecar exists; the durable journal already says awaiting_user.
     first.beginDrain();
     legacyJournal(first._store).close();
-    const restarted = createSetupJobManager(opts);
+    const restarted = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "device-code-restart-watcher")),
+    });
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId }).phase).toBe("awaiting_user");
     // The sidecar lands under the SUCCESSOR daemon.
@@ -1908,6 +1979,7 @@ describe("setup jobs", () => {
 
   it("marks a disappeared runner interrupted on restart and ignores a mismatched result", async () => {
     const first = createSetupJobManager({
+      store: new SetupJobStore(join(root, "interrupted")),
       rootDir: join(root, "interrupted"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1924,6 +1996,7 @@ describe("setup jobs", () => {
     first.beginDrain();
     legacyJournal(first._store).close();
     const restarted = createSetupJobManager({
+      store: new SetupJobStore(join(root, "interrupted")),
       rootDir: join(root, "interrupted"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -1949,7 +2022,10 @@ describe("setup jobs", () => {
       processGroups: group.service,
       sleep: async () => {},
     };
-    const first = createSetupJobManager(opts);
+    const first = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "graceful-adopt")),
+    });
     await first.start();
     const job = first.create(LOGIN_REQUEST);
     writeRunnerStateV2(first, job.jobId, group.leader);
@@ -1957,7 +2033,10 @@ describe("setup jobs", () => {
     await first.shutdown();
     expect(group.signals).toEqual([]);
     legacyJournal(first._store).close();
-    const restarted = createSetupJobManager(opts);
+    const restarted = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "graceful-adopt")),
+    });
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId })).toMatchObject({
       state: "waiting_for_input",
@@ -2006,7 +2085,11 @@ describe("setup jobs", () => {
       openTerminal: fakeOpener,
       sleep: async () => {},
     };
-    firstManager = createSetupJobManager({ ...baseOpts, processGroups: group.service });
+    firstManager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "toctou-probe-hook")),
+      ...baseOpts,
+      processGroups: group.service,
+    });
     await firstManager.start();
     const job = firstManager.create(LOGIN_REQUEST);
     jobId = job.jobId;
@@ -2033,7 +2116,11 @@ describe("setup jobs", () => {
     firstManager.beginDrain();
     legacyJournal(firstManager._store).close();
     armed = true;
-    const restarted = createSetupJobManager({ ...baseOpts, processGroups: rigged });
+    const restarted = createSetupJobManager({
+      store: new SetupJobStore(join(root, "toctou-probe-hook")),
+      ...baseOpts,
+      processGroups: rigged,
+    });
     await restarted.start();
     const after = restarted.status({ jobId });
     expect(after.outcome?.reason).not.toBe("cancelled_on_restart");
@@ -2051,13 +2138,19 @@ describe("setup jobs", () => {
       processGroups: group.service,
       sleep: async () => {},
     };
-    const first = createSetupJobManager(opts);
+    const first = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "dead-runner-restart")),
+    });
     const job = first.create(LOGIN_REQUEST);
     writeRunnerStateV2(first, job.jobId, group.leader);
     group.setAlive(false); // the runner died while no daemon was watching
     first.beginDrain();
     legacyJournal(first._store).close();
-    const restarted = createSetupJobManager(opts);
+    const restarted = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "dead-runner-restart")),
+    });
     await restarted.start();
     expect(restarted.status({ jobId: job.jobId })).toMatchObject({
       state: "cancelled",
@@ -2074,6 +2167,7 @@ describe("setup jobs", () => {
       const leader = knownLeader(51);
       const group = processGroupFixture({ leader });
       const first = createSetupJobManager({
+        store: new SetupJobStore(storeRoot),
         rootDir: storeRoot,
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -2092,6 +2186,7 @@ describe("setup jobs", () => {
       first.beginDrain();
       legacyJournal(first._store).close();
       const restarted = createSetupJobManager({
+        store: new SetupJobStore(storeRoot),
         rootDir: storeRoot,
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -2110,6 +2205,7 @@ describe("setup jobs", () => {
   it("a device_auth_unsupported runner result terminates the awaiting-user job as not_supported (old codex CLI)", async () => {
     const group = processGroupFixture({ leader: knownLeader(106) });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-auth-unsupported")),
       rootDir: join(root, "device-auth-unsupported"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2151,6 +2247,7 @@ describe("setup jobs", () => {
     async (errorCode, expectedState, expectedReason) => {
       const group = processGroupFixture({ leader: knownLeader(160) });
       const manager = createSetupJobManager({
+        store: new SetupJobStore(join(root, `terminal-receipt-${errorCode}`)),
         rootDir: join(root, `terminal-receipt-${errorCode}`),
         platform: "darwin",
         runnerPath: "/tmp/setup-login-runner.js",
@@ -2184,6 +2281,7 @@ describe("setup jobs", () => {
   it("keeps a post-start terminal transport break distinct from vendor spawn", async () => {
     const group = processGroupFixture({ leader: knownLeader(161) });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "terminal-receipt-post-start")),
       rootDir: join(root, "terminal-receipt-post-start"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2219,6 +2317,7 @@ describe("setup jobs", () => {
     // the daemon-hosted login works there, so it must not be advertised.
     const group = processGroupFixture({ leader: knownLeader(107) });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-auth-unsupported-linux")),
       rootDir: join(root, "device-auth-unsupported-linux"),
       platform: "linux",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2263,6 +2362,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "default-store-manifest")),
       rootDir: join(root, "default-store-manifest"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2288,6 +2388,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-auth-remedy")),
       rootDir: join(root, "device-auth-remedy"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2321,6 +2422,7 @@ describe("setup jobs", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-code-disclosure-race")),
       rootDir: join(root, "device-code-disclosure-race"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2370,6 +2472,9 @@ describe("setup jobs", () => {
     let nowMs = Date.parse("2026-07-29T00:00:00.000Z");
     const group = processGroupFixture();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-code-extended-disclosure"), {
+        now: () => new Date(nowMs),
+      }),
       rootDir: join(root, "device-code-extended-disclosure"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2415,6 +2520,7 @@ describe("setup jobs", () => {
 
   it("a browser-redirect create refuses (409) while a device-code login is active", () => {
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "flow-conflict")),
       rootDir: join(root, "flow-conflict"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2447,7 +2553,10 @@ describe("setup jobs", () => {
       monitorPollMs: 1,
       sleep: async () => {},
     };
-    const first = createSetupJobManager(opts);
+    const first = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "toctou-late-result")),
+    });
     await first.start();
     const job = first.create(LOGIN_REQUEST);
     const observedAt = new Date().toISOString();
@@ -2463,6 +2572,7 @@ describe("setup jobs", () => {
 
     const capability = capabilityVerifier();
     const restarted = createSetupJobManager({
+      store: new SetupJobStore(join(root, "toctou-late-result")),
       ...opts,
       authCapabilityVerifier: capability.verifier,
       probeAuthSource: async () => nativeReadiness(true),
@@ -2488,7 +2598,10 @@ describe("setup jobs", () => {
       terminationGraceMs: 1,
       sleep: async () => {},
     };
-    const first = createSetupJobManager(opts);
+    const first = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "cancelling-successor")),
+    });
     await first.start();
     const job = first.create(LOGIN_REQUEST);
     writeRunnerStateV2(first, job.jobId, group.leader, "awaiting_permit");
@@ -2502,7 +2615,10 @@ describe("setup jobs", () => {
     first.beginDrain();
     legacyJournal(first._store).close();
 
-    const restarted = createSetupJobManager(opts);
+    const restarted = createSetupJobManager({
+      ...opts,
+      store: new SetupJobStore(join(root, "cancelling-successor")),
+    });
     await restarted.start();
     // The successor finishes the interrupted cancellation instead of adopting a
     // zombie: the job reaches a terminal cancelled state (not stuck active).
@@ -2514,6 +2630,7 @@ describe("setup jobs", () => {
 
   it("extends the deadline by exactly fifteen minutes on every call", () => {
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store")),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2532,6 +2649,7 @@ describe("setup jobs for credential profiles (INV-135)", () => {
     process.env.CLAUDEXOR_CONFIG_DIR = join(root, "cfg");
     const { profile } = registerConfigDirProfile({ harnessId: "codex", profileId: "work" });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store")),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2562,6 +2680,7 @@ describe("setup jobs for credential profiles (INV-135)", () => {
     process.env.CLAUDEXOR_AGY_BIN = fakeAgy;
     registerConfigDirProfile({ harnessId: "agy", profileId: "work" });
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store-agy")),
       rootDir: join(root, "store-agy"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2647,6 +2766,7 @@ describe("setup jobs for credential profiles (INV-135)", () => {
     // schema field remains OPTIONAL, so pre-upgrade sealed manifests (absent
     // field) keep their digests valid — only newly sealed manifests carry it.
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store")),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2667,6 +2787,7 @@ describe("setup jobs for credential profiles (INV-135)", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store"), { now: () => new Date(ms) }),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2729,6 +2850,7 @@ describe("setup jobs for credential profiles (INV-135)", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier(() => new Date(ms));
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store"), { now: () => new Date(ms) }),
       rootDir: join(root, "store"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2799,6 +2921,7 @@ describe("D-17 codex device-code login", () => {
     let terminalOpened = 0;
     let runnerSpawned = 0;
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-launch")),
       rootDir: join(root, "device-launch"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2831,6 +2954,7 @@ describe("D-17 codex device-code login", () => {
   it("projects the transient code on the snapshot but never in the journaled job", async () => {
     const group = processGroupFixture();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-projection")),
       rootDir: join(root, "device-projection"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2867,6 +2991,7 @@ describe("D-17 codex device-code login", () => {
     const group = processGroupFixture();
     const capability = capabilityVerifier();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-terminal")),
       rootDir: join(root, "device-terminal"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2895,6 +3020,7 @@ describe("D-17 codex device-code login", () => {
   it("a capability-probe miss finishes not_supported (typed Terminal fallback)", async () => {
     const group = processGroupFixture();
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "device-unsupported")),
       rootDir: join(root, "device-unsupported"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2965,6 +3091,7 @@ describe("one-shot sign-in input (url_disclosure_with_input, owner directive 202
 
   it("writes the transient input sidecar exactly once and never journals the value", async () => {
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "input-happy")),
       rootDir: join(root, "input-happy"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -2996,6 +3123,7 @@ describe("one-shot sign-in input (url_disclosure_with_input, owner directive 202
     // user is racing that clock, so a successful paste being cancelled is the
     // COMMON case, not an edge one.
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "input-grace")),
       rootDir: join(root, "input-grace"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -3016,6 +3144,7 @@ describe("one-shot sign-in input (url_disclosure_with_input, owner directive 202
 
   it("rejects input for flows that do not take it (cursor url_disclosure, codex device-code)", async () => {
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "input-wrong-mode")),
       rootDir: join(root, "input-wrong-mode"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -3035,6 +3164,7 @@ describe("one-shot sign-in input (url_disclosure_with_input, owner directive 202
 
   it("rejects malformed values before touching the job", async () => {
     const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "input-malformed")),
       rootDir: join(root, "input-malformed"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
@@ -3090,6 +3220,7 @@ describe("setup credential-mutation window (#363)", () => {
   ) {
     const bumps: string[] = [];
     const manager = createSetupJobManager({
+      store: new SetupJobStore(rootDir),
       rootDir,
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",

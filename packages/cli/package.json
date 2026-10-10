@@ -30,7 +30,6 @@
     "@claudexor/harness-fake": "workspace:*",
     "@claudexor/harness-opencode": "workspace:*",
     "@claudexor/harness-raw-api": "workspace:*",
-    "@claudexor/journal": "workspace:*",
     "@claudexor/mcp-server": "workspace:*",
     "@claudexor/orchestrator": "workspace:*",
     "@claudexor/review": "workspace:*",

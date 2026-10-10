@@ -13,10 +13,6 @@ export const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 // Keep replay fail-closed before an unbounded allocation while retaining
 // headroom for the large single-frame snapshots earlier writers produced.
 export const MAX_COMPACTED_LOGICAL_BYTES = 512 * 1024 * 1024;
-// Logical bytes per compacted snapshot chunk. Worst-case deflate expansion,
-// the base64 4/3 blow-up and the JSON envelope of 11.75 MiB still fit the
-// 16 MiB frame payload cap, so a chunk is cut by logical size alone.
-export const SNAPSHOT_CHUNK_LOGICAL_BYTES = 11.75 * 1024 * 1024;
 export const ZERO_HASH = "0".repeat(64);
 export const COMPACTED_SNAPSHOT = "journal.compacted_snapshot";
 
@@ -40,13 +36,6 @@ export interface FrameHeader {
   time: string;
   type: string;
   logicalSpan?: number;
-}
-
-export interface CompactedSnapshotPayload {
-  version: 1;
-  count: number;
-  encoding: "gzip-base64";
-  data: string;
 }
 
 /** A logical record inside a compacted snapshot. `seq` is present in

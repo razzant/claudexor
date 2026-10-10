@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { continuationRefusal, selectRunListPage, type CommandListQuery } from "@claudexor/schema";
-import { selectProductCommands } from "./command-retention.js";
-import { publicCommandList } from "./command-list-projection.js";
+import { selectProductCommands } from "./store/test-support/fixtures/legacy/daemon/command-retention.js";
+import { publicCommandList } from "./store/test-support/fixtures/legacy/daemon/command-list-projection.js";
 import type { JobRecord } from "./job-record.js";
 
 const record = (

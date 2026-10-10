@@ -13,7 +13,7 @@
  * exactly the directories this owner deletes, so the retention pass retries a
  * purge until they are gone and never loops on a directory it cannot own.
  */
-import type { ProjectPartitions } from "@claudexor/daemon";
+import type { ProjectThreadPort } from "@claudexor/daemon";
 import type { Thread } from "@claudexor/schema";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -31,7 +31,7 @@ export interface ThreadPurgeDurability {
 }
 
 export function threadPurgeOwner(
-  threads: Pick<ProjectPartitions, "getThread" | "purgeThread">,
+  threads: Pick<ProjectThreadPort, "getThread" | "purgeThread">,
   noProjectRoot: string,
   durability?: ThreadPurgeDurability,
 ) {

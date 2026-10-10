@@ -1,43 +1,57 @@
-import { describe, expect, it } from "vitest";
-import { commandActivityRecords } from "./command-activity.js";
-import { publicJobRecord, type JobRecord } from "./job-record.js";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, it, vi } from "vitest";
+import { sqlActivityRecords } from "../../cli/src/sql-daemon-queries.js";
+import { sqlFixture } from "./store/test-support/sql-fixture.js";
 
-describe("in-process project and retention activity", () => {
-  it("keeps global and project scopes without walking prompt bodies", () => {
-    const rows: JobRecord[] = ["global", "project"].map((id) => ({
-      id,
-      runId: `run-${id}`,
-      state: "running",
-      createdAt: "2026-10-08T00:00:00Z",
-      params: {
-        scope: id === "global" ? { kind: "none" } : { kind: "project", root: "/fixture/project" },
-        request: {
-          get prompt() {
-            throw new Error("body traversed");
-          },
+it("keeps global/project scopes and turn ids in retention activity without hydrating bodies", async () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "activity-sql-")));
+  const sql = await sqlFixture(root);
+  try {
+    const commands = sql.graph.commands.current();
+    for (const id of ["global", "project", "delivery-hidden", "model-hidden"]) {
+      commands.accept({
+        id,
+        idempotencyKey: id,
+        clientId: "test",
+        params: {
+          ...(id === "model-hidden" ? { kind: "model" } : {}),
+          scope:
+            id === "project" ? { kind: "project", root: "/fixture/project" } : { kind: "none" },
+          threadId: id === "project" ? "t-1" : undefined,
+          prompt: "full retained input".repeat(4096),
         },
-      },
-    }));
-    expect(commandActivityRecords(rows)).toEqual(
-      rows.map((r) => ({
-        runId: r.runId,
-        state: r.state,
-        finishedAt: undefined,
-        params: { scope: (r.params as { scope: unknown }).scope },
-      })),
-    );
-    // The retention trash fence matches a live turn by its thread id.
-    const turn = { ...rows[1]!, params: { ...(rows[1]!.params as object), threadId: "t-1" } };
-    expect(commandActivityRecords([turn])[0]?.params).toEqual({
-      scope: (rows[1]!.params as { scope: unknown }).scope,
-      threadId: "t-1",
+      });
+      commands.update(id, { runId: `run-${id}`, state: "running" });
+    }
+    const body = vi.spyOn(sql.graph.blobs, "read").mockImplementation(() => {
+      throw new Error("body traversed");
     });
-    expect(() => rows.map(publicJobRecord)).toThrow("body traversed");
-    expect(
-      commandActivityRecords([
-        { ...rows[0]!, id: "delivery-old" },
-        { ...rows[0]!, params: { kind: "model" } },
+    const activity = sqlActivityRecords(sql.store);
+    expect(activity).toHaveLength(2);
+    expect(activity).toEqual(
+      expect.arrayContaining([
+        {
+          runId: "run-global",
+          state: "running",
+          finishedAt: undefined,
+          params: { scope: { kind: "global" }, threadId: undefined },
+        },
+        {
+          runId: "run-project",
+          state: "running",
+          finishedAt: undefined,
+          params: { scope: { kind: "project", root: "/fixture/project" }, threadId: "t-1" },
+        },
       ]),
-    ).toEqual([]);
-  });
+    );
+    expect(body).not.toHaveBeenCalled();
+    // The same poison trips a full detail read, proving the activity guard is live.
+    expect(() => commands.get("global")).toThrow("body traversed");
+    body.mockRestore();
+  } finally {
+    await sql.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

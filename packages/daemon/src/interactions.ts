@@ -1,4 +1,3 @@
-import type { DurableJournal } from "@claudexor/journal";
 import type { InteractionStorePort } from "./store-contracts.js";
 import type {
   ControlPendingInteraction,
@@ -31,132 +30,21 @@ export interface InteractionResolution {
   terminal: InteractionTerminal;
 }
 
-const REQUESTED = "interaction.requested";
-const RESOLVED = "interaction.resolved";
-
-/** Journal-backed authority for pending interaction projections. */
-export class InteractionStore {
-  private readonly pending = new Map<string, ControlPendingInteraction>();
-  private readonly resolved = new Set<string>();
-
-  constructor(private readonly journal: DurableJournal) {
-    this.replay();
-  }
-
-  /** Resolve replayed pending interactions only after bootstrap activation. */
-  recoverAfterStartup(): void {
-    this.interruptAfterRestart();
-  }
-
-  request(ctx: InteractionContext): ControlPendingInteraction {
-    const value = pendingInteraction(ctx);
-    const key = interactionKey(value.runId, value.interactionId);
-    if (this.pending.has(key) || this.resolved.has(key)) {
-      throw new Error(`duplicate interaction '${value.interactionId}' for run '${value.runId}'`);
-    }
-    this.journal.append(REQUESTED, value);
-    this.pending.set(key, value);
-    return value;
-  }
-
-  resolve(
-    runId: string,
-    interactionId: string,
-    terminal: InteractionTerminal,
-  ): "resolved" | "not_found" | "already_resolved" {
-    const key = interactionKey(runId, interactionId);
-    if (this.resolved.has(key)) return "already_resolved";
-    if (!this.pending.has(key)) return "not_found";
-    this.commitResolution({ runId, interactionIds: [interactionId], terminal });
-    return "resolved";
-  }
-
-  resolveRun(
-    runId: string,
-    terminal: Extract<InteractionTerminal, "run_terminal" | "interrupted">,
-  ): string[] {
-    const interactionIds = this.pendingForRun(runId).map((value) => value.interactionId);
-    if (interactionIds.length > 0) this.commitResolution({ runId, interactionIds, terminal });
-    return interactionIds;
-  }
-
-  status(runId: string, interactionId: string): "pending" | "resolved" | "missing" {
-    const key = interactionKey(runId, interactionId);
-    if (this.pending.has(key)) return "pending";
-    return this.resolved.has(key) ? "resolved" : "missing";
-  }
-
-  pendingForRun(runId: string): ControlPendingInteraction[] {
-    return [...this.pending.values()].filter((value) => value.runId === runId);
-  }
-
-  validateProjection(): void {
-    for (const value of this.pending.values()) PendingInteractionSchema.parse(value);
-    for (const key of this.pending.keys()) {
-      if (this.resolved.has(key)) throw new Error("interaction is both pending and resolved");
-    }
-  }
-
-  private replay(): void {
-    for (const record of this.journal.records(0, [REQUESTED, RESOLVED])) {
-      if (record.type === REQUESTED) {
-        const value = PendingInteractionSchema.parse(record.payload);
-        const key = interactionKey(value.runId, value.interactionId);
-        if (this.pending.has(key) || this.resolved.has(key)) {
-          throw new Error("duplicate interaction request history");
-        }
-        this.pending.set(key, value);
-      } else if (record.type === RESOLVED) {
-        this.applyResolution(parseInteractionResolution(record.payload));
-      }
-    }
-    this.validateProjection();
-  }
-
-  private interruptAfterRestart(): void {
-    const byRun = new Map<string, string[]>();
-    for (const value of this.pending.values()) {
-      const ids = byRun.get(value.runId) ?? [];
-      ids.push(value.interactionId);
-      byRun.set(value.runId, ids);
-    }
-    for (const [runId, interactionIds] of byRun) {
-      this.commitResolution({ runId, interactionIds, terminal: "interrupted" });
-    }
-  }
-
-  private commitResolution(value: InteractionResolution): void {
-    const parsed = parseInteractionResolution(value);
-    this.journal.append(RESOLVED, parsed);
-    this.applyResolution(parsed);
-  }
-
-  private applyResolution(value: InteractionResolution): void {
-    for (const interactionId of value.interactionIds) {
-      const key = interactionKey(value.runId, interactionId);
-      if (!this.pending.delete(key)) throw new Error("interaction resolution precedes request");
-      this.resolved.add(key);
-    }
-  }
-}
-
 interface LiveEntry {
   store: InteractionStorePort;
   resolve: (result: InteractionAnswerSet | InteractionHandlerRelease) => void;
   expiresAtMs: number | null;
 }
 
-/** Live answer bridge; durable state remains owned by InteractionStore. */
+/** Live answer bridge; durable state remains owned by its store. */
 export class InteractionRegistry {
   private readonly live = new Map<string, LiveEntry>();
 
   constructor(
     private readonly stores: {
       forRequest(params: unknown): InteractionStorePort;
-    } & (
-      | { forRun(runId: string): InteractionStorePort | undefined; all?: never }
-      | { all(): InteractionStorePort[]; forRun?: undefined }
-    ),
+      forRun(runId: string): InteractionStorePort | undefined;
+    },
   ) {}
 
   register(
@@ -221,7 +109,6 @@ export class InteractionRegistry {
   }
 
   private storesForRun(runId: string): InteractionStorePort[] {
-    if (!this.stores.forRun) return this.stores.all();
     const store = this.stores.forRun(runId);
     return store ? [store] : [];
   }
@@ -245,15 +132,6 @@ function parseExpiry(timeoutAt: string | null): number | null {
   const value = Date.parse(timeoutAt);
   if (!Number.isFinite(value)) throw new Error("invalid interaction timeoutAt");
   return value;
-}
-
-export function interactionProjection() {
-  return {
-    name: "interactions",
-    create: (journal: DurableJournal) => new InteractionStore(journal),
-    validate: (store: InteractionStore) => store.validateProjection(),
-    recover: (store: InteractionStore) => store.recoverAfterStartup(),
-  };
 }
 
 export function interactionKey(runId: string, interactionId: string): string {

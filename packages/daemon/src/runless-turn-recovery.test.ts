@@ -1,10 +1,10 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { recordInterruptedRunlessTurns, RESTARTED_BEFORE_START } from "./runless-turn-recovery.js";
-import { ThreadStore } from "./threads.js";
+import { ThreadStore } from "./store/test-support/fixtures/legacy/daemon/threads.js";
 
 const roots: string[] = [];
 const journals: DurableJournal[] = [];

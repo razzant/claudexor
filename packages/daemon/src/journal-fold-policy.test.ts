@@ -7,19 +7,19 @@ import {
   type DurableJournalOptions,
   type FoldRecord,
   type JournalRecord,
-} from "@claudexor/journal";
+} from "./store/test-support/fixtures/legacy/journal/index.js";
 import { CredentialRoute, QuotaSource, type RunEvent } from "@claudexor/schema";
 import { afterEach, describe, expect, it } from "vitest";
-import { CommandStore } from "./command-store.js";
-import { InteractionStore } from "./interactions.js";
+import { CommandStore } from "./store/test-support/fixtures/legacy/daemon/command-store.js";
+import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
 import { journalFoldPolicy } from "./journal-fold-policy.js";
 import { journaledRunEventCopy } from "./journaled-run-events.js";
-import { OperatorDecisionStore } from "./operator-decisions.js";
-import { ProjectStore } from "./projects.js";
+import { OperatorDecisionStore } from "./store/test-support/fixtures/legacy/daemon/operator-decisions.js";
+import { ProjectStore } from "./store/test-support/fixtures/legacy/daemon/projects.js";
 import { QuotaRegistry } from "./quota-registry.js";
-import { RunEventStore } from "./run-events.js";
-import { ThreadHeadPingEmitter } from "./thread-head-ping.js";
-import { ThreadStore } from "./threads.js";
+import { RunEventStore } from "./store/test-support/fixtures/legacy/daemon/run-events.js";
+import { ThreadHeadPingEmitter } from "./store/test-support/fixtures/legacy/daemon/thread-head-ping.js";
+import { ThreadStore } from "./store/test-support/fixtures/legacy/daemon/threads.js";
 
 const roots: string[] = [];
 const journals: DurableJournal[] = [];
@@ -113,12 +113,12 @@ function buildFixture() {
     });
 
   // Registry: one kept project, one relinked then unregistered.
-  const { project: p1 } = projects.register({
+  const p1 = projects.register({
     root: projectRoots[0]!,
     idempotencyKey: "reg-1",
     clientId: "t",
   });
-  const { project: p2 } = projects.register({
+  const p2 = projects.register({
     root: projectRoots[1]!,
     idempotencyKey: "reg-2",
     clientId: "t",

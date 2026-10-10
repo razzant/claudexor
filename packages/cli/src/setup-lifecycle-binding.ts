@@ -1,4 +1,4 @@
-import { JournalRecoveryRequiredError } from "@claudexor/journal";
+import { JournalRecoveryRequiredError } from "@claudexor/daemon";
 import type { ControlSetupJob } from "@claudexor/schema";
 import { hasUnconfirmedSetupTermination } from "./setup-job-reducer.js";
 

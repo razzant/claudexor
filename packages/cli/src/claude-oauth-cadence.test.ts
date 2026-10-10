@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { updateGlobalConfig } from "@claudexor/config";
-import { DurableJournal } from "@claudexor/journal";
+import { DurableJournal } from "../../daemon/src/store/test-support/fixtures/legacy/journal/index.js";
 import type { QuotaSubject } from "@claudexor/schema";
 import { QuotaRegistry } from "../../daemon/src/quota-registry.js";
 import { accountsMigrationFilePath } from "./accounts-unified-migration.js";

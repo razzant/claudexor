@@ -4,7 +4,6 @@ import {
   parseOperatorDecision,
   type DecisionMutation,
   type OperatorDecisionRecord,
-  type OperatorDecisionStore,
   type RecordedOperatorDecision,
 } from "../operator-decisions.js";
 import type { SqlEventLedger } from "./event-store.js";
@@ -43,10 +42,7 @@ export function applyDecisionInTx(
   }
 }
 
-export class SqlOperatorDecisionStore implements Pick<
-  OperatorDecisionStore,
-  "get" | "findByIdempotency" | "record"
-> {
+export class SqlOperatorDecisionStore {
   constructor(
     private readonly store: EngineStore,
     private readonly events: SqlEventLedger,

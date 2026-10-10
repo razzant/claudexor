@@ -9,7 +9,7 @@ import {
   type EngineStore,
   type StoreEvent,
 } from "@claudexor/daemon";
-import { JournalRecoveryRequiredError, type JournalRecoveryState } from "@claudexor/journal";
+import { JournalRecoveryRequiredError, type JournalRecoveryState } from "@claudexor/daemon";
 import { SetupJobProjection } from "./setup-job-projection.js";
 import {
   idempotencyConflict,

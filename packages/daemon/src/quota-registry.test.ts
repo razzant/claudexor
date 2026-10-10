@@ -1,13 +1,22 @@
 import { fsyncSync, mkdtempSync, realpathSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { DurableJournal } from "@claudexor/journal";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import { withQuotaAvailability, type QuotaSubject } from "@claudexor/schema";
 import { hashJson, sha256 } from "@claudexor/util";
-import { JournalManager } from "./journal-manager.js";
-import { quotaProjection } from "./quota-projection.js";
+import { sqlFixture as openSqlFixture } from "./store/test-support/sql-fixture.js";
 import { QuotaRegistry } from "./quota-registry.js";
+
+const sqlStores: Array<Awaited<ReturnType<typeof openSqlFixture>>> = [];
+async function sqlFixture(root: string, now?: () => Date) {
+  const sql = await openSqlFixture(root, now);
+  sqlStores.push(sql);
+  return sql;
+}
+afterEach(async () => {
+  for (const sql of sqlStores.splice(0).reverse()) await sql.close();
+});
 
 function quotaSnapshot(harness: string, subjectId: string | null, usedRatio: number) {
   return {
@@ -397,50 +406,46 @@ describe("QuotaRegistry", () => {
   it("fences one refresh marker after the whole batch and replays only later direct mutations", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-fence-")));
     const now = () => new Date("2026-07-28T00:00:01.000Z");
-    const manager = new JournalManager(root, {
+    const manager = await sqlFixture(root, now);
+    const slot = new QuotaRegistry(
+      manager.graph.globalEvents,
+      [
+        async () => ({
+          snapshots: [quotaSnapshot("claude", null, 0.2), quotaSnapshot("claude", "work", 0.4)],
+        }),
+      ],
       now,
-    });
-    const slot = manager.registerProjection(
-      quotaProjection(
-        [
-          async () => ({
-            snapshots: [quotaSnapshot("claude", null, 0.2), quotaSnapshot("claude", "work", 0.4)],
-          }),
-        ],
-        () => [],
-        now,
-      ),
+      () => [],
     );
-    manager.start();
+    slot.recoverAfterStartup();
 
-    const fenced = await slot.current().refreshWithCursor();
+    const fenced = await slot.refreshWithCursor();
     expect(fenced.response.snapshots).toHaveLength(2);
-    const refreshEvents = manager.events();
+    const refreshEvents = manager.graph.journalEvents("global");
     expect(refreshEvents.map((event) => event.type)).toEqual([
       "quota.snapshot.upserted",
       "quota.snapshot.upserted",
       "quota.projection.updated",
     ]);
     expect(refreshEvents.at(-1)?.payload).toMatchObject({ reason: "refresh" });
-    expect(manager.events(fenced.quotaEventCursor)).toEqual([]);
+    expect(manager.graph.journalEvents("global", fenced.quotaEventCursor)).toEqual([]);
 
-    slot.current().upsert(quotaSnapshot("claude", "later", 0.6));
-    const laterEvents = manager.events(fenced.quotaEventCursor);
+    slot.upsert(quotaSnapshot("claude", "later", 0.6));
+    const laterEvents = manager.graph.journalEvents("global", fenced.quotaEventCursor);
     expect(laterEvents.map((event) => event.type)).toEqual([
       "quota.snapshot.upserted",
       "quota.projection.updated",
     ]);
     expect(laterEvents.at(-1)?.payload).toMatchObject({ reason: "direct_mutation" });
-    const afterUpsertCursor = manager.events().at(-1)?.cursor;
+    const afterUpsertCursor = manager.graph.journalEvents("global").at(-1)?.cursor;
     expect(afterUpsertCursor).toBeTruthy();
 
-    slot.current().removeSubject("claude", "later");
-    expect(manager.events(afterUpsertCursor).map((event) => event.type)).toEqual([
-      "quota.subject.removed",
-      "quota.projection.updated",
-    ]);
+    slot.removeSubject("claude", "later");
+    expect(
+      manager.graph.journalEvents("global", afterUpsertCursor).map((event) => event.type),
+    ).toEqual(["quota.subject.removed", "quota.projection.updated"]);
 
-    manager.close();
+    await manager.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -452,46 +457,44 @@ describe("QuotaRegistry", () => {
       plan_label: null,
       subject_id: null,
     };
-    const manager = new JournalManager(root, {
-      now: () => new Date("2026-07-28T00:00:02.000Z"),
-    });
-    const slot = manager.registerProjection(
-      quotaProjection(
-        [
-          async () => ({
-            snapshots: [],
-            absences: [
-              {
-                subject,
-                reason: "not_logged_in" as const,
-                detail: null,
-                observed_at: "2026-07-28T00:00:02.000Z",
-              },
-            ],
-          }),
-        ],
-        () => [subject],
-      ),
+    const manager = await sqlFixture(root, () => new Date("2026-07-28T00:00:02.000Z"));
+    const slot = new QuotaRegistry(
+      manager.graph.globalEvents,
+      [
+        async () => ({
+          snapshots: [],
+          absences: [
+            {
+              subject,
+              reason: "not_logged_in" as const,
+              detail: null,
+              observed_at: "2026-07-28T00:00:02.000Z",
+            },
+          ],
+        }),
+      ],
+      undefined,
+      () => [subject],
     );
-    manager.start();
+    slot.recoverAfterStartup();
 
-    const fenced = await slot.current().refreshWithCursor();
+    const fenced = await slot.refreshWithCursor();
     expect(fenced.response.snapshots).toEqual([]);
     expect(fenced.response.absences).toHaveLength(1);
-    const events = manager.events();
+    const events = manager.graph.journalEvents("global");
     expect(events.map((event) => event.type)).toEqual(["quota.projection.updated"]);
     expect(events[0]?.payload).toMatchObject({ reason: "refresh" });
-    expect(manager.events(fenced.quotaEventCursor)).toEqual([]);
+    expect(manager.graph.journalEvents("global", fenced.quotaEventCursor)).toEqual([]);
 
-    manager.close();
+    await manager.close();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("closes a recovered raw-mutation gap with one projection marker", () => {
+  it("closes a recovered raw-mutation gap with one projection marker", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-recovery-marker-")));
     const first = new DurableJournal({ rootDir: root, partition: "global" });
     first.append("quota.snapshot.upserted", quotaSnapshot("claude", "work", 0.4));
-    first.close();
+    await first.close();
 
     const afterUpsert = new DurableJournal({ rootDir: root, partition: "global" });
     const now = () => new Date("2026-07-28T00:00:01.000Z");
@@ -519,12 +522,12 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("ingests a typed harness quota event with its exact credential route", () => {
+  it("ingests a typed harness quota event with its exact credential route", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-ingest-")));
-    const manager = new JournalManager(root);
-    const slot = manager.registerProjection(quotaProjection());
-    manager.start();
-    slot.current().ingest("codex", {
+    const manager = await sqlFixture(root);
+    const slot = new QuotaRegistry(manager.graph.globalEvents, [], undefined, undefined);
+    slot.recoverAfterStartup();
+    slot.ingest("codex", {
       type: "usage",
       session_id: "session-1",
       ts: new Date().toISOString(),
@@ -545,11 +548,11 @@ describe("QuotaRegistry", () => {
         ],
       },
     });
-    expect(slot.current().read().snapshots[0]).toMatchObject({
+    expect(slot.read().snapshots[0]).toMatchObject({
       subject: { harness: "codex", credential_route: "vendor_native" },
       source: "codex_rollout",
     });
-    slot.current().ingest("codex", {
+    slot.ingest("codex", {
       type: "error",
       session_id: "session-1",
       ts: new Date().toISOString(),
@@ -557,22 +560,20 @@ describe("QuotaRegistry", () => {
       credential_route: "vendor_native",
       rate_limit: { resets_at: null, retry_delay_ms: 60_000 },
     });
-    expect(
-      slot
-        .current()
-        .read()
-        .snapshots[0]?.constraints.map((item) => item.id),
-    ).toEqual(["primary", "cooldown"]);
-    manager.close();
+    expect(slot.read().snapshots[0]?.constraints.map((item) => item.id)).toEqual([
+      "primary",
+      "cooldown",
+    ]);
+    await manager.close();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("a profiled quota event registers under ITS profile subject, never the engine default (round-17 #2)", () => {
+  it("a profiled quota event registers under ITS profile subject, never the engine default (round-17 #2)", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-subject-")));
-    const manager = new JournalManager(root);
-    const slot = manager.registerProjection(quotaProjection());
-    manager.start();
-    slot.current().ingest("codex", {
+    const manager = await sqlFixture(root);
+    const slot = new QuotaRegistry(manager.graph.globalEvents, [], undefined, undefined);
+    slot.recoverAfterStartup();
+    slot.ingest("codex", {
       type: "usage",
       session_id: "session-1",
       ts: new Date().toISOString(),
@@ -596,28 +597,28 @@ describe("QuotaRegistry", () => {
         ],
       },
     });
-    expect(slot.current().read().snapshots[0]?.subject).toMatchObject({
+    expect(slot.read().snapshots[0]?.subject).toMatchObject({
       harness: "codex",
       credential_route: "vendor_native",
       subject_id: "acc2",
     });
-    expect(slot.current().removeSubject("codex", "acc2")).toBe(1);
-    expect(slot.current().read().snapshots).toEqual([]);
-    manager.close();
-    const restarted = new JournalManager(root);
-    const restartedSlot = restarted.registerProjection(quotaProjection());
-    restarted.start();
-    expect(restartedSlot.current().read().snapshots).toEqual([]);
-    restarted.close();
+    expect(slot.removeSubject("codex", "acc2")).toBe(1);
+    expect(slot.read().snapshots).toEqual([]);
+    await manager.close();
+    const restarted = await sqlFixture(root);
+    const restartedSlot = new QuotaRegistry(restarted.graph.globalEvents, [], undefined, undefined);
+    restartedSlot.recoverAfterStartup();
+    expect(restartedSlot.read().snapshots).toEqual([]);
+    await restarted.close();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("records Claude api_retry cooldowns as retry evidence, never as statusline quota", () => {
+  it("records Claude api_retry cooldowns as retry evidence, never as statusline quota", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-claude-retry-")));
-    const manager = new JournalManager(root);
-    const slot = manager.registerProjection(quotaProjection());
-    manager.start();
-    slot.current().ingest("claude", {
+    const manager = await sqlFixture(root);
+    const slot = new QuotaRegistry(manager.graph.globalEvents, [], undefined, undefined);
+    slot.recoverAfterStartup();
+    slot.ingest("claude", {
       type: "thinking",
       session_id: "session-claude",
       // Recent: observations older than 24h are pruned from reads (W17).
@@ -629,7 +630,7 @@ describe("QuotaRegistry", () => {
       rate_limit: { resets_at: null, retry_delay_ms: 30_000 },
     });
 
-    expect(slot.current().read().snapshots).toEqual([
+    expect(slot.read().snapshots).toEqual([
       expect.objectContaining({
         subject: expect.objectContaining({
           harness: "claude",
@@ -639,20 +640,20 @@ describe("QuotaRegistry", () => {
         constraints: [expect.objectContaining({ id: "cooldown" })],
       }),
     ]);
-    manager.close();
+    await manager.close();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("persists independent model-scoped Claude cooldown windows", () => {
+  it("persists independent model-scoped Claude cooldown windows", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-claude-model-cooldown-")));
-    const manager = new JournalManager(root);
-    const slot = manager.registerProjection(quotaProjection());
-    manager.start();
+    const manager = await sqlFixture(root);
+    const slot = new QuotaRegistry(manager.graph.globalEvents, [], undefined, undefined);
+    slot.recoverAfterStartup();
     for (const [constraintId, aliases] of [
       ["seven_day_opus", ["opus", "claude-opus-5", "best"]],
       ["seven_day_sonnet", ["sonnet", "claude-sonnet-5", "best"]],
     ] as const) {
-      slot.current().ingest("claude", {
+      slot.ingest("claude", {
         type: "status",
         session_id: `session-${constraintId}`,
         ts: new Date().toISOString(),
@@ -665,7 +666,7 @@ describe("QuotaRegistry", () => {
         },
       });
     }
-    expect(slot.current().read().snapshots[0]?.constraints).toEqual(
+    expect(slot.read().snapshots[0]?.constraints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "cooldown:seven_day_opus",
@@ -677,11 +678,11 @@ describe("QuotaRegistry", () => {
         }),
       ]),
     );
-    manager.close();
-    const restarted = new JournalManager(root);
-    const restartedSlot = restarted.registerProjection(quotaProjection());
-    restarted.start();
-    expect(restartedSlot.current().read().snapshots[0]?.constraints).toEqual(
+    await manager.close();
+    const restarted = await sqlFixture(root);
+    const restartedSlot = new QuotaRegistry(restarted.graph.globalEvents, [], undefined, undefined);
+    restartedSlot.recoverAfterStartup();
+    expect(restartedSlot.read().snapshots[0]?.constraints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: "cooldown:seven_day_opus",
@@ -693,11 +694,11 @@ describe("QuotaRegistry", () => {
         }),
       ]),
     );
-    restarted.close();
+    await restarted.close();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps the durable base upsert readable by v3.2.0 while replaying model scopes", () => {
+  it("keeps the durable base upsert readable by v3.2.0 while replaying model scopes", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-rollback-compat-")));
     const now = () => new Date("2026-07-28T00:00:01.000Z");
     const first = new DurableJournal({ rootDir: root, partition: "global" });
@@ -759,7 +760,7 @@ describe("QuotaRegistry", () => {
       "used_ratio",
       "window_seconds",
     ]);
-    first.close();
+    await first.close();
 
     const replay = new DurableJournal({ rootDir: root, partition: "global" });
     const recovered = new QuotaRegistry(replay, [], now);
@@ -771,12 +772,12 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("registers a cursor vendor-limit cooldown under its own source and profile subject (A4)", () => {
+  it("registers a cursor vendor-limit cooldown under its own source and profile subject (A4)", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-cursor-cooldown-")));
-    const manager = new JournalManager(root);
-    const slot = manager.registerProjection(quotaProjection());
-    manager.start();
-    slot.current().ingest("cursor", {
+    const manager = await sqlFixture(root);
+    const slot = new QuotaRegistry(manager.graph.globalEvents, [], undefined, undefined);
+    slot.recoverAfterStartup();
+    slot.ingest("cursor", {
       type: "error",
       session_id: "session-cursor",
       ts: new Date().toISOString(),
@@ -784,7 +785,7 @@ describe("QuotaRegistry", () => {
       credential_profile_id: "valintine",
       rate_limit: { resets_at: null, retry_delay_ms: null, applies_to_models: null },
     });
-    expect(slot.current().read().snapshots).toEqual([
+    expect(slot.read().snapshots).toEqual([
       expect.objectContaining({
         subject: expect.objectContaining({
           harness: "cursor",
@@ -798,16 +799,13 @@ describe("QuotaRegistry", () => {
     // The profile stamp scopes the cooldown: the default cursor subject stays
     // uncooled by a profiled limit.
     expect(
-      slot
-        .current()
-        .read()
-        .snapshots.filter((snapshot) => snapshot.subject.subject_id === null),
+      slot.read().snapshots.filter((snapshot) => snapshot.subject.subject_id === null),
     ).toEqual([]);
-    manager.close();
+    await manager.close();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("bounds a day-granular vendor reset at end-of-that-day UTC instead of the 5-minute default", () => {
+  it("bounds a day-granular vendor reset at end-of-that-day UTC instead of the 5-minute default", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-cursor-reset-day-")));
     const now = () => new Date("2026-08-17T10:00:00.000Z");
     const journal = new DurableJournal({ rootDir: root, partition: "global" });
@@ -831,7 +829,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("writes a v3.2.0-parseable base source for cursor cooldowns while replaying the true source", () => {
+  it("writes a v3.2.0-parseable base source for cursor cooldowns while replaying the true source", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-cursor-rollback-")));
     const now = () => new Date("2026-08-17T10:00:00.000Z");
     const first = new DurableJournal({ rootDir: root, partition: "global" });
@@ -852,7 +850,7 @@ describe("QuotaRegistry", () => {
     expect(
       first.records().filter((record) => record.type === "quota.snapshot.scoped_prepared"),
     ).toHaveLength(1);
-    first.close();
+    await first.close();
 
     const replay = new DurableJournal({ rootDir: root, partition: "global" });
     const recovered = new QuotaRegistry(replay, [], now);
@@ -864,7 +862,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps server availability out of raw journal payloads and projection signatures", () => {
+  it("keeps server availability out of raw journal payloads and projection signatures", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-raw-availability-")));
     const journal = new DurableJournal({ rootDir: root, partition: "global" });
     const registry = new QuotaRegistry(journal, [], () => new Date("2026-07-28T00:00:01.000Z"));
@@ -898,7 +896,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("journals an upsert only when the evidence changes; observed_at alone stays in memory", () => {
+  it("journals an upsert only when the evidence changes; observed_at alone stays in memory", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-upsert-on-change-")));
     const now = () => new Date("2026-07-28T00:10:00.000Z");
     const journal = new DurableJournal({ rootDir: root, partition: "global" });
@@ -940,7 +938,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps the scoped prepare+upsert pair adjacent and change-gated", () => {
+  it("keeps the scoped prepare+upsert pair adjacent and change-gated", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-scoped-gate-")));
     const now = () => new Date("2026-07-28T00:00:01.000Z");
     const journal = new DurableJournal({ rootDir: root, partition: "global" });
@@ -977,7 +975,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("discards a scoped prepare when its atomic batch stops before the base commit", () => {
+  it("discards a scoped prepare when its atomic batch stops before the base commit", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-batch-stop-")));
     const interrupted = new DurableJournal({
       rootDir: root,
@@ -1034,7 +1032,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("falls back to the compatible base for malformed or future scoped prepares", () => {
+  it("falls back to the compatible base for malformed or future scoped prepares", async () => {
     const base = quotaSnapshot("claude", null, 0.2);
     const scoped = {
       ...base,
@@ -1057,7 +1055,7 @@ describe("QuotaRegistry", () => {
         { type: "quota.snapshot.scoped_prepared", payload: prepare },
         { type: "quota.snapshot.upserted", payload: base },
       ]);
-      first.close();
+      await first.close();
 
       const replay = new DurableJournal({ rootDir: root, partition: "global" });
       const recovered = new QuotaRegistry(replay, [], () => new Date("2026-07-28T00:00:01.000Z"));
@@ -1073,7 +1071,7 @@ describe("QuotaRegistry", () => {
 
   it.each([false, true])(
     "keeps original sequence adjacency after type filtering (compacted=%s)",
-    (compacted) => {
+    async (compacted) => {
       for (const gap of [false, true]) {
         const root = realpathSync.native(mkdtempSync(join(tmpdir(), "quota-filter-gap-")));
         const base = quotaSnapshot("claude", null, 0.2);
@@ -1113,7 +1111,7 @@ describe("QuotaRegistry", () => {
     },
   );
 
-  it("lets a later unscoped commit replace a previously scoped snapshot on replay", () => {
+  it("lets a later unscoped commit replace a previously scoped snapshot on replay", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-unscoped-replace-")));
     const now = () => new Date("2026-07-28T00:00:01.000Z");
     const first = new DurableJournal({ rootDir: root, partition: "global" });
@@ -1133,7 +1131,7 @@ describe("QuotaRegistry", () => {
       ],
     });
     registry.upsert(quotaSnapshot("claude", null, 0.2));
-    first.close();
+    await first.close();
 
     const replay = new DurableJournal({ rootDir: root, partition: "global" });
     const recovered = new QuotaRegistry(replay, [], now);
@@ -1146,19 +1144,18 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps a new scoped cooldown fresh after an older sibling reset expires", () => {
+  it("keeps a new scoped cooldown fresh after an older sibling reset expires", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-claude-cooldown-expiry-")));
     let now = new Date("2026-08-03T00:00:00.000Z");
-    const manager = new JournalManager(root);
-    const slot = manager.registerProjection(
-      quotaProjection(
-        [],
-        () => [],
-        () => now,
-      ),
+    const manager = await sqlFixture(root);
+    const slot = new QuotaRegistry(
+      manager.graph.globalEvents,
+      [],
+      () => now,
+      () => [],
     );
-    manager.start();
-    slot.current().ingest("claude", {
+    slot.recoverAfterStartup();
+    slot.ingest("claude", {
       type: "status",
       session_id: "session-opus",
       ts: now.toISOString(),
@@ -1171,7 +1168,7 @@ describe("QuotaRegistry", () => {
       },
     });
     now = new Date("2026-08-03T00:00:02.000Z");
-    slot.current().ingest("claude", {
+    slot.ingest("claude", {
       type: "status",
       session_id: "session-sonnet",
       ts: now.toISOString(),
@@ -1183,7 +1180,7 @@ describe("QuotaRegistry", () => {
         retry_delay_ms: null,
       },
     });
-    expect(slot.current().read().snapshots).toEqual([
+    expect(slot.read().snapshots).toEqual([
       expect.objectContaining({
         freshness: "fresh",
         constraints: [
@@ -1194,16 +1191,16 @@ describe("QuotaRegistry", () => {
         ],
       }),
     ]);
-    manager.close();
+    await manager.close();
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("persists all windows and marks expired data stale without fabricating zero usage", () => {
+  it("persists all windows and marks expired data stale without fabricating zero usage", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-")));
-    const first = new JournalManager(root);
-    const slot = first.registerProjection(quotaProjection());
-    first.start();
-    slot.current().upsert({
+    const first = await sqlFixture(root);
+    const slot = new QuotaRegistry(first.graph.globalEvents, [], undefined, undefined);
+    slot.recoverAfterStartup();
+    slot.upsert({
       subject: {
         harness: "codex",
         credential_route: "vendor_native",
@@ -1234,17 +1231,17 @@ describe("QuotaRegistry", () => {
         },
       ],
     });
-    first.close();
+    await first.close();
 
-    const reopened = new JournalManager(root);
-    const replayed = reopened.registerProjection(quotaProjection());
-    reopened.start();
-    const value = replayed.current().read();
+    const reopened = await sqlFixture(root);
+    const replayed = new QuotaRegistry(reopened.graph.globalEvents, [], undefined, undefined);
+    replayed.recoverAfterStartup();
+    const value = replayed.read();
     expect(value.snapshots[0]?.freshness).toBe("stale");
     expect(value.snapshots[0]?.constraints).toHaveLength(2);
     expect(value.snapshots[0]?.constraints[0]?.used_ratio).toBe(0.42);
     expect(value.snapshots[0]?.constraints[1]?.used_ratio).toBeNull();
-    reopened.close();
+    await reopened.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -1940,7 +1937,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("prunes snapshots older than 24h from every projection read (W17)", () => {
+  it("prunes snapshots older than 24h from every projection read (W17)", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-prune-")));
     const journal = new DurableJournal({ rootDir: root, partition: "global" });
     let nowIso = "2026-07-16T12:00:00.000Z";
@@ -2249,7 +2246,7 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("keeps an old observation whose constraint still extends into the future (live weekly cooldown)", () => {
+  it("keeps an old observation whose constraint still extends into the future (live weekly cooldown)", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-live-")));
     const journal = new DurableJournal({ rootDir: root, partition: "global" });
     let nowIso = "2026-07-16T12:00:00.000Z";

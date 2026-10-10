@@ -1,5 +1,10 @@
 import { RunEvent, type RunTelemetry } from "@claudexor/schema";
-import { commandDigests, validateCommandKey, type CommandStore } from "../command-store.js";
+import {
+  commandDigests,
+  validateCommandKey,
+  type AcceptCommand,
+  type FindCommand,
+} from "../command-store.js";
 import { journaledRunEventCopy } from "../journaled-run-events.js";
 import type { JobRecord } from "../job-record.js";
 import type { CommandStorePort } from "../store-contracts.js";
@@ -25,9 +30,6 @@ import type { PartitionGeneration } from "./partitions.js";
 import type { EngineStore } from "./store.js";
 import type { SqlTerminalFiles } from "./terminal-files.js";
 import { applyTerminalInTx, storedTerminal } from "./run-events.js";
-
-type AcceptCommand = Parameters<CommandStore["accept"]>[0];
-type FindCommand = Parameters<CommandStore["find"]>[0];
 
 /** Partition-scoped SQL command writes. Collection reads live in the separate
  * addressed query owner, not an enumerable in-memory command cache. */
