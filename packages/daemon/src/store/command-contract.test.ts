@@ -16,6 +16,7 @@ import { createPartition, currentGeneration } from "./partitions.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
 import { legacyOracle } from "./test-support/legacy-oracle.js";
+import { maintenanceCommandSummary } from "./command-rows.js";
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -74,6 +75,63 @@ const request = (id: string, params: unknown = { mode: "ask", prompt: "hello" })
 });
 
 describe("SQL command authority", () => {
+  it("maintenance inventory reads bounded canonical evidence by harness without body reads", async () => {
+    const f = await fixture();
+    const evidence = {
+      lifecycle: "succeeded",
+      phase: "settled",
+      mechanism: "managed_npm",
+      target: { kind: "version", version: "2.0.0" },
+      before: { version: "1.0.0", binary: "/fixture/vendor", selection: "managed", proved: true },
+      after: null,
+      mutation: "applied",
+      termination: "not_applicable",
+      limitations: [],
+      progress: ["x".repeat(100000)],
+      problem: null,
+    };
+    for (const [id, harness] of [
+      ["first", "codex"],
+      ["other", "claude"],
+      ["latest", "codex"],
+      ["archived", "codex"],
+    ]) {
+      f.commands.accept(
+        request(id!, {
+          kind: "harness_maintenance",
+          harness,
+          target: { kind: "version", version: "2.0.0" },
+        }),
+      );
+      expect(f.commands.get(id!)?.result).toBeUndefined();
+      f.commands.update(id!, { state: "succeeded", finishedAt: TIME, result: evidence });
+    }
+    const expected = ["latest", "first"].map((id) =>
+      maintenanceCommandSummary(f.commands.get(id)!),
+    );
+    f.store.transaction(() =>
+      f.store.prepare("UPDATE command SET live=0 WHERE id='archived'").run(),
+    );
+    const read = vi.spyOn(f.blobs, "read"),
+      prepare = vi.spyOn(f.store, "prepare");
+    expect(f.queries.maintenanceForHarness("codex")).toEqual(expected);
+    expect(f.queries.maintenanceForHarness("unknown")).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
+    const query = prepare.mock.calls.find(([sql]) =>
+      sql.includes("INDEXED BY command_maintenance_harness"),
+    )![0];
+    const plan = (
+      f.store.prepare(`EXPLAIN QUERY PLAN ${query}`).all("codex") as Array<{ detail: string }>
+    )
+      .map((row) => row.detail)
+      .join("\n");
+    expect(plan).toContain("command_maintenance_harness");
+    expect(plan).not.toMatch(/SCAN command|TEMP B-TREE/);
+    expect(Buffer.byteLength(JSON.stringify(expected[0]))).toBeLessThan(600);
+    expect(f.commands.get("latest")!.result).toEqual(evidence);
+    f.commands.update("latest", { result: { phase: "invalid" } });
+    expect(f.queries.maintenanceForHarness("codex")[0]?.evidence).toBeNull();
+  });
   it("preserves frozen digest/replay/immutable params and separates digest from body identity", async () => {
     const f = await fixture();
     const input = {

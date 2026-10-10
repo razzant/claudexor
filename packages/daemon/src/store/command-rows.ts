@@ -1,4 +1,4 @@
-import { continuedRunOf, delegatedParentOf } from "@claudexor/schema";
+import { continuedRunOf, delegatedParentOf, HarnessMaintenanceEvidence } from "@claudexor/schema";
 import { compactCommandRecord } from "../command-list-projection.js";
 import { isNeedsDecision } from "../command-retention.js";
 import { validateCommandRecord } from "../command-store.js";
@@ -50,6 +50,50 @@ const object = (value: unknown): Record<string, unknown> =>
     : {};
 const encoded = (value: unknown): Buffer => Buffer.from(JSON.stringify(value ?? null));
 
+export type MaintenanceCommandSummary = Pick<
+  JobRecord,
+  "id" | "state" | "createdAt" | "startedAt" | "finishedAt"
+> & {
+  harness: string;
+  evidence:
+    | (Pick<HarnessMaintenanceEvidence, "phase" | "target" | "mutation"> & {
+        before: Pick<
+          NonNullable<HarnessMaintenanceEvidence["before"]>,
+          "version" | "proved"
+        > | null;
+      })
+    | null;
+};
+
+/** Inventory and previous-version selection need only these receipt facts.
+ * Full detail keeps the original body; partial evidence is never parsed as a
+ * complete HarnessMaintenanceEvidence. The legacy read adapter can reuse this. */
+export function maintenanceCommandSummary(record: JobRecord): MaintenanceCommandSummary | null {
+  const params = object(record.params);
+  if (params.kind !== "harness_maintenance" || typeof params.harness !== "string") return null;
+  const { lifecycle: _lifecycle, ...result } = object(record.result);
+  const parsed = HarnessMaintenanceEvidence.safeParse(result);
+  const evidence = parsed.success ? parsed.data : null;
+  return {
+    id: record.id,
+    state: record.state,
+    createdAt: record.createdAt,
+    startedAt: record.startedAt,
+    finishedAt: record.finishedAt,
+    harness: params.harness,
+    evidence: evidence
+      ? {
+          phase: evidence.phase,
+          target: evidence.target,
+          mutation: evidence.mutation,
+          before: evidence.before
+            ? { version: evidence.before.version, proved: evidence.before.proved }
+            : null,
+        }
+      : null,
+  };
+}
+
 /** One mapper for accept, update, terminal, import and recovery. Indexed facts
  * are derived here; immutable params/kind/acceptance metadata can be reused. */
 export function prepareCommandRow(
@@ -73,6 +117,11 @@ export function prepareCommandRow(
   // Internal scheduling needs the command family; product collections already
   // exclude these rows, so no model request or account binding crosses them.
   if (kind !== "product") summary.params = { ...object(summary.params), kind: params.kind };
+  if (kind === "maintenance") {
+    const maintenance = maintenanceCommandSummary(record);
+    summary.params = { ...object(summary.params), harness: maintenance?.harness ?? null };
+    summary.result = maintenance?.evidence ?? null;
+  }
   const error = Object.fromEntries(
     Object.entries(record).filter(([key]) => key.startsWith("error")),
   );
@@ -165,9 +214,14 @@ export function commandSummary(row: Pick<CommandRow, "summary">): JobRecord {
 
 /** Full bodies are hydrated only for an addressed detail, retry or mutation. */
 export function hydrateCommand(row: CommandRow, blobs: Pick<BlobFiles, "read">): JobRecord {
-  const { promptPreview: _preview, ...record } = commandSummary(row) as JobRecord & {
+  const {
+    promptPreview: _preview,
+    result: _summaryResult,
+    ...metadata
+  } = commandSummary(row) as JobRecord & {
     promptPreview?: string;
   };
+  const record: JobRecord = metadata;
   record.params = JSON.parse(blobs.read(row.params_sha).toString("utf8")) as unknown;
   if (row.result_sha !== null)
     record.result = JSON.parse(blobs.read(row.result_sha).toString("utf8")) as unknown;

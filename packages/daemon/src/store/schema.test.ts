@@ -82,6 +82,7 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "command_expiry",
         "command_list",
         "command_list_state",
+        "command_maintenance_harness",
         "command_prunable",
         "command_result",
         "command_request_resource",

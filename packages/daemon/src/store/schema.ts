@@ -48,6 +48,8 @@ CREATE INDEX command_terminal  ON command(created_at, id)
 CREATE INDEX command_prunable  ON command(created_at, id)
   WHERE live = 1 AND kind IN ('product','delivery','maintenance') AND finished_at IS NOT NULL AND needs_decision = 0;
 CREATE INDEX command_expiry    ON command(response_state, response_expires_at) WHERE kind = 'model';
+CREATE INDEX command_maintenance_harness ON command(json_extract(CAST(summary AS TEXT),'$.params.harness'),created_at)
+  WHERE live=1 AND kind='maintenance';
 CREATE INDEX command_params    ON command(params_sha);
 CREATE INDEX command_result    ON command(result_sha) WHERE result_sha IS NOT NULL;
 CREATE TABLE run_terminal(run_id TEXT PRIMARY KEY, pid INTEGER NOT NULL, event BLOB NOT NULL) STRICT;

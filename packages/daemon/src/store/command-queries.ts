@@ -3,7 +3,12 @@ import { parseCommandListQuery } from "../command-list-select.js";
 import { publicJobRecord, type JobRecord } from "../job-record.js";
 import type { CommandQueries } from "../store-contracts.js";
 import type { BlobFiles } from "./blob-files.js";
-import { commandRow, commandSummary, hydrateCommand } from "./command-rows.js";
+import {
+  commandRow,
+  commandSummary,
+  hydrateCommand,
+  type MaintenanceCommandSummary,
+} from "./command-rows.js";
 import type { EngineStore } from "./store.js";
 
 type SummaryRow = {
@@ -64,6 +69,30 @@ export class SqlCommandQueries implements CommandQueries, ModelResourceQueries {
     return Number(
       (this.store.prepare("SELECT count(*) AS n FROM command").get() as { n: number }).n,
     );
+  }
+
+  /** Newest retained operations for this harness, without params/result bodies. */
+  maintenanceForHarness(harness: string): MaintenanceCommandSummary[] {
+    return (
+      this.store
+        .prepare(
+          `SELECT summary FROM command INDEXED BY command_maintenance_harness
+      WHERE live=1 AND kind='maintenance' AND json_extract(CAST(summary AS TEXT),'$.params.harness')=?
+      ORDER BY created_at DESC,rowid DESC`,
+        )
+        .all(harness) as Array<{ summary: Uint8Array }>
+    ).map((row) => {
+      const record = commandSummary(row);
+      return {
+        id: record.id,
+        state: record.state,
+        createdAt: record.createdAt,
+        startedAt: record.startedAt,
+        finishedAt: record.finishedAt,
+        harness,
+        evidence: record.result as MaintenanceCommandSummary["evidence"],
+      };
+    });
   }
 
   expiredResponses(now: string): string[] {
