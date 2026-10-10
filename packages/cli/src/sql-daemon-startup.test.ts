@@ -544,4 +544,72 @@ describe.skipIf(!sqlite)("production SQL daemon startup process qualification", 
     expect(existsSync(join(f.daemon, "journal"))).toBe(true);
     expect(existsSync(f.database)).toBe(false);
   }, 60_000);
+
+  it("keeps global and healthy project HTTP writable beside a damaged project", async () => {
+    const f = new Fixture("project-isolation");
+    f.start();
+    await f.httpReady();
+    await f.mode("normal");
+    const goodRoot = join(f.root, "healthy"),
+      badRoot = join(f.root, "damaged");
+    mkdirSync(goodRoot);
+    mkdirSync(badRoot);
+    await f.request("/v2/projects", "POST", { root: goodRoot });
+    const bad = await f.request<{ id: string }>("/v2/projects", "POST", { root: badRoot });
+    await f.request("/v2/threads", "POST", {
+      title: "retained damaged-project evidence",
+      scope: { kind: "project", root: badRoot },
+    });
+    await f.stop();
+    readSql(f, (db) => {
+      expect(
+        db
+          .prepare("UPDATE partition SET status='recovery_required' WHERE name=?")
+          .run(`project:${bad.id}`).changes,
+      ).toBe(1);
+    });
+
+    f.start();
+    await f.httpReady();
+    await f.mode("normal");
+    const global = await f.request<{ id: string }>("/v2/threads", "POST", {
+      title: "global still writable",
+    });
+    const healthy = await f.request<{ id: string }>("/v2/threads", "POST", {
+      title: "healthy still writable",
+      scope: { kind: "project", root: goodRoot },
+    });
+    expect(
+      await f.request(
+        "/v2/threads",
+        "POST",
+        {
+          title: "must refuse damaged project",
+          scope: { kind: "project", root: badRoot },
+        },
+        409,
+      ),
+    ).toMatchObject({ code: "journal_recovery_required" });
+    const recoveryPath = `/v2/recovery/partitions/${encodeURIComponent(`project:${bad.id}`)}`;
+    expect((await f.request<ControlJournalInspection>(recoveryPath)).status).toBe(
+      "recovery_required",
+    );
+    expect(await f.request(`${recoveryPath}/validate`, "POST", {})).toMatchObject({
+      status: "recovery_required",
+    });
+    expect((await f.hello()).servingMode).toBe("normal");
+    const listed = await f.request<{ threads: Array<{ id: string }> }>("/v2/threads");
+    expect(listed.threads.map((row) => row.id)).toEqual(
+      expect.arrayContaining([global.id, healthy.id]),
+    );
+    await f.stop();
+    readSql(f, (db) => {
+      expect(
+        db.prepare("SELECT status FROM partition WHERE name=?").get(`project:${bad.id}`),
+      ).toEqual({ status: "recovery_required" });
+      expect(
+        db.prepare("SELECT count(*) AS n FROM thread WHERE id IN (?,?)").get(global.id, healthy.id),
+      ).toEqual({ n: 2 });
+    });
+  }, 60_000);
 });
