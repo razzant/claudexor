@@ -240,7 +240,7 @@ jobs:
           node scripts/verify-win32-conpty-helper.mjs --file $fixture
 
       - name: Upload the internal Windows authority artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
           path: ${{ runner.temp }}/windows-conpty-authority
@@ -823,7 +823,7 @@ jobs:
           (cd "$assets" && shasum -a 256 * > SHA256SUMS)
 
       - name: Upload immutable candidate assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
           path: ${{ runner.temp }}/release-assets
