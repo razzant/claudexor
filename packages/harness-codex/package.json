@@ -24,7 +24,7 @@
     "@claudexor/schema": "workspace:*",
     "@claudexor/secrets": "workspace:*",
     "@claudexor/util": "workspace:*",
-    "undici": "7.25.0"
+    "undici": "8.11.2"
   },
   "repository": {
     "type": "git",
