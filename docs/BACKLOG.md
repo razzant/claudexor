@@ -53,12 +53,12 @@ deferred; they are recorded here now.
   60-second `git add` timeout on a legitimately huge plausible root leaves an
   `index.lock`; a partial init failure does not roll back a self-created
   `.git`.
-- #130 consent model (designed, owner-locked deferral): auto-init only for
-  empty or freshly created roots, consent prompts for non-empty ones, a user's
-  own `git init` as consent, a one-click Initialize remediation, and composer
-  pre-disable via the run-applicability matrix. The comparator rationale lives
-  in `docs/WHITEPAPER.md` (Workspace Semantics); the release process files
-  this as a GitHub issue from the project tracker account.
+- #130 consent model (declined, owner decision 2026-10-03; #143 closed as not
+  planned): the first writing run in a plain folder keeps automatic Git setup,
+  with no consent stop on non-empty roots. Such a stop would sit on the most
+  common start path, and INV-120 asks a new restriction for demonstrated harm;
+  none was seen outside home, which #130 refuses. Each init emits
+  `project.git.initialized`; directory workspaces (3.11.0) need no Git.
 
 ## v3.2.0 post-dogfood adjudication deferrals
 
