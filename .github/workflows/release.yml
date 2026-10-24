@@ -178,7 +178,7 @@ jobs:
 
       - name: Download the candidate authority artifact for exact publish promotion
         if: needs.prepare.outputs.mode == 'publish'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
           path: ${{ runner.temp }}/windows-conpty-authority
@@ -264,7 +264,7 @@ jobs:
           persist-credentials: false
 
       - name: Download authoritative Windows ConPTY bytes
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
           path: ${{ runner.temp }}/windows-conpty-authority
@@ -486,7 +486,7 @@ jobs:
 
       - name: Promote the exact candidate release artifact (publish, A-5)
         if: needs.prepare.outputs.mode == 'publish'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
           path: candidate-assets
@@ -848,12 +848,12 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
           path: release-assets
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
           path: windows-conpty-authority
@@ -976,7 +976,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
           path: release-assets
@@ -1004,11 +1004,11 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
           path: release-assets
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
           path: windows-conpty-authority
@@ -1082,7 +1082,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-windows-conpty-authority
           path: windows-conpty-authority
@@ -1131,7 +1131,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
           path: release-assets
