@@ -5787,17 +5787,19 @@ then PATH. The launch is refused before any process starts when the resolver pro
 the install broken, so that search cannot start a file nobody selected (an image in
 the cwd or under a relative PATH entry), or when the search would reach a proven
 non-image. The refusal carries the spawn error the OS reports for that file
-(`EFTYPE`) and its message leads with the file and the verdict, so doctor, discovery,
-the broken-install advisory and the bounded auth-status detail report the
-unlaunchable file instead of a missing CLI. On Windows, PATH is read as libuv reads
-it: normalization preserves quoted entries containing `;`, a child env without
-PATH searches the daemon's own PATH, and an empty PATH searches no directory. On every platform, relative PATH
+(`EFTYPE`) and its message leads with the file and the verdict. Claude doctor,
+discovery, the broken-install advisory and bounded auth-status detail name the
+unlaunchable file; Codex appends that detail to its missing-CLI summary. Windows
+PATH is read as libuv reads it: normalization preserves quoted entries containing
+`;`, an unclosed quote consumes the remaining PATH, a child env without PATH
+searches the daemon's own PATH, and an empty PATH searches no directory. On every platform, relative PATH
 entries resolve at the daemon's cwd, for a run and for the probes that vouch for its
 binary alike, and the run is given the selected file's absolute path; an explicitly
 relative override resolves from the child's cwd. The shape is not loader validity:
 an image for another architecture or with damaged headers still reaches the OS, an
-unreadable file or failed read is not proof, and POSIX executability rules are
-unchanged. The Windows
+unreadable file or failed read is not proof. An incomplete header during an in-place
+update can be refused for that inspection; the next resolution rechecks it.
+POSIX executability rules are unchanged. The Windows
 smoke is `scripts/windows-local-install-smoke.mjs`; native Windows login and Agent
 execution are separate acceptance claims, not consequences of package resolution.
 The omitted target remains `remote`; the SSH installer's destination and PATH

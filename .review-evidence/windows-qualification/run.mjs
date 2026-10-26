@@ -10,7 +10,7 @@ assert.equal(process.platform,'win32','Run on an actual Windows host');
 const [outArg='.review-evidence/windows-qualification/out',...selection]=process.argv.slice(2);
 const out=resolve(outArg),here=dirname(fileURLToPath(import.meta.url));
 const cases=selection.length?selection:['npm-placeholder','npm-nul','npm-mz-no-pe','direct-and-npm','direct-com',
-  'explicit-exe','explicit-cmd','explicit-relative','cwd-only','bad-interpreter','native-x64','native-x86','direct-native','direct-native-com','js','fallback','repair','quoted-placeholder','quoted-native','missing-path-placeholder','missing-path-native','placeholder-cwd-native','quoted-double-placeholder','quoted-double-native'];
+  'explicit-exe','explicit-cmd','explicit-relative','cwd-only','bad-interpreter','native-x64','native-x86','direct-native','direct-native-com','js','fallback','repair','quoted-placeholder','quoted-native','missing-path-placeholder','missing-path-native','placeholder-cwd-native','quoted-double-placeholder','quoted-double-native','trailing-dot-bad','trailing-dot-good'];
 const rows=[];
 const scratch=mkdtempSync(join(tmpdir(),'cx-win-qualification-'));
 const bundle=join(out,'candidate.mjs'),fixture=join(out,'fixture-x64.exe'),fixture86=join(out,'fixture-x86.exe');

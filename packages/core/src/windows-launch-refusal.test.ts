@@ -134,6 +134,40 @@ function escaped(text: string): string {
 }
 
 describe("a provable non-image is never launched", () => {
+  it("uses the trailing dot exactly as Windows spawn does", async () => {
+    const bad = file(join(root, "tool.exe"), PLACEHOLDER);
+    const bin = join(root, "tool.");
+    expect(thrown(() => prepareHarnessCommand(bin, [], { PATH: root }, "win32"))).toMatchObject({
+      code: "EFTYPE",
+      path: bad,
+    });
+    await onWindows(async () => {
+      await expect(runCapture(bin, [], { env: { PATH: root } })).rejects.toMatchObject({
+        code: "EFTYPE",
+        path: bad,
+      });
+      await expect(runCaptureRaw(bin, [], { env: { PATH: root } })).rejects.toMatchObject({
+        code: "EFTYPE",
+        path: bad,
+      });
+    });
+    expect(observer.attempts).toEqual([]);
+    writeFileSync(bad, image());
+    expect(thrown(() => prepareHarnessCommand(bin, [], { PATH: root }, "win32"))).toBeUndefined();
+  });
+
+  it("names unlaunchable candidates in quoted PATH diagnostic fallbacks", async () => {
+    const prefix = join(root, `tools${delimiter}local`);
+    const candidate = join(prefix, "unavailable.exe");
+    mkdirSync(candidate, { recursive: true });
+    const shim = file(join(prefix, "unsupported.cmd"), "echo custom launcher\n");
+    await onWindows(async () => {
+      const env = { ...process.env, PATH: `"${prefix}"` };
+      expect(brokenInstallAdvisory("unavailable", env, [])).toContain(candidate);
+      expect(brokenInstallAdvisory("unsupported", env, [])).toContain(shim);
+    });
+    expect(observer.attempts).toEqual([]);
+  });
   it.each(NOT_IMAGES)("rejects an npm launcher target that is %s, naming it", (_kind, bytes) => {
     const prefix = join(root, "npm");
     const { shim, target } = npmInstall(prefix, bytes);

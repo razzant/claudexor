@@ -176,10 +176,11 @@ function windowsSearchTarget(file: string, pathValue: string, cwd: string): stri
   const nameAt = Math.max(file.lastIndexOf("\\"), file.lastIndexOf("/"), file.lastIndexOf(":")) + 1;
   const name = file.slice(nameAt);
   const dot = name.indexOf(".");
+  const prefix = name.endsWith(".") ? name : `${name}.`;
   const names = [
     ...(dot >= 0 && dot < name.length - 1 ? [name] : []),
-    `${name}.com`,
-    `${name}.exe`,
+    `${prefix}com`,
+    `${prefix}exe`,
   ];
   const dirs =
     nameAt > 0

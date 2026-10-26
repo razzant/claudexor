@@ -55,6 +55,10 @@ switch(scenario) {
     process.env.PATH=[direct,prefix].join(delimiter); break;
   case 'direct-com':
     expectedBad=join(direct,'claude.com');writeFileSync(expectedBad,placeholder);process.env.PATH=direct;break;
+  case 'trailing-dot-bad': case 'trailing-dot-good':
+    expectedBad=join(direct,'claude.exe');
+    writeFileSync(expectedBad,scenario==='trailing-dot-good'?readFileSync(fixture):placeholder);
+    selected=expectedBad;process.env.CLAUDEXOR_CLAUDE_BIN=join(direct,'claude.');positive=scenario==='trailing-dot-good';break;
   case 'explicit-exe': process.env.CLAUDEXOR_CLAUDE_BIN=target;break;
   case 'explicit-cmd': process.env.CLAUDEXOR_CLAUDE_BIN=shim;break;
   case 'explicit-relative':
@@ -94,6 +98,11 @@ for(const method of Object.keys(original)) cp[method]=function(binary,args,optio
   }
   // A missed guard is an observed failure, never permission to execute a malformed image.
   let digest;try{digest=hash(binary);}catch{}
+  // Only this exact suffix control permits the OS to resolve its alias. The
+  // resolved fixture is still byte-allowlisted; malformed bytes never execute.
+  if(!digest&&scenario==='trailing-dot-good'&&String(binary)===process.env.CLAUDEXOR_CLAUDE_BIN){
+    digest=hash(selected);record.evidenceResolvedFile=selected;
+  }
   if(method!=='spawn'||!allowed.has(digest)) {
     record.blocked=true;
     throw Object.assign(new Error(`EVIDENCE_BLOCKED_SPAWN ${binary}`),{code:'EVIDENCE_BLOCKED_SPAWN'});
@@ -157,7 +166,10 @@ try {
     const discovery=results.filter(r=>/:discover$/.test(r.name)).at(-1);assert.equal(discovery.ok,true);
     for(const suffix of ['capture','raw']){const r=results.filter(r=>r.name.endsWith(':'+suffix)).at(-1);assert.equal(r.value?.code,0);assert.match(r.value.stdout,/2\.1\.281/);}
     const resolution=mod.resolveHarnessCommandOnPath(mod.BIN,process.env.PATH);
-    assert.equal(realpathSync(resolution.command.entrypoint),realpathSync(selected));
+    if(scenario==='trailing-dot-good') {
+      assert.equal(resolution.command,null,'suffix alias is resolved by the OS fallback');
+      assert(calls.some(x=>x.evidenceResolvedFile===selected&&x.pid),'real Windows suffix resolution must execute');
+    } else assert.equal(realpathSync(resolution.command.entrypoint),realpathSync(selected));
     if(scenario==='fallback')assert(resolution.advisory?.includes(expectedBad));
     assert(calls.some(x=>x.pid&&x.sha256),'positive control must have a real child PID and allowed digest');
     assert.equal(calls.filter(x=>x.blocked).length,0,'unexpected or bad executable reached spawn');

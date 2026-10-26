@@ -482,10 +482,9 @@ export function brokenInstallAdvisory(
     process.platform === "win32" && extname(bin) === "" ? [bin, `${bin}.cmd`, `${bin}.bat`] : [];
   const candidates = isAbsolute(bin)
     ? names
-    : normalizedHarnessPath(source)
-        .split(delimiter)
-        .filter(Boolean)
-        .flatMap((dir) => names.map((n) => join(dir, n)));
+    : harnessSearchDirs(normalizedHarnessPath(source), process.platform).flatMap((dir) =>
+        names.map((n) => join(dir, n)),
+      );
   for (const candidate of candidates) {
     const kind = lstatKind(candidate);
     if (kind === null) continue;
@@ -502,8 +501,7 @@ export function brokenInstallAdvisory(
       `reinstall ${name} or point the binary override at a working install`;
     return `${where} exists but ${how} — ${fix}`;
   }
-  for (const dir of normalizedHarnessPath(source).split(delimiter)) {
-    if (!dir) continue;
+  for (const dir of harnessSearchDirs(normalizedHarnessPath(source), process.platform)) {
     for (const shim of shimNames) {
       if (lstatKind(join(dir, shim)) === null) continue;
       return `${join(dir, shim)} exists but is a launcher script, not a Windows executable — install the native ${name}.exe or point the binary override at one`;

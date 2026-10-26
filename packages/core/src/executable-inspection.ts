@@ -168,8 +168,8 @@ export function isLaunchableExecutable(
 
 /**
  * Proof, not suspicion: a readable regular `.exe`/`.com` without the PE shape.
- * An unreadable, raced or short-read file proves nothing and keeps the verdict
- * above, so a transient condition never turns into a refusal.
+ * An unreadable, raced or short-read file proves nothing. An incomplete header
+ * read during an in-place update can be refused; the next resolution rechecks it.
  */
 export function isProvenNonWindowsImage(path: string): boolean {
   if (!WINDOWS_IMAGE_NAME.test(path)) return false;
