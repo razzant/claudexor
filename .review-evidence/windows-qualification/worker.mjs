@@ -16,7 +16,7 @@ assert.equal(machine(fixture),0x8664,'x64 control must be a compiled x64 PE');
 assert.equal(machine(fixture86),0x14c,'x86 control must be a compiled x86 PE');
 const placeholder=readFileSync(join(here,'fixtures/placeholder.txt'));
 assert.equal(createHash('sha256').update(placeholder).digest('hex'),'6d7abae055d3b598281300a6c835086dec81bf3048f8a2294c5d3e50c8830d7b');
-const prefix=join(root,'npm prefix'), direct=join(root,'direct'), home=join(root,'home'), cwd=join(root,'cwd');
+const prefix=join(root,scenario.startsWith('quoted-double-')?'npm;;prefix':scenario.startsWith('quoted-')?'npm;prefix':'npm prefix'), direct=join(root,'direct'), home=join(root,'home'), cwd=join(root,'cwd');
 for(const path of [prefix,direct,home,cwd,join(root,'config'),join(root,'tmp')]) mkdirSync(path,{recursive:true});
 // A fresh worker owns its environment. No inherited provider or owner state.
 const osEnv={};
@@ -43,7 +43,11 @@ const nul=Buffer.alloc(4096), mz=Buffer.alloc(128); mz.write('MZ'); mz.writeUInt
 let expectedBad=target, positive=false, recover=false, selected=target;
 installNative(placeholder);
 switch(scenario) {
-  case 'npm-placeholder': break;
+  case 'npm-placeholder': case 'missing-path-placeholder': break;
+  case 'quoted-placeholder': case 'quoted-double-placeholder': process.env.PATH='"'+prefix+'"';break;
+  case 'quoted-native': case 'quoted-double-native': installNative(readFileSync(fixture));process.env.PATH='"'+prefix+'"';positive=true;break;
+  case 'missing-path-native': installNative(readFileSync(fixture));positive=true;break;
+  case 'placeholder-cwd-native': copyFileSync(fixture,join(cwd,'claude.exe'));break;
   case 'npm-nul': installNative(nul); break;
   case 'npm-mz-no-pe': installNative(mz); break;
   case 'direct-and-npm':
@@ -112,17 +116,20 @@ async function observe(name,fn){
 }
 async function round(label) {
   const path=process.env.PATH,bin=mod.BIN;
+  const absentPath=scenario.startsWith('missing-path-');
+  const patch=absentPath?{PATH:null}:{PATH:path};
+  const preparedEnv={...process.env}; if(absentPath)delete preparedEnv.PATH;
   await observe(label+':resolve',()=>mod.resolveHarnessCommandOnPath(bin,path));
-  await observe(label+':prepare',()=>mod.prepareHarnessCommand(bin,['--version'],{...process.env}));
+  await observe(label+':prepare',()=>mod.prepareHarnessCommand(bin,['--version'],preparedEnv));
   await observe(label+':version',()=>mod.detectClaudeVersion(undefined,path));
   await observe(label+':help',()=>mod.probeClaudeHelp(undefined,path));
-  await observe(label+':auth',()=>mod.probeAuthStatus(bin,{env:{PATH:path}}));
+  await observe(label+':auth',()=>mod.probeAuthStatus(bin,{env:patch}));
   await observe(label+':doctor',()=>adapter.doctor({cwd,env:{PATH:path}}));
   // Discovery normalizes PATH and may legitimately use the running Node as a later interpreter.
   // The bad-interpreter case qualifies exact PATH consumers only.
   if(scenario!=='bad-interpreter') await observe(label+':discover',()=>adapter.discover());
-  await observe(label+':capture',()=>mod.runCapture(bin,['--version'],{env:{PATH:path},timeoutMs:2000}));
-  await observe(label+':raw',()=>mod.runCaptureRaw(bin,['--version'],{env:{PATH:path},timeoutMs:2000}));
+  await observe(label+':capture',()=>mod.runCapture(bin,['--version'],{env:patch,timeoutMs:2000}));
+  await observe(label+':raw',()=>mod.runCaptureRaw(bin,['--version'],{env:patch,timeoutMs:2000}));
 }
 let failed;
 try {

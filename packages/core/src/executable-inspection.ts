@@ -103,8 +103,7 @@ export function isBoundedRegularExecutable(info: ExecutableInspection): boolean 
 const WINDOWS_IMAGE_NAME = /\.(?:exe|com)$/i;
 
 /** Why such a file is refused; phrased to follow the file's path. */
-export const NOT_WINDOWS_IMAGE =
-  "is not a Windows executable image; the install is incomplete or damaged, reinstall it";
+export const NOT_WINDOWS_IMAGE = "is not a Windows executable image";
 
 /**
  * The PE minimum shape CreateProcess requires: `MZ`, then `PE\0\0` at the

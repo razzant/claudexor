@@ -5,6 +5,7 @@ import { windowsImageFault } from "./npm-launch.js";
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { isLaunchableExecutable } from "./executable-inspection.js";
 import { describeSkipped, launchRefusalError, windowsLaunchRefusal } from "./launch-refusal.js";
+import { envPath, harnessSearchDirs, rawPathEntries } from "./launch-refusal.js";
 import type { HarnessLaunchRefusal, SkippedLaunchCandidate } from "./launch-refusal.js";
 
 /**
@@ -208,13 +209,7 @@ export function normalizedHarnessPath(
     "/usr/sbin",
     "/sbin",
   ];
-  const inheritedPath =
-    source.PATH ??
-    (platform === "win32"
-      ? Object.entries(source).find(([key]) => key.toUpperCase() === "PATH")?.[1]
-      : undefined) ??
-    "";
-  const inherited = inheritedPath.split(delimiter).filter(Boolean);
+  const inherited = rawPathEntries(envPath(source, platform) ?? "", platform);
   const seen = new Set<string>();
   return [...preferred, ...inherited]
     .filter((entry) => {
@@ -276,12 +271,14 @@ export interface HarnessCommandResolution {
   command: HarnessCommand | null;
   skipped: SkippedLaunchCandidate[];
   advisory: string | null;
-  /** win32: nothing selected, and spawning `bin` could only reach a provable non-image. */
+  /** win32: nothing selected, and the install is proven broken or spawning `bin`
+   * would reach a provable non-image. */
   refusal: HarnessLaunchRefusal | null;
 }
 
 /** Exact final PATH; never normalize a scoped HOME or replace a caller's patch.
- * Relative names and PATH entries resolve from `cwd`, where the child runs. */
+ * PATH entries resolve where the daemon runs, as its probes do; an explicitly
+ * relative name resolves from `cwd`, where the child runs. */
 export function resolveHarnessCommandOnPath(
   bin: string,
   pathValue: string,
@@ -290,24 +287,21 @@ export function resolveHarnessCommandOnPath(
   cwd?: string,
 ): HarnessCommandResolution {
   const names = binaryNameCandidates(bin, platform);
-  const anchor = (path: string): string => (cwd === undefined ? path : resolve(cwd, path));
-  const dirs = pathValue.split(delimiter).filter(Boolean).map(anchor);
-  const searchPath = dirs.join(delimiter);
   // Absolute and explicitly relative paths are exact choices, not PATH searches.
   const explicit = isAbsolute(bin) || /[\\/]/.test(bin);
   const candidates = explicit
-    ? [...new Set([bin, ...names])].map(anchor)
-    : dirs.flatMap((dir) => names.map((name) => join(dir, name)));
+    ? [...new Set([bin, ...names])].map((path) => (cwd === undefined ? path : resolve(cwd, path)))
+    : harnessSearchDirs(pathValue, platform).flatMap((dir) => names.map((name) => join(dir, name)));
   const skipped: SkippedLaunchCandidate[] = [];
   let command: HarnessCommand | null = null;
   for (const candidate of candidates) {
-    command = commandForFile(candidate, searchPath, platform, delimiter, source);
+    command = commandForFile(candidate, pathValue, platform, delimiter, source);
     if (command) break;
     const kind = lstatKind(candidate);
     if (!kind) continue;
     skipped.push({
       path: candidate,
-      ...(windowsImageFault(candidate, searchPath, delimiter, platform) ?? {
+      ...(windowsImageFault(candidate, pathValue, delimiter, platform) ?? {
         reason:
           kind === "symlink" && !existsSync(candidate)
             ? "symlink target is missing"
@@ -334,12 +328,9 @@ export function prepareHarnessCommand(
   platform: NodeJS.Platform = process.platform,
   cwd?: string,
 ): ReturnType<typeof interpretedCommand> & { resolution: HarnessCommandResolution } {
+  // An env without PATH searches the daemon's own on win32 (libuv); "" searches nothing.
   const pathValue =
-    env.PATH ??
-    (platform === "win32"
-      ? Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1]
-      : undefined) ??
-    "";
+    envPath(env, platform) ?? (platform === "win32" ? envPath(process.env, platform) : "") ?? "";
   const resolution = resolveHarnessCommandOnPath(bin, pathValue, platform, env, cwd);
   const command = resolution.command;
   if (resolution.refusal) throw launchRefusalError(resolution.refusal);
@@ -481,6 +472,8 @@ export function brokenInstallAdvisory(
 ): string | null {
   const resolution = resolveHarnessCommandOnPath(bin, normalizedHarnessPath(source));
   if (resolution.command) return resolution.advisory;
+  // A refused launch already names its file; every surface keeps that one wording.
+  if (resolution.refusal?.code === "EFTYPE") return resolution.refusal.message;
   const name = basename(bin);
   const names = binaryNameCandidates(bin, process.platform);
   // A Windows npm install ships shims (`codex`, `codex.cmd`) and no image, so

@@ -5,6 +5,7 @@ import {
   isProvenNonWindowsImage,
   NOT_WINDOWS_IMAGE,
 } from "./executable-inspection.js";
+import { harnessSearchDirs } from "./launch-refusal.js";
 
 /** A vendor entry remains the identity. Its interpreter is only launch transport. */
 export interface HarnessInterpreter {
@@ -164,7 +165,8 @@ function npmShimTarget(path: string): { entrypoint: string; removesJsExtension: 
   }
 }
 
-/** Interpreters for a Node entry: a launcher's adjacent node.exe, then PATH's. */
+/** Interpreters for a Node entry: a launcher's adjacent node.exe, then PATH's,
+ * read from the same directories as the resolver's own candidates. */
 function nodeCandidates(
   path: string,
   shim: boolean,
@@ -173,10 +175,7 @@ function nodeCandidates(
 ): string[] {
   return [
     ...(shim ? [join(dirname(path), "node.exe")] : []),
-    ...pathValue
-      .split(pathDelimiter)
-      .filter(Boolean)
-      .map((dir) => join(dir, "node.exe")),
+    ...harnessSearchDirs(pathValue, "win32", pathDelimiter).map((dir) => join(dir, "node.exe")),
   ];
 }
 

@@ -5778,17 +5778,26 @@ A `.exe`/`.com` the resolver would start (a PATH candidate, a standard launcher'
 declared native target, or a Node interpreter) must have the PE minimum shape: `MZ`,
 then `PE\0\0` at the header's offset, read through the descriptor that supplied
 the identity facts. A readable file without it, such as the npm placeholder left
-when the package's postinstall did not run or a zero-filled download, is skipped
-with its path named, and a later healthy candidate is used. When nothing is
-selected, spawning the bare name would let libuv search again, the cwd first and
-then PATH; if that search would reach a proven non-image, or would find nothing
-while the resolver proved one, the launch is refused before any process starts.
-The refusal carries the spawn error the OS reports for that file (`EFTYPE`) and
-names it, so doctor and discovery report the unlaunchable file instead of a missing
-CLI. Relative names and relative PATH entries resolve from the child's cwd. The
-shape is not loader validity: an image for another architecture or with damaged
-headers still reaches the OS, an unreadable file or failed read is not proof, and
-POSIX launch rules are unchanged. The Windows
+when the package's postinstall did not run or a zero-filled download, is never
+started. A skipped candidate or launcher target is named and a later healthy
+candidate is used; a broken `node.exe` is passed over for a later healthy
+interpreter without a diagnostic and is named only when none remains. When nothing
+is selected, spawning the bare name would let libuv search again, the cwd first and
+then PATH. The launch is refused before any process starts when the resolver proved
+the install broken, so that search cannot start a file nobody selected (an image in
+the cwd or under a relative PATH entry), or when the search would reach a proven
+non-image. The refusal carries the spawn error the OS reports for that file
+(`EFTYPE`) and its message leads with the file and the verdict, so doctor, discovery,
+the broken-install advisory and the bounded auth-status detail report the
+unlaunchable file instead of a missing CLI. On Windows, PATH is read as libuv reads
+it: normalization preserves quoted entries containing `;`, a child env without
+PATH searches the daemon's own PATH, and an empty PATH searches no directory. On every platform, relative PATH
+entries resolve at the daemon's cwd, for a run and for the probes that vouch for its
+binary alike, and the run is given the selected file's absolute path; an explicitly
+relative override resolves from the child's cwd. The shape is not loader validity:
+an image for another architecture or with damaged headers still reaches the OS, an
+unreadable file or failed read is not proof, and POSIX executability rules are
+unchanged. The Windows
 smoke is `scripts/windows-local-install-smoke.mjs`; native Windows login and Agent
 execution are separate acceptance claims, not consequences of package resolution.
 The omitted target remains `remote`; the SSH installer's destination and PATH
