@@ -46,7 +46,7 @@
           "price": 0,
           "priceCurrency": "USD"
         },
-        "downloadUrl": "https://github.com/razzant/claudexor/releases/latest",
+        "downloadUrl": "https://claudexor.ai/#install",
         "image": "https://claudexor.ai/assets/social-preview-v2.png",
         "sameAs": [
           "https://github.com/razzant/claudexor",
@@ -1590,9 +1590,7 @@
         </div>
         <div class="nav-actions">
           <a class="nav-source" href="https://github.com/razzant/claudexor">GitHub</a>
-          <a class="nav-download" href="https://github.com/razzant/claudexor/releases/latest"
-            >Get Claudexor</a
-          >
+          <a class="nav-download" href="#install">Get Claudexor</a>
         </div>
       </nav>
     </header>
@@ -1611,12 +1609,14 @@
                   rotation, and keeps every run in one auditable thread.
                 </p>
                 <div class="acts">
-                  <a class="btn p" href="https://github.com/razzant/claudexor/releases/latest"
-                    >Download for macOS <small>signed</small></a
+                  <a
+                    class="btn p"
+                    href="https://github.com/razzant/claudexor/releases/download/v4.8.1/Claudexor-4.8.1.dmg"
+                    >Download for macOS <small>.dmg</small></a
                   >
                   <a class="btn s" href="#install">Install the CLI <small>npm</small></a>
                 </div>
-                <p class="meta">MIT · no telemetry · macOS app, Linux CLI</p>
+                <p class="meta">MIT · no telemetry · macOS 26+ app · macOS/Linux CLI</p>
                 <p class="aside">
                   <span class="m" id="aside"
                     >Your five-hour window resets at <i>14:02</i>. Your deadline does not.</span
@@ -1951,25 +1951,36 @@
                   <p class="kick">install</p>
                   <h2>Start with the app, or stay in the terminal.</h2>
                   <p class="lead">
-                    The macOS app bundles its own runtime and updates in place against a signed
-                    manifest. The CLI and daemon also run on Linux.
+                    On macOS 26 or newer, download the app and drag it to Applications. It includes
+                    its runtime, so no separate Node or pnpm installation is needed. For terminal
+                    use on macOS or Linux, install the npm package with Node.js 24.15 or newer.
                   </p>
                   <div class="acts">
-                    <a class="btn p" href="https://github.com/razzant/claudexor/releases/latest"
-                      >Latest release</a
+                    <a
+                      class="btn p"
+                      data-download-version="4.8.1"
+                      href="https://github.com/razzant/claudexor/releases/download/v4.8.1/Claudexor-4.8.1.dmg"
+                      >Download macOS app <small>4.8.1 .dmg</small></a
                     >
-                    <a class="btn s" href="https://github.com/razzant/claudexor">View source</a>
+                    <a class="btn s" href="https://github.com/razzant/claudexor#quickstart"
+                      >First steps</a
+                    >
                   </div>
+                  <p class="note">
+                    Connect one coding agent through Claudexor, choose a project and try an Ask
+                    question. The agent uses your subscription allowance or configured API budget.
+                    Git and the selected coding agent are checked during setup.
+                  </p>
                 </div>
                 <div class="flat term" style="overflow: hidden">
-                  <div class="bar"><i></i><i></i><i></i><span>terminal</span></div>
+                  <div class="bar"><i></i><i></i><i></i><span>terminal · Node.js 24.15+</span></div>
                   <pre><span class="p">$</span> npm install -g claudexor
 <span class="p">$</span> claudexor doctor
 
-<span class="c"># ask, compare, inspect, apply</span>
+<span class="c"># connect through Claudexor first</span>
+<span class="p">$</span> cd /path/to/your/project
 <span class="p">$</span> claudexor ask <span class="s">"map this repo"</span>
-<span class="p">$</span> claudexor best-of <span class="s">"fix add()"</span> --n 3
-<span class="p">$</span> claudexor apply &lt;run_id&gt; --dry-run</pre>
+<span class="p">$</span> claudexor inspect &lt;run_id&gt;</pre>
                 </div>
               </div>
             </section>
