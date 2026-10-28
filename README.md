@@ -87,8 +87,11 @@ composer](docs/assets/app-agent-run.jpg)
 
 ## Prerequisites
 
-- Node.js >= 24.15 (the daemon, CLI, and every surface run on Node)
-- pnpm (via corepack: `corepack enable pnpm`)
+- **macOS app:** macOS 26 or newer. The app includes its Node runtime; you do
+  not need to install Node or pnpm separately.
+- **Terminal installation on macOS or Linux:** Node.js >= 24.15 and npm.
+- **Building from source:** Node.js >= 24.15 and pnpm
+  (`corepack enable pnpm`). See [Development](docs/DEVELOPMENT.md).
 - Git for Git-backed worktrees, candidate envelopes, and source-control delivery.
   Explicit directory execution supports direct work and selected-input copies
   without Git; Doctor reports Git availability, and
@@ -100,25 +103,14 @@ composer](docs/assets/app-agent-run.jpg)
   `ANTHROPIC_API_KEY`, ... as fallbacks; the raw-API route needs only a key).
   Log in through Claudexor, not the bare vendor CLI — see
   [Install And Login](docs/AGENT_ONBOARDING.md#install-and-login)
-- macOS for the desktop app; the CLI/daemon also run on Linux
 
 ## Install
 
-CLI + daemon from npm (installs the `claudexor` and `claudexord` bins):
+### macOS app
 
-```bash
-npm install -g claudexor
-claudexor doctor
-```
+The signed and notarized app requires **macOS 26 or newer**.
 
-You can also build from source — see Quickstart below.
-
-On a Mac, the app is the easiest way in — it ships as a signed and
-notarized DMG, so it installs like any ordinary Mac app, with no Gatekeeper
-warnings:
-
-1. Download `Claudexor-<version>.dmg` from
-   [Releases](https://github.com/razzant/claudexor/releases).
+1. [Download the macOS app 4.8.1 (.dmg)](https://github.com/razzant/claudexor/releases/download/v4.8.1/Claudexor-4.8.1.dmg).
 2. Drag `Claudexor.app` into `Applications`.
 3. Open it. The app starts its bundled Claudexor engine, then onboarding checks
    the external Git and harness route needed by the work you select.
@@ -131,6 +123,21 @@ Claudexor CLI is only needed for terminal use. Git and vendor harnesses remain
 separate capabilities checked before a run starts. (The v1.0.0 DMG was unsigned
 — if you kept it, either upgrade or approve it via System Settings → Privacy &
 Security → Open Anyway.)
+
+### Terminal on macOS or Linux
+
+With **Node.js 24.15 or newer**, install the CLI and daemon from npm:
+
+```bash
+npm install -g claudexor
+claudexor doctor
+```
+
+This installs the `claudexor` and `claudexord` commands. You do not need a
+source checkout or pnpm to use this package. Continue with the
+[quickstart](#quickstart) to connect an account and try your first question.
+
+### Harness setup
 
 Host integrations may install one vendor CLI into Claudexor's managed local
 toolchain with
@@ -252,6 +259,28 @@ client verifiers themselves stay fail-closed for the waived versions too).
   fail-closed (npm users update via npm).
 
 ## Quickstart
+
+Start with one coding agent and one account. In the macOS app, follow
+onboarding to connect that account, choose a small project and select **Ask**.
+Try: "Explain how this project is organized and where its tests live."
+The answer and its execution evidence stay in the conversation.
+
+For the installed CLI, follow [Install And Login](docs/AGENT_ONBOARDING.md#install-and-login)
+to connect the account through Claudexor. Then open your project in a terminal:
+
+```bash
+cd /path/to/your/project
+claudexor ask "Explain how this project is organized and where its tests live."
+```
+
+The selected coding agent uses your subscription allowance or configured API
+budget. You can add accounts, request changes or compare approaches later.
+If the run needs attention, use its returned run ID with `claudexor inspect`
+or `claudexor follow`; do not repeat the task just to retrieve its result.
+
+### From a source checkout
+
+These build steps are for contributors and source installations:
 
 ```bash
 pnpm install --frozen-lockfile

@@ -11,7 +11,7 @@ Claudexor installation; they do not provide accounts or remote model access.
 ## Preconditions
 
 - Support macOS and Linux. Do not claim Windows support.
-- Require Node.js 20.19 or newer and a preinstalled `claudexor` command. If the
+- Require Node.js 24.15 or newer and a preinstalled `claudexor` command. If the
   MCP server is missing, ask the user to run `npm install -g claudexor`, then
   restart the host. Do not download a runtime implicitly.
 - If a generated Claudexor host integration already owns the current host's

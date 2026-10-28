@@ -143,6 +143,12 @@ Release stays draft until all publication checks pass, rejects differing
 same-name assets, and becomes public as the final mutation. Published releases
 are never edited. Versions still use changesets and the fixed lockstep group.
 
+After a release becomes public, update the direct DMG links and displayed
+download version in `README.md` and `site/index.html`. Keep them on a published
+installer even when the development branch has a newer package version.
+`node scripts/site-metadata-check.mjs` checks their consistency; verify that
+the linked asset exists before publishing the site.
+
 The `publish` mode carries the OWNER-SIGNED runtime-update manifest (D-2),
 transported as a base64 workflow-dispatch input. The candidate run builds the
 engine-runtime closure and an UNSIGNED `runtime-manifest.json`; on a trusted

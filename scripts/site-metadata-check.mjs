@@ -16,6 +16,15 @@ const llms = readFileSync("site/llms.txt", "utf8");
 const readme = readFileSync("README.md", "utf8");
 const integrations = readFileSync("docs/INTEGRATIONS.md", "utf8");
 const pagesWorkflow = readFileSync(".github/workflows/pages.yml", "utf8");
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+// This is a published installer, which can lag an unreleased package.version.
+const downloadVersion = index.match(/data-download-version="([\d.]+)"/)?.[1];
+const dmgUrl = `https://github.com/razzant/claudexor/releases/download/v${downloadVersion}/Claudexor-${downloadVersion}.dmg`;
+const nodeFloor = pkg.engines.node.replace(/^>=/, "").replace(/\.0$/, "");
+const macPlist = readFileSync("apps/macos/packaging/Info.plist", "utf8");
+const macFloor = macPlist
+  .match(/<key>LSMinimumSystemVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1]
+  ?.replace(/\.0$/, "");
 
 function requireMatch(text, pattern, message) {
   if (!pattern.test(text)) failures.push(message);
@@ -81,6 +90,48 @@ requireMatch(
 for (const [name, text] of [
   ["README.md", readme],
   ["site/index.html", index],
+]) {
+  requireText(text, dmgUrl, `${name}: direct DMG link must match the displayed download version`);
+  requireText(
+    text,
+    `Node.js ${name === "README.md" ? ">= " : ""}${nodeFloor}`,
+    `${name}: Node prerequisite is missing`,
+  );
+  requireText(text, `macOS ${macFloor}`, `${name}: published macOS minimum is missing`);
+}
+const hero = index.match(/<section class="hero"[\s\S]*?<div class="stage"/)?.[0] ?? "";
+requireText(
+  index,
+  `Download macOS app <small>${downloadVersion} .dmg</small>`,
+  "site/index.html: installer version must be visible",
+);
+requireText(
+  readme,
+  `macOS app ${downloadVersion} (.dmg)`,
+  "README.md: installer version must be visible",
+);
+requireText(
+  hero,
+  `href="${dmgUrl}"`,
+  "site/index.html: primary macOS button must download the DMG",
+);
+requireMatch(
+  index,
+  /class="nav-download"\s+href="#install"/,
+  "site/index.html: Get Claudexor must lead to the install choices",
+);
+for (const host of ["copilot", "claude", "cursor"]) {
+  const path = `plugins/${host}/skills/claudexor/SKILL.md`;
+  requireText(
+    readFileSync(path, "utf8"),
+    `Require Node.js ${nodeFloor} or newer`,
+    `${path}: Node prerequisite must match package engines`,
+  );
+}
+
+for (const [name, text] of [
+  ["README.md", readme],
+  ["site/index.html", index],
   ["site/llms.txt", llms],
 ]) {
   requireText(text, ouroborosRepositoryUrl, `${name}: Ouroboros repository link is missing`);
@@ -113,6 +164,9 @@ if (!jsonLdMatch) {
     }
     if (schema.image !== socialImageUrl) {
       failures.push("site/index.html: JSON-LD image must use the production HTTPS origin");
+    }
+    if (schema.downloadUrl !== `${productionUrl}#install`) {
+      failures.push("site/index.html: JSON-LD download URL must lead to the install choices");
     }
   } catch (error) {
     failures.push(`site/index.html: JSON-LD is invalid JSON (${error.message})`);
