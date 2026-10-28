@@ -23,6 +23,10 @@ import SwiftUI
     private(set) var passage: Passage?
     private(set) var isResizing = false
     private(set) var isFollowingResize = false
+    /// How long a width change lets layout settle before the passage is restored.
+    var restoreDelay: Duration = .milliseconds(180)
+    /// How long an upward wheel, trackpad or key scroll counts as the reader's own movement.
+    var readerIntentWindow: Duration = .milliseconds(400)
     /// AppKit's user-driven live scroll: a gesture or a scroller-knob drag.
     var liveScrolling = false
 
@@ -65,7 +69,7 @@ import SwiftUI
     func readerMovedUp() { if canShowEarlier { readerMovedUpAt = .now } }
     /// The tail or an explicit navigation took over; earlier input no longer applies.
     func readerIntentEnded() { readerMovedUpAt = nil }
-    var readerIsMovingUp: Bool { readerMovedUpAt.map { .now - $0 < .milliseconds(400) } ?? false }
+    var readerIsMovingUp: Bool { readerMovedUpAt.map { .now - $0 < readerIntentWindow } ?? false }
     func register(_ view: ProseTextView) { hosts.add(view) }
     func unregister(_ view: ProseTextView) { hosts.remove(view) }
     func stop() {
@@ -128,8 +132,9 @@ import SwiftUI
         isFollowingResize = state.follows
         let navigation = state.navigationRevision
         let following = state.follows
+        let delay = restoreDelay
         restoreTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(180))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self, let state = self.state else { return }
             self.isResizing = false
             self.isFollowingResize = false

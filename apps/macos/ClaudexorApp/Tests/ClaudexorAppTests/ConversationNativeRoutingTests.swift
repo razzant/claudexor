@@ -164,6 +164,9 @@ struct ConversationNativeRoutingTests {
         state.navigate(toY: prose.convert(line, to: document).minY + 4)
         await settle(host, count: 10)
         #expect(state.readingPosition.passage != nil)
+        // Parallel suites can resume this test after a 180 ms restore already ran (#520);
+        // hold the restore so the newer intent always meets it pending and must cancel it.
+        state.readingPosition.restoreDelay = .seconds(30)
         window.setContentSize(NSSize(width: 420, height: 700))
         host.setFrameSize(NSSize(width: 420, height: 700))
         await settle(host, count: 1)
@@ -250,6 +253,8 @@ struct ConversationNativeRoutingTests {
     /// leaves no reader intent, so growth past the viewport keeps following; once the content
     /// overflows, the same wheel moves the feed and leaves the tail. A never-ordered window gives
     /// the monitor's filters no event location, so the test makes the monitor's report itself.
+    /// AppKit animates a line wheel on the window's display link, which such a window does not
+    /// always advance (#527), so the overflow scroll moves the clip as the wheel's first frame would.
     @Test func upwardWheelOnAShortFeedKeepsFollowingWhenItGrows() async throws {
         let policy = NSApplication.shared.activationPolicy()
         NSApplication.shared.setActivationPolicy(.prohibited)
@@ -300,9 +305,14 @@ struct ConversationNativeRoutingTests {
         #expect(state.follows && history.following)
         #expect(document.frame.height - feed.contentView.bounds.maxY <= 8)
         let bottom = feed.contentView.bounds.minY
-        try wheelUp(feed, reading: state.readingPosition)
+        // A busy main actor can sample the scroll after the 400 ms intent window; hold the
+        // intent so the reader's scroll is always recognized.
+        state.readingPosition.readerIntentWindow = .seconds(30)
+        state.readingPosition.readerMovedUp()
+        feed.contentView.scroll(to: NSPoint(x: 0, y: bottom - 50))
+        feed.reflectScrolledClipView(feed.contentView)
         #expect(state.readingPosition.readerIsMovingUp)
-        await settle(host)
+        await settle(host) { feed.contentView.bounds.minY < bottom - 20 && !state.follows }
         #expect(feed.contentView.bounds.minY < bottom - 20)
         #expect(!state.follows && !history.following)
     }

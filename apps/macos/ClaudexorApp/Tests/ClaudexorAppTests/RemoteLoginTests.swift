@@ -79,7 +79,7 @@ import Testing
         gateway.delayInput = true
         let controller = SetupLifecycleController(gateway: gateway)
         await controller.observeJob(jobId: "setup-remote")
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(60)
         while await controller.snapshot().deviceCode == nil, ContinuousClock.now < deadline { await Task.yield() }
         try #require(await controller.snapshot().deviceCode != nil)
         let submission = Task { await controller.submitInput("one-time") }
@@ -131,8 +131,9 @@ import Testing
             isCurrent: { true }, refreshReadiness: { _ in nil })
     }
 
+    // Parallel UI suites can hold the main actor for seconds (#527); the deadline only bounds a failing test.
     private func waitUntil(_ predicate: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(60)
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         #expect(predicate())
         try #require(predicate())

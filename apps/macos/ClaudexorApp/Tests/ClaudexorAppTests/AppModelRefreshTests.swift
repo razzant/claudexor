@@ -1419,22 +1419,26 @@ struct AppModelRefreshTests {
         let accountsArrived = AppRefreshCallCounter()
         let releaseHarness = DispatchSemaphore(value: 0)
         let releaseAccounts = DispatchSemaphore(value: 0)
-        defer { releaseHarness.signal(); releaseAccounts.signal() }
+        let releaseObserver = DispatchSemaphore(value: 0)
+        defer { releaseHarness.signal(); releaseAccounts.signal(); releaseObserver.signal() }
         AppRequestStubURLProtocol.handler = { request in
             switch request.url?.path {
             case "/v2/harnesses":
                 harnessArrived.increment()
-                _ = releaseHarness.wait(timeout: .now() + 5)
+                _ = releaseHarness.wait(timeout: .now() + 60)
                 return (appResponse(for: request), appHarnessSnapshot(
                     version: "held-old", status: "degraded"))
             case "/v2/credential-profiles":
                 accountsArrived.increment()
-                _ = releaseAccounts.wait(timeout: .now() + 5)
+                _ = releaseAccounts.wait(timeout: .now() + 60)
                 return (appResponse(for: request), appAccountsSnapshot(
                     profileID: "accounts", displayName: "Accounts",
                     observedAt: "2026-07-29T00:00:00Z"))
             case "/v2/global/events":
-                throw AppRefreshTestError.badRequest
+                // Held like the sibling tests: an immediate failure could invalidate next-up
+                // before the test suspends the observer this refresh starts (#527).
+                _ = releaseObserver.wait(timeout: .now() + 60)
+                return (appResponse(for: request), Data())
             default:
                 throw AppRefreshTestError.badRequest
             }
@@ -4936,8 +4940,9 @@ private func waitForAppTest(
     _ predicate: @escaping @MainActor () -> Bool,
     message: String
 ) async throws {
+    // Parallel UI suites can hold the main actor for seconds (#527); this only bounds a failing test.
     try #require(
-        await appTestEventually(timeout: .seconds(5), predicate),
+        await appTestEventually(timeout: .seconds(60), predicate),
         Comment(rawValue: message))
 }
 

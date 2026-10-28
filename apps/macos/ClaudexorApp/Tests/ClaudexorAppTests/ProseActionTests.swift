@@ -36,8 +36,8 @@ struct ProseActionTests {
         view.writeCopiedText = { _ in false }
         #expect(coordinator.textView(view, clickedOnLink: link, at: index))
         #expect(view.string.contains("Copy failed"))
-        // The label returns after 1.2 s; a busy main actor may run that reset later.
-        let deadline = ContinuousClock.now + .seconds(5)
+        // The label returns after 1.2 s; a busy main actor may run that reset much later (#527).
+        let deadline = ContinuousClock.now + .seconds(60)
         while view.string.contains("Copy failed"), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
