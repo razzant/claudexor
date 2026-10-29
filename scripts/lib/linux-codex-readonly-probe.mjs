@@ -79,6 +79,12 @@ export const RECORDED_SYSCTLS = [
 export const SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 export const SYSTEM_BWRAP = "/usr/bin/bwrap";
 
+/** Each Codex run in a cell is stopped after this long; five runs per cell at
+ * most keep a hung cell inside the job budget. */
+export const SANDBOX_RUN_TIMEOUT_MS = 60_000;
+/** A probe that ended this close to the limit failed on timing. */
+const TIME_LIMIT_MARGIN_MS = 5_000;
+
 export const WRITE_STARTED = "cx337-write-started";
 
 /** Runs inside the sandbox: our own key=value lines, absolute tool paths only.
@@ -92,14 +98,16 @@ export const IDENTITY_SCRIPT = [
 /** $1 = marker, $2 = host path; the marker proves the command started inside. */
 export const WRITE_SCRIPT = `printf '${WRITE_STARTED}\\n'; printf %s "$1" > "$2"`;
 
-/** open/openat let the trace name the file behind a bundled /proc/self/fd/N exec. */
+/** open/openat show which file a thread opened as the N of a bundled
+ * /proc/self/fd/N exec, and close, close_range, dup2 and dup3 when N stops
+ * naming it; socket and ioctl show bubblewrap's network setup. */
 export const STRACE_ARGS = [
   "-f",
   "-v",
   "-s",
   "4096",
   "-e",
-  "trace=execve,open,openat,clone,clone3,unshare,setns,mount,pivot_root,prctl,seccomp,sendto,recvfrom,sendmsg,recvmsg",
+  "trace=execve,open,openat,close,close_range,dup2,dup3,clone,clone3,unshare,setns,mount,pivot_root,prctl,seccomp,socket,ioctl,sendto,recvfrom,sendmsg,recvmsg",
 ];
 
 // ---- diagnostic control phases ----
@@ -126,7 +134,7 @@ export const PHASES = [
   { id: "baseline", change: null },
   {
     id: "apparmor-bwrap-profile",
-    change: `AppArmor profile ${BWRAP_PROFILE_NAME} attached to ${SYSTEM_BWRAP} with \`userns\``,
+    change: `AppArmor profile ${BWRAP_PROFILE_NAME} for ${SYSTEM_BWRAP} with \`userns\` loaded`,
   },
   { id: "userns-sysctl-relaxed", change: `${USERNS_RESTRICTION} set to 0` },
 ];
@@ -134,22 +142,48 @@ export const PHASES = [
 export const DIAGNOSTIC_CONTROL =
   "Diagnostic control on a disposable GitHub-hosted runner. After an unchanged baseline, one phase " +
   `loads an AppArmor profile for ${SYSTEM_BWRAP} and one sets ${USERNS_RESTRICTION}=0; each ` +
-  "reverts its change and verifies the host state before the next phase starts. The changes exist " +
-  "only to locate the boundary behind claudexor#337 on this runner, and neither is a recommended " +
-  "host setting. Sandbox verdicts are data: the job fails only on a harness defect.";
+  "reverts its change and verifies the host state before the next phase starts, and a cell whose " +
+  "processes are not shown to have ended stops the comparison. The changes exist only to locate " +
+  "the boundary behind claudexor#337 on this runner, and neither is a recommended host setting. " +
+  "Sandbox verdicts are data: the job fails only on a harness defect.";
 
 const NEGATIVE_CONTROL_NOTE =
-  "In apparmor-bwrap-profile the bundled cells are negative controls: the profile attaches only " +
+  "In apparmor-bwrap-profile the bundled cells are negative controls: the profile can attach only " +
   `to an executable at ${SYSTEM_BWRAP}, and Codex executes its bundled helper, a different file, ` +
   "through /proc/self/fd/N.";
 
+const ATTACHMENT_NOTE =
+  "`change verified` means the host state read after the change differed from the one before by " +
+  "exactly that change: for apparmor-bwrap-profile, the kernel listed the profile " +
+  "`bwrap (unconfined)`. That does not show the profile attached to the helper in any cell. A " +
+  "cell shows it attached through a label inside the sandbox naming `bwrap`; an AppArmor line " +
+  "naming the profile during the cell is a weaker sign, since kernel lines are not tied to the " +
+  "cell's own processes. When the identity command failed and no such line appears, attachment " +
+  "in that cell is unknown.";
+
+/** How the phases may be read. docs/evidence/linux-codex-readonly-probe.md
+ * states the same rules. */
+export const PHASE_READING = [
+  "Compare phases only in a `complete` run: a `not_run` cell or any harness defect leaves the comparison open.",
+  "A baseline cell that is `proven` has no failure for the controls to locate.",
+  "Support: a system cell `proven` in both `apparmor-bwrap-profile` and `userns-sysctl-relaxed`, while the bundled cells still fail under the profile, is strong support that this runner's failure is AppArmor's restriction of unprivileged user namespaces applied to bwrap.",
+  "Refutation: a cell that fails in both control phases fails for another reason on this runner. `userns-sysctl-relaxed` runs its cells only after the sysctl reads `0`.",
+  "Profile failing, sysctl passing: the profile did not take effect for the helper (attachment path, `NoNewPrivileges`, the profile itself). That is not a refutation.",
+  "Profile passing, sysctl failing: relaxing the restriction for every program cannot be stricter than one profile, so this is an artifact such as timing or a leftover process; rerun rather than conclude.",
+  "In `apparmor-bwrap-profile`, `direct-system` is the clean cell. The service cells run with `NoNewPrivileges=yes`, under which AppArmor may refuse the exec-time profile transition, so a failing `service-system` beside a proven `direct-system` is not a refutation.",
+  "A bundled cell `proven` under `apparmor-bwrap-profile` breaks the negative control, and that phase cannot be credited to the profile.",
+  "A cell whose sandbox probe ended by `ETIMEDOUT` or ran for about the 60 s limit failed on timing: an artifact, not a refutation.",
+];
+
 export const LIMITATIONS = [
   "Only `codex sandbox` runs: no app-server, thread, model turn or Claudexor review, so model-driven project reading remains unproven.",
+  "The #337 report observed Codex 0.153.3; this probe pins 0.162.1, so a change in how Codex launches its sandbox between those versions is outside what it shows.",
   "A GitHub-hosted Ubuntu 24.04 VM is not the #337 host; no result here establishes or excludes the original cause.",
   "The transient unit carries only the reported hardening; the original unit's other properties, environment, PATH and writable paths are unknown.",
   "Each control phase changes one host restriction on a disposable runner. A verdict that changes between phases shows what this runner's failure depends on; neither change is a host recommendation.",
-  "The helper is chosen only through PATH, Codex's own rule. The traced helper comes from a separate traced read: the system helper by its exec path; the bundled helper is inferred from an exec of /proc/self/fd/N with argv0 bwrap and named only when the traced open of that file returned N.",
-  "Kernel audit lines reach dmesg through the kernel's printk rate limit, and AppArmor suppresses repeated audit records of the same capability denial, so a missing line is not evidence that nothing was denied. Traces and kernel lines are raw diagnostics, never verdict inputs.",
+  "A verified profile change shows the kernel loaded the profile, not that it attached to the helper in a cell; the service cells keep NoNewPrivileges=yes, under which AppArmor may refuse the exec-time transition.",
+  "The helper is chosen only through PATH, Codex's own rule. The traced helper comes from a separate traced read and counts only execs the trace shows returning 0; an exec of /proc/self/fd/N with argv0 bwrap is only ever inferred to be the bundled helper, because a text trace cannot show what N named at that moment.",
+  "A cell's kernel lines are those printed while it ran, by any process on the runner, not lines proven to come from its own processes. They reach dmesg through the kernel's printk rate limit, and AppArmor suppresses repeated audit records of the same capability denial, so a missing line is not evidence that nothing was denied. Traces and kernel lines are raw diagnostics, never verdict inputs.",
 ];
 
 export function cellPlan() {
@@ -177,6 +211,22 @@ export function digestMismatches(digests) {
   return Object.entries(CODEX_PIN.sha256)
     .filter(([name, pinned]) => digests[name] !== pinned)
     .map(([name, pinned]) => `${name} sha256 ${digests[name]} is not pinned ${pinned}`);
+}
+
+/** The bwrap Codex selects from SYSTEM_PATH and whether it is the file the
+ * control profile names: AppArmor attaches a profile by the resolved path of
+ * the executable, so only that file can carry it. */
+export function systemHelper(path, realpath) {
+  return { path, realpath, profiledPath: SYSTEM_BWRAP, matchesProfile: realpath === SYSTEM_BWRAP };
+}
+
+function profiledHelperGaps(helper) {
+  if (helper === undefined) return ["the system bwrap was not recorded"];
+  if (helper?.matchesProfile === true) return [];
+  if (!helper?.path) return [`no bwrap on the system PATH, so no cell can execute ${SYSTEM_BWRAP}`];
+  return [
+    `the system bwrap ${helper.path} resolves to ${helper.realpath ?? "an unreadable path"}, not the profiled ${SYSTEM_BWRAP}`,
+  ];
 }
 
 /** argv for `sudo`: a disposable transient unit run as the same normal user. */
@@ -324,6 +374,30 @@ export function classifyCell(expectedNonce, observations) {
   );
 }
 
+/** How each sandbox probe of a cell ended, to read a failure by and never a
+ * verdict input: its end, duration, whether it reached the per-run time limit,
+ * and its first stderr line, the helper's own message when it failed before
+ * the command. */
+export function probeEnds(observations) {
+  return Object.fromEntries(
+    ["read", "identity", "write"].map((name) => {
+      const probe = observations?.probes?.[name];
+      if (!probe) return [name, null];
+      return [
+        name,
+        {
+          ended: ended(probe),
+          ms: probe.ms ?? null,
+          atTimeLimit:
+            probe.error === "ETIMEDOUT" ||
+            probe.ms >= SANDBOX_RUN_TIMEOUT_MS - TIME_LIMIT_MARGIN_MS,
+          stderr: lines(probe.stderr)[0]?.trim().slice(0, 300) ?? null,
+        },
+      ];
+    }),
+  );
+}
+
 /** Whether the unit really carried the requested hardening, from the worker's
  * own view: its cgroup unit, kernel NoNewPrivs and `systemctl show`. */
 export function serviceGeometry(observations, expectedUnit) {
@@ -390,46 +464,125 @@ export function kernelAudit(diffLines) {
   return { apparmor: [...groups.values()], suppressed };
 }
 
-/** Which bwrap the traced read executed. Codex runs the system helper by its
- * path and the bundled one as /proc/self/fd/N with argv0 `bwrap`; N is named
- * by the last open/openat in that thread that returned it before the exec.
- * `bundledBwrap` may list several spellings of the installed helper's path. */
+const UNFINISHED = " <unfinished ...>";
+
+/** The value and errno strace printed after a call's closing parenthesis,
+ * which it pads to a column. The return holds no quote, so it is looked for
+ * after the last one; null when the trace shows no return. */
+function traceReturn(call) {
+  const tail = call.slice(call.lastIndexOf('"') + 1);
+  const found = [...tail.matchAll(/\)\s+=\s+(\?|-?\d+)(?=\s|$)(?:\s+(E[A-Z0-9]+))?/g)].at(-1);
+  return found ? { value: found[1], errno: found[2] ?? null } : null;
+}
+
+/** Which descriptor numbers a call closes or replaces, or null. */
+function releasedBy(name, args) {
+  if (!["close", "close_range", "dup2", "dup3"].includes(name)) return null;
+  const [first, second] = args.split(",", 2).map((part) => Number.parseInt(part, 10));
+  if (name === "close") return (fd) => fd === first;
+  if (name === "dup2" || name === "dup3") return (fd) => fd === second;
+  if (name !== "close_range") return null;
+  // An open-ended range may print its last descriptor as ~0 or -1.
+  const from = Number.isInteger(first) ? first : 0;
+  const to = Number.isInteger(second) && second >= from ? second : Infinity;
+  return (fd) => fd >= from && fd <= to;
+}
+
+/** Which bwrap the traced read executed. An exec counts only when the trace
+ * shows it returned 0. strace splits a call that another thread interrupts
+ * into `<unfinished ...>` and `<... execve resumed>` lines; the two are joined
+ * by pid, also across strace's `superseded by execve` handover to the thread
+ * group leader. An attempt that returned an error is kept in `failed`, one
+ * whose return the trace never shows in `unresolved`, neither as executed.
+ *
+ * Codex runs the system helper by its path and the bundled one as
+ * /proc/self/fd/N with argv0 `bwrap`. A text trace cannot show what N named at
+ * that exec, so a descriptor exec is only ever `(inferred)`. Its `openedAs`
+ * hint is the file the same thread last opened as N, dropped when any thread
+ * closes or replaces N; without a hint the exec is taken for the bundled
+ * helper, Codex's own route. `bundledBwrap` may list several spellings of the
+ * installed helper's path. */
 export function tracedHelper(trace, { systemBwrap, bundledBwrap }) {
-  if (typeof trace !== "string") return { kind: "unknown", execs: [] };
+  const helper = { kind: "unknown", execs: [], failed: [], unresolved: [] };
+  if (typeof trace !== "string") return helper;
   const bundled = [bundledBwrap].flat().filter(Boolean);
-  const opened = new Map();
-  const pending = new Map();
-  const execs = [];
+  const named = (file) =>
+    file === systemBwrap ? "system" : bundled.includes(file) ? "bundled" : "other";
+  const opened = new Map(); // pid -> Map(fd -> path of that thread's last open)
+  const pending = new Map(); // pid -> the call it started and has not returned from
+  // A thread runs one call at a time: one it leaves without a return stays unresolved.
+  const leave = (pid) => {
+    const attempt = pending.get(pid)?.attempt;
+    if (attempt) helper.unresolved.push({ ...attempt, returned: null });
+    pending.delete(pid);
+  };
+  const enter = (pid, name, args) => {
+    const released = releasedBy(name, args);
+    if (released)
+      for (const table of opened.values())
+        for (const fd of table.keys()) if (released(fd)) table.delete(fd);
+    const exec = name === "execve" && /^"([^"]*)", \["bwrap"[,\]]/.exec(args);
+    if (!exec) return null;
+    const fd = /^\/proc\/self\/fd\/(\d+)$/.exec(exec[1]);
+    const openedAs = fd ? (opened.get(pid)?.get(Number(fd[1])) ?? null) : null;
+    const kind = fd ? `${openedAs ? named(openedAs) : "bundled"} (inferred)` : named(exec[1]);
+    return { pid: Number(pid), path: exec[1], openedAs, kind };
+  };
+  const exit = (pid, name, args, attempt) => {
+    const result = traceReturn(args);
+    const returned = /^\d+$/.test(result?.value ?? "") ? result.value : null;
+    const open = (name === "open" || name === "openat") && /^(?:[^,"]+, )?"([^"]*)"/.exec(args);
+    if (open && returned !== null) {
+      if (!opened.has(pid)) opened.set(pid, new Map());
+      opened.get(pid).set(Number(returned), open[1]);
+    }
+    // A new task, or a new program in this one, starts without this thread's opens.
+    if ((name === "clone" || name === "clone3") && returned !== null) opened.delete(returned);
+    if (name === "execve" && returned === "0") opened.delete(pid);
+    if (!attempt) return;
+    if (result?.value === "0") helper.execs.push(attempt);
+    else if (result?.value === "-1") helper.failed.push({ ...attempt, errno: result.errno });
+    else helper.unresolved.push({ ...attempt, returned: result?.value ?? null });
+  };
   for (const line of trace.split("\n")) {
-    const open = /^(\d+)\s+open(?:at)?\((?:[^,"]+, )?"([^"]*)",(.*)$/.exec(line);
-    if (open) {
-      const fd = /\) = (\d+)$/.exec(open[3]);
-      if (fd) opened.set(`${open[1]}:${fd[1]}`, open[2]);
-      else if (open[3].endsWith("<unfinished ...>")) pending.set(open[1], open[2]);
+    const [, pid, body] = /^(\d+)\s+(.*)$/.exec(line) ?? [];
+    if (!pid) continue;
+    const superseded = /^\+\+\+ superseded by execve in pid (\d+) \+\+\+$/.exec(body);
+    if (superseded) {
+      // The exec'ing thread takes over this pid, and its exec returns under it.
+      const call = pending.get(superseded[1]);
+      pending.delete(superseded[1]);
+      opened.delete(superseded[1]);
+      leave(pid);
+      if (call) pending.set(pid, call);
       continue;
     }
-    const resumed = /^(\d+)\s+<\.\.\. open(?:at)? resumed>.*\) = (\d+)$/.exec(line);
-    if (resumed && pending.has(resumed[1])) {
-      opened.set(`${resumed[1]}:${resumed[2]}`, pending.get(resumed[1]));
-      pending.delete(resumed[1]);
+    if (/^\+\+\+ (?:exited with|killed by) /.test(body)) {
+      leave(pid);
+      opened.delete(pid);
       continue;
     }
-    const exec = /^(\d+)\s+execve\("([^"]*)", \["bwrap"[,\]](.*)$/.exec(line);
-    if (!exec || / = -1 [A-Z]+ \(.*\)$/.test(exec[3])) continue;
-    const fd = /^\/proc\/self\/fd\/(\d+)$/.exec(exec[2]);
-    const file = fd ? (opened.get(`${exec[1]}:${fd[1]}`) ?? null) : exec[2];
-    const kind =
-      exec[2] === systemBwrap
-        ? "system"
-        : fd && bundled.includes(file)
-          ? "bundled"
-          : fd && file === null
-            ? "bundled (inferred)"
-            : "other";
-    execs.push({ path: exec[2], file, kind });
+    const resumed = /^<\.\.\. (\w+) resumed>(.*)$/.exec(body);
+    if (resumed) {
+      const call = pending.get(pid);
+      if (call?.name !== resumed[1]) continue;
+      pending.delete(pid);
+      exit(pid, call.name, call.args + resumed[2], call.attempt);
+      continue;
+    }
+    const call = /^(\w+)\((.*)$/.exec(body);
+    if (!call) continue;
+    leave(pid);
+    const unfinished = call[2].endsWith(UNFINISHED);
+    const args = unfinished ? call[2].slice(0, -UNFINISHED.length) : call[2];
+    const attempt = enter(pid, call[1], args);
+    if (unfinished) pending.set(pid, { name: call[1], args, attempt });
+    else exit(pid, call[1], args, attempt);
   }
-  const kinds = [...new Set(execs.map((exec) => exec.kind))];
-  return { kind: kinds.length === 1 ? kinds[0] : kinds.length ? "mixed" : "none", execs };
+  for (const pid of [...pending.keys()]) leave(pid);
+  const kinds = [...new Set(helper.execs.map((exec) => exec.kind))];
+  helper.kind = kinds.length === 1 ? kinds[0] : kinds.length ? "mixed" : "none";
+  return helper;
 }
 
 /** Wait before each cell so its audit lines get a fresh printk rate-limit window. */
@@ -511,7 +664,11 @@ function restrictionAsReported(before) {
  * and reverts it, and the only difference the applied state may show. */
 const PHASE_CHANGES = {
   "apparmor-bwrap-profile": {
-    preconditions: restrictionAsReported,
+    // The profile can reach the system cells only through the file it names.
+    preconditions: (before, { systemBwrap }) => [
+      ...restrictionAsReported(before),
+      ...profiledHelperGaps(systemBwrap),
+    ],
     apply: ({ profileFile }) => ["-n", APPARMOR_PARSER, "-r", profileFile],
     restore: ({ profileFile }) => ["-n", APPARMOR_PARSER, "-R", profileFile],
     expected: () => [`profile ${BWRAP_PROFILE_NAME} (unconfined) added`],
@@ -556,15 +713,38 @@ export function phaseOutcome(cells) {
   return verdicts.length === cellPlan().length && clean ? "proven" : "not_proven";
 }
 
+/** Why the harness cannot show that every process of a cell ended, or null: a
+ * service cell's unit must read back stopped, and a direct cell's worker must
+ * have exited by itself or never started. A cell the harness could not finish
+ * shows neither. */
+function unsettled(cell) {
+  if (cell.geometry === "service")
+    return cell.unitSettled === true ? null : "its transient unit was not shown stopped";
+  if (!cell.worker) return "the harness has no record of how its worker ended";
+  const { signal, error } = cell.worker;
+  return signal || error === "ETIMEDOUT" ? `its worker ${ended(cell.worker)}` : null;
+}
+
 /** Runs every phase in order with injected effects, so sequencing, labels and
  * restores are testable without root: `snapshot(phase, stage)` reads the host
  * state, `command(phase, step, args)` runs `sudo args`, `runCell(phase, plan)`
  * runs one cell. A control phase applies its change only to the reported
- * restriction (the sysctl at 1, no bwrap profile), runs its cells only when the
- * applied state differs from the state before by exactly that change, and
- * always reverts a change it attempted. A phase that does not end in its
- * starting state blocks the rest. */
-export function runPhases({ snapshot, command, runCell, profileFile, phases = [], cells = [] }) {
+ * restriction (the sysctl at 1, no bwrap profile, and for the profile the
+ * system helper `systemBwrap` being the profiled file), runs its cells only
+ * when the applied state differs from the state before by exactly that change,
+ * and always reverts a change it attempted. A phase that does not end in its
+ * starting state blocks the rest; so does a cell whose processes are not shown
+ * to have ended, since one left running could act during any later cell: the
+ * rest of its phase and every later phase are then not run. */
+export function runPhases({
+  snapshot,
+  command,
+  runCell,
+  profileFile,
+  systemBwrap,
+  phases = [],
+  cells = [],
+}) {
   let blocked = null;
   for (const { id, change } of PHASES) {
     const actions = PHASE_CHANGES[id];
@@ -606,7 +786,9 @@ export function runPhases({ snapshot, command, runCell, profileFile, phases = []
     else {
       const before = read("before");
       const gaps = stateGaps(before);
-      phase.preconditionGaps = actions ? [...gaps, ...actions.preconditions(before)] : gaps;
+      phase.preconditionGaps = actions
+        ? [...gaps, ...actions.preconditions(before, { systemBwrap })]
+        : gaps;
       if (actions && phase.preconditionGaps.length)
         notRun(`precondition not met: ${phase.preconditionGaps.join("; ")}`);
       else {
@@ -628,19 +810,25 @@ export function runPhases({ snapshot, command, runCell, profileFile, phases = []
           if (!ready) notRun("the applied host state is not exactly the intended change");
           else {
             phase.ran = true;
-            for (const plan of cellPlan())
-              phaseCells.push(
-                guarded(
-                  () => ({ phase: id, ...runCell(id, plan) }),
-                  (error) => ({
-                    phase: id,
-                    ...plan,
-                    verdict: "worker_defect",
-                    reason: `the harness failed while running this cell: ${error.split("\n")[0]}`,
-                    facts: null,
-                  }),
-                ),
+            for (const plan of cellPlan()) {
+              const cell = guarded(
+                () => ({ phase: id, ...runCell(id, plan) }),
+                (error) => ({
+                  phase: id,
+                  ...plan,
+                  verdict: "worker_defect",
+                  reason: `the harness failed while running this cell: ${error.split("\n")[0]}`,
+                  facts: null,
+                }),
               );
+              phaseCells.push(cell);
+              const reason = unsettled(cell);
+              if (reason) {
+                blocked = `the comparison stopped after ${id}/${plan.id}: ${reason}, so a process it started may still be running`;
+                break;
+              }
+            }
+            if (blocked && phaseCells.length < cellPlan().length) notRun(blocked);
           }
         } catch (error) {
           phase.error = String(error?.stack ?? error);
@@ -651,7 +839,7 @@ export function runPhases({ snapshot, command, runCell, profileFile, phases = []
           const differences = [...stateGaps(after), ...stateDifferences(before, after)];
           phase.endState = { differences, restored: differences.length === 0 };
           if (!phase.endState.restored)
-            blocked = `the host state after ${id} was not verified as the state it started from`;
+            blocked ??= `the host state after ${id} was not verified as the state it started from`;
         }
       }
     }
@@ -732,9 +920,35 @@ function kernelLogCell(log) {
   return `${log.state}: ${log.newLines} lines, ${audited} AppArmor (${denied} DENIED)${suppressed}`;
 }
 
+/** The executed helper, then any exec attempt that failed or never returned. */
+function helperCell(helper) {
+  if (!helper) return "n/a";
+  const failed = new Map();
+  for (const { errno } of helper.failed ?? []) failed.set(errno, (failed.get(errno) ?? 0) + 1);
+  const attempts = [...failed].map(([errno, count]) => `${count} failed (${errno ?? "no errno"})`);
+  if (helper.unresolved?.length) attempts.push(`${helper.unresolved.length} unresolved`);
+  return attempts.length ? `${helper.kind}; exec attempts: ${attempts.join(", ")}` : helper.kind;
+}
+
+function probeCell(probe) {
+  if (!probe) return "n/a";
+  const ms = probe.ms === null ? "" : ` in ${probe.ms} ms`;
+  const limit = probe.atTimeLimit ? " (time limit)" : "";
+  const stderr = probe.stderr ? `: ${probe.stderr.replaceAll("|", "\\|")}` : "";
+  return `${probe.ended}${ms}${limit}${stderr}`;
+}
+
+function systemHelperLine(helper) {
+  if (!helper?.path)
+    return `System helper: no bwrap on the system PATH; the profile names ${SYSTEM_BWRAP}.`;
+  const same = helper.matchesProfile ? "the same file" : "a different file";
+  return `System helper: Codex's PATH selects ${helper.path}, resolving to ${helper.realpath ?? "an unreadable path"}; the profile names ${SYSTEM_BWRAP}, ${same}.`;
+}
+
 export function renderSummary(summary) {
   const out = [`# Linux Codex readonly probe (claudexor#337): harness ${summary.outcome}`, ""];
   out.push(DIAGNOSTIC_CONTROL, "");
+  if (summary.host) out.push(systemHelperLine(summary.host.systemBwrap), "");
   const notes = (summary.gaps ?? []).map((gap) => `- unsupported: ${gap}`);
   if (summary.error) notes.push(`- harness error: ${summary.error.split("\n")[0]}`);
   if (notes.length) out.push(...notes, "");
@@ -757,11 +971,12 @@ export function renderSummary(summary) {
       out.push(
         `| ${phase.id} | ${phase.change} | ${phase.setup ? yesNo(phase.setup.verified) : "n/a"} | ${phase.endState ? yesNo(phase.endState.restored) : "n/a"} | ${phase.sandboxOutcome} |`,
       );
-    out.push("", "## Cells", "");
+    out.push("", ATTACHMENT_NOTE, "", "## How to read the phases", "");
+    out.push(...PHASE_READING.map((rule) => `- ${rule}`), "", "## Cells", "");
     out.push(
-      "| phase | cell | verdict | reason | traced helper | label inside sandbox | service geometry | unit settled | kernel log |",
+      "| phase | cell | verdict | reason | read probe | traced helper | label inside sandbox | service geometry | unit settled | kernel log |",
     );
-    out.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    out.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const cell of cells) {
       const service = cell.geometry === "service" && "serviceGeometry" in cell;
       const geometry = service
@@ -772,7 +987,7 @@ export function renderSummary(summary) {
           ? "direct"
           : "n/a";
       out.push(
-        `| ${cell.phase} | ${cell.id} | ${cell.verdict} | ${cell.reason} | ${cell.trace?.helper?.kind ?? "n/a"} | ${cell.sandboxLabel ?? "n/a"} | ${geometry} | ${service ? String(cell.unitSettled) : "n/a"} | ${kernelLogCell(cell.kernelLog)} |`,
+        `| ${cell.phase} | ${cell.id} | ${cell.verdict} | ${cell.reason} | ${probeCell(cell.probes?.read)} | ${helperCell(cell.trace?.helper)} | ${cell.sandboxLabel ?? "n/a"} | ${geometry} | ${service ? String(cell.unitSettled) : "n/a"} | ${kernelLogCell(cell.kernelLog)} |`,
       );
     }
     out.push("");

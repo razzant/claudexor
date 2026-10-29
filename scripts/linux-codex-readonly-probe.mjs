@@ -12,15 +12,16 @@
  * provisioned, then with an AppArmor profile for /usr/bin/bwrap granting
  * `userns`, then with kernel.apparmor_restrict_unprivileged_userns=0. Each
  * control phase reverts its change and verifies the host state before the next
- * one starts. They are diagnostic controls, never recommended host settings.
+ * one starts, and a cell whose processes are not shown to have ended stops the
+ * comparison. They are diagnostic controls, never recommended host settings.
  *
  *   node scripts/linux-codex-readonly-probe.mjs run --out DIR --work DIR
  *
  * `cell --spec FILE` is the internal per-geometry worker. Exit codes: 0 every
  * planned cell ran with its evidence and every phase ended in its starting host
  * state, whatever the sandbox verdicts; 1 a harness defect (a cell not run,
- * missing evidence, an unverified change or restore); 2 unsupported host or
- * harness failure. See docs/evidence/linux-codex-readonly-probe.md.
+ * missing evidence, an unverified change or restore, a stopped comparison); 2
+ * unsupported host or harness failure. See docs/evidence/linux-codex-readonly-probe.md.
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -47,6 +48,7 @@ import {
   IDENTITY_SCRIPT,
   LIMITATIONS,
   RECORDED_SYSCTLS,
+  SANDBOX_RUN_TIMEOUT_MS,
   STRACE_ARGS,
   SYSCTL,
   SYSTEM_BWRAP,
@@ -64,11 +66,13 @@ import {
   kernelLogPauseMs,
   parseKeyValues,
   preconditionGaps,
+  probeEnds,
   renderSummary,
   runInTransientUnit,
   runPhases,
   serviceGeometry,
   summarize,
+  systemHelper,
   tracedHelper,
 } from "./lib/linux-codex-readonly-probe.mjs";
 
@@ -187,8 +191,7 @@ function runCell(specFile) {
     LC_ALL: "C.UTF-8",
     TERM: "dumb",
   };
-  // Five Codex runs per cell at most 60 s each keep a hung cell inside the job budget.
-  const codex = { cwd: spec.project, env, timeoutMs: 60_000 };
+  const codex = { cwd: spec.project, env, timeoutMs: SANDBOX_RUN_TIMEOUT_MS };
   const codexSandbox = [spec.launcher, "sandbox", "--"];
   const sandbox = (name, command) =>
     recorded(spec.raw, name, spec.node, [...codexSandbox, ...command], codex);
@@ -274,7 +277,13 @@ function hostFacts(dir) {
     sysctl: readSysctls(),
     apparmorEnabled: read("/sys/module/apparmor/parameters/enabled"),
     systemBwrap: bwrap
-      ? { path: bwrap, version: run("system-bwrap-version", bwrap, ["--version"]).stdout.trim() }
+      ? {
+          ...systemHelper(
+            bwrap,
+            tryValue(() => realpathSync(bwrap)),
+          ),
+          version: run("system-bwrap-version", bwrap, ["--version"]).stdout.trim(),
+        }
       : null,
     strace: onPath("strace"),
     user: {
@@ -440,6 +449,7 @@ function runPlannedCell({ phase, plan, install, host, out, work, pauseMs }) {
     unit: service ? `${unit}.service` : null,
     serviceGeometry: service ? serviceGeometry(observations, `${unit}.service`) : null,
     unitSettled,
+    probes: probeEnds(observations),
     sandboxLabel: identity?.status === 0 ? parseKeyValues(identity.stdout).apparmor || null : null,
     trace: {
       expected: Boolean(spec.strace),
@@ -469,7 +479,7 @@ async function runProbe({ out, work }) {
   const linux = process.platform === "linux";
   const hostDir = join(out, "host");
   const summary = {
-    schema: "claudexor-linux-codex-readonly-probe/3",
+    schema: "claudexor-linux-codex-readonly-probe/4",
     diagnosticControl: DIAGNOSTIC_CONTROL,
     outcome: null,
     defects: [],
@@ -510,6 +520,7 @@ async function runProbe({ out, work }) {
     summary.cells = [];
     runPhases({
       profileFile,
+      systemBwrap: summary.host.systemBwrap,
       phases: summary.phases,
       cells: summary.cells,
       snapshot: (phase, stage) => {

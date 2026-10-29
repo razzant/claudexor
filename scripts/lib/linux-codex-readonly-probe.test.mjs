@@ -10,10 +10,14 @@ import {
   CODEX_PIN,
   CODEX_VERSION_OUTPUT,
   DIAGNOSTIC_CONTROL,
+  LIMITATIONS,
+  PHASE_READING,
   PHASES,
   REPORTED_SERVICE_PROPERTIES,
+  SANDBOX_RUN_TIMEOUT_MS,
   STRACE_ARGS,
   SYSCTL,
+  SYSTEM_BWRAP,
   UNIT_OUTER_TIMEOUT_MS,
   UNIT_RUNTIME_MAX_SEC,
   UNIT_TIMEOUT_STOP_SEC,
@@ -30,11 +34,13 @@ import {
   kernelLogPauseMs,
   phaseOutcome,
   preconditionGaps,
+  probeEnds,
   renderSummary,
   runInTransientUnit,
   runPhases,
   serviceGeometry,
   summarize,
+  systemHelper,
   tracedHelper,
 } from "./linux-codex-readonly-probe.mjs";
 import { jobSection } from "./workflow-sections.mjs";
@@ -46,6 +52,7 @@ import { jobSection } from "./workflow-sections.mjs";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = join(repoRoot, "scripts", "linux-codex-readonly-probe.mjs");
 const WORKFLOW_PATH = join(repoRoot, ".github", "workflows", "linux-codex-readonly-probe.yml");
+const DOC_PATH = join(repoRoot, "docs", "evidence", "linux-codex-readonly-probe.md");
 const scratch = mkdtempSync(join(tmpdir(), "cx337-probe-test-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
@@ -190,6 +197,26 @@ describe("cell verdicts", () => {
     ];
     for (const observation of cases)
       expect(classifyCell(NONCE, observation).verdict).toBe("inconclusive");
+  });
+
+  it("keeps how each probe ended, its time and first stderr line beside the verdict, never in it", () => {
+    const loopback = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted";
+    const failing = observed({
+      read: result(1, "", `\n${loopback}\nmore\n`, { ms: 812 }),
+      identity: result(null, "", "", { signal: "SIGTERM", error: "ETIMEDOUT", ms: 60_004 }),
+      write: { ...result(1, "", "a | b\n", { ms: 57_000 }), targetExists: false },
+    });
+    expect(probeEnds(failing)).toEqual({
+      read: { ended: "exited 1", ms: 812, atTimeLimit: false, stderr: loopback },
+      identity: { ended: "failed (ETIMEDOUT)", ms: 60_004, atTimeLimit: true, stderr: null },
+      write: { ended: "exited 1", ms: 57_000, atTimeLimit: true, stderr: "a | b" },
+    });
+    expect(probeEnds({})).toEqual({ read: null, identity: null, write: null });
+    // The same failure with no message or a different one is still the same verdict.
+    expect(classifyCell(NONCE, failing)).toEqual(
+      classifyCell(NONCE, { ...failing, probes: { ...failing.probes, read: result(1) } }),
+    );
+    expect(SANDBOX_RUN_TIMEOUT_MS).toBe(60_000);
   });
 });
 
@@ -355,57 +382,176 @@ describe("traced helper", () => {
   const options = { systemBwrap, bundledBwrap: [bundledBwrap, null] };
   const exec = (pid, path, rest = ', "--as-pid-1", "--unshare-net"], ["PATH=/x"]) = 0') =>
     `${pid}  execve("${path}", ["bwrap"${rest}`;
+  const started = (pid, path = systemBwrap) =>
+    exec(pid, path, ', "--ro-bind", "/", "/"], ["PATH=/x"] <unfinished ...>');
+  // strace -o pads a short line so that its ` = ` return starts at column 40.
+  const padded = (head, value) => `${head.padEnd(40)}= ${value}`;
+  const open = (pid, path, fd) => `${pid}  open("${path}", O_RDONLY|O_CLOEXEC) = ${fd}`;
+  const ran = (pid, path, kind, openedAs = null) => ({ pid, path, openedAs, kind });
 
-  it("names the system helper by its exec path and ignores the feature probe", () => {
+  it("counts an exec only when the trace shows it returned 0, joining split lines by pid", () => {
     const trace = [
+      // Codex's feature probe runs bwrap under its full path as argv0.
       '2814  execve("/usr/bin/bwrap", ["/usr/bin/bwrap", "--help"], ["CODEX_HOME=/c"]) = 0',
       exec(2815, systemBwrap),
-      exec(2813, systemBwrap, ', "--ro-bind", "/", "/"], ["PATH=/x"] <unfinished ...>'),
+      started(2813),
+      padded("2816  close(9)", "0"),
+      padded("2813  <... execve resumed>)", "0"),
+      // A non-leader thread's exec returns under the thread group leader.
+      started(2820),
+      "2819  +++ superseded by execve in pid 2820 +++",
+      padded("2819  <... execve resumed>)", "0"),
     ].join("\n");
     expect(tracedHelper(trace, options)).toEqual({
       kind: "system",
       execs: [
-        { path: systemBwrap, file: systemBwrap, kind: "system" },
-        { path: systemBwrap, file: systemBwrap, kind: "system" },
+        ran(2815, systemBwrap, "system"),
+        ran(2813, systemBwrap, "system"),
+        ran(2820, systemBwrap, "system"),
       ],
+      failed: [],
+      unresolved: [],
     });
   });
 
-  it("binds /proc/self/fd/N to the file the same thread opened as N, else marks it inferred", () => {
+  it("keeps failed and unresolved exec attempts apart and never counts them as executed", () => {
+    const attempt = ran(2813, systemBwrap, "system");
+    const cases = [
+      // A split exec that resumed with an error.
+      [
+        [
+          started(2813),
+          padded("2816  close(9)", "0"),
+          padded("2813  <... execve resumed>)", "-1 EACCES (Permission denied)"),
+        ],
+        { failed: [{ ...attempt, errno: "EACCES" }], unresolved: [] },
+      ],
+      // A split exec whose continuation the trace never shows.
+      [
+        [started(2813), padded("2816  close(9)", "0")],
+        { failed: [], unresolved: [{ ...attempt, returned: null }] },
+      ],
+      // A complete exec that failed.
+      [
+        [exec(2813, systemBwrap, '], ["PATH=/x"]) = -1 EACCES (Permission denied)')],
+        { failed: [{ ...attempt, errno: "EACCES" }], unresolved: [] },
+      ],
+      // Another thread's return is not this thread's.
+      [
+        [started(2813), padded("2814  <... execve resumed>)", "0")],
+        { failed: [], unresolved: [{ ...attempt, returned: null }] },
+      ],
+      // Killed inside the exec, with or without strace's unknown return.
+      [
+        [
+          started(2813),
+          padded("2813  <... execve resumed>)", "?"),
+          "2813  +++ killed by SIGKILL +++",
+        ],
+        { failed: [], unresolved: [{ ...attempt, returned: "?" }] },
+      ],
+      [
+        [started(2813), "2813  +++ killed by SIGKILL +++", padded("2813  close(4)", "0")],
+        { failed: [], unresolved: [{ ...attempt, returned: null }] },
+      ],
+    ];
+    for (const [lines, attempts] of cases)
+      expect(tracedHelper(lines.join("\n"), options), lines.join("\n")).toEqual({
+        kind: "none",
+        execs: [],
+        ...attempts,
+      });
+    const retried = [
+      exec(2813, systemBwrap, '], ["PATH=/x"]) = -1 EACCES (Permission denied)'),
+      exec(2813, systemBwrap),
+    ];
+    expect(tracedHelper(retried.join("\n"), options)).toMatchObject({
+      kind: "system",
+      execs: [attempt],
+      failed: [{ ...attempt, errno: "EACCES" }],
+    });
+  });
+
+  it("only infers the file behind /proc/self/fd/N, from a hint a close or reassignment drops", () => {
+    const fdExec = (pid, fd) => exec(pid, `/proc/self/fd/${fd}`);
     const bound = [
       '2925  openat(AT_FDCWD, "/etc/ld-musl-x86_64.path", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)',
-      '2925  open("/w/other", O_RDONLY|O_CLOEXEC) = 3',
-      `2925  open("${bundledBwrap}", O_RDONLY|O_CLOEXEC) = 3`,
+      open(2925, "/w/other", 3),
+      open(2925, bundledBwrap, 3),
       `2926  openat(AT_FDCWD, "${bundledBwrap}", O_RDONLY|O_CLOEXEC <unfinished ...>`,
-      "2925  close(9) = 0",
-      "2926  <... openat resumed>) = 4",
-      exec(2925, "/proc/self/fd/3"),
-      exec(2926, "/proc/self/fd/4"),
+      padded("2925  close(9)", "0"),
+      padded("2926  <... openat resumed>)", "4"),
+      fdExec(2925, 3),
+      fdExec(2926, 4),
     ].join("\n");
-    expect(tracedHelper(bound, options)).toMatchObject({
-      kind: "bundled",
-      execs: [
-        { path: "/proc/self/fd/3", file: bundledBwrap, kind: "bundled" },
-        { path: "/proc/self/fd/4", file: bundledBwrap, kind: "bundled" },
-      ],
-    });
-    // Another thread's open of N says nothing about this thread's N.
-    const unbound = [`2925  open("${bundledBwrap}", O_RDONLY) = 3`, exec(2930, "/proc/self/fd/3")];
-    expect(tracedHelper(unbound.join("\n"), options)).toEqual({
+    expect(tracedHelper(bound, options)).toEqual({
       kind: "bundled (inferred)",
-      execs: [{ path: "/proc/self/fd/3", file: null, kind: "bundled (inferred)" }],
+      execs: [
+        ran(2925, "/proc/self/fd/3", "bundled (inferred)", bundledBwrap),
+        ran(2926, "/proc/self/fd/4", "bundled (inferred)", bundledBwrap),
+      ],
+      failed: [],
+      unresolved: [],
     });
+    // Closed or replaced before the exec, by this thread or one sharing its
+    // descriptors, or a new task or program under the pid: the hint is gone.
+    for (const between of [
+      [padded("2925  close(3)", "0"), padded("2925  dup2(7, 3)", "3")],
+      [padded("2925  dup2(7, 3)", "3")],
+      ["2925  dup3(7, 3, O_CLOEXEC)                  = 3"],
+      [padded("2931  close(3)", "0")],
+      ["2931  close(3 <unfinished ...>"],
+      ["2931  close_range(3, 4294967295, 0)          = 0"],
+      ["2931  close_range(3, ~0, CLOSE_RANGE_UNSHARE) = 0"],
+      ["2925  +++ exited with 0 +++"],
+      [
+        "2900  clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7f) = 2925",
+      ],
+      ['2925  execve("/bin/true", ["true"], ["PATH=/x"]) = 0'],
+    ]) {
+      const trace = [open(2925, bundledBwrap, 3), ...between, fdExec(2925, 3)].join("\n");
+      expect(tracedHelper(trace, options).execs, between.join("\n")).toEqual([
+        ran(2925, "/proc/self/fd/3", "bundled (inferred)"),
+      ]);
+    }
+    // A later open of N is the hint instead, and still inferred.
+    for (const [file, kind] of [
+      ["/w/other", "other (inferred)"],
+      [systemBwrap, "system (inferred)"],
+    ]) {
+      const reopened = [
+        open(2925, bundledBwrap, 3),
+        padded("2925  close(3)", "0"),
+        open(2925, file, 3),
+      ];
+      expect(tracedHelper([...reopened, fdExec(2925, 3)].join("\n"), options).execs).toEqual([
+        ran(2925, "/proc/self/fd/3", kind, file),
+      ]);
+    }
+    // Another thread's open of N says nothing about this thread's N.
+    const unbound = [open(2925, bundledBwrap, 3), fdExec(2930, 3)];
+    expect(tracedHelper(unbound.join("\n"), options).execs).toEqual([
+      ran(2930, "/proc/self/fd/3", "bundled (inferred)"),
+    ]);
+    // Only an exec under the installed helper's own path names it.
+    expect(tracedHelper(exec(2925, bundledBwrap), options).kind).toBe("bundled");
   });
 
-  it("reports failed, missing, foreign and mixed execs as such", () => {
-    const failed = exec(1, systemBwrap, '], ["PATH=/x"]) = -1 EACCES (Permission denied)');
-    expect(tracedHelper(failed, options)).toEqual({ kind: "none", execs: [] });
-    expect(tracedHelper("", options).kind).toBe("none");
-    expect(tracedHelper(null, options)).toEqual({ kind: "unknown", execs: [] });
+  it("reports missing, foreign and mixed execs as such", () => {
+    const empty = { execs: [], failed: [], unresolved: [] };
+    expect(tracedHelper("", options)).toEqual({ kind: "none", ...empty });
+    expect(tracedHelper(null, options)).toEqual({ kind: "unknown", ...empty });
     expect(tracedHelper(exec(1, "/opt/bwrap"), options).kind).toBe("other");
     const mixed = [exec(1, systemBwrap), exec(2, "/proc/self/fd/3")].join("\n");
     expect(tracedHelper(mixed, options).kind).toBe("mixed");
-    expect(STRACE_ARGS.at(-1)).toMatch(/^trace=execve,open,openat,/);
+    const [filter, ...traced] = STRACE_ARGS.at(-1).split(/[=,]/);
+    expect(filter).toBe("trace");
+    expect(traced).toEqual(
+      expect.arrayContaining([
+        ...["execve", "open", "openat", "close", "close_range", "dup2", "dup3"],
+        ...["clone", "clone3", "socket", "ioctl", "sendmsg", "recvmsg"],
+      ]),
+    );
   });
 });
 
@@ -414,8 +560,16 @@ describe("control phases", () => {
   const ORIGINAL_PROFILES = ["docker-default (enforce)", "unprivileged_userns (enforce)"];
 
   /** A host whose two restrictions the fake tools really change, and whose
-   * cells pass only where the restriction no longer applies to their helper. */
-  function fakeHost({ restriction = "1", profiles = ORIGINAL_PROFILES, tool, cellThrows } = {}) {
+   * cells pass only where the restriction no longer applies to their helper.
+   * `cell(phase, plan)` may override fields of a cell's record. */
+  function fakeHost({
+    restriction = "1",
+    profiles = ORIGINAL_PROFILES,
+    systemBwrap = systemHelper(SYSTEM_BWRAP, SYSTEM_BWRAP),
+    tool,
+    cellThrows,
+    cell,
+  } = {}) {
     const host = {
       sysctl: { [USERNS_RESTRICTION]: restriction, "kernel.printk_ratelimit": "5" },
       profiles: [...profiles],
@@ -449,12 +603,20 @@ describe("control phases", () => {
       const relaxed =
         host.sysctl[USERNS_RESTRICTION] === "0" ||
         (plan.helper === "system" && host.profiles.includes("bwrap (unconfined)"));
-      return ranCell(plan, relaxed ? "proven" : "capability_failed");
+      return ranCell(plan, relaxed ? "proven" : "capability_failed", cell?.(phase, plan));
     };
     return {
       host,
       log,
-      run: () => runPhases({ snapshot, command, runCell, profileFile: PROFILE_FILE }),
+      run: (options = {}) =>
+        runPhases({
+          snapshot,
+          command,
+          runCell,
+          profileFile: PROFILE_FILE,
+          systemBwrap,
+          ...options,
+        }),
     };
   }
 
@@ -657,7 +819,7 @@ describe("control phases", () => {
     expect(summarize(stuck.phases, stuck.cells).outcome).toBe("incomplete");
   });
 
-  it("keeps a cell the harness could not run as a worker defect and still reverts", () => {
+  it("keeps a cell the harness could not run as a worker defect, reverts and stops", () => {
     const fake = fakeHost({
       cellThrows: (phase, plan) =>
         phase === "apparmor-bwrap-profile" && plan.id === "direct-system",
@@ -670,12 +832,189 @@ describe("control phases", () => {
       reason: "the harness failed while running this cell: boom",
       facts: null,
     });
-    expect(cells.filter((cell) => cell.phase === "apparmor-bwrap-profile")).toHaveLength(4);
-    expect(phases[1]).toMatchObject({ endState: { restored: true }, sandboxOutcome: "not_proven" });
-    expect(phases[2].ran).toBe(true);
+    // Without a record of how its worker ended, the cell may have left one running.
+    const stopped =
+      "the comparison stopped after apparmor-bwrap-profile/direct-system: the harness has no record of how its worker ended, so a process it started may still be running";
+    expect(matrix(cells)["apparmor-bwrap-profile"]).toEqual([
+      "direct-system=worker_defect",
+      "direct-bundled=not_run",
+      "service-system=not_run",
+      "service-bundled=not_run",
+    ]);
+    expect(fake.log).toContain(
+      `apparmor-bwrap-profile restore sudo -n ${APPARMOR_PARSER} -R ${PROFILE_FILE}`,
+    );
+    expect(phases[1]).toMatchObject({
+      notRunReason: stopped,
+      endState: { restored: true },
+      sandboxOutcome: "not_proven",
+    });
+    expect(phases[2]).toMatchObject({ ran: false, notRunReason: stopped, setup: null });
     expect(summarize(phases, cells).defects).toEqual([
+      `apparmor-bwrap-profile: planned cells not run (${stopped})`,
+      `userns-sysctl-relaxed: planned cells not run (${stopped})`,
       "apparmor-bwrap-profile/direct-system: the harness failed while running this cell: boom",
     ]);
+  });
+
+  it("stops the comparison after a cell whose processes are not shown to have ended", () => {
+    const at = (phaseId, cellId, extra) =>
+      fakeHost({ cell: (phase, plan) => (phase === phaseId && plan.id === cellId ? extra : {}) });
+    const stoppedAfter = (where, why) =>
+      `the comparison stopped after ${where}: ${why}, so a process it started may still be running`;
+
+    // An unsettled baseline unit: no control phase changes the host at all.
+    const fake = at("baseline", "service-system", { unitSettled: false });
+    const { phases, cells } = fake.run();
+    const stopped = stoppedAfter(
+      "baseline/service-system",
+      "its transient unit was not shown stopped",
+    );
+    expect(fake.log).toEqual([
+      "baseline snapshot before",
+      "baseline cell direct-system",
+      "baseline cell direct-bundled",
+      "baseline cell service-system",
+      "baseline snapshot after",
+    ]);
+    expect(fake.host.sysctl[USERNS_RESTRICTION]).toBe("1");
+    expect(matrix(cells)).toEqual({
+      baseline: [
+        "direct-system=capability_failed",
+        "direct-bundled=capability_failed",
+        "service-system=capability_failed",
+        "service-bundled=not_run",
+      ],
+      "apparmor-bwrap-profile": cellPlan().map((plan) => `${plan.id}=not_run`),
+      "userns-sysctl-relaxed": cellPlan().map((plan) => `${plan.id}=not_run`),
+    });
+    for (const cell of cells.filter((cell) => cell.verdict === "not_run"))
+      expect(cell.reason).toBe(stopped);
+    expect(phases.map((phase) => phase.sandboxOutcome)).toEqual([
+      "not_proven",
+      "not_run",
+      "not_run",
+    ]);
+    const conclusion = summarize(phases, cells);
+    expect(conclusion).toEqual({
+      outcome: "incomplete",
+      defects: [
+        `baseline: planned cells not run (${stopped})`,
+        `apparmor-bwrap-profile: planned cells not run (${stopped})`,
+        `userns-sysctl-relaxed: planned cells not run (${stopped})`,
+        "baseline/service-system: transient unit not shown stopped",
+      ],
+    });
+    expect(exitCodeFor(conclusion.outcome)).toBe(1);
+
+    // In a control phase the change is still reverted; a last cell leaves none of its own phase.
+    const control = at("apparmor-bwrap-profile", "service-bundled", { unitSettled: null });
+    const run = control.run();
+    expect(control.log).toContain(
+      `apparmor-bwrap-profile restore sudo -n ${APPARMOR_PARSER} -R ${PROFILE_FILE}`,
+    );
+    expect(control.log.some((line) => line.startsWith("userns-sysctl-relaxed"))).toBe(false);
+    expect(run.phases[1]).toMatchObject({ notRunReason: null, endState: { restored: true } });
+    expect(summarize(run.phases, run.cells).defects).toEqual([
+      `userns-sysctl-relaxed: planned cells not run (${stoppedAfter("apparmor-bwrap-profile/service-bundled", "its transient unit was not shown stopped")})`,
+      "apparmor-bwrap-profile/service-bundled: transient unit not shown stopped",
+    ]);
+
+    // A direct worker the harness had to end, or a service cell that threw, shows no end either.
+    const killed = at("baseline", "direct-system", {
+      worker: { status: null, signal: "SIGTERM", error: "ETIMEDOUT" },
+    }).run();
+    expect(killed.phases[0].notRunReason).toBe(
+      stoppedAfter("baseline/direct-system", "its worker failed (ETIMEDOUT)"),
+    );
+    const thrown = fakeHost({
+      cellThrows: (phase, plan) => phase === "baseline" && plan.id === "service-bundled",
+    }).run();
+    expect(thrown.phases.map((phase) => phase.notRunReason)).toEqual([
+      null,
+      stoppedAfter("baseline/service-bundled", "its transient unit was not shown stopped"),
+      stoppedAfter("baseline/service-bundled", "its transient unit was not shown stopped"),
+    ]);
+
+    // A worker that exited by itself, even non-zero, or never started, ended.
+    for (const worker of [
+      { status: 1, signal: null, error: null },
+      { status: null, signal: null, error: "ENOENT" },
+    ]) {
+      const settled = at("baseline", "direct-system", { worker }).run();
+      expect(settled.phases.map((phase) => phase.ran)).toEqual([true, true, true]);
+      expect(settled.cells.filter((cell) => cell.verdict === "not_run")).toEqual([]);
+    }
+  });
+
+  it("runs the profile phase only when Codex's system bwrap is the profiled file", () => {
+    for (const [systemBwrap, gap] of [
+      [
+        systemHelper("/usr/local/bin/bwrap", "/usr/local/bin/bwrap"),
+        "the system bwrap /usr/local/bin/bwrap resolves to /usr/local/bin/bwrap, not the profiled /usr/bin/bwrap",
+      ],
+      [null, "no bwrap on the system PATH, so no cell can execute /usr/bin/bwrap"],
+    ]) {
+      const fake = fakeHost({ systemBwrap });
+      const { phases, cells } = fake.run();
+      expect(phases[1]).toMatchObject({ ran: false, preconditionGaps: [gap], setup: null });
+      expect(fake.log.some((line) => line.startsWith("apparmor-bwrap-profile setup"))).toBe(false);
+      // The sysctl reaches every helper, whichever file Codex selects.
+      expect(phases[2]).toMatchObject({ ran: true, setup: { verified: true } });
+      expect(summarize(phases, cells).defects).toEqual([
+        `apparmor-bwrap-profile: planned cells not run (precondition not met: ${gap})`,
+      ]);
+    }
+    // AppArmor attaches by the resolved path, so a link to the profiled file is that file.
+    expect(systemHelper("/bin/bwrap", "/usr/bin/bwrap")).toEqual({
+      path: "/bin/bwrap",
+      realpath: "/usr/bin/bwrap",
+      profiledPath: "/usr/bin/bwrap",
+      matchesProfile: true,
+    });
+    const linked = fakeHost({ systemBwrap: systemHelper("/bin/bwrap", "/usr/bin/bwrap") });
+    expect(linked.run().phases[1]).toMatchObject({ ran: true, preconditionGaps: [] });
+    // A helper never recorded is not mistaken for one that is absent.
+    expect(fakeHost().run({ systemBwrap: undefined }).phases[1]).toMatchObject({
+      ran: false,
+      preconditionGaps: ["the system bwrap was not recorded"],
+    });
+  });
+
+  it("ends every skipped or stopped comparison as an incomplete run that exits 1", () => {
+    const scenarios = {
+      "restriction already relaxed": fakeHost({ restriction: "0" }),
+      "profile already loaded": fakeHost({ profiles: [...ORIGINAL_PROFILES, "bwrap (enforce)"] }),
+      "system helper not the profiled file": fakeHost({
+        systemBwrap: systemHelper("/usr/local/bin/bwrap", "/usr/local/bin/bwrap"),
+      }),
+      "change not verified": fakeHost({
+        tool: (step, args) =>
+          step === "setup" && args[1] === APPARMOR_PARSER ? result(1, "", "parser error\n") : null,
+      }),
+      "host state not restored": fakeHost({
+        tool: (step, args) =>
+          step === "restore" && args[1] === APPARMOR_PARSER ? result(1, "", "busy\n") : null,
+      }),
+      "unit not shown stopped": fakeHost({
+        cell: (phase, plan) =>
+          phase === "baseline" && plan.id === "service-bundled" ? { unitSettled: false } : {},
+      }),
+    };
+    for (const [name, fake] of Object.entries(scenarios)) {
+      const { phases, cells } = fake.run();
+      expect(cells, name).toHaveLength(PHASES.length * cellPlan().length);
+      expect(
+        cells.some((cell) => cell.verdict === "not_run"),
+        name,
+      ).toBe(true);
+      const conclusion = summarize(phases, cells);
+      expect(conclusion.outcome, name).toBe("incomplete");
+      expect(exitCodeFor(conclusion.outcome), name).toBe(1);
+      expect(renderSummary({ ...conclusion, phases, cells }), name).toMatch(
+        /^# Linux Codex readonly probe \(claudexor#337\): harness incomplete\n/,
+      );
+    }
   });
 
   it("never changes a host whose state it cannot read", () => {
@@ -696,9 +1035,37 @@ describe("control phases", () => {
   });
 
   it("labels every cell by phase and states the diagnostic control in the summary", () => {
-    const { phases, cells } = fakeHost().run();
-    const markdown = renderSummary({ outcome: "complete", defects: [], phases, cells });
+    const { phases, cells } = fakeHost({
+      cell: (phase, plan) =>
+        phase === "baseline" && plan.id === "direct-system"
+          ? {
+              probes: {
+                read: {
+                  ended: "exited 1",
+                  ms: 812,
+                  atTimeLimit: false,
+                  stderr: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
+                },
+              },
+              trace: {
+                expected: true,
+                recorded: true,
+                helper: {
+                  kind: "system",
+                  execs: [],
+                  failed: [{ errno: "ENOENT" }, { errno: "ENOENT" }, { errno: "EACCES" }],
+                  unresolved: [{ returned: null }],
+                },
+              },
+            }
+          : {},
+    }).run();
+    const host = { systemBwrap: systemHelper(SYSTEM_BWRAP, SYSTEM_BWRAP) };
+    const markdown = renderSummary({ outcome: "complete", defects: [], host, phases, cells });
     expect(markdown).toContain(DIAGNOSTIC_CONTROL);
+    expect(markdown).toContain(
+      "System helper: Codex's PATH selects /usr/bin/bwrap, resolving to /usr/bin/bwrap; the profile names /usr/bin/bwrap, the same file.",
+    );
     expect(markdown).toContain(
       "| cell | baseline | apparmor-bwrap-profile | userns-sysctl-relaxed |",
     );
@@ -706,12 +1073,32 @@ describe("control phases", () => {
       "| direct-bundled | capability_failed | capability_failed | proven |",
     );
     expect(markdown).toContain(
-      "| apparmor-bwrap-profile | AppArmor profile bwrap attached to /usr/bin/bwrap with `userns` | yes | yes | not_proven |",
+      "| apparmor-bwrap-profile | AppArmor profile bwrap for /usr/bin/bwrap with `userns` loaded | yes | yes | not_proven |",
     );
     expect(markdown).toContain(
-      "| userns-sysctl-relaxed | service-bundled | proven | proven | bundled | n/a | established | true | captured: 0 lines, 0 AppArmor (0 DENIED) |",
+      "That does not show the profile attached to the helper in any cell.",
+    );
+    expect(markdown).toContain(
+      `## How to read the phases\n\n${PHASE_READING.map((rule) => `- ${rule}`).join("\n")}\n`,
+    );
+    expect(markdown).toContain(
+      "| baseline | direct-system | capability_failed | capability_failed | exited 1 in 812 ms: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted | system; exec attempts: 2 failed (ENOENT), 1 failed (EACCES), 1 unresolved | n/a | direct | n/a | captured: 0 lines, 0 AppArmor (0 DENIED) |",
+    );
+    expect(markdown).toContain(
+      "| userns-sysctl-relaxed | service-bundled | proven | proven | n/a | bundled | n/a | established | true | captured: 0 lines, 0 AppArmor (0 DENIED) |",
     );
     expect(markdown).toContain("## Harness defects\n\n- none\n");
+    expect(markdown).toContain(`Limits:\n${LIMITATIONS.map((limit) => `- ${limit}`).join("\n")}`);
+    const elsewhere = renderSummary({
+      outcome: "complete",
+      host: { systemBwrap: systemHelper("/usr/local/bin/bwrap", "/usr/local/bin/bwrap") },
+    });
+    expect(elsewhere).toContain(
+      "System helper: Codex's PATH selects /usr/local/bin/bwrap, resolving to /usr/local/bin/bwrap; the profile names /usr/bin/bwrap, a different file.",
+    );
+    expect(renderSummary({ outcome: "complete", host: { systemBwrap: null } })).toContain(
+      "System helper: no bwrap on the system PATH; the profile names /usr/bin/bwrap.",
+    );
     const unsupported = renderSummary({
       outcome: "unsupported",
       gaps: ["platform is darwin, not linux"],
@@ -950,6 +1337,12 @@ describe("cell worker with stand-in launchers", () => {
       const read = observations.probes.read;
       expect(read.stdout.trim()).toBe(NONCE);
       expect(read.stderr).toHaveLength(300000);
+      expect(probeEnds(observations).read).toEqual({
+        ended: "exited 0",
+        ms: expect.any(Number),
+        atTimeLimit: false,
+        stderr: "x".repeat(300),
+      });
       expect(readFileSync(join(spec.raw, "read.stderr"))).toHaveLength(300000);
       expect(readFileSync(join(spec.raw, "read.stdout"), "utf8")).toBe(`${NONCE}\n`);
       const recordedRead = JSON.parse(readFileSync(join(spec.raw, "read.json"), "utf8"));
@@ -1049,7 +1442,7 @@ describe("cell worker with stand-in launchers", () => {
       expect(run.status).toBe(2);
       const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"));
       expect(summary).toMatchObject({
-        schema: "claudexor-linux-codex-readonly-probe/3",
+        schema: "claudexor-linux-codex-readonly-probe/4",
         diagnosticControl: DIAGNOSTIC_CONTROL,
         outcome: "unsupported",
       });
@@ -1060,6 +1453,14 @@ describe("cell worker with stand-in launchers", () => {
       expect(existsSync(join(out, "phases"))).toBe(false);
     },
   );
+});
+
+describe("evidence doc", () => {
+  it("states the phase-reading rules the summary prints", () => {
+    const flat = (text) => text.replace(/\s+/g, " ");
+    const doc = flat(readFileSync(DOC_PATH, "utf8"));
+    for (const rule of PHASE_READING) expect(doc).toContain(flat(rule));
+  });
 });
 
 describe("diagnostic workflow", () => {
