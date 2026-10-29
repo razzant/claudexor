@@ -1,0 +1,58 @@
+name: Linux Codex readonly probe
+
+# Credential-free diagnostic for claudexor#337: runs the real pinned Codex
+# 0.162.1 `codex sandbox` (read-only policy, Linux bubblewrap helper) as the
+# runner's normal user, directly and inside a disposable systemd unit with the
+# reported hardening. No secrets, login or model. Triggers: manual dispatch,
+# which GitHub offers only once this file is on the default branch, and a push
+# to the single diagnostic branch below, which bootstraps a run before that.
+# See docs/evidence/linux-codex-readonly-probe.md.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - diag/linux-codex-readonly-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Codex readonly sandbox, direct vs systemd service (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # The reported host had Ubuntu's bubblewrap 0.9.0 on PATH; strace only
+      # records helper argv and syscalls. No kernel, AppArmor or capability setting changes.
+      - name: Install the reported system bubblewrap and strace
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap strace
+
+      - name: Probe the real Codex readonly sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/linux-codex-readonly-probe.mjs run \
+            --out "$RUNNER_TEMP/linux-codex-readonly-probe" \
+            --work "$RUNNER_TEMP/linux-codex-readonly-work"
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-codex-readonly-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-codex-readonly-probe
+          if-no-files-found: error
+          retention-days: 14
