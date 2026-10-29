@@ -8,12 +8,19 @@
  * Codex no credential. Every process it starts leaves complete argv, env,
  * stdout and stderr files beside a small factual summary.
  *
+ * The four cells run in three phases on the disposable runner: the host as
+ * provisioned, then with an AppArmor profile for /usr/bin/bwrap granting
+ * `userns`, then with kernel.apparmor_restrict_unprivileged_userns=0. Each
+ * control phase reverts its change and verifies the host state before the next
+ * one starts. They are diagnostic controls, never recommended host settings.
+ *
  *   node scripts/linux-codex-readonly-probe.mjs run --out DIR --work DIR
  *
  * `cell --spec FILE` is the internal per-geometry worker. Exit codes: 0 every
- * cell proven in its established geometry; 1 otherwise (an experiment result);
- * 2 unsupported host or harness failure (no verdict).
- * See docs/evidence/linux-codex-readonly-probe.md.
+ * planned cell ran with its evidence and every phase ended in its starting host
+ * state, whatever the sandbox verdicts; 1 a harness defect (a cell not run,
+ * missing evidence, an unverified change or restore); 2 unsupported host or
+ * harness failure. See docs/evidence/linux-codex-readonly-probe.md.
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -24,34 +31,45 @@ import {
   mkdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  APPARMOR_PARSER,
+  APPARMOR_PROFILES,
+  BWRAP_PROFILE,
   CODEX_PIN,
+  DIAGNOSTIC_CONTROL,
   IDENTITY_SCRIPT,
   LIMITATIONS,
   RECORDED_SYSCTLS,
   STRACE_ARGS,
+  SYSCTL,
+  SYSTEM_BWRAP,
   SYSTEM_PATH,
   TARGET_TRIPLE,
   UNIT_OUTER_TIMEOUT_MS,
   UNIT_PROPERTIES_RECORDED,
   WRITE_SCRIPT,
-  cellPlan,
   classifyCell,
   digestMismatches,
   exitCodeFor,
-  kernelLogState,
+  hostState,
+  kernelAudit,
+  kernelLogDiff,
+  kernelLogPauseMs,
   parseKeyValues,
   preconditionGaps,
   renderSummary,
   runInTransientUnit,
+  runPhases,
   serviceGeometry,
   summarize,
+  tracedHelper,
 } from "./lib/linux-codex-readonly-probe.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -91,6 +109,19 @@ function tryValue(read) {
   } catch {
     return null;
   }
+}
+
+function readSysctls() {
+  return Object.fromEntries(
+    RECORDED_SYSCTLS.map((name) => [
+      name,
+      tryValue(() => readFileSync(`/proc/sys/${name.replaceAll(".", "/")}`, "utf8").trim()),
+    ]),
+  );
+}
+
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 // ---- cell worker: runs inside the geometry under test ----
@@ -156,7 +187,7 @@ function runCell(specFile) {
     LC_ALL: "C.UTF-8",
     TERM: "dumb",
   };
-  // Four Codex runs per cell at most 60 s each keep a hung cell inside the job budget.
+  // Five Codex runs per cell at most 60 s each keep a hung cell inside the job budget.
   const codex = { cwd: spec.project, env, timeoutMs: 60_000 };
   const codexSandbox = [spec.launcher, "sandbox", "--"];
   const sandbox = (name, command) =>
@@ -177,6 +208,8 @@ function runCell(specFile) {
       properties: unitShow ? parseKeyValues(unitShow.stdout) : null,
     },
     controls: controls(spec),
+    // A sandbox result means something only if Codex launches in this very environment.
+    launch: recorded(spec.raw, "launch", spec.node, [spec.launcher, "--version"], codex),
     probes: {},
   };
   // Untraced runs decide the verdict; the traced run below is diagnostic only.
@@ -230,16 +263,15 @@ function hostFacts(dir) {
   run("id", "id", []);
   run("packages", "dpkg-query", ["-W", "bubblewrap", "strace", "systemd", "apparmor"]);
   run("systemd-version", "systemctl", ["--version"]);
-  run("apparmor-profiles", "sudo", ["-n", "cat", "/sys/kernel/security/apparmor/profiles"]);
+  run("apparmor-profiles", "sudo", ["-n", "cat", APPARMOR_PROFILES]);
   run("apparmor-d", "ls", ["-la", "/etc/apparmor.d"]);
+  run("control-tools", "ls", ["-l", APPARMOR_PARSER, SYSCTL]);
   const bwrap = onPath("bwrap");
   if (bwrap) run("system-bwrap-help", bwrap, ["--help"]);
   return {
     os: parseKeyValues(read("/etc/os-release")).PRETTY_NAME?.replace(/^"|"$/g, "") ?? null,
     kernel: run("uname-r", "uname", ["-r"]).stdout.trim() || null,
-    sysctl: Object.fromEntries(
-      RECORDED_SYSCTLS.map((name) => [name, read(`/proc/sys/${name.replaceAll(".", "/")}`)]),
-    ),
+    sysctl: readSysctls(),
     apparmorEnabled: read("/sys/module/apparmor/parameters/enabled"),
     systemBwrap: bwrap
       ? { path: bwrap, version: run("system-bwrap-version", bwrap, ["--version"]).stdout.trim() }
@@ -323,15 +355,16 @@ async function installCodex(work, dir) {
   return { paths, receipt };
 }
 
-function runPlannedCell(plan, install, host, out, work) {
-  const root = join(work, "cells", plan.id);
-  const evidence = join(out, "cells", plan.id);
+function runPlannedCell({ phase, plan, install, host, out, work, pauseMs }) {
+  const root = join(work, phase, plan.id);
+  const evidencePath = join("phases", phase, "cells", plan.id);
+  const evidence = join(out, evidencePath);
   rmSync(root, { recursive: true, force: true });
   const dir = (name) => join(root, name);
   for (const name of ["home", "codex-home", "tmp", "project", "path-without-bwrap", "raw"])
     mkdirSync(dir(name), { recursive: true });
   const nonce = `cx337-${randomBytes(16).toString("hex")}`;
-  const unit = `cx337-${plan.id}-${randomBytes(3).toString("hex")}`;
+  const unit = `cx337-${phase}-${plan.id}-${randomBytes(3).toString("hex")}`;
   const spec = {
     node: process.execPath,
     launcher: install.paths.launcher,
@@ -351,15 +384,18 @@ function runPlannedCell(plan, install, host, out, work) {
   const specFile = join(root, "spec.json");
   writeFileSync(specFile, `${JSON.stringify(spec, null, 2)}\n`);
   const worker = [process.execPath, SELF, "cell", "--spec", specFile];
+  // A fresh printk rate-limit window, so the previous cell's audit lines cannot use up this one's.
+  pause(pauseMs);
   const before = recorded(evidence, "dmesg-before", "sudo", ["-n", "dmesg"]);
   let unitSettled = null;
+  let workerRun;
   if (plan.geometry === "direct") {
-    recorded(evidence, "worker", worker[0], worker.slice(1), {
+    workerRun = recorded(evidence, "worker", worker[0], worker.slice(1), {
       cwd: spec.project,
       timeoutMs: UNIT_OUTER_TIMEOUT_MS,
     });
   } else {
-    unitSettled = runInTransientUnit({
+    const unitRun = runInTransientUnit({
       run: (step, file, args, timeoutMs) =>
         recorded(evidence, `unit-${step}`, file, args, { cwd: spec.project, timeoutMs }),
       unit,
@@ -368,9 +404,16 @@ function runPlannedCell(plan, install, host, out, work) {
       workingDirectory: spec.project,
       readWritePath: root,
       command: worker,
-    }).settled;
+    });
+    unitSettled = unitRun.settled;
+    workerRun = unitRun.steps.start;
   }
   const after = recorded(evidence, "dmesg-after", "sudo", ["-n", "dmesg"]);
+  const kernel = kernelLogDiff(before, after);
+  writeFileSync(
+    join(evidence, "kernel-log-diff.txt"),
+    kernel.lines.map((line) => `${line}\n`).join(""),
+  );
   cpSync(dir("raw"), join(evidence, "raw"), { recursive: true });
   cpSync(specFile, join(evidence, "spec.json"));
   const observationsFile = join(root, "observations.json");
@@ -378,15 +421,35 @@ function runPlannedCell(plan, install, host, out, work) {
   if (observations) cpSync(observationsFile, join(evidence, "observations.json"));
   const classified = observations
     ? classifyCell(nonce, observations)
-    : { verdict: "inconclusive", reason: "the cell worker left no observations", facts: null };
+    : { verdict: "worker_defect", reason: "the cell worker left no observations", facts: null };
+  const identity = observations?.probes?.identity;
+  const trace = spec.strace
+    ? tryValue(() => readFileSync(join(dir("raw"), "strace.txt"), "utf8"))
+    : null;
+  const bundledBwrap = [install.paths.bwrap, tryValue(() => realpathSync(install.paths.bwrap))];
   const service = plan.geometry === "service";
   return {
     ...plan,
     ...classified,
+    evidence: evidencePath,
+    worker: {
+      status: workerRun?.status ?? null,
+      signal: workerRun?.signal ?? null,
+      error: workerRun?.error ?? null,
+    },
     unit: service ? `${unit}.service` : null,
     serviceGeometry: service ? serviceGeometry(observations, `${unit}.service`) : null,
     unitSettled,
-    kernelLog: kernelLogState(before, after),
+    sandboxLabel: identity?.status === 0 ? parseKeyValues(identity.stdout).apparmor || null : null,
+    trace: {
+      expected: Boolean(spec.strace),
+      recorded: Boolean(trace),
+      helper: tracedHelper(trace, {
+        systemBwrap: host.systemBwrap?.path ?? SYSTEM_BWRAP,
+        bundledBwrap,
+      }),
+    },
+    kernelLog: { state: kernel.state, newLines: kernel.lines.length, ...kernelAudit(kernel.lines) },
   };
 }
 
@@ -406,7 +469,10 @@ async function runProbe({ out, work }) {
   const linux = process.platform === "linux";
   const hostDir = join(out, "host");
   const summary = {
-    schema: "claudexor-linux-codex-readonly-probe/2",
+    schema: "claudexor-linux-codex-readonly-probe/3",
+    diagnosticControl: DIAGNOSTIC_CONTROL,
+    outcome: null,
+    defects: [],
     codex: CODEX_PIN.version,
     startedAt: new Date().toISOString(),
     ci: Object.fromEntries(
@@ -436,10 +502,33 @@ async function runProbe({ out, work }) {
       versionOutput: install.receipt.versionOutput,
       sha256: install.receipt.sha256,
     };
-    summary.cells = cellPlan().map((plan) =>
-      runPlannedCell(plan, install, summary.host, out, work),
-    );
-    Object.assign(summary, summarize(summary.cells));
+    const profileFile = join(out, "phases", "apparmor-bwrap-profile", "bwrap.apparmor");
+    mkdirSync(dirname(profileFile), { recursive: true });
+    writeFileSync(profileFile, BWRAP_PROFILE);
+    const pauseMs = kernelLogPauseMs(summary.host.sysctl);
+    summary.phases = [];
+    summary.cells = [];
+    runPhases({
+      profileFile,
+      phases: summary.phases,
+      cells: summary.cells,
+      snapshot: (phase, stage) => {
+        const dir = join(out, "phases", phase, `host-${stage}`);
+        const sysctl = readSysctls();
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "sysctl.json"), `${JSON.stringify(sysctl, null, 2)}\n`);
+        const profiles = recorded(dir, "apparmor-profiles", "sudo", [
+          "-n",
+          "cat",
+          APPARMOR_PROFILES,
+        ]);
+        return hostState(sysctl, profiles);
+      },
+      command: (phase, step, args) => recorded(join(out, "phases", phase), step, "sudo", args),
+      runCell: (phase, plan) =>
+        runPlannedCell({ phase, plan, install, host: summary.host, out, work, pauseMs }),
+    });
+    Object.assign(summary, summarize(summary.phases, summary.cells));
   } catch (error) {
     summary.outcome = "harness_error";
     summary.error = String(error?.stack ?? error);
