@@ -74,6 +74,7 @@ import {
   summarize,
   systemHelper,
   tracedHelper,
+  unsettledEnd,
 } from "./lib/linux-codex-readonly-probe.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -211,43 +212,61 @@ function runCell(specFile) {
       properties: unitShow ? parseKeyValues(unitShow.stdout) : null,
     },
     controls: controls(spec),
-    // A sandbox result means something only if Codex launches in this very environment.
-    launch: recorded(spec.raw, "launch", spec.node, [spec.launcher, "--version"], codex),
+    launch: null,
     probes: {},
+    trace: null,
+    stopped: null,
   };
+  // A run that the time limit or a signal ended may have left processes
+  // running, so the cell starts nothing after it and names the runs it skipped.
+  const step = (name, start) => {
+    if (observations.stopped) {
+      observations.stopped.skipped.push(name);
+      return null;
+    }
+    const run = start();
+    const end = unsettledEnd(run);
+    if (end) observations.stopped = { after: name, ended: end, skipped: [] };
+    return run;
+  };
+  // A sandbox result means something only if Codex launches in this very environment.
+  observations.launch = step("launch", () =>
+    recorded(spec.raw, "launch", spec.node, [spec.launcher, "--version"], codex),
+  );
   // Untraced runs decide the verdict; the traced run below is diagnostic only.
-  observations.probes.read = sandbox("read", ["/bin/cat", spec.nonceFile]);
-  observations.probes.identity = sandbox("identity", ["/bin/sh", "-c", IDENTITY_SCRIPT]);
-  const write = sandbox("write", [
-    "/bin/sh",
-    "-c",
-    WRITE_SCRIPT,
-    "cx337-write",
-    "cx337",
-    spec.writeTarget,
-  ]);
-  write.targetExists = existsSync(spec.writeTarget);
-  if (write.targetExists) {
-    write.targetContent = tryValue(() => readFileSync(spec.writeTarget, "utf8"));
-    rmSync(spec.writeTarget, { force: true });
+  observations.probes.read = step("read", () => sandbox("read", ["/bin/cat", spec.nonceFile]));
+  observations.probes.identity = step("identity", () =>
+    sandbox("identity", ["/bin/sh", "-c", IDENTITY_SCRIPT]),
+  );
+  const write = step("write", () =>
+    sandbox("write", ["/bin/sh", "-c", WRITE_SCRIPT, "cx337-write", "cx337", spec.writeTarget]),
+  );
+  if (write) {
+    write.targetExists = existsSync(spec.writeTarget);
+    if (write.targetExists) {
+      write.targetContent = tryValue(() => readFileSync(spec.writeTarget, "utf8"));
+      rmSync(spec.writeTarget, { force: true });
+    }
   }
   observations.probes.write = write;
   if (spec.strace)
-    recorded(
-      spec.raw,
-      "strace-read",
-      spec.strace,
-      [
-        ...STRACE_ARGS,
-        "-o",
-        join(spec.raw, "strace.txt"),
-        "--",
-        spec.node,
-        ...codexSandbox,
-        "/bin/cat",
-        spec.nonceFile,
-      ],
-      codex,
+    observations.trace = step("trace", () =>
+      recorded(
+        spec.raw,
+        "strace-read",
+        spec.strace,
+        [
+          ...STRACE_ARGS,
+          "-o",
+          join(spec.raw, "strace.txt"),
+          "--",
+          spec.node,
+          ...codexSandbox,
+          "/bin/cat",
+          spec.nonceFile,
+        ],
+        codex,
+      ),
     );
   writeFileSync(join(spec.root, "observations.json"), `${JSON.stringify(observations, null, 2)}\n`);
 }
@@ -364,7 +383,19 @@ async function installCodex(work, dir) {
   return { paths, receipt };
 }
 
-function runPlannedCell({ phase, plan, install, host, out, work, pauseMs }) {
+/** Runs one planned cell and returns its record. `privileged` runs and records
+ * the cell's `sudo` commands as `recorded` does: the kernel log reads and the
+ * transient unit's steps. The tests inject it; the cell worker always runs. */
+export function runPlannedCell({
+  phase,
+  plan,
+  install,
+  host,
+  out,
+  work,
+  pauseMs,
+  privileged = recorded,
+}) {
   const root = join(work, phase, plan.id);
   const evidencePath = join("phases", phase, "cells", plan.id);
   const evidence = join(out, evidencePath);
@@ -395,7 +426,7 @@ function runPlannedCell({ phase, plan, install, host, out, work, pauseMs }) {
   const worker = [process.execPath, SELF, "cell", "--spec", specFile];
   // A fresh printk rate-limit window, so the previous cell's audit lines cannot use up this one's.
   pause(pauseMs);
-  const before = recorded(evidence, "dmesg-before", "sudo", ["-n", "dmesg"]);
+  const before = privileged(evidence, "dmesg-before", "sudo", ["-n", "dmesg"]);
   let unitSettled = null;
   let workerRun;
   if (plan.geometry === "direct") {
@@ -406,7 +437,7 @@ function runPlannedCell({ phase, plan, install, host, out, work, pauseMs }) {
   } else {
     const unitRun = runInTransientUnit({
       run: (step, file, args, timeoutMs) =>
-        recorded(evidence, `unit-${step}`, file, args, { cwd: spec.project, timeoutMs }),
+        privileged(evidence, `unit-${step}`, file, args, { cwd: spec.project, timeoutMs }),
       unit,
       user: host.user.name,
       group: host.user.group,
@@ -417,7 +448,7 @@ function runPlannedCell({ phase, plan, install, host, out, work, pauseMs }) {
     unitSettled = unitRun.settled;
     workerRun = unitRun.steps.start;
   }
-  const after = recorded(evidence, "dmesg-after", "sudo", ["-n", "dmesg"]);
+  const after = privileged(evidence, "dmesg-after", "sudo", ["-n", "dmesg"]);
   const kernel = kernelLogDiff(before, after);
   writeFileSync(
     join(evidence, "kernel-log-diff.txt"),
@@ -450,6 +481,7 @@ function runPlannedCell({ phase, plan, install, host, out, work, pauseMs }) {
     serviceGeometry: service ? serviceGeometry(observations, `${unit}.service`) : null,
     unitSettled,
     probes: probeEnds(observations),
+    stopped: observations?.stopped ?? null,
     sandboxLabel: identity?.status === 0 ? parseKeyValues(identity.stdout).apparmor || null : null,
     trace: {
       expected: Boolean(spec.strace),
@@ -479,7 +511,7 @@ async function runProbe({ out, work }) {
   const linux = process.platform === "linux";
   const hostDir = join(out, "host");
   const summary = {
-    schema: "claudexor-linux-codex-readonly-probe/4",
+    schema: "claudexor-linux-codex-readonly-probe/5",
     diagnosticControl: DIAGNOSTIC_CONTROL,
     outcome: null,
     defects: [],
@@ -561,7 +593,9 @@ function parseRunArgs(argv) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-if (mode === "cell" && rest[0] === "--spec" && rest[1]) {
+if (tryValue(() => realpathSync(process.argv[1])) !== SELF) {
+  // Imported, as the tests import runPlannedCell: no command runs.
+} else if (mode === "cell" && rest[0] === "--spec" && rest[1]) {
   runCell(rest[1]);
 } else if (mode === "run") {
   let options = null;

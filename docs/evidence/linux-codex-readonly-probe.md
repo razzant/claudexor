@@ -50,7 +50,9 @@ the same user can read it and write that directory. Through `codex sandbox` it t
 the nonce file, an identity script (namespace ids, `NoNewPrivs`, `Seccomp`, `CapEff` and the
 AppArmor label inside the sandbox) and a write into the project directory. Each Codex run is
 stopped after 60 seconds. A final `strace -f` run of the read and the kernel log before and after
-the cell are kept as raw diagnostics.
+the cell are kept as raw diagnostics. A run that was stopped at that limit or ended by a signal
+may have left processes running, so the worker starts none of the cell's remaining runs and
+records them in `stopped.skipped` of its observations.
 
 Each transient unit also gets `RuntimeMaxSec=600` and `TimeoutStopSec=30`, which bound only its
 life. However the wait ends, the probe reads that exact unit's state, stops it and reads it again.
@@ -114,11 +116,15 @@ Both control phases follow the same rules:
   afterwards equal those read before it. Otherwise every later phase is `not_run`.
 
 In every phase, a cell whose processes are not shown to have ended stops the comparison: a service
-cell whose transient unit does not read back as stopped, a direct cell whose worker ended by a
-signal or was stopped at its time limit, or a cell the harness could not finish. A process such
-a cell left could act during any later cell, so the rest of its phase and every later phase are
-`not_run`, and no later host change is applied. A change the current phase applied is still
-reverted.
+cell whose transient unit does not read back as stopped, a direct cell whose worker, or any run
+that worker started (the launch check, read, identity, write or trace), ended by a signal or was
+stopped at its time limit, a direct cell whose worker left no record of how its runs ended, or a
+cell the harness could not finish. A worker that exits 0 is not enough: it can exit after its
+own run was stopped while a process that run started is still running. Stopping a service cell's
+unit ends every process in it, so there the unit's state decides. A process such a cell left
+could act during any later cell, so the rest of its phase and every later phase are `not_run`,
+and no later host change is applied. A change the current phase applied is still reverted and
+read back.
 
 The privileged commands live in the probe script, and its tests pin their exact argv, order and
 restore logic with injected commands. The workflow file runs no `sysctl`, `apparmor_parser` or
@@ -149,8 +155,12 @@ prints these rules:
   failing `service-system` beside a proven `direct-system` is not a refutation.
 - A bundled cell `proven` under `apparmor-bwrap-profile` breaks the negative control, and that
   phase cannot be credited to the profile.
-- A cell whose sandbox probe ended by `ETIMEDOUT` or ran for about the 60 s limit failed on
-  timing: an artifact, not a refutation.
+- A cell whose sandbox probe ended by `ETIMEDOUT` or a signal was stopped before it finished: an
+  artifact, not a refutation. A probe that only ran near the 60 s limit is flagged to inspect how
+  it ended; its exit status and stderr, not its duration, show why it failed.
+- The same verdict is not the same cause: `capability_failed` covers any run that did not return
+  the nonce. Before reading support or refutation into two verdicts, compare how their probes
+  ended, their stderr, traces and labels.
 
 ## Verdicts
 
@@ -170,19 +180,24 @@ Each cell's verdict comes from its untraced runs only:
   start inside or ended by signal, error or timeout.
 - `worker_defect`: no sandbox ran. In that cell `codex --version` did not print the pinned version
   (a missing node or launcher, for example), a probe process could not be started, or the cell
-  worker left no observations.
+  worker left no observations. A probe the worker skipped after an earlier run did not end by
+  itself is not counted as one that could not start; the verdict comes from the runs that did
+  run.
 - `not_run`: the cell was planned but never started, because its phase's precondition or change
   was not verified, an earlier phase did not end in its starting state, or an earlier cell's
   processes were not shown to have ended.
 
 Each cell also reports:
 
-- `probes`: for the read, identity and write runs, how each ended (`exited 1`,
-  `failed (ETIMEDOUT)` and so on), how many milliseconds it took, whether it reached the time limit
-  (`atTimeLimit`: ended by `ETIMEDOUT` or within 5 seconds of the 60-second limit) and its first
-  stderr line. That line is the helper's own message when it failed before the command, which
+- `probes`: for the launch check, the read, identity and write runs and the traced read, how each
+  ended (`exited 1`, `failed (ETIMEDOUT)`, `ended by SIGTERM` and so on, or `null` when it did not
+  run), how many milliseconds it took, whether it ran within 5 seconds of the 60-second limit
+  (`nearTimeLimit`, a hint to inspect how it ended, never its cause), whether it is shown to have
+  ended by itself (`settled`: it exited, or the OS refused to start it) and its first stderr line.
+  That line is the helper's own message when it failed before the command, which
   `capability_failed` alone does not tell apart. These help read a failure and never decide the
-  verdict; the summary shows the read run's.
+  verdict; the summary shows the read run's. `stopped` names the run after which the worker
+  started nothing more, how it ended and the runs it skipped, and is `null` otherwise.
 - `trace.helper`: which `bwrap` the separately traced read executed. That read is a different
   process from the runs that decide the verdict. An exec counts as executed only when the trace
   shows it returned 0. strace splits a call that another thread interrupts into an
@@ -226,10 +241,13 @@ Sandbox verdicts are experimental data and never fail the job. `summary.json` re
 `outcome` and its `defects`, every phase with its host-state reads, setup and restore command
 records, observed differences and sandbox outcome, and every cell labelled with its `phase`.
 
-`summary.json` uses schema `claudexor-linux-codex-readonly-probe/4`. In `/3`, the entries of
+`summary.json` uses schema `claudexor-linux-codex-readonly-probe/5`. In `/3`, the entries of
 `trace.helper.execs` were `{path, file, kind}`, and a split exec counted as executed whatever it
 returned. In `/4` they are `{pid, path, openedAs, kind}`, only execs that returned 0 are listed
-there, and the other attempts are listed separately in `failed` and `unresolved`.
+there, and the other attempts are listed separately in `failed` and `unresolved`. In `/5` each
+cell's `probes` also covers `launch` and `trace`, replaces `atTimeLimit` with `nearTimeLimit` and
+adds `settled`, and the cell records `stopped`; a `/4` run kept running a cell, and the cells and
+controls after it, when a run of a direct cell timed out but its worker exited 0.
 
 The run:
 
@@ -237,7 +255,8 @@ The run:
   in its starting host state;
 - exits 1 (`incomplete`) on any harness defect: a cell `not_run` (a control phase skipped for its
   precondition, or a comparison stopped after a cell whose processes were not shown to have ended)
-  or `worker_defect`, a failed outside control, a cell worker that did not exit 0, an unavailable
+  or `worker_defect`, a failed outside control, a cell worker that did not exit 0, a cell that
+  stopped after a run that did not end by itself, an unavailable
   kernel log, a missing trace, an unestablished service geometry, a transient unit not shown
   stopped, a control change that could not be verified, or a host state not restored;
 - exits 2 for an unsupported host or a harness exception.
@@ -283,9 +302,10 @@ captures.
 - Helper choice is steered only through `PATH`, Codex's own selection rule. Which helper ran comes
   from the separately traced read, which counts only execs that returned 0 and only infers which
   file a `/proc/self/fd/N` exec ran.
-- A direct cell has no unit to stop. The harness sees its worker end, but a Codex process that a
-  timed-out run left behind is not tracked; stopping a service cell's unit ends every process in
-  it.
+- A direct cell has no unit to stop. A Codex process that a timed-out or signalled run left behind
+  is not tracked, so such a cell ends the comparison rather than being shown to have ended;
+  stopping a service cell's unit ends every process in it. A run that exited by itself is taken
+  to have ended; the probe does not track processes it may have left in the background.
 
 The same Codex build has a second credential-free route that this probe does not run: the
 app-server Claudexor uses, after its `initialize` handshake, accepts `command/exec` with

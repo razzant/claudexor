@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { runPlannedCell } from "../linux-codex-readonly-probe.mjs";
 import {
   APPARMOR_PARSER,
   BWRAP_PROFILE,
@@ -57,6 +58,9 @@ const scratch = mkdtempSync(join(tmpdir(), "cx337-probe-test-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 const NONCE = "cx337-0123456789abcdef0123456789abcdef";
+const LOOPBACK = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted";
+/** Every process a cell worker starts, each of which must be shown to have ended. */
+const CELL_RUNS = ["launch", "read", "identity", "write", "trace"];
 const OUTSIDE = { user: "user:[4026531837]", mnt: "mnt:[4026531841]", net: "net:[4026531840]" };
 const INSIDE =
   "user=user:[4026532301]\nmnt=mnt:[4026532302]\nnet=net:[4026532304]\napparmor=bwrap (unconfined)\n";
@@ -206,12 +210,34 @@ describe("cell verdicts", () => {
       identity: result(null, "", "", { signal: "SIGTERM", error: "ETIMEDOUT", ms: 60_004 }),
       write: { ...result(1, "", "a | b\n", { ms: 57_000 }), targetExists: false },
     });
-    expect(probeEnds(failing)).toEqual({
-      read: { ended: "exited 1", ms: 812, atTimeLimit: false, stderr: loopback },
-      identity: { ended: "failed (ETIMEDOUT)", ms: 60_004, atTimeLimit: true, stderr: null },
-      write: { ended: "exited 1", ms: 57_000, atTimeLimit: true, stderr: "a | b" },
+    const end = (ended, ms, nearTimeLimit, settled, stderr) => ({
+      ended,
+      ms,
+      nearTimeLimit,
+      settled,
+      stderr,
     });
-    expect(probeEnds({})).toEqual({ read: null, identity: null, write: null });
+    expect(probeEnds(failing)).toEqual({
+      launch: end("exited 0", null, false, true, null),
+      read: end("exited 1", 812, false, true, loopback),
+      identity: end("failed (ETIMEDOUT)", 60_004, true, false, null),
+      // Near the limit but exited by itself: a refusal that ended, not a timeout.
+      write: end("exited 1", 57_000, true, true, "a | b"),
+      trace: null,
+    });
+    expect(probeEnds({})).toEqual(Object.fromEntries(CELL_RUNS.map((name) => [name, null])));
+    // A clean nonce read near the limit is still a read that ended, and still proof.
+    const slow = observed({ read: result(0, `${NONCE}\n`, "", { ms: 55_001 }) });
+    expect(probeEnds(slow).read).toEqual(end("exited 0", 55_001, true, true, null));
+    expect(classifyCell(NONCE, slow).verdict).toBe("proven");
+    const [directSystem] = cellPlan();
+    const markdown = renderSummary({
+      outcome: "complete",
+      phases: [{ id: "baseline", change: "none", sandboxOutcome: "not_proven" }],
+      cells: [{ phase: "baseline", ...ranCell(directSystem, "proven"), probes: probeEnds(slow) }],
+    });
+    expect(markdown).toContain("| exited 0 in 55001 ms (near time limit; inspect how it ended) |");
+    expect(markdown).not.toContain("(time limit)");
     // The same failure with no message or a different one is still the same verdict.
     expect(classifyCell(NONCE, failing)).toEqual(
       classifyCell(NONCE, { ...failing, probes: { ...failing.probes, read: result(1) } }),
@@ -219,6 +245,14 @@ describe("cell verdicts", () => {
     expect(SANDBOX_RUN_TIMEOUT_MS).toBe(60_000);
   });
 });
+
+/** Every run of a cell that exited by itself. */
+const SETTLED_RUNS = Object.fromEntries(
+  CELL_RUNS.map((name) => [
+    name,
+    { ended: "exited 0", ms: 100, nearTimeLimit: false, settled: true, stderr: null },
+  ]),
+);
 
 /** A cell that ran with all of its evidence; only the verdict varies. */
 function ranCell(plan, verdict, extra = {}) {
@@ -234,6 +268,8 @@ function ranCell(plan, verdict, extra = {}) {
     serviceGeometry: service ? { established: true, mismatches: [] } : null,
     unitSettled: service ? true : null,
     sandboxLabel: null,
+    probes: SETTLED_RUNS,
+    stopped: null,
     trace: { expected: true, recorded: true, helper: { kind: plan.helper, execs: [] } },
     kernelLog: { state: "captured", newLines: 0, apparmor: [], suppressed: 0 },
     ...extra,
@@ -561,7 +597,8 @@ describe("control phases", () => {
 
   /** A host whose two restrictions the fake tools really change, and whose
    * cells pass only where the restriction no longer applies to their helper.
-   * `cell(phase, plan)` may override fields of a cell's record. */
+   * `cell(phase, plan)` may override fields of a cell's record, and
+   * `planned(phase, plan)` may return a whole record the probe itself made. */
   function fakeHost({
     restriction = "1",
     profiles = ORIGINAL_PROFILES,
@@ -569,6 +606,7 @@ describe("control phases", () => {
     tool,
     cellThrows,
     cell,
+    planned,
   } = {}) {
     const host = {
       sysctl: { [USERNS_RESTRICTION]: restriction, "kernel.printk_ratelimit": "5" },
@@ -600,6 +638,8 @@ describe("control phases", () => {
     const runCell = (phase, plan) => {
       log.push(`${phase} cell ${plan.id}`);
       if (cellThrows?.(phase, plan)) throw new Error("boom\nat stack");
+      const real = planned?.(phase, plan);
+      if (real) return real;
       const relaxed =
         host.sysctl[USERNS_RESTRICTION] === "0" ||
         (plan.helper === "system" && host.profiles.includes("bwrap (unconfined)"));
@@ -945,7 +985,221 @@ describe("control phases", () => {
       expect(settled.phases.map((phase) => phase.ran)).toEqual([true, true, true]);
       expect(settled.cells.filter((cell) => cell.verdict === "not_run")).toEqual([]);
     }
+
+    // A direct worker that exits 0 still shows no end when one of its own runs did not end itself.
+    const inner = (run, ended) => ({
+      probes: { ...SETTLED_RUNS, [run]: { ...SETTLED_RUNS[run], ended, settled: false } },
+    });
+    for (const [run, ended] of [
+      ["launch", "ended by SIGKILL"],
+      ["read", "failed (ETIMEDOUT)"],
+      ["identity", "ended by SIGTERM"],
+      ["write", "failed (ETIMEDOUT)"],
+      ["trace", "ended by SIGTERM"],
+    ]) {
+      const stoppedInner = at("baseline", "direct-bundled", inner(run, ended));
+      const { phases: innerPhases } = stoppedInner.run();
+      expect(innerPhases[0].notRunReason).toBe(
+        stoppedAfter("baseline/direct-bundled", `its ${run} run ${ended}`),
+      );
+      expect(stoppedInner.log.at(-1)).toBe("baseline snapshot after");
+    }
+    // In a control phase its change is still reverted and read back, and no later change applied.
+    const profile = at(
+      "apparmor-bwrap-profile",
+      "direct-system",
+      inner("read", "failed (ETIMEDOUT)"),
+    );
+    const profileRun = profile.run();
+    expect(profile.log.slice(-5)).toEqual([
+      `apparmor-bwrap-profile setup sudo -n ${APPARMOR_PARSER} -r ${PROFILE_FILE}`,
+      "apparmor-bwrap-profile snapshot applied",
+      "apparmor-bwrap-profile cell direct-system",
+      `apparmor-bwrap-profile restore sudo -n ${APPARMOR_PARSER} -R ${PROFILE_FILE}`,
+      "apparmor-bwrap-profile snapshot after",
+    ]);
+    expect(profile.host.profiles).toEqual(ORIGINAL_PROFILES);
+    expect(profileRun.phases[1].endState).toEqual({ differences: [], restored: true });
+    expect(profileRun.phases[2].notRunReason).toBe(
+      stoppedAfter("apparmor-bwrap-profile/direct-system", "its read run failed (ETIMEDOUT)"),
+    );
+    // A worker that left no record of its runs shows no end of them; one never started ran none.
+    const unrecorded = at("baseline", "direct-system", { probes: probeEnds(null) }).run();
+    expect(unrecorded.phases[0].notRunReason).toBe(
+      stoppedAfter("baseline/direct-system", "its worker left no record of how its runs ended"),
+    );
+    const unstarted = at("baseline", "direct-system", {
+      worker: { status: null, signal: null, error: "ENOENT" },
+      probes: probeEnds(null),
+    }).run();
+    expect(unstarted.cells.filter((cell) => cell.verdict === "not_run")).toEqual([]);
+    // A refusal that exited by itself near the limit ended; it is data, not a stop or a defect.
+    const refusal = at("baseline", "direct-system", {
+      probes: {
+        ...SETTLED_RUNS,
+        read: { ended: "exited 1", ms: 59_000, nearTimeLimit: true, settled: true, stderr: "x" },
+      },
+    }).run();
+    expect(refusal.cells.filter((cell) => cell.verdict === "not_run")).toEqual([]);
+    expect(summarize(refusal.phases, refusal.cells)).toEqual({ outcome: "complete", defects: [] });
+    // A service cell's stopped unit ends its runs; the runs it skipped stay a defect.
+    const service = at("baseline", "service-system", {
+      ...inner("read", "failed (ETIMEDOUT)"),
+      stopped: { after: "read", ended: "failed (ETIMEDOUT)", skipped: ["identity", "write"] },
+    }).run();
+    expect(service.cells.filter((cell) => cell.verdict === "not_run")).toEqual([]);
+    expect(summarize(service.phases, service.cells).defects).toEqual([
+      "baseline/service-system: its read run failed (ETIMEDOUT), so identity, write did not run",
+    ]);
   });
+
+  /** baseline/direct-system run by the probe's own runPlannedCell inside the
+   * phases: the real cell worker with stand-ins for Codex and strace. Only the
+   * cell's `sudo` commands, its kernel log reads, and the host are injected. */
+  function plannedRun(name, mode, strace) {
+    const root = join(scratch, name);
+    const sudo = [];
+    let cell = null;
+    const fake = fakeHost({
+      planned: (phase, plan) => {
+        if (phase !== "baseline" || plan.id !== "direct-system") return null;
+        cell = runPlannedCell({
+          phase,
+          plan,
+          install: { paths: { launcher: standIn(name, mode), bwrap: join(root, "bundled-bwrap") } },
+          host: {
+            strace: straceStandIn(name, strace),
+            systemBwrap: systemHelper(SYSTEM_BWRAP, SYSTEM_BWRAP),
+          },
+          out: join(root, "out"),
+          work: join(root, "work"),
+          pauseMs: 0,
+          privileged: (dir, step, file, args) => {
+            sudo.push(`${step}: ${file} ${args.join(" ")}`);
+            return result(0, step === "dmesg-before" ? "k1\n" : "k1\nk2\n");
+          },
+        });
+        return cell;
+      },
+    });
+    const { phases, cells } = fake.run();
+    const envFile = join(root, "work", "baseline", "direct-system", "tmp", "env.jsonl");
+    const launches = existsSync(envFile) ? readFileSync(envFile, "utf8").trim().split("\n") : [];
+    return {
+      phases,
+      cells,
+      fake,
+      cell,
+      sudo,
+      launches,
+      evidence: join(root, "out", cell.evidence),
+    };
+  }
+
+  it.skipIf(process.platform === "win32")(
+    "stops the cell, its phase and every later control after a run a signal ended, though the worker exits 0",
+    () => {
+      const stoppedAfter = (why) =>
+        `the comparison stopped after baseline/direct-system: ${why}, so a process it started may still be running`;
+      const dmesg = ["dmesg-before: sudo -n dmesg", "dmesg-after: sudo -n dmesg"];
+
+      // The read ends by SIGTERM: nothing more starts in the cell, and no host change follows.
+      const read = plannedRun("planned-kill-reader", "kill-reader");
+      expect(read.cell).toMatchObject({
+        id: "direct-system",
+        verdict: "capability_failed",
+        worker: { status: 0, signal: null, error: null },
+        probes: {
+          launch: { ended: "exited 0", settled: true },
+          read: { ended: "ended by SIGTERM", settled: false },
+          identity: null,
+          write: null,
+          trace: null,
+        },
+        stopped: {
+          after: "read",
+          ended: "ended by SIGTERM",
+          skipped: ["identity", "write", "trace"],
+        },
+        trace: { expected: true, recorded: false },
+        kernelLog: { state: "captured", newLines: 1 },
+      });
+      expect(read.launches).toHaveLength(2);
+      expect(read.sudo).toEqual(dmesg);
+      const kept = JSON.parse(readFileSync(join(read.evidence, "observations.json"), "utf8"));
+      expect(kept).toMatchObject({
+        probes: { identity: null, write: null },
+        trace: null,
+        stopped: read.cell.stopped,
+      });
+      for (const file of ["identity.json", "write.json", "strace-read.json", "strace.txt"])
+        expect(existsSync(join(read.evidence, "raw", file)), file).toBe(false);
+      expect(read.fake.log).toEqual([
+        "baseline snapshot before",
+        "baseline cell direct-system",
+        "baseline snapshot after",
+      ]);
+      expect(read.fake.host.sysctl[USERNS_RESTRICTION]).toBe("1");
+      expect(read.fake.host.profiles).toEqual(ORIGINAL_PROFILES);
+      const why = stoppedAfter("its read run ended by SIGTERM");
+      const conclusion = summarize(read.phases, read.cells);
+      expect(conclusion).toEqual({
+        outcome: "incomplete",
+        defects: [
+          `baseline: planned cells not run (${why})`,
+          `apparmor-bwrap-profile: planned cells not run (${why})`,
+          `userns-sysctl-relaxed: planned cells not run (${why})`,
+          "baseline/direct-system: its read run ended by SIGTERM, so identity, write, trace did not run",
+          "baseline/direct-system: the strace run left no trace",
+        ],
+      });
+      expect(exitCodeFor(conclusion.outcome)).toBe(1);
+
+      // A refused read ends by itself; a trace ended by SIGTERM still stops the comparison.
+      const trace = plannedRun("planned-kill-tracer", "refuse-reader", "kill -TERM $$");
+      expect(trace.cell).toMatchObject({
+        verdict: "capability_failed",
+        worker: { status: 0, signal: null, error: null },
+        probes: {
+          read: { ended: "exited 1", settled: true, stderr: LOOPBACK },
+          trace: { ended: "ended by SIGTERM", settled: false },
+        },
+        stopped: { after: "trace", ended: "ended by SIGTERM", skipped: [] },
+        trace: { expected: true, recorded: true },
+      });
+      expect(trace.launches).toHaveLength(4);
+      expect(trace.sudo).toEqual(dmesg);
+      expect(trace.fake.log.at(-1)).toBe("baseline snapshot after");
+      expect(trace.phases[1].notRunReason).toBe(stoppedAfter("its trace run ended by SIGTERM"));
+      expect(summarize(trace.phases, trace.cells).defects).toContain(
+        "baseline/direct-system: its trace run ended by SIGTERM",
+      );
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps a refusal whose runs all ended by themselves as data and runs every later cell and control",
+    () => {
+      const refusal = plannedRun("planned-refusal", "refuse-reader");
+      expect(refusal.cell).toMatchObject({
+        verdict: "capability_failed",
+        worker: { status: 0, signal: null, error: null },
+        probes: { read: { ended: "exited 1", stderr: LOOPBACK } },
+        stopped: null,
+        trace: { expected: true, recorded: true },
+      });
+      expect(CELL_RUNS.map((name) => refusal.cell.probes[name]?.settled)).toEqual(
+        CELL_RUNS.map(() => true),
+      );
+      expect(refusal.launches).toHaveLength(4);
+      expect(refusal.cells.filter((cell) => cell.verdict === "not_run")).toEqual([]);
+      expect(refusal.fake.log.filter((line) => line.includes(" setup "))).toHaveLength(2);
+      expect(summarize(refusal.phases, refusal.cells)).toEqual({
+        outcome: "complete",
+        defects: [],
+      });
+    },
+  );
 
   it("runs the profile phase only when Codex's system bwrap is the profiled file", () => {
     for (const [systemBwrap, gap] of [
@@ -1040,10 +1294,12 @@ describe("control phases", () => {
         phase === "baseline" && plan.id === "direct-system"
           ? {
               probes: {
+                ...SETTLED_RUNS,
                 read: {
                   ended: "exited 1",
                   ms: 812,
-                  atTimeLimit: false,
+                  nearTimeLimit: false,
+                  settled: true,
                   stderr: "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
                 },
               },
@@ -1085,7 +1341,7 @@ describe("control phases", () => {
       "| baseline | direct-system | capability_failed | capability_failed | exited 1 in 812 ms: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted | system; exec attempts: 2 failed (ENOENT), 1 failed (EACCES), 1 unresolved | n/a | direct | n/a | captured: 0 lines, 0 AppArmor (0 DENIED) |",
     );
     expect(markdown).toContain(
-      "| userns-sysctl-relaxed | service-bundled | proven | proven | n/a | bundled | n/a | established | true | captured: 0 lines, 0 AppArmor (0 DENIED) |",
+      "| userns-sysctl-relaxed | service-bundled | proven | proven | exited 0 in 100 ms | bundled | n/a | established | true | captured: 0 lines, 0 AppArmor (0 DENIED) |",
     );
     expect(markdown).toContain("## Harness defects\n\n- none\n");
     expect(markdown).toContain(`Limits:\n${LIMITATIONS.map((limit) => `- ${limit}`).join("\n")}`);
@@ -1256,33 +1512,56 @@ describe("pins and preconditions", () => {
   });
 });
 
-describe("cell worker with stand-in launchers", () => {
-  // A launcher that never sandboxes: `--version` prints the pinned version and
-  // `sandbox -- argv` runs argv directly, except that `refuse` and
-  // `kill-writer` stand-ins end write probes themselves.
-  function standIn(name, mode) {
-    const path = join(scratch, `${name}.mjs`);
-    writeFileSync(
-      path,
-      [
-        'import { spawnSync } from "node:child_process";',
-        'import { appendFileSync, writeSync } from "node:fs";',
-        "appendFileSync(`${process.env.TMPDIR}/env.jsonl`, `${JSON.stringify(Object.keys(process.env).sort())}\\n`);",
-        `if (process.argv[2] === "--version") { writeSync(1, ${JSON.stringify(`${CODEX_VERSION_OUTPUT}\n`)}); process.exit(0); }`,
-        'const argv = process.argv.slice(process.argv.indexOf("--") + 1);',
-        `const mode = ${JSON.stringify(mode)};`,
-        'if (mode !== "pass-through" && /write-target\\.txt$/.test(String(argv.at(-1)))) {',
-        `  writeSync(1, ${JSON.stringify(`${WRITE_STARTED}\n`)});`,
-        '  if (mode === "kill-writer") process.kill(process.pid, "SIGKILL");',
-        "  process.exit(1);",
-        "}",
-        'if (argv[0] === "/bin/cat") writeSync(2, "x".repeat(300000));',
-        'process.exitCode = spawnSync(argv[0], argv.slice(1), { stdio: "inherit" }).status ?? 1;',
-      ].join("\n"),
-    );
-    return path;
-  }
+// A launcher that never sandboxes: `--version` prints the pinned version and
+// `sandbox -- argv` runs argv directly, except that `refuse` and
+// `kill-writer` stand-ins end write probes themselves, `kill-reader` ends its
+// read by SIGTERM, as the harness's time limit would, and `refuse-reader`
+// fails its read with the #337 message.
+function standIn(name, mode) {
+  const path = join(scratch, `${name}.mjs`);
+  writeFileSync(
+    path,
+    [
+      'import { spawnSync } from "node:child_process";',
+      'import { appendFileSync, writeSync } from "node:fs";',
+      "appendFileSync(`${process.env.TMPDIR}/env.jsonl`, `${JSON.stringify(Object.keys(process.env).sort())}\\n`);",
+      `if (process.argv[2] === "--version") { writeSync(1, ${JSON.stringify(`${CODEX_VERSION_OUTPUT}\n`)}); process.exit(0); }`,
+      'const argv = process.argv.slice(process.argv.indexOf("--") + 1);',
+      `const mode = ${JSON.stringify(mode)};`,
+      'if (argv[0] === "/bin/cat" && mode === "kill-reader") {',
+      '  process.kill(process.pid, "SIGTERM");',
+      "  process.exit(0);",
+      "}",
+      'if (argv[0] === "/bin/cat" && mode === "refuse-reader") {',
+      `  writeSync(2, ${JSON.stringify(`${LOOPBACK}\n`)});`,
+      "  process.exit(1);",
+      "}",
+      'if (mode !== "pass-through" && /write-target\\.txt$/.test(String(argv.at(-1)))) {',
+      `  writeSync(1, ${JSON.stringify(`${WRITE_STARTED}\n`)});`,
+      '  if (mode === "kill-writer") process.kill(process.pid, "SIGKILL");',
+      "  process.exit(1);",
+      "}",
+      'if (argv[0] === "/bin/cat") writeSync(2, "x".repeat(300000));',
+      'process.exitCode = spawnSync(argv[0], argv.slice(1), { stdio: "inherit" }).status ?? 1;',
+    ].join("\n"),
+  );
+  return path;
+}
 
+/** An executable standing in for strace: it writes the `-o` file, then runs `then`. */
+function straceStandIn(name, then = "exit 0") {
+  const path = join(scratch, `${name}-strace.sh`);
+  const lines = [
+    "#!/bin/sh",
+    'while [ "$#" -gt 0 ] && [ "$1" != "-o" ]; do shift; done',
+    'printf "stand-in trace\\n" > "$2"',
+    then,
+  ];
+  writeFileSync(path, `${lines.join("\n")}\n`, { mode: 0o755 });
+  return path;
+}
+
+describe("cell worker with stand-in launchers", () => {
   function runWorker(name, mode, overrides = {}) {
     const root = join(scratch, name);
     const dir = (part) => join(root, part);
@@ -1340,7 +1619,8 @@ describe("cell worker with stand-in launchers", () => {
       expect(probeEnds(observations).read).toEqual({
         ended: "exited 0",
         ms: expect.any(Number),
-        atTimeLimit: false,
+        nearTimeLimit: false,
+        settled: true,
         stderr: "x".repeat(300),
       });
       expect(readFileSync(join(spec.raw, "read.stderr"))).toHaveLength(300000);
@@ -1396,6 +1676,11 @@ describe("cell worker with stand-in launchers", () => {
     () => {
       const { observations, spec } = runWorker("kill-writer", "kill-writer");
       expect(observations.probes.write).toMatchObject({ status: null, signal: "SIGKILL" });
+      expect(observations.stopped).toEqual({
+        after: "write",
+        ended: "ended by SIGKILL",
+        skipped: [],
+      });
       expect(readFileSync(join(spec.raw, "write.stdout"), "utf8")).toBe(`${WRITE_STARTED}\n`);
       const { facts } = classifyCell(NONCE, observations);
       expect(facts).toMatchObject({
@@ -1442,7 +1727,7 @@ describe("cell worker with stand-in launchers", () => {
       expect(run.status).toBe(2);
       const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"));
       expect(summary).toMatchObject({
-        schema: "claudexor-linux-codex-readonly-probe/4",
+        schema: "claudexor-linux-codex-readonly-probe/5",
         diagnosticControl: DIAGNOSTIC_CONTROL,
         outcome: "unsupported",
       });

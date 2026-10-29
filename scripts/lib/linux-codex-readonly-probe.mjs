@@ -82,8 +82,13 @@ export const SYSTEM_BWRAP = "/usr/bin/bwrap";
 /** Each Codex run in a cell is stopped after this long; five runs per cell at
  * most keep a hung cell inside the job budget. */
 export const SANDBOX_RUN_TIMEOUT_MS = 60_000;
-/** A probe that ended this close to the limit failed on timing. */
+/** A run that took this close to the limit is flagged for a look at how it
+ * ended; its duration alone does not show that the timer stopped it. */
 const TIME_LIMIT_MARGIN_MS = 5_000;
+
+/** The processes a cell worker starts, in order: the launch check, the three
+ * untraced probes and the traced read. */
+const CELL_RUNS = ["launch", "read", "identity", "write", "trace"];
 
 export const WRITE_STARTED = "cx337-write-started";
 
@@ -172,7 +177,8 @@ export const PHASE_READING = [
   "Profile passing, sysctl failing: relaxing the restriction for every program cannot be stricter than one profile, so this is an artifact such as timing or a leftover process; rerun rather than conclude.",
   "In `apparmor-bwrap-profile`, `direct-system` is the clean cell. The service cells run with `NoNewPrivileges=yes`, under which AppArmor may refuse the exec-time profile transition, so a failing `service-system` beside a proven `direct-system` is not a refutation.",
   "A bundled cell `proven` under `apparmor-bwrap-profile` breaks the negative control, and that phase cannot be credited to the profile.",
-  "A cell whose sandbox probe ended by `ETIMEDOUT` or ran for about the 60 s limit failed on timing: an artifact, not a refutation.",
+  "A cell whose sandbox probe ended by `ETIMEDOUT` or a signal was stopped before it finished: an artifact, not a refutation. A probe that only ran near the 60 s limit is flagged to inspect how it ended; its exit status and stderr, not its duration, show why it failed.",
+  "The same verdict is not the same cause: `capability_failed` covers any run that did not return the nonce. Before reading support or refutation into two verdicts, compare how their probes ended, their stderr, traces and labels.",
 ];
 
 export const LIMITATIONS = [
@@ -316,6 +322,19 @@ function ended(result) {
   return result.signal ? `ended by ${result.signal}` : `exited ${result.status}`;
 }
 
+/** How a process the harness started ended, when that does not show it ended
+ * by itself, else null. One that exited, or that the OS refused to start,
+ * ended; one the harness stopped at its time limit, or that a signal ended,
+ * may have left processes it started running. */
+export function unsettledEnd(result) {
+  const settled =
+    Boolean(result) &&
+    !result.signal &&
+    result.error !== "ETIMEDOUT" &&
+    (typeof result.status === "number" || Boolean(result.error));
+  return settled ? null : ended(result);
+}
+
 const NAMESPACES = ["user", "mnt", "net"];
 
 /** Deterministic facts only: exit status, the pinned version line, our nonce
@@ -324,12 +343,16 @@ const NAMESPACES = ["user", "mnt", "net"];
 export function classifyCell(expectedNonce, observations) {
   const launch = observations?.launch;
   const { read, write, identity } = observations?.probes ?? {};
+  // A probe the worker skipped after an unsettled run was never meant to start.
+  const skipped = observations?.stopped?.skipped ?? [];
   const outside = observations?.outside?.namespaces ?? {};
   const inside = parseKeyValues(identity?.stdout);
   const facts = {
     codexLaunched:
       exitedZero(launch) && String(launch.stdout ?? "").trim() === CODEX_VERSION_OUTPUT,
-    probesStarted: [read, identity, write].every((probe) => !spawnFailed(probe)),
+    probesStarted: Object.entries({ read, identity, write }).every(
+      ([name, probe]) => skipped.includes(name) || !spawnFailed(probe),
+    ),
     controlRead: observations?.controls?.read === expectedNonce,
     controlWrite: observations?.controls?.write?.ok === true,
     readNonce: exitedZero(read) && read.stdout.trim() === expectedNonce,
@@ -374,23 +397,25 @@ export function classifyCell(expectedNonce, observations) {
   );
 }
 
-/** How each sandbox probe of a cell ended, to read a failure by and never a
- * verdict input: its end, duration, whether it reached the per-run time limit,
- * and its first stderr line, the helper's own message when it failed before
- * the command. */
+/** How each run of a cell ended, null for one that did not run, to read a
+ * failure by and never a verdict input: its end, duration, whether it ran near
+ * the per-run time limit (a hint, not a cause), whether it is shown to have
+ * ended by itself, and its first stderr line, the helper's own message when it
+ * failed before the command. */
 export function probeEnds(observations) {
+  const runs = { launch: observations?.launch, ...observations?.probes };
+  runs.trace = observations?.trace;
   return Object.fromEntries(
-    ["read", "identity", "write"].map((name) => {
-      const probe = observations?.probes?.[name];
+    CELL_RUNS.map((name) => {
+      const probe = runs[name];
       if (!probe) return [name, null];
       return [
         name,
         {
           ended: ended(probe),
           ms: probe.ms ?? null,
-          atTimeLimit:
-            probe.error === "ETIMEDOUT" ||
-            probe.ms >= SANDBOX_RUN_TIMEOUT_MS - TIME_LIMIT_MARGIN_MS,
+          nearTimeLimit: probe.ms >= SANDBOX_RUN_TIMEOUT_MS - TIME_LIMIT_MARGIN_MS,
+          settled: unsettledEnd(probe) === null,
           stderr: lines(probe.stderr)[0]?.trim().slice(0, 300) ?? null,
         },
       ];
@@ -714,15 +739,20 @@ export function phaseOutcome(cells) {
 }
 
 /** Why the harness cannot show that every process of a cell ended, or null: a
- * service cell's unit must read back stopped, and a direct cell's worker must
- * have exited by itself or never started. A cell the harness could not finish
- * shows neither. */
+ * service cell's unit must read back stopped, since stopping it ends every
+ * process in it. A direct cell has no unit, so its worker must have exited by
+ * itself or never started, and so must each run the worker started. A cell
+ * the harness could not finish shows neither. */
 function unsettled(cell) {
   if (cell.geometry === "service")
     return cell.unitSettled === true ? null : "its transient unit was not shown stopped";
   if (!cell.worker) return "the harness has no record of how its worker ended";
-  const { signal, error } = cell.worker;
-  return signal || error === "ETIMEDOUT" ? `its worker ${ended(cell.worker)}` : null;
+  const worker = unsettledEnd(cell.worker);
+  if (worker) return `its worker ${worker}`;
+  if (cell.worker.error) return null;
+  if (!cell.probes?.launch) return "its worker left no record of how its runs ended";
+  const run = CELL_RUNS.find((name) => cell.probes[name]?.settled === false);
+  return run ? `its ${run} run ${cell.probes[run].ended}` : null;
 }
 
 /** Runs every phase in order with injected effects, so sequencing, labels and
@@ -863,6 +893,11 @@ export function cellDefects(cell) {
     defects.push(`${where}: the outside read or write control failed`);
   if ("worker" in cell && !exitedZero(cell.worker))
     defects.push(`${where}: the cell worker ${ended(cell.worker)}`);
+  if (cell.stopped) {
+    const { after, skipped } = cell.stopped;
+    const rest = skipped.length ? `, so ${skipped.join(", ")} did not run` : "";
+    defects.push(`${where}: its ${after} run ${cell.stopped.ended}${rest}`);
+  }
   if (cell.kernelLog?.state === "unavailable") defects.push(`${where}: kernel log unavailable`);
   if (cell.trace?.expected && !cell.trace.recorded)
     defects.push(`${where}: the strace run left no trace`);
@@ -933,7 +968,7 @@ function helperCell(helper) {
 function probeCell(probe) {
   if (!probe) return "n/a";
   const ms = probe.ms === null ? "" : ` in ${probe.ms} ms`;
-  const limit = probe.atTimeLimit ? " (time limit)" : "";
+  const limit = probe.nearTimeLimit ? " (near time limit; inspect how it ended)" : "";
   const stderr = probe.stderr ? `: ${probe.stderr.replaceAll("|", "\\|")}` : "";
   return `${probe.ended}${ms}${limit}${stderr}`;
 }
