@@ -34,6 +34,7 @@ import {
   REPORTED_SERVICE_PROPERTIES,
   runInTransientUnit,
   serviceGeometry,
+  STAND_TMP_PROPERTIES,
   UNIT_OUTER_TIMEOUT_MS,
   UNIT_RUNTIME_MAX_SEC,
   UNIT_TIMEOUT_STOP_SEC,
@@ -98,6 +99,7 @@ describe("disposable unit lifecycle", () => {
     );
     expect(start.args.filter((_, index) => start.args[index - 1] === "-p")).toEqual([
       ...REPORTED_SERVICE_PROPERTIES,
+      "PrivateTmp=yes",
       ...EGRESS_PROPERTIES,
       "ReadWritePaths=/w",
       `RuntimeMaxSec=${UNIT_RUNTIME_MAX_SEC}`,
@@ -197,7 +199,9 @@ describe("pins, geometry and kernel evidence", () => {
       outside: { status: { NoNewPrivs: "1" } },
       unit: {
         name: unit,
-        properties: Object.fromEntries(REPORTED_SERVICE_PROPERTIES.map((p) => p.split("="))),
+        properties: Object.fromEntries(
+          [...REPORTED_SERVICE_PROPERTIES, ...STAND_TMP_PROPERTIES].map((p) => p.split("=")),
+        ),
       },
     };
     expect(serviceGeometry(applied, unit)).toEqual({ established: true, mismatches: [] });
@@ -205,8 +209,18 @@ describe("pins, geometry and kernel evidence", () => {
     expect(serviceGeometry(permissive, unit).mismatches).toEqual(["kernel NoNewPrivs is 0"]);
     expect(serviceGeometry(applied, "cx-other.service").established).toBe(false);
     expect(serviceGeometry(null, unit).mismatches).toHaveLength(
-      2 + REPORTED_SERVICE_PROPERTIES.length,
+      2 + REPORTED_SERVICE_PROPERTIES.length + STAND_TMP_PROPERTIES.length,
     );
+    // Run 40993163090's unit: the reported hardening without a private /tmp, where Codex
+    // 0.162.1 cannot create /tmp/codex-daemon-<uid>, is not the stand geometry.
+    const sharedTmp = {
+      ...applied,
+      unit: { ...applied.unit, properties: { ...applied.unit.properties, PrivateTmp: "no" } },
+    };
+    expect(serviceGeometry(sharedTmp, unit)).toEqual({
+      established: false,
+      mismatches: ["PrivateTmp is no"],
+    });
   });
 
   it("diffs the kernel log per cell and keeps an unavailable one unknown rather than empty", () => {

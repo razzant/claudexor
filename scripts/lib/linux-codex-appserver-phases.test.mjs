@@ -10,6 +10,7 @@ import {
   REPORTED_SERVICE_PROPERTIES,
   runPhases,
   serviceRunArgv,
+  STAND_TMP_PROPERTIES,
   USERNS_RESTRICTION,
 } from "./linux-codex-appserver-phases.mjs";
 import { accessVerdicts, classifyTurn } from "./linux-codex-appserver-cell.mjs";
@@ -331,6 +332,57 @@ describe("phase sequence", () => {
     expect(summarize(phases, cells).outcome).toBe("complete");
   });
 
+  // Codex 0.162.1's pre-start denial frame from run 40993163090, verbatim: no commandExecution
+  // item exists for it, and the turn completed.
+  const preStartDenial = (output, nonce = NONCE) =>
+    classifyTurn({
+      turn: { started: true },
+      notifications: [{ method: "turn/completed", params: { turn: { status: "completed" } } }],
+      providerLog: [
+        { reply: "call:exec_command", tools: ["exec_command", "view_image"] },
+        {
+          reply: "final_message",
+          tools: ["exec_command", "view_image"],
+          functionCallOutputs: {
+            [EXEC_CALL_ID]: `Chunk ID: 05f9a4\nWall time: 0.0000 seconds\nProcess exited with code 1\nOriginal token count: 18\nOutput:\n${output}`,
+          },
+        },
+      ],
+      nonce,
+      hostWrite: { exists: false },
+    });
+
+  it("treats Codex's pre-start denial frame as a known read failure, not a capture loss", () => {
+    const turn = preStartDenial(
+      "error building bubblewrap command: Read-only file system (os error 30)\n",
+    );
+    expect(turn).toMatchObject({ exec: "not_read", execEvidence: "denied_before_start" });
+    const access = producedAccess({ readonly_read: "not_read", readonly_write: "not_started" }, "");
+    // The first run's baseline/system cell no longer stops the run.
+    const { effects, log, host } = fakeEffects({
+      cell: (phase, plan) => (plan.id === "system" ? { access, turn } : {}),
+    });
+    const { phases, cells } = runPhases(effects);
+    expect(cells.filter((c) => c.verdict === "not_run")).toEqual([]);
+    expect(appliedOf(log)).toEqual(["apply distro-profile", "apply minimal-profile"]);
+    expect(host.profiles).toEqual(BASE_PROFILES);
+    expect(summarize(phases, cells)).toEqual({ outcome: "complete", defects: [] });
+    // Under the distro profile the turn alone is a known failure of the system helper.
+    expect(
+      distroProfileFailed([
+        {
+          phase: "distro-profile",
+          id: "system",
+          kind: "appserver",
+          helper: "system",
+          verdict: "ran",
+          access: { readonly: "usable" },
+          turn,
+        },
+      ]),
+    ).toEqual(["system"]);
+  });
+
   it("stops later cells and phases on a classified capture loss even when the stream parsed", () => {
     const turn = producedTurn(false);
     expect(turn.exec).toBe("capture_unknown");
@@ -537,8 +589,13 @@ describe("geometry, kernel evidence and summary", () => {
       readWritePath: "/c",
       command: ["node", "w"],
     });
-    for (const property of [...REPORTED_SERVICE_PROPERTIES, ...EGRESS_PROPERTIES])
+    for (const property of [
+      ...REPORTED_SERVICE_PROPERTIES,
+      ...STAND_TMP_PROPERTIES,
+      ...EGRESS_PROPERTIES,
+    ])
       expect(argv).toContain(property);
+    expect(STAND_TMP_PROPERTIES).toEqual(["PrivateTmp=yes"]);
     expect(EGRESS_PROPERTIES).toEqual(["IPAddressDeny=any", "IPAddressAllow=localhost"]);
     expect(argv.slice(0, 7)).toEqual([
       "-n",

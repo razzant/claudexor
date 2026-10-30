@@ -11,6 +11,7 @@ import {
   commandProbes,
   DAEMON_PROMPT,
   daemonAskRequest,
+  deniedBeforeStart,
   deadProxyEnv,
   managedLaunch,
   modelExecCommand,
@@ -383,6 +384,127 @@ describe("scripted turn", () => {
         nonce: NONCE,
       }),
     ).toMatchObject({ exec: "not_called", viewImage: "tool_unavailable" });
+  });
+
+  // Verbatim from run 40993163090 (baseline/system, Codex 0.162.1): the provider's
+  // function_call_output for probe_exec and the turn's app-server items, which hold no
+  // commandExecution item because Codex denied the launch before beginning one.
+  const REAL_NONCE = "1e33a9a0cbde9a63cf29df11fc7d6d82469ca7e24a7e6ebe35c473dc25b4e590";
+  const REAL_EXEC_ERROR =
+    "error building bubblewrap command: Read-only file system (os error 30)\n";
+  const realFrame = ({ code = 1, wall = "0.0000", output = REAL_EXEC_ERROR } = {}) =>
+    `Chunk ID: 05f9a4\nWall time: ${wall} seconds\nProcess exited with code ${code}\nOriginal token count: 18\nOutput:\n${output}`;
+  const REAL_IMAGE_PATH =
+    "/home/runner/work/_temp/cx337w/cells/baseline/system/project/research/pixel.png";
+  const realItem = (method, item) => ({ method, params: { item } });
+  const REAL_ITEMS = [
+    realItem("item/started", { type: "imageView", id: IMAGE_CALL_ID, path: REAL_IMAGE_PATH }),
+    realItem("item/completed", { type: "imageView", id: IMAGE_CALL_ID, path: REAL_IMAGE_PATH }),
+    realItem("item/completed", {
+      type: "agentMessage",
+      id: "probe-response-3-message",
+      text: `exec output: ${realFrame()}\nview_image output: [input_image]`,
+    }),
+  ];
+  const REAL_COMPLETED = { method: "turn/completed", params: { turn: { status: "completed" } } };
+  const realTurn = ({ exec = realFrame(), completed = true, items = [], nonce, hostWrite } = {}) =>
+    classifyTurn({
+      turn: { started: true, startState: "result", completed },
+      notifications: [...REAL_ITEMS, ...items, ...(completed ? [REAL_COMPLETED] : [])],
+      providerLog: [
+        { reply: "call:exec_command", tools: ["exec_command", "view_image"] },
+        {
+          reply: "call:view_image",
+          tools: ["exec_command", "view_image"],
+          functionCallOutputs: { [EXEC_CALL_ID]: exec },
+        },
+        {
+          reply: "final_message",
+          tools: ["exec_command", "view_image"],
+          functionCallOutputs: {
+            [EXEC_CALL_ID]: exec,
+            [IMAGE_CALL_ID]: [
+              { type: "input_image", image_url: "data:image/png;base64,AA", detail: "high" },
+            ],
+          },
+        },
+      ],
+      nonce: nonce ?? REAL_NONCE,
+      hostWrite: hostWrite ?? { exists: false },
+    });
+
+  it("replays the real pre-start denial as a known not_read with the write never started", () => {
+    expect(realTurn()).toMatchObject({
+      exec: "not_read",
+      execEvidence: "denied_before_start",
+      execExitCode: 1,
+      execIdentity: {},
+      write: "not_started",
+      viewImage: "returned_image",
+      imageViewItems: 1,
+      turnStatus: "completed",
+      providerSawNonce: false,
+    });
+    // The host file still decides a landing.
+    expect(realTurn({ hostWrite: { exists: true } }).write).toBe("landed");
+    // The #337-style helper failure takes the same vendor path once it is this fast.
+    const rtm = "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n";
+    expect(realTurn({ exec: realFrame({ output: rtm }) })).toMatchObject({
+      exec: "not_read",
+      execEvidence: "denied_before_start",
+    });
+    expect(deniedBeforeStart(realFrame(), REAL_NONCE)).toEqual({
+      exitCode: 1,
+      output: REAL_EXEC_ERROR,
+    });
+  });
+
+  it("keeps every other item-less exec output unknown", () => {
+    const unknown = {
+      "an unfinished turn": { completed: false },
+      "a zero exit": { exec: realFrame({ code: 0, output: `${REAL_NONCE}\nwrite_rc=1\n` }) },
+      "a failing frame that carries the nonce": {
+        exec: realFrame({ output: `${REAL_NONCE}\n${REAL_EXEC_ERROR}` }),
+      },
+      "a measured wall time (the command was started)": { exec: realFrame({ wall: "0.0021" }) },
+      "no vendor denial keyword": { exec: realFrame({ output: "cat: input.txt: No such file\n" }) },
+      "a truncated output": {
+        exec: realFrame({
+          output: `Warning: truncated output (original token count: 9)\n${REAL_EXEC_ERROR}`,
+        }),
+      },
+      "an omitted span": {
+        exec: realFrame({ output: `... 12 bytes omitted ...\n${REAL_EXEC_ERROR}` }),
+      },
+      "the bare exit line of a code-mode or older frame": { exec: "Process exited with code 1" },
+    };
+    for (const [why, replay] of Object.entries(unknown)) {
+      const verdict = realTurn(replay);
+      expect({
+        why,
+        exec: verdict.exec,
+        write: verdict.write,
+        evidence: verdict.execEvidence,
+      }).toEqual({ why, exec: "capture_unknown", write: "capture_unknown", evidence: null });
+      // view_image stays its own verdict either way.
+      expect(verdict.viewImage).toBe("returned_image");
+    }
+  });
+
+  it("lets a commandExecution item, not the provider frame, decide when one exists", () => {
+    const item = (exitCode, output) =>
+      realItem("item/completed", {
+        type: "commandExecution",
+        id: EXEC_CALL_ID,
+        exitCode,
+        aggregatedOutput: output,
+      });
+    expect(realTurn({ items: [item(0, `${REAL_NONCE}\nwrite_rc=1\n`)] })).toMatchObject({
+      exec: "read",
+      execEvidence: "command_item",
+      write: "refused",
+      execExitCode: 0,
+    });
   });
 
   it("puts the nonce read first and reports the readonly write without changing the status", () => {

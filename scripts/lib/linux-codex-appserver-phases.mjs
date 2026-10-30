@@ -47,13 +47,25 @@ export const REPORTED_SERVICE_PROPERTIES = [
  * everything but loopback, so a misapplied provider redirect cannot reach a real endpoint. The
  * worker verifies it (an immediate EPERM) before any thread or daemon starts. */
 export const EGRESS_PROPERTIES = ["IPAddressDeny=any", "IPAddressAllow=localhost"];
+/** Deliberate stand addition, not part of the #337 report: a private writable /tmp. Before it
+ * builds any restricted bwrap command (linux-sandbox/src/bwrap.rs:431), Codex 0.162.1 creates
+ * its fixed app-server socket rendezvous /tmp/codex-daemon-<uid>, mode 0700 and independent of
+ * TMPDIR, HOME and CODEX_HOME by design (uds/src/daemon_directory.rs:12-39). Under
+ * ProtectSystem=strict with only the cell writable that mkdir fails, and every readonly and
+ * workspace-write command ends `error building bubblewrap command: Read-only file system (os
+ * error 30)` before bwrap runs (run 40993163090), a failure unrelated to user namespaces that
+ * 0.153.3, the #337 version, cannot have: it has no such directory. A private /tmp keeps the
+ * host's /tmp untouched and gives each cell a fresh one. */
+export const STAND_TMP_PROPERTIES = ["PrivateTmp=yes"];
 export const UNIT_RUNTIME_MAX_SEC = 600;
 export const UNIT_TIMEOUT_STOP_SEC = 30;
 export const UNIT_OUTER_TIMEOUT_MS = (UNIT_RUNTIME_MAX_SEC + UNIT_TIMEOUT_STOP_SEC + 60) * 1000;
 const UNIT_STATE_PROPERTIES = "LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus";
 export const UNIT_PROPERTIES_RECORDED = [
   "Id",
-  ...REPORTED_SERVICE_PROPERTIES.map((property) => property.split("=")[0]),
+  ...[...REPORTED_SERVICE_PROPERTIES, ...STAND_TMP_PROPERTIES].map(
+    (property) => property.split("=")[0],
+  ),
   "User",
   "SystemCallFilter",
   "CapabilityBoundingSet",
@@ -95,10 +107,9 @@ export function serviceRunArgv({ unit, user, group, workingDirectory, readWriteP
     `--uid=${user}`,
     `--gid=${group}`,
     `--working-directory=${workingDirectory}`,
-    ...[...REPORTED_SERVICE_PROPERTIES, ...EGRESS_PROPERTIES].flatMap((property) => [
-      "-p",
-      property,
-    ]),
+    ...[...REPORTED_SERVICE_PROPERTIES, ...STAND_TMP_PROPERTIES, ...EGRESS_PROPERTIES].flatMap(
+      (property) => ["-p", property],
+    ),
     "-p",
     `ReadWritePaths=${readWritePath}`,
     "-p",
@@ -164,7 +175,7 @@ export function serviceGeometry(observations, expectedUnit) {
     mismatches.push(`worker ran in ${unit.name ?? "an unknown unit"}, not ${expectedUnit}`);
   const noNewPrivs = observations?.outside?.status?.NoNewPrivs;
   if (noNewPrivs !== "1") mismatches.push(`kernel NoNewPrivs is ${noNewPrivs ?? "unknown"}`);
-  for (const property of REPORTED_SERVICE_PROPERTIES) {
+  for (const property of [...REPORTED_SERVICE_PROPERTIES, ...STAND_TMP_PROPERTIES]) {
     const [name, requested] = property.split("=");
     const applied = unit.properties?.[name];
     if (applied !== requested) mismatches.push(`${name} is ${applied ?? "unknown"}`);

@@ -22,7 +22,7 @@ export const READING = [
   "minimal-profile runs only after a known read failure of the system helper under the distro profile (readonly `capability_failed`, the turn's exec_command or the daemon read `not_read`) with every earlier phase verified; inconclusive or unknown evidence is data and never admits it. A system cell that passes there but failed under distro-profile points at the distro profile itself (its stacked `unpriv_bwrap` child, NoNewPrivileges), not at the userns restriction.",
   "Helper identity comes from evidence, not PATH: executables the cgroup sampler saw (a short-lived failing helper can be missed), the in-sandbox label (`bwrap//&unpriv_bwrap` expected under the distro profile), `command -v bwrap`, Codex's startup configWarning, and kernel `execpath` lines. A missing kernel line is not evidence that nothing happened.",
   "A configWarning list counts as complete only when `settled` (Codex's remote-control status frame, sent right after its startup warnings, arrived).",
-  "A sandbox that refuses (`not_read`, `capability_failed`, a refused write) is data; a missing model request, tool call or captured tool result (`no_model_request`, `not_called`, `capture_unknown`, `rpc_error`) for the scripted turn's exec_command or the daemon read is a harness defect, and unknown namespace identity alone only leaves readonly `inconclusive`.",
+  "A sandbox that refuses (`not_read`, `capability_failed`, a refused write) is data; a missing model request, tool call or captured tool result (`no_model_request`, `not_called`, `capture_unknown`, `rpc_error`) for the scripted turn's exec_command or the daemon read is a harness defect, and unknown namespace identity alone only leaves readonly `inconclusive`. Without a commandExecution item the turn's exec_command is `not_read` only from Codex's pre-start denial frame (wall time zero, non-zero exit, a denial keyword, untruncated, no nonce, turn completed; `execEvidence: denied_before_start`); any other item-less output stays `capture_unknown`.",
   "Model-path verdicts come from a scripted provider: they show the tool surfaces and Claudexor's handling of a report derived from the tool result, not a real model's choices or `needs_input` judgement.",
 ];
 
@@ -30,7 +30,7 @@ export const LIMITATIONS = [
   "A scripted loopback provider stands in for the model: the observed model is whatever slug Codex sent, and the work report is derived from the read's exit status.",
   "The daemon cells use the api_key route with a dummy key; the native subscription route of the #337 runs needs a real login and is not exercised.",
   "Codex 0.162.1 only; the #337 host ran 0.153.3.",
-  "A GitHub-hosted Ubuntu 24.04 VM is not the #337 host; the transient unit carries the reported hardening plus loopback-only networking (IPAddressDeny), a deliberate addition.",
+  "A GitHub-hosted Ubuntu 24.04 VM is not the #337 host; the transient unit carries the reported hardening plus loopback-only networking (IPAddressDeny) and a private /tmp (PrivateTmp=yes, for Codex 0.162.1's fixed /tmp/codex-daemon-<uid>), deliberate additions.",
   "Only the packaged profile file is installed (extracted from the pinned .deb, not the package), loaded with the runner's own apparmor_parser and -K (no cache write).",
   "Kernel lines are those printed while a cell ran, by any process, through the printk rate limit; they are raw diagnostics.",
 ];

@@ -242,6 +242,14 @@ export async function runCellWorker(specFile) {
   obs.controls = controls(spec);
   obs.outsideTargetGaps = outsideTargetGaps(spec, realpathLoose);
   capture.push(...obs.outsideTargetGaps);
+  // Codex 0.162.1 creates /tmp/codex-daemon-<uid> before any restricted bwrap command; on a
+  // read-only /tmp each such command fails before bwrap, which no cell may report as a sandbox
+  // verdict. access(2) answers EROFS for a read-only mount without creating anything.
+  obs.tmpWritable = tryValue(() => (accessSync("/tmp", constants.W_OK), true)) ?? false;
+  if (!obs.tmpWritable)
+    capture.push(
+      "the unit's /tmp is not writable, so Codex 0.162.1 cannot create /tmp/codex-daemon-<uid> and every restricted command would fail before bwrap",
+    );
   // Fail closed BEFORE any Codex or daemon process starts: the unit must refuse to send
   // anything to a non-loopback address.
   obs.egress = await egressProbe();
@@ -255,7 +263,10 @@ export async function runCellWorker(specFile) {
   const sampler = startProcessSampler(obs.outside.cgroupPath);
   if (spec.kind === "daemon")
     return finishDaemonCell(spec, { obs, capture, sampler, fixtureBefore });
-  if (egressOpen) {
+  // A unit whose /tmp is not writable cannot build any restricted bwrap command at all — the
+  // fixed daemon socket directory under /tmp fails first — so starting Codex would only add
+  // pre-bwrap failures. Stop here with the capture unknown, like an open egress.
+  if (egressOpen || !obs.tmpWritable) {
     obs.executed = sampler.stop();
     obs.fixture = { differences: manifestDifferences(fixtureBefore, manifest(fixtureDirs)) };
     obs.result = {

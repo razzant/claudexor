@@ -300,32 +300,70 @@ function turnWriteVerdict(identity, hostWrite) {
   return identity.write_rc !== "0" ? "refused" : "inconclusive";
 }
 
+/** Codex 0.162.1's whole answer to an exec_command whose sandboxed launch exits non-zero within
+ * the 150 ms early-exit grace with a denial keyword in its output: `UnifiedExecProcess::
+ * from_spawned` returns SandboxDenied (core/src/unified_exec/process.rs:381-398, sandboxing/src/
+ * denial.rs) before `exec_command_inner` begins the commandExecution item
+ * (unified_exec/process_manager.rs:521-592), and the handler sends the model this frame with
+ * the denial's zero duration (tools/handlers/unified_exec/exec_command.rs:441-461,
+ * tools/context.rs:524-547). No item is ever emitted for that call, so this frame, untruncated
+ * and failing, is complete negative evidence; any other item-less output stays unknown. */
+const DENIED_BEFORE_START =
+  /^Chunk ID: [0-9a-f]{6}\nWall time: 0\.0000 seconds\nProcess exited with code (-?\d+)\nOriginal token count: \d+\nOutput:\n([\s\S]*)$/;
+const VENDOR_DENIAL_KEYWORDS = [
+  "operation not permitted",
+  "permission denied",
+  "read-only file system",
+  "seccomp",
+  "sandbox",
+  "landlock",
+  "failed to write file",
+];
+
+/** `{exitCode, output}` when `providerExec` is that pre-start denial frame, else null. A frame
+ * that exited 0, was truncated or carries the nonce is never read as a denial. */
+export function deniedBeforeStart(providerExec, nonce) {
+  const match = typeof providerExec === "string" ? DENIED_BEFORE_START.exec(providerExec) : null;
+  if (!match) return null;
+  const [, code, output] = match;
+  if (Number(code) === 0 || output.includes(nonce)) return null;
+  if (output.startsWith("Warning: truncated output") || / bytes omitted \.\.\./.test(output))
+    return null;
+  const lower = output.toLowerCase();
+  if (!VENDOR_DENIAL_KEYWORDS.some((keyword) => lower.includes(keyword))) return null;
+  return { exitCode: Number(code), output };
+}
+
 /** The scripted turn's verdicts. `exec` uses the app-server's own commandExecution item
- * (exit code + exact nonce line); `hostWrite = {exists}` is the turn's write target on the
- * host afterwards. */
+ * (exit code + exact nonce line); without one, only Codex's pre-start denial frame in a
+ * completed turn is a known `not_read`. `hostWrite = {exists}` is the turn's write target on
+ * the host afterwards. */
 export function classifyTurn({ turn, notifications, providerLog, nonce, hostWrite }) {
   const outputs = providerOutputs(providerLog);
   const offered = new Set(providerLog.flatMap((entry) => entry.tools ?? []));
   const providerExec = outputs.get(EXEC_CALL_ID);
   const commands = itemsOf(notifications, "commandExecution");
   const command = commands.at(-1) ?? null;
-  const output = String(command?.aggregatedOutput ?? "");
   const completed = notifications.find((n) => n.method === "turn/completed");
+  const denied = !command && completed ? deniedBeforeStart(providerExec, nonce) : null;
+  const output = String(command?.aggregatedOutput ?? denied?.output ?? "");
   const credentialHeaders = providerLog.flatMap((entry) => entry.credentialHeaders ?? []);
   const execIdentity = parseKeyValues(output.split("\n").slice(1).join("\n"));
   const exec = (() => {
     if (!turn?.started) return turn?.startState === "error" ? "rpc_error" : "capture_unknown";
     if (providerExec === undefined && !command)
       return offered.size ? "not_called" : "no_model_request";
+    if (denied) return "not_read";
     if (!command) return "capture_unknown";
     return command.exitCode === 0 && output.split("\n")[0] === nonce ? "read" : "not_read";
   })();
   return {
     exec,
+    execEvidence: command ? "command_item" : denied ? "denied_before_start" : null,
     viewImage: viewImageVerdict(providerLog),
-    write: command ? turnWriteVerdict(execIdentity, hostWrite) : exec,
+    write: command || denied ? turnWriteVerdict(execIdentity, hostWrite) : exec,
     turnStatus: completed?.params?.turn?.status ?? null,
-    execExitCode: command?.exitCode ?? null,
+    execExitCode: command?.exitCode ?? denied?.exitCode ?? null,
     execIdentity,
     providerExecOutput: providerExec ?? null,
     providerSawNonce: typeof providerExec === "string" && providerExec.includes(nonce),

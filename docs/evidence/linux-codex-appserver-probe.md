@@ -25,8 +25,17 @@ runner; neither their presence nor their absence is a recommendation for a host.
   `IPAddressAllow=localhost`. Before any thread or daemon starts, the worker sends one UDP
   datagram to 192.0.2.1:9 (RFC 5737, never routed) and proceeds only when the send itself fails
   with `EPERM`, the unit filter's answer (a dropped TCP SYN is retransmitted, not reported);
-  every proxy variable also points at a closed loopback port. The worker checks its own cgroup,
-  `NoNewPrivs` and `systemctl show` values.
+  every proxy variable also points at a closed loopback port. A second deliberate addition:
+  `PrivateTmp=yes`. Before it builds any restricted bwrap command, Codex 0.162.1 creates its
+  fixed app-server socket rendezvous `/tmp/codex-daemon-<uid>` (mode 0700, independent of
+  TMPDIR, HOME and CODEX_HOME by design; `codex-rs/uds/src/daemon_directory.rs:12-39`,
+  `codex-rs/linux-sandbox/src/bwrap.rs:431` at `rust-v0.162.1`). With the host's /tmp read-only
+  under `ProtectSystem=strict` that mkdir fails, and every readonly and workspace-write command
+  ends `error building bubblewrap command: Read-only file system (os error 30)` before bwrap
+  runs: run 40993163090's baseline, a failure unrelated to user namespaces that 0.153.3 (no such
+  directory) cannot have. The worker checks its own cgroup, `NoNewPrivs` and `systemctl show`
+  values, `PrivateTmp` included, and that its /tmp is writable (`access(2)`, nothing created);
+  if not, capture is unknown and no Codex process starts.
 - **Provider**: a loopback scripted Responses server inside the worker, never a model. It plays
   one script in whichever tool surface Codex offers: classic `exec_command` then `view_image`,
   or code mode (the JavaScript `exec` tool Codex 0.162.1 offers for Claudexor's default model),
@@ -107,7 +116,15 @@ evidence.
   `capability_failed`, `outside_write_landed`, `inconclusive`, `unknown`.
 - full: `usable` or `failed`.
 - turn exec_command: `read` (the app-server's commandExecution item exited 0 and its first output
-  line is the exact nonce) or `not_read`; view_image: `returned_image` (the provider received an
+  line is the exact nonce) or `not_read`. With no commandExecution item, `not_read` comes only
+  from Codex 0.162.1's pre-start denial frame: a sandboxed launch that exits non-zero within its
+  150 ms early-exit grace with a denial keyword is returned as SandboxDenied before the item is
+  begun, and the model receives `Chunk ID … / Wall time: 0.0000 seconds / Process exited with
+  code N / Original token count … / Output:` (`core/src/unified_exec/process.rs:381-398`,
+  `process_manager.rs:521-592`, `tools/handlers/unified_exec/exec_command.rs:441-461`); the
+  frame must be untruncated, without the nonce, in a completed turn, and is recorded as
+  `execEvidence: denied_before_start`. Any other item-less output, a success above all, stays
+  `capture_unknown`; view_image: `returned_image` (the provider received an
   `input_image`) or `failed` (it received Codex's error text); write: `refused` (`write_rc` not 0,
   no host file), `landed`, `not_started`.
 - daemon read: `read` (the provider received a tool output that exited 0 with the nonce as its
@@ -134,7 +151,7 @@ startup `configWarning`, and AppArmor `execpath` kernel lines.
 - minimal-profile runs only after a known read failure of the system helper under the distro profile (readonly `capability_failed`, the turn's exec_command or the daemon read `not_read`) with every earlier phase verified; inconclusive or unknown evidence is data and never admits it. A system cell that passes there but failed under distro-profile points at the distro profile itself (its stacked `unpriv_bwrap` child, NoNewPrivileges), not at the userns restriction.
 - Helper identity comes from evidence, not PATH: executables the cgroup sampler saw (a short-lived failing helper can be missed), the in-sandbox label (`bwrap//&unpriv_bwrap` expected under the distro profile), `command -v bwrap`, Codex's startup configWarning, and kernel `execpath` lines. A missing kernel line is not evidence that nothing happened.
 - A configWarning list counts as complete only when `settled` (Codex's remote-control status frame, sent right after its startup warnings, arrived).
-- A sandbox that refuses (`not_read`, `capability_failed`, a refused write) is data; a missing model request, tool call or captured tool result (`no_model_request`, `not_called`, `capture_unknown`, `rpc_error`) for the scripted turn's exec_command or the daemon read is a harness defect, and unknown namespace identity alone only leaves readonly `inconclusive`.
+- A sandbox that refuses (`not_read`, `capability_failed`, a refused write) is data; a missing model request, tool call or captured tool result (`no_model_request`, `not_called`, `capture_unknown`, `rpc_error`) for the scripted turn's exec_command or the daemon read is a harness defect, and unknown namespace identity alone only leaves readonly `inconclusive`. Without a commandExecution item the turn's exec_command is `not_read` only from Codex's pre-start denial frame (wall time zero, non-zero exit, a denial keyword, untruncated, no nonce, turn completed; `execEvidence: denied_before_start`); any other item-less output stays `capture_unknown`.
 - Model-path verdicts come from a scripted provider: they show the tool surfaces and Claudexor's handling of a report derived from the tool result, not a real model's choices or `needs_input` judgement.
 
 ## Stop rules and the job result
@@ -180,4 +197,6 @@ the harness list, the request, outcome and run detail, the whole run directory a
 - The native subscription route of the #337 runs (`auth_mode: local_session`): it needs a real
   login. The daemon cells use the api_key route with a dummy key.
 - Codex 0.162.1 only (the #337 host ran 0.153.3), on a GitHub VM rather than the #337 host.
+- A read-only host /tmp under 0.162.1: each cell gets a private /tmp. Run 40993163090's baseline
+  (shared, read-only /tmp) already showed that every restricted command then fails before bwrap.
 - The `bundled` cell's PATH deviates from the managed one on purpose.
