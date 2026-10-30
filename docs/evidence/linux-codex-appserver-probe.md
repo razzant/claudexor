@@ -134,6 +134,7 @@ startup `configWarning`, and AppArmor `execpath` kernel lines.
 - minimal-profile runs only when the distro profile failed for the system helper with every earlier phase verified. A system cell that passes there but failed under distro-profile points at the distro profile itself (its stacked `unpriv_bwrap` child, NoNewPrivileges), not at the userns restriction.
 - Helper identity comes from evidence, not PATH: executables the cgroup sampler saw (a short-lived failing helper can be missed), the in-sandbox label (`bwrap//&unpriv_bwrap` expected under the distro profile), `command -v bwrap`, Codex's startup configWarning, and kernel `execpath` lines. A missing kernel line is not evidence that nothing happened.
 - A configWarning list counts as complete only when `settled` (Codex's remote-control status frame, sent right after its startup warnings, arrived).
+- A sandbox that refuses (`not_read`, `capability_failed`, a refused write) is data; a missing model request, tool call or captured tool result (`no_model_request`, `not_called`, `capture_unknown`, `rpc_error`) for the scripted turn's exec_command or the daemon read is a harness defect, and unknown namespace identity alone only leaves readonly `inconclusive`.
 - Model-path verdicts come from a scripted provider: they show the tool surfaces and Claudexor's handling of a report derived from the tool result, not a real model's choices or `needs_input` judgement.
 
 ## Stop rules and the job result
@@ -150,7 +151,7 @@ rest. The workflow re-runs the idempotent restore of every recorded change (both
 `/etc/codex/config.toml`) in an `always()` step.
 
 Sandbox verdicts never fail the job. It exits 0 `complete` only when every planned cell ran with
-known capture and cleanup, outside controls, geometry, closed egress and kernel log, the fixture
+known capture and cleanup, a scripted turn exec_command and daemon read that reached the model path, outside controls, geometry, closed egress and kernel log, the fixture
 unchanged, no credential header, an effective bundled control, an admitted daemon route, the
 provider route installed and removed, and every phase ended in its starting state; 1
 `incomplete` otherwise; 2 for an unsupported host (not Linux x64, root, no systemd-run or sudo,

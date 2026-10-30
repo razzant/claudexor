@@ -1,6 +1,7 @@
 /** Harness defects, the job conclusion and the human summary of the Linux Codex app-server
  * probe. Sandbox verdicts are data and never a defect: the job fails only when the harness
- * cannot stand behind a result (unknown capture or cleanup, a missing cell, an unverified
+ * cannot stand behind a result (unknown capture or cleanup, a model path never exercised,
+ * a missing cell, an unverified
  * change or restore, a mutated fixture, a credential header, missing geometry or evidence). */
 import { CELLS, PHASES } from "./linux-codex-appserver-phases.mjs";
 
@@ -21,6 +22,7 @@ export const READING = [
   "minimal-profile runs only when the distro profile failed for the system helper with every earlier phase verified. A system cell that passes there but failed under distro-profile points at the distro profile itself (its stacked `unpriv_bwrap` child, NoNewPrivileges), not at the userns restriction.",
   "Helper identity comes from evidence, not PATH: executables the cgroup sampler saw (a short-lived failing helper can be missed), the in-sandbox label (`bwrap//&unpriv_bwrap` expected under the distro profile), `command -v bwrap`, Codex's startup configWarning, and kernel `execpath` lines. A missing kernel line is not evidence that nothing happened.",
   "A configWarning list counts as complete only when `settled` (Codex's remote-control status frame, sent right after its startup warnings, arrived).",
+  "A sandbox that refuses (`not_read`, `capability_failed`, a refused write) is data; a missing model request, tool call or captured tool result (`no_model_request`, `not_called`, `capture_unknown`, `rpc_error`) for the scripted turn's exec_command or the daemon read is a harness defect, and unknown namespace identity alone only leaves readonly `inconclusive`.",
   "Model-path verdicts come from a scripted provider: they show the tool surfaces and Claudexor's handling of a report derived from the tool result, not a real model's choices or `needs_input` judgement.",
 ];
 
@@ -34,6 +36,8 @@ export const LIMITATIONS = [
 ];
 
 const UNKNOWN = ["capture_unknown", "rpc_error", "unknown"];
+const ACCESS_MODES = ["readonly", "workspace_write", "full"];
+const MODEL_PATH_MISSING = ["no_model_request", "not_called"];
 
 export function cellDefects(cell) {
   if (["not_run", "skipped"].includes(cell.verdict)) return [];
@@ -72,11 +76,25 @@ export function cellDefects(cell) {
     defects.push(`${where}: the bundled control's app-server PATH still holds a bwrap`);
   if (cell.daemon?.read === "not_admitted")
     defects.push(`${where}: the fixture route did not admit the codex lane`);
-  const unknownAccess = Object.entries(cell.access ?? {}).filter(([, value]) =>
-    UNKNOWN.includes(value),
-  );
-  for (const [mode] of unknownAccess) defects.push(`${where}: ${mode} verdict unknown`);
-  if (UNKNOWN.includes(cell.daemon?.read)) defects.push(`${where}: daemon read verdict unknown`);
+  // `namespaces` is isolation evidence (unknown without a captured identity file) and stays
+  // data; a readonly cell that cannot show it is `inconclusive`, never a harness defect.
+  let unknownMode = false;
+  for (const mode of ACCESS_MODES)
+    if (UNKNOWN.includes(cell.access?.[mode])) {
+      unknownMode = true;
+      defects.push(`${where}: ${mode} verdict unknown`);
+    }
+  if (cell.access?.anyUnknown && !unknownMode) defects.push(`${where}: a probe verdict unknown`);
+  // not_read, refused and tool_error results are data; no model request or no tool call/result
+  // captured means the model path itself was not exercised.
+  for (const [label, verdict] of [
+    ["scripted turn exec_command", cell.turn?.exec],
+    ["daemon read", cell.daemon?.read],
+  ]) {
+    if (UNKNOWN.includes(verdict)) defects.push(`${where}: ${label} verdict unknown`);
+    else if (MODEL_PATH_MISSING.includes(verdict))
+      defects.push(`${where}: ${label} not exercised (${verdict})`);
+  }
   return defects;
 }
 

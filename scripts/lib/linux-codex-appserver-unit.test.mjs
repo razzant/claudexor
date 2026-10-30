@@ -8,6 +8,13 @@ import {
   phaseControls,
   PROVIDER_PORTS,
 } from "./linux-codex-appserver-controls.mjs";
+import {
+  accessVerdicts,
+  classifyDaemonRun,
+  classifyProbe,
+  classifyTurn,
+  commandProbes,
+} from "./linux-codex-appserver-cell.mjs";
 import { DAEMON_RUN_TIMEOUT_MS } from "./linux-codex-appserver-daemon.mjs";
 import {
   cmdlineArgs,
@@ -34,6 +41,7 @@ import {
   workerEndProblem,
 } from "./linux-codex-appserver-phases.mjs";
 import { READING, summarize } from "./linux-codex-appserver-summary.mjs";
+import { DOCTOR_SMOKE_STEP, EXEC_CALL_ID } from "./scripted-responses-provider.mjs";
 import { jobSection } from "./workflow-sections.mjs";
 
 // Offline checks only. The unit lifecycle, kernel-log, pin and geometry cases are carried
@@ -382,6 +390,149 @@ describe("harness defects", () => {
     const phases = [{ id: "minimal-profile", skipped: "the distro profile did not fail" }];
     const cells = [{ phase: "minimal-profile", id: "system", verdict: "skipped" }];
     expect(summarize(phases, cells)).toEqual({ outcome: "complete", defects: [] });
+  });
+});
+
+describe("harness defects from the actual producers", () => {
+  const nonce = "b7".repeat(32);
+  const spec = {
+    nonce,
+    nonceFile: "/cell/project/research/input.txt",
+    marker: "probe",
+    writeTargets: {
+      readonly: "/cell/project/ro",
+      project: "/cell/project/ww",
+      outside: "/cell/outside/w",
+      full: "/cell/full/w",
+    },
+  };
+  const cell = (extra) => ({
+    phase: "baseline",
+    id: "system",
+    kind: "appserver",
+    verdict: "ran",
+    capture: { known: true, problems: [] },
+    cleanup: { known: true, problems: [] },
+    ...extra,
+  });
+  const execOutput = (text) => ({ [EXEC_CALL_ID]: `Process exited with code 0\nOutput:\n${text}` });
+  const item = (exitCode, aggregatedOutput) => ({
+    method: "item/completed",
+    params: { item: { type: "commandExecution", exitCode, aggregatedOutput } },
+  });
+  const turn = (extra) =>
+    classifyTurn({ turn: { started: true }, notifications: [], providerLog: [], nonce, ...extra });
+
+  // Probe verdicts by the real classifier; `answer(probe)` is the JSON-RPC outcome.
+  const access = (answer, identity = "", outside = { user: "u:1", mnt: "m:1", net: "n:1" }) => {
+    const verdicts = Object.fromEntries(
+      commandProbes(spec).map((probe) => [
+        probe.id,
+        classifyProbe(probe, answer(probe), spec, { exists: false }),
+      ]),
+    );
+    return accessVerdicts(verdicts, identity, outside);
+  };
+  const refusing = (probe) =>
+    probe.access === "full"
+      ? {
+          state: "result",
+          result: { exitCode: 0, stdout: probe.target ? "cx-probe-write-started\n" : `${nonce}\n` },
+        }
+      : { state: "result", result: { exitCode: 1, stdout: "", stderr: "bwrap startup refused" } };
+
+  it("keeps a negative sandbox baseline with unknown namespace identity as complete data", () => {
+    const verdicts = access(refusing);
+    expect(verdicts).toMatchObject({
+      readonly: "capability_failed",
+      workspace_write: "capability_failed",
+      namespaces: "unknown",
+      anyUnknown: false,
+    });
+    expect(summarize([], [cell({ access: verdicts })])).toEqual({
+      outcome: "complete",
+      defects: [],
+    });
+  });
+
+  it("still fails the run when a probe produced no verdict", () => {
+    for (const state of ["timeout", "error"]) {
+      const verdicts = access((probe) =>
+        probe.id === "readonly_read" ? { state } : refusing(probe),
+      );
+      expect(verdicts.readonly).toBe("unknown");
+      expect(summarize([], [cell({ access: verdicts })]).defects).toEqual([
+        "baseline/system: readonly verdict unknown",
+      ]);
+    }
+    // An unanswered identity probe shows only in anyUnknown; it must not be silently dropped.
+    const identity = access((probe) =>
+      probe.id.endsWith("_identity") ? { state: "timeout" } : refusing(probe),
+    );
+    expect(identity.anyUnknown).toBe(true);
+    expect(summarize([], [cell({ access: identity })]).defects).toEqual([
+      "baseline/system: a probe verdict unknown",
+    ]);
+  });
+
+  it("separates a refused or failed daemon operation from a model path never exercised", () => {
+    const exec = { reply: "call:exec_command", tools: ["exec_command"] };
+    const final = (output) => ({
+      reply: "final_message",
+      tools: ["exec_command"],
+      functionCallOutputs: { [EXEC_CALL_ID]: output },
+    });
+    const ran = { outcome: { status: "succeeded" }, eventTypes: { "harness.started": 1 } };
+    const answer = (text) => ({ ...ran, detail: { primaryOutput: { text } } });
+    const states = [
+      [
+        "read",
+        answer(nonce),
+        [exec, final(`Process exited with code 0\nOutput:\n${nonce}\n`)],
+        "complete",
+      ],
+      [
+        "not_read",
+        answer("denied"),
+        [exec, final("Process exited with code 1\nOutput:\n")],
+        "complete",
+      ],
+      ["capture_unknown", {}, [], "incomplete"],
+      ["not_admitted", { outcome: { status: "failed" }, eventTypes: {} }, [], "incomplete"],
+      ["no_model_request", ran, [{ reply: DOCTOR_SMOKE_STEP }], "incomplete"],
+      ["not_called", ran, [exec], "incomplete"],
+    ];
+    for (const [read, obs, providerLog, outcome] of states) {
+      const daemon = classifyDaemonRun({ obs, providerLog, nonce, hostWrite: { exists: false } });
+      expect(daemon.read).toBe(read);
+      expect(summarize([], [cell({ id: "daemon", kind: "daemon", daemon })]).outcome).toBe(outcome);
+    }
+  });
+
+  it("does the same for the scripted turn's exec_command", () => {
+    const offered = [{ tools: ["exec_command"] }];
+    const withOutput = [{ tools: ["exec_command"], functionCallOutputs: execOutput("x") }];
+    const states = [
+      [
+        "read",
+        turn({ notifications: [item(0, `${nonce}\nwrite_rc=1`)], providerLog: withOutput }),
+        "complete",
+      ],
+      [
+        "not_read",
+        turn({ notifications: [item(1, "denied")], providerLog: withOutput }),
+        "complete",
+      ],
+      ["rpc_error", turn({ turn: { started: false, startState: "error" } }), "incomplete"],
+      ["capture_unknown", turn({ turn: { started: false } }), "incomplete"],
+      ["no_model_request", turn(), "incomplete"],
+      ["not_called", turn({ providerLog: offered }), "incomplete"],
+      ["capture_unknown", turn({ providerLog: withOutput }), "incomplete"],
+    ];
+    for (const [exec, produced, outcome] of states) {
+      expect(produced.exec).toBe(exec);
+      expect(summarize([], [cell({ turn: produced })]).outcome).toBe(outcome);
+    }
   });
 });
 
