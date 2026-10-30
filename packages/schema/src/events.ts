@@ -51,12 +51,8 @@ export const JournaledRunCreatedPayload = z
     prompt_sha256: z
       .string()
       .regex(/^[0-9a-f]{64}$/)
-      .describe("sha256 hex digest of the redacted prompt text."),
-    prompt_bytes: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe("UTF-8 byte length of the redacted prompt text."),
+      .describe("sha256 hex digest of the prompt text."),
+    prompt_bytes: z.number().int().nonnegative().describe("UTF-8 byte length of the prompt text."),
   })
   .passthrough()
   .describe(

@@ -294,20 +294,25 @@ jobs:
           fi
           node scripts/verify-release-input.mjs
 
-      - name: Secret scan
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git grep -InE '(\bsk-[A-Za-z0-9_-]{20,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-or-[A-Za-z0-9_-]{20,}|\bghp_[A-Za-z0-9_]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|xox[baeprs]-[A-Za-z0-9-]{10,}|\bnpm_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- . ':!pnpm-lock.yaml'; then
-            echo "::error::Potential token-like secret found in tracked files."
-            exit 1
-          fi
-
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
           cache: pnpm
+
+      - name: Provision publication scanner (pinned Betterleaks)
+        run: node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks/betterleaks"
+
+      # Same adapter as `pr` delivery and CI (INV-146): the release tree, the
+      # range's commits and messages and, when publishing, the reviewed tag's
+      # message must be clean before any release artifact is built from them.
+      - name: Publication scan
+        env:
+          CLAUDEXOR_BETTERLEAKS_PATH: ${{ runner.temp }}/betterleaks/betterleaks
+        run: |
+          tag_args=()
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then tag_args=(--tag "$RELEASE_REF_INPUT"); fi
+          node scripts/publication-scan.mjs --repo . --range "origin/main..HEAD" --tree HEAD "${tag_args[@]}"
 
       - name: Pin release Node runtime
         shell: bash
@@ -389,6 +394,9 @@ jobs:
       - name: Build shared engine resources before app packaging
         if: needs.prepare.outputs.mode == 'candidate'
         shell: bash
+        env:
+          # The app and update closure must ship the pinned darwin scanners.
+          CLAUDEXOR_REQUIRE_BETTERLEAKS: "1"
         run: |
           set -euo pipefail
           resources="$RUNNER_TEMP/engine-resources"
@@ -667,7 +675,7 @@ jobs:
             for entry in claudexord.bundle.cjs claudexor.bundle.cjs setup-login-runner.cjs browser-mcp-runtime native; do
               diff -r "$CLAUDEXOR_ENGINE_RESOURCES/$entry" "apps/macos/dist/bundle.noindex/Claudexor.app/Contents/Resources/$entry"
             done
-            node scripts/build-runtime-closure.mjs \
+            CLAUDEXOR_REQUIRE_BETTERLEAKS=1 node scripts/build-runtime-closure.mjs \
               --resources "$CLAUDEXOR_ENGINE_RESOURCES" \
               --version "$VERSION" \
               --out "$closure" \
@@ -711,6 +719,15 @@ jobs:
                 "https://nodejs.org/dist/v$node_version/node-v$node_version-$target.tar.gz" \
                 --output "$archive"
               digest="$(node -e 'const x=require("./scripts/remote-node-sha256.json");process.stdout.write(x.assets[process.argv[1]])' "$target")"
+              # The target's pinned publication scanner; build-remote-runtime
+              # checks its archive and binary digests before staging it.
+              scanners="$RUNNER_TEMP/betterleaks-archives"
+              scanner_url="$(node --input-type=module -e 'import { BETTERLEAKS_RELEASE_URL, BETTERLEAKS_RELEASES } from "./packages/delivery/src/publication-scanner-pin.ts"; process.stdout.write(BETTERLEAKS_RELEASE_URL + "/" + BETTERLEAKS_RELEASES[process.argv[1]].asset)' "$target")"
+              scanner_asset="${scanner_url##*/}"
+              mkdir -p "$scanners"
+              curl --fail --location --proto '=https' --tlsv1.2 \
+                "$scanner_url" \
+                --output "$scanners/$scanner_asset"
               node scripts/build-remote-runtime.mjs \
                 --target "$target" \
                 --version "$VERSION" \
@@ -719,6 +736,7 @@ jobs:
                 --node-archive "$archive" \
                 --node-sha256 "$digest" \
                 --node-version "$node_version" \
+                --betterleaks-archive "$scanners/$scanner_asset" \
                 --out "$remote"
             done
             node scripts/build-remote-runtime-manifest.mjs \

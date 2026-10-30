@@ -1,6 +1,6 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { InputTokenUsage } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 import {
   claudeCompactBoundaryEvents,
   claudeRateLimitEvents,
@@ -555,7 +555,8 @@ function toolTarget(name: string, input: Record<string, unknown>): string | unde
     input["command"],
   ];
   const found = candidates.find((v) => typeof v === "string" && v.trim().length > 0);
-  return found ? redactSecrets(`${name}: ${String(found)}`).slice(0, 500) : undefined;
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return found ? `${name}: ${String(found)}`.slice(0, 500) : undefined;
 }
 
 function numberOrUndef(v: unknown): number | undefined {

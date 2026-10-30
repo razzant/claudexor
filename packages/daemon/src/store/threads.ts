@@ -10,7 +10,6 @@ import { Thread as ThreadSchema, ThreadTurn as ThreadTurnSchema } from "@claudex
 import {
   newId,
   nowIso,
-  redactSecrets,
   safeProblemContext,
   safeProblemMessage,
   safeProblemRequiredActions,
@@ -353,8 +352,8 @@ export class SqlThreadStore {
       plan_hash: input.planHash ?? null,
       plan_readiness_overridden: input.planOverridden === true,
       kind,
-      // Redact at the persistence boundary (the store is read back into UIs).
-      prompt: redactSecrets(prompt),
+      // Exact: later turns, continuation and Run Again read this prompt back.
+      prompt,
       attachments: input.attachments ?? [],
       created_at: nowIso(),
     });

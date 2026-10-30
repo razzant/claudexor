@@ -25,9 +25,9 @@ export const RunDetailProblem = z
 export type RunDetailProblem = z.infer<typeof RunDetailProblem>;
 
 /**
- * INV-062 disclosure for a run whose output held secret-like strings: the
- * changes were kept and only Claudexor's saved/served copies hide them. Paths,
- * rule ids and counts — never a matched value.
+ * Historical disclosure for a run written under the retired INV-062, whose
+ * saved/served copies hid secret-like strings. Paths, rule ids and counts —
+ * never a matched value. Current runs save exact bytes (INV-146) and leave it null.
  */
 export const SecretLikeDisclosure = z
   .object({
@@ -64,7 +64,7 @@ export const SecretLikeDisclosure = z
   })
   .strict()
   .describe(
-    "What a run's saved copies hide: secret-like strings kept in the work, hidden on disk.",
+    "What a historical (INV-062) run's saved copies hide: secret-like strings kept in the work, hidden on disk.",
   );
 export type SecretLikeDisclosure = z.infer<typeof SecretLikeDisclosure>;
 
@@ -267,7 +267,7 @@ export const McpRunHandleResult = z
     secretLike: SecretLikeDisclosure.nullable()
       .default(null)
       .describe(
-        "INV-062 disclosure: secret-like strings kept in the work but hidden in saved copies (paths and counts only); null when nothing was hidden.",
+        "Historical disclosure of a run written under the retired INV-062 that hid secret-like strings in its saved copies (paths and counts only); null for current runs, which save exact bytes.",
       ),
   })
   .strict()

@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import type { HarnessEvent } from "@claudexor/schema";
 import { buildEvidenceIndex } from "./continuation-evidence.js";
 import { collectEvidenceIndexInput, toolCallIndex } from "./continuation-evidence-io.js";
-import { harnessEventPayload, redactHarnessEvent } from "./runSupport.js";
+import { harnessEventPayload } from "./runSupport.js";
 import { parseCodexEvent } from "../../harness-codex/src/parse.js";
 import { codexAppServerEvents } from "../../harness-codex/src/app-server-protocol.js";
 import { parseAgyEvent } from "../../harness-agy/src/parse.js";
@@ -38,7 +38,7 @@ function journal(events: HarnessEvent[], where: "attempt" | "run"): string {
   const runDir = mkdtempSync(join(tmpdir(), "cx-edit-journal-"));
   roots.push(runDir);
   mkdirSync(join(runDir, "attempts", "a01"), { recursive: true });
-  const safe = events.map(redactHarnessEvent);
+  const safe = events;
   if (where === "attempt") {
     writeFileSync(
       join(runDir, "attempts", "a01", "events.jsonl"),

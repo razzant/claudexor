@@ -20,6 +20,14 @@ export function withClaudeApiFailureParser(
           : null;
     }
     const parsed = parse(obj, sessionId);
+    if (isSyntheticApiErrorMessage(obj))
+      return (
+        parsed?.map((event) =>
+          event.type === "message" && typeof event.text === "string"
+            ? { ...event, text: redactSecrets(event.text) }
+            : event,
+        ) ?? parsed
+      );
     if (
       obj?.type !== "result" ||
       obj.is_error !== true ||
@@ -27,10 +35,13 @@ export function withClaudeApiFailureParser(
       obj.subtype === "error_max_structured_output_retries" ||
       !Number.isInteger(obj.api_error_status) ||
       obj.api_error_status < 400 ||
-      obj.api_error_status > 599 ||
-      claudeTerminalContextEvent(obj.terminal_reason, sessionId, nowIso()) !== null
+      obj.api_error_status > 599
     )
       return parsed;
+    // A context terminal keeps its owner (the context signal, no added error);
+    // its status copy of the API prose is still a diagnostic (INV-146).
+    if (claudeTerminalContextEvent(obj.terminal_reason, sessionId, nowIso()) !== null)
+      return parsed?.map((event) => maskApiFailureCopy(event, obj.result)) ?? parsed;
     const code =
       typeof obj.api_error_code === "string" && obj.api_error_code.length > 0
         ? obj.api_error_code
@@ -53,8 +64,12 @@ export function withClaudeApiFailureParser(
         : undefined;
     return [
       // Replace the result parser's generic subtype error with the native
-      // API cause; usage and all non-error evidence keep their order.
-      ...(parsed ?? []).filter((event) => event.type !== "error"),
+      // API cause; usage and all non-error evidence keep their order. The
+      // parser's status copy of this API-failure prose is the same vendor
+      // diagnostic, so it is masked like the error (INV-146).
+      ...(parsed ?? []).flatMap((event) =>
+        event.type === "error" ? [] : [maskApiFailureCopy(event, obj.result)],
+      ),
       {
         type: "error",
         session_id: sessionId,
@@ -68,6 +83,33 @@ export function withClaudeApiFailureParser(
       },
     ];
   };
+}
+
+/** The CLI's own API-error turn: an assistant frame it synthesized (model
+ * `<synthetic>`, never a model's output) that names an API error. Its text is
+ * the vendor's failure prose, a diagnostic (INV-146). */
+function isSyntheticApiErrorMessage(obj: Parameters<ClaudeEventParser>[0]): boolean {
+  return (
+    obj?.type === "assistant" &&
+    obj.message?.model === "<synthetic>" &&
+    (obj.is_api_error_message === true || typeof obj.error === "string")
+  );
+}
+
+/** The result parser keeps a non-success `result` as a status event with
+ * `non_success_result`. On an API-failure result that text is the vendor's
+ * failure prose, not model output. A structured-output status carries the
+ * model's own JSON instead and stays exact. */
+function maskApiFailureCopy(event: HarnessEvent, result: unknown): HarnessEvent {
+  if (
+    event.type !== "status" ||
+    event.payload?.["non_success_result"] !== true ||
+    event.payload?.["structured_output"] === true ||
+    typeof result !== "string" ||
+    event.text !== result
+  )
+    return event;
+  return { ...event, text: redactSecrets(result) };
 }
 
 /** Attach only this invocation's native failure to its actual failed exit,

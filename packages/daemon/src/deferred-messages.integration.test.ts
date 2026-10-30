@@ -436,27 +436,23 @@ describe("deferred promotion in the existing daemon queue", () => {
     expect(f.capture).not.toHaveBeenCalled();
     expect(f.sql.store.prepare("SELECT count(*) n FROM deferred_message").get()).toEqual({ n: 0 });
   });
-  it("rejects inline secret text before create and replace persistence", async () => {
+  it("keeps credential-shaped draft text exactly through create and replace (INV-146)", async () => {
     const f = await fixture();
     const prompt = "api_key=sk-" + "abcdefghijklmnopqrstuvwxyz0123456789";
-    await expect(
-      f.mutate({ ...f.input, request: { ...f.input.request, prompt } }),
-    ).rejects.toThrow();
-    expect(f.capture).not.toHaveBeenCalled();
-    const draft = (await f.create()).draft;
-    await expect(
-      f.mutate({
-        request: {
-          action: "replace",
-          draftId: draft.draftId,
-          expectedRevision: 1,
-          prompt,
-          attachments: [],
-        },
-        idempotencyKey: "secret",
-      }),
-    ).rejects.toThrow();
-    expect(f.read(draft.draftId).prompt).toBe("verify");
+    const created = await f.mutate({ ...f.input, request: { ...f.input.request, prompt } });
+    expect(f.read(created.draft.draftId).prompt).toBe(prompt);
+    const replaced = `${prompt} (revised)`;
+    await f.mutate({
+      request: {
+        action: "replace",
+        draftId: created.draft.draftId,
+        expectedRevision: created.draft.revision,
+        prompt: replaced,
+        attachments: [],
+      },
+      idempotencyKey: "secret",
+    });
+    expect(f.read(created.draft.draftId).prompt).toBe(replaced);
   });
   it("enforces the same operator boundary over real HTTP and projects addressed detail without bodies in collections", async () => {
     const f = await fixture();

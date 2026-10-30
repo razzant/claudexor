@@ -3,15 +3,9 @@ import {
   ControlUploadImportRequest,
   type ControlUploadImportContent,
 } from "@claudexor/schema";
-import { hashJson, sensitiveResourcePolicy } from "@claudexor/util";
+import { hashJson } from "@claudexor/util";
 import type { PublishBlob } from "./publish-blob.js";
-import {
-  readResourceRow,
-  readUploadRow,
-  resourceError,
-  sensitiveResourceError,
-  type UploadRow,
-} from "./resource-rows.js";
+import { readResourceRow, readUploadRow, resourceError, type UploadRow } from "./resource-rows.js";
 import type { EngineStore } from "./store.js";
 import { uploadKeyDigest } from "./upload-binding-retention.js";
 import type { SqlUploads } from "./uploads.js";
@@ -43,8 +37,6 @@ export class SqlUploadImports {
       );
     if (expectedStoreId !== storeId)
       throw resourceError("this import names another durable store", 409, "store_mismatch");
-    if (sensitiveResourcePolicy.classifyPath(request.name).sensitive)
-      throw sensitiveResourceError();
     const requestDigest = hashJson({ ...request, source: request.source ?? null });
     const bound = this.uploads.bindings.lookup("import", key, requestDigest);
     if (!bound) {

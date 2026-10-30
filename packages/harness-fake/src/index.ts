@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
@@ -218,8 +219,8 @@ async function* runFake(
       yield* runFakeDocument(spec, observedModel);
       return;
     case "fake-success":
-      // Prompt-free deterministic text: the raw prompt must never be echoed into a
-      // persisted message/answer artifact (BIBLE §6 — secrets never become artifacts).
+      // Prompt-free deterministic text: the answer does not depend on the prompt,
+      // so fixtures stay stable whatever the prompt holds.
       yield ev(s, "message", { text: "Implemented by the fake harness." });
       yield ev(s, "file_change", { payload: { path: "FAKE_CHANGE.txt", action: "create" } });
       yield ev(s, "usage", { usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 } });
@@ -256,8 +257,9 @@ async function* runFake(
     case "fake-session": {
       // A native-session fixture for thread continuity (INV-034/137): the
       // first turn mints a native id, a later turn of the same lane is handed
-      // that id and resumes it. The probe reports only engine-chosen facts
-      // (resumed id, HOME, cwd entry names) — never the prompt.
+      // that id and resumes it. The probe reports engine-chosen facts (resumed
+      // id, HOME, cwd entry names) and a sha256 per line of the prompt it
+      // actually received, so tests prove exact delivery without echoing it.
       const resumed = spec.resume_session_id ?? null;
       let entries: string[] = [];
       try {
@@ -274,6 +276,9 @@ async function* runFake(
           home: spec.env?.["HOME"] ?? null,
           cwd: spec.cwd,
           cwd_entries: entries,
+          prompt_line_sha256: spec.prompt
+            .split("\n")
+            .map((line) => createHash("sha256").update(line).digest("hex")),
         },
       });
       if (PRODUCING_INTENTS.has(spec.intent) && spec.access !== "readonly") {

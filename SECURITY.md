@@ -39,9 +39,32 @@ What Claudexor already does, so you can calibrate reports:
   (timing-safe comparison), and enforces a loopback host/origin guard;
   `/healthz` is the only unauthenticated route.
 - Claudexor-managed secrets use the daemon-owned `0600` file store. Vendor-native
-  credentials remain in each vendor's own store, which may use the OS Keychain;
-  secret material is redacted from event logs, job records, thread stores, and
-  reviewer artifacts.
+  credentials remain in each vendor's own store, which may use the OS Keychain.
+  Claudexor never places these engine credentials into prompts, events or
+  artifacts and keeps their stores outside every authorized root. A harness
+  process can read the credential the engine hands it (for example the API key
+  or OAuth token in its environment); whatever the harness prints is ordinary
+  output, kept exactly in local run records as in the vendor's own transcript.
+  The ACP adapter removes the managed token it injected, by value. Engine and
+  vendor diagnostics (errors, stderr tails, probe output, vendor failure
+  reports, retry notices and native warnings) are not working content: they
+  mask credential-shaped text, including in the run, attempt and reviewer
+  event journals, which every writer fills through one shared
+  diagnostic-masking step, and may be retained only in masked form. Your own
+  working content (model-authored or user-provided material) is not filtered:
+  prompts, attachments, project files, answers, a failed completion's partial
+  output, tool calls and tool output, patches and review evidence reach the
+  selected harness and stay unmasked in local run records (answers, patches
+  and files byte-exact; tool output as each adapter's bounded,
+  whitespace-normalized summary), so a real key you place there or a tool
+  prints is ordinary task material. Of an ACP agent's raw frames only the lines of its JSON-RPC
+  error frames, which are diagnostics, are masked; its other frames stay
+  exact. Publication is the one content check: before anything is
+  pushed, `pr` delivery scans the outgoing commits (merges and messages
+  included), the branch name and the PR title and body with the pinned
+  Betterleaks scanner and refuses on a finding, an unavailable scanner or a
+  failed scan, including a Git history read that Git's own trace does not
+  prove complete. Betterleaks skips some binary, archive and lockfile content.
 - No telemetry, analytics or crash reports (README Privacy). Configured model/
   harness routes send outbound traffic; Web/Search follows run policy (`auto`),
   Browser needs opt-in, and enabled SSH streams may reconnect automatically.

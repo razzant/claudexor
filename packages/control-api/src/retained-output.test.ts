@@ -81,7 +81,7 @@ async function withApi(
 }
 
 describe("retained results through the public control API", () => {
-  it("transfers a complete retained document beyond the log-preview cap with redaction", async () => {
+  it("transfers a complete retained document beyond the log-preview cap exactly", async () => {
     const runDir = directory();
     mkdirSync(join(runDir, "final"));
     const secret = `sk-ant-${"A".repeat(48)}`;
@@ -103,7 +103,7 @@ describe("retained results through the public control API", () => {
       const text = await response.text();
       expect(text.length).toBeGreaterThan(4_800_000);
       expect(text).toContain("END_OF_REVIEW");
-      expect(text).not.toContain(secret);
+      expect(text).toContain(secret);
       expect((await get("/runs/run-large/artifacts/large.log")).status).toBe(413);
     });
   });

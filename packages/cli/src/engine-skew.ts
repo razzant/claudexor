@@ -74,7 +74,7 @@ export function observedEngineSkew(): EngineSkew | null {
   return observedSkew ? { ...observedSkew } : null;
 }
 
-// Echo hygiene (INV-062-adjacent): only a validated engine version/SHA may
+// Echo hygiene (INV-146-adjacent): only a validated engine version/SHA may
 // reach a terminal or a typed envelope — never arbitrary response text. Same
 // bounds the plugin-skew check uses.
 const ENGINE_VERSION_RE = /^[\w.+-]{1,32}$/;

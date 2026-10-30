@@ -1,7 +1,7 @@
 /** Finite, read-only artifact operations shared by the bulk executor and run
  * projection. No daemon, response, registry, or open stream crosses this API. */
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { basename, extname, join, relative, sep } from "node:path";
+import { extname, join, relative, sep } from "node:path";
 import { isMarkedAsUntransferable } from "node:worker_threads";
 import {
   ControlArtifactListResponse,
@@ -9,7 +9,6 @@ import {
   type ControlArtifactInfo,
 } from "@claudexor/schema";
 import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
-import { containsSecretLikeToken, redactSecrets } from "@claudexor/util";
 import { isVanishedErrno, safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { readRunTombstone } from "./retention.js";
 import { locateFilesArtifact, type FilesArtifactTransfer } from "./files-artifact-stream.js";
@@ -36,7 +35,7 @@ export type ArtifactReadResult =
   | { kind: "error"; status: number; body: Record<string, unknown> }
   | { kind: "files"; transfer: FilesArtifactTransfer };
 
-/** Listing validation/serialization and text redaction finish off-loop. Exact
+/** Listing validation/serialization finish off-loop. Exact
  * immutable files return only their verified manifest address; their potentially
  * unbounded transfer remains an asynchronous, backpressured main-side stream. */
 export function readArtifact(request: ArtifactReadRequest): ArtifactReadResult {
@@ -66,33 +65,14 @@ export function readArtifact(request: ArtifactReadRequest): ArtifactReadResult {
   );
 }
 
-/** Shared artifact-file body: caps, patch secret fence, text redaction, and the
- * binary content check (one funnel for run artifacts, outputs and produced). */
+/** Shared artifact-file body: path checks and size caps, then the exact bytes
+ * (one funnel for run artifacts, outputs and produced). */
 function readArtifactFile(target: string | null, fullRetainedOutput = false): ArtifactReadResult {
   if (!target || !existsSync(target) || lstatSync(target).isDirectory())
     return { kind: "error", status: 404, body: { error: "no such artifact" } };
-  // Sensitive-filename REFUSAL (the filename analogue of the `.diff` patch
-  // refusal below): `.env`-style credential files have no file extension, so
-  // `contentType` classified them as octet-stream and they took the BINARY path
-  // — skipping `redactSecrets` and serving their bytes raw. Refuse the
-  // well-known credential-file conventions outright with a typed 409 naming the
-  // class, BEFORE reading any bytes, across all three fetch families (they all
-  // funnel through here).
-  const sensitiveClass = sensitiveArtifactClass(target);
-  if (sensitiveClass) {
-    return {
-      kind: "error",
-      status: 409,
-      body: {
-        error: `refusing to serve ${basename(target)}: credential-bearing ${sensitiveClass} file`,
-        code: "sensitive_file_refused",
-        sensitiveClass,
-      },
-    };
-  }
   const stats = lstatSync(target);
   // This generated document is a full-result transfer, not a log preview. It
-  // still passes the same path/credential checks and text redaction below.
+  // still passes the same path checks below.
   const cap = fullRetainedOutput
     ? Infinity
     : isTextArtifact(target)
@@ -108,31 +88,7 @@ function readArtifactFile(target: string | null, fullRetainedOutput = false): Ar
       },
     };
   }
-  let data = readFileSync(target);
-  if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) {
-    return {
-      kind: "error",
-      status: 409,
-      body: {
-        error: "artifact contains secret-like token; refusing to serve patch",
-      },
-    };
-  }
-  if (isTextArtifact(target)) data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
-  // INV-062 for SERVED copies: text is redacted above, but media and other
-  // binaries (project outputs and produced files come straight from the
-  // project/thread tree) cannot be redacted in place. The same content policy
-  // decides: bytes that match it are withheld typed; safe files serve as before.
-  else if (containsSecretLikeToken(data.toString("latin1"))) {
-    return {
-      kind: "error",
-      status: 409,
-      body: {
-        error: `refusing to serve ${basename(target)}: its bytes match the secret-like content policy`,
-        code: "secret_like_content_withheld",
-      },
-    };
-  }
+  const data = readFileSync(target);
   return { kind: "body", contentType: contentType(target), body: transferableBytes(data) };
 }
 
@@ -248,50 +204,11 @@ function artifactMime(path: string): string {
   return contentType(path).split(";")[0] as string;
 }
 
-function isPatchArtifact(path: string): boolean {
-  const ext = extname(path);
-  return ext === ".diff" || ext === ".patch";
-}
-
-/**
- * Files whose NAME (not extension) marks them as secret-bearing by convention.
- * These must never be served from a run/produced/project artifact tree,
- * regardless of MIME — `.env`-style files carry no extension, so `contentType`
- * classified them as `application/octet-stream` and the binary fetch path served
- * them raw, bypassing redaction. Returns the refusal class name, or null when
- * the filename is not a known credential convention.
- *
- * The list is bounded to the WELL-KNOWN credential-file conventions rather than
- * a broad guess: dotenv files, package-registry credential files
- * (`.npmrc`/`.pypirc`/`.netrc`), and any `*credentials*` filename (which also
- * catches vendor stores like `.credentials.json`). Truly-binary or ordinary
- * source files are unaffected.
- */
-function sensitiveArtifactClass(path: string): string | null {
-  const name = basename(path).toLowerCase();
-  if (name === ".env" || name.startsWith(".env.")) return "dotenv";
-  if (name === ".npmrc" || name === ".pypirc" || name === ".netrc")
-    return "package_registry_credentials";
-  if (name.includes("credentials")) return "credentials_file";
-  return null;
-}
-
 /**
  * Extensions whose bytes are semantic TEXT even when their MIME is not `text/*`
  * or JSON, so `contentType` classifies them as `application/octet-stream`.
- * Without this set those files took the 32MiB BINARY cap and skipped
- * `redactSecrets`, so a secret-like token inside a served artifact leaked raw
- * (QA-067). Listing them here routes them through the text path: the smaller
- * text cap AND secret redaction.
- *
- * The set is the common text-bearing artifact surface a run produces — source
- * code, config/markup, and structured data — all of which are UTF-8 the
- * redaction pass can safely serve. Truly-binary types (images, PDFs, archives)
- * stay on the binary path. `.env`-style secret files are deliberately NOT here:
- * they never belong in a served artifact tree, and rather than route them
- * through redaction they are REFUSED outright by `sensitiveArtifactClass` (a
- * typed 409) before any bytes are read — adding them here would only imply this
- * path is a safe delivery channel for them.
+ * They take the smaller text fetch cap instead of the 32MiB binary cap. Truly
+ * binary types (images, PDFs, archives) stay on the binary cap.
  */
 const SEMANTIC_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
   // structured data / markup

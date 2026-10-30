@@ -186,11 +186,10 @@ invariant or operator decision before proceeding.
   `applied_review_blocked`, emits the WorkProduct event before the terminal, and
   preserves a revert anchor; it never misreports the tree as untouched.
   Secret-like output takes no exception here: the live bytes stay where the
-  harness wrote them, the WorkProduct and its revert anchor are recorded as
-  for any other turn, and INV-062 hides the matches only in persisted copies.
-  The diff owner still inspects immutable binary preimages and postimages as
-  well as text (non-Git binary stubs through a bounded no-follow descriptor),
-  but only to decide what a saved copy must hide. A capture that could not
+  harness wrote them, and the WorkProduct, its exact patch and its revert
+  anchor are recorded as for any other turn (INV-146). The capture inspects no
+  content: the `pr` publication boundary scans the outgoing commits themselves
+  (INV-146). A capture that could not
   observe the live changes at all remains a sanitized `adopted:true`/
   `applied_review_blocked` receipt with no patch and no anchor; nothing is
   rolled back and it never claims false revertability. A later
@@ -270,8 +269,9 @@ invariant or operator decision before proceeding.
   delivery, while direct effects disclose any unknown preimages. Captured diffs must round-trip:
   the exact patch object recorded as the work product must `git apply` cleanly to
   the base it was captured against (no silent corruption — CRLF, quoted
-  paths, binary — between capture and delivery); persisted copies may be masked
-  under INV-062 and are display-only. verify: workspace diff
+  paths, binary — between capture and delivery); saved copies are that exact
+  patch (INV-146), and only historical runs kept a masked display copy beside
+  a private exact object. verify: workspace diff
   tests incl. the CRLF and binary round-trip cases (byte-faithful raw
   capture; `git diff --binary`).
 - **INV-042** Reviews are trusted only when reviewer output is parseable,
@@ -280,13 +280,13 @@ invariant or operator decision before proceeding.
   candidate evidence files rather than a giant prompt-only diff. A reviewer
   workspace is an explicit candidate projection, never a recursive copy of
   the live checkout: Git-visible files plus exact diff-touched paths, subject to
-  the shared sensitive-resource boundary, are the candidate plane; the
-  sealed/redacted evidence packet is a separate explicit plane. Gitignored
+  root and symlink containment, are the candidate plane; the sealed evidence
+  packet (exact bytes, INV-146) is a separate explicit plane. Gitignored
   local state that is absent from the diff never crosses the reviewer boundary.
   For an explicit directory result, the complete selected file manifest supplies
   the candidate inventory instead of Git membership. Retained unchanged inputs
   and observed output bytes remain available, with baseline/output evidence in
-  the explicit packet and the same sensitive-resource boundary. A selected file
+  the explicit packet and the same containment boundary. A selected file
   is not excluded merely because its directory name usually denotes generated
   output; unselected source siblings are never implicitly copied.
   verify: reviewEngine route-proof,
@@ -355,7 +355,7 @@ invariant or operator decision before proceeding.
   deliverables. Surfaces label which plane they show. verify: control-api
   produced/artifacts endpoint tests; thread-workspace Artifacts review.
 
-## 6. Secrets Never Become Artifacts
+## 6. Engine Credentials Stay Private, Work Stays Exact
 
 - **INV-060** Native harness auth is ready only after the exact source-targeted
   doctor probe and, for setup success, an isolated same-harness capability smoke
@@ -394,34 +394,63 @@ invariant or operator decision before proceeding.
   copied auth store or independent refresh mechanism is introduced. Model
   account Auto keeps a suitable preferred profile then uses the existing pool;
   pin never rotates or falls back to an API credential.
-- **INV-062** Raw secrets must not appear in run params, the command journal, task
-  contracts, events, summaries, persisted patch copies, PR text, logs, or
-  docs. The PROMPT
-  is included: a secret-like value inside the prompt text is hard-blocked at
-  every ingress surface (CLI, POST /runs, thread turns, MCP, ACP, daemon
-  enqueue) with a typed `inline_secret_rejected` error and remediation —
-  prompts are durable artifacts and there is deliberately NO bypass flag.
-  Agent OUTPUT is a different axis: it is not rolled back, discarded or
-  failed for containing secret-like text. The changed files keep the exact
-  bytes; persisted and served copies hide the matches; the run discloses
-  paths and counts, never values. A redacted copy is display-only — apply
-  binds to the digest of the exact bytes and reads the private exact patch
-  object or refuses typed (`patch_exact_bytes_unavailable`). `pr` delivery
-  never publishes secret-like text. A capture that cannot observe the
-  changes is the only capture-time refusal, under its own name.
-  verify: secret-scan CI step; redaction tests; inline-secret rejection
-  tests; canary `[INV-062:prompt-secret-block]`; keep-and-mask tests
-  (`packages/orchestrator/src/persistedPatch.test.ts`,
-  `packages/orchestrator/src/secretDiff.test.ts`, the orchestrator in-place,
-  isolated, binary, raster and best-of runs, the delivery exact-digest and
-  `pr` refusal tests, the Control API exact-object Apply and
-  `patch_exact_bytes_unavailable` tests, the thread delivery tests).
-  Model-purpose request/response resources are the narrow content boundary:
-  caller-supplied conversation bytes pass without secret-like-text filtering,
-  just as on a model API. They cannot be used as ordinary Agent attachments.
-  This is not a general bypass flag. Engine OAuth and control credentials are
-  never injected into that content, and the journal retains only compact
-  identities, digests, state, usage and cost evidence, never the conversation.
+- **INV-062** RETIRED (superseded by INV-146, owner decision 29 Oct 2026, issue
+  #555). It hard-blocked secret-like text at every ingress, masked it in task
+  contracts, events, summaries, thread history, saved patches, reviewer packets
+  and served artifacts, and withheld matching media. That blocked and corrupted
+  ordinary work on authentication code and test fixtures while protecting no
+  credential the engine owns. Historical runs written under it keep their
+  masked copies and private exact patch objects; they are read, never restored.
+  verify: retired; see INV-146.
+- **INV-146** Authorized working content is exact. Prompts, instructions,
+  output schemas, test and gate commands, live and deferred messages,
+  interaction questions and answers, attachments, project files, context,
+  answers, events, thread history, task contracts, command journal records,
+  patches, reviewer evidence and served artifacts carry the bytes the user and
+  the harness produced. No surface refuses, masks, omits or withholds them for
+  looking like a credential, by content pattern or by file name. Review reads
+  the same exact patch that apply consumes; there is no second masked copy.
+  Tool results keep unmasked summaries of a tool's output within each
+  adapter's existing bound and whitespace normalization; answers, patches and
+  artifact bytes stay byte-exact.
+  Claudexor never places engine-owned credentials (daemon tokens, provider
+  keys, OAuth stores, account homes) into working content: they stay in their
+  physical stores (INV-060, INV-061, INV-063), outside every authorized root,
+  behind real authentication, explicit grants, read-only/trust policy, root
+  and symlink containment and digest integrity. A harness process can read the
+  credential the engine hands it, and whatever the harness prints is ordinary
+  output, kept exactly in local records as in the vendor's own transcript; the
+  ACP adapter removes the managed token it injected, by value. Masking never
+  replaces the only copy of working content (model-authored or user-provided
+  material: answers, a failed completion's partial output, tool-call targets
+  and tool output, required inputs, disclosed gate argv) in an answer, event or
+  record. Engine and vendor diagnostics (errors, stderr tails, probe and
+  vendor-failure text, native warnings, retry notices) are not working content
+  and may be retained only in masked form.
+  Reading an
+  arbitrary host path for import remains guarded by its path classes, and
+  review risk may still rise for credential-named paths; neither refuses
+  project material. Model-purpose request/response resources (INV-064) still
+  cannot be used as ordinary Agent attachments; engine OAuth and control
+  credentials are never injected into them, and the journal retains only
+  compact identities, digests, state, usage and cost evidence, never the
+  conversation. The one content boundary is publication: before the first
+  external send, `pr` delivery scans what would leave the machine (every
+  commit a push URL lacks, what each merge itself changed, their messages, the
+  branch name and the PR title and body) with the pinned Betterleaks scanner
+  and refuses typed on a finding (`publication_scan_findings`), an unavailable
+  scanner (`publication_scan_unavailable`) or a failed scan
+  (`publication_scan_failed`); the scanner skips some binary, archive and
+  lockfile content, so a clean scan is not proof of absence. Local apply,
+  branch and commit stay available. A run the old
+  rule saved with `persisted_patch: redacted` still binds apply to its exact
+  patch object or refuses typed (`patch_exact_bytes_unavailable`). verify:
+  canary `[INV-146:exact-working-content]`; ingress, contract and thread
+  tests; `packages/orchestrator/src/secretDiff.test.ts`;
+  `packages/orchestrator/src/runSupport.test.ts`; reviewer-workspace and
+  evidence tests; the delivery `pr` publication-scanner tests
+  (`packages/delivery/src/publication-scan.test.ts`); the Control API
+  historical exact-object Apply and `patch_exact_bytes_unavailable` tests.
 - **INV-063** Scoped harness homes/config dirs stay outside every mutation
   worktree, in the external per-project runtime namespace, so `git add -A`
   can never capture auth files, plugin downloads, sqlite logs, or transcripts
@@ -432,8 +461,10 @@ invariant or operator decision before proceeding.
   its pending binding (digest, key, request digest and result) before consuming
   that file, publishes digest-bound immutable bytes by hard link, and removes
   the part only after the flusher confirms publication. Run/turn requests accept
-  only the returned resource IDs. verify: resource-store and control-api upload
-  tests.
+  only the returned resource IDs. Finalized bytes reach every lane exactly; a
+  file's name or content is never a reason to refuse it (INV-146), while
+  digest and size integrity still are. verify: resource-store and control-api
+  upload tests.
   Model resources use the same upload/blob owner with atomic, replayable
   finalization. Request bytes are released when the operation terminates;
   response bytes after explicit digest-bound acknowledgement, or 30 days from
@@ -936,7 +967,7 @@ invariant or operator decision before proceeding.
   capability-preservation tests.
 - **INV-142** Retained-command reads name an address or a bounded keyset page
   before public projection. Collection answers contain summary facts and a
-  redacted prompt preview, never unrelated prompt bodies, instructions or full
+  bounded prompt preview, never unrelated prompt bodies, instructions or full
   results. Full detail and Exact Retry remain addressed; transitive cancellation
   stays uncapped, and the synchronous durable enqueue owns successor admission.
   This bounds transport amplification, not resident journal history. verify:

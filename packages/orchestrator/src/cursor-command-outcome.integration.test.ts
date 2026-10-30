@@ -39,7 +39,7 @@ afterAll(() => {
   for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-async function runFixture() {
+async function runFixture(input: Array<Record<string, any>> = frames) {
   const repo = temporaryDirectory("claudexor-cursor-outcome-");
   writeFileSync(join(repo, "README.md"), "fixture\n");
   const configDir = temporaryDirectory("claudexor-cursor-outcome-config-");
@@ -64,7 +64,7 @@ async function runFixture() {
     listCursorModels: async () => [],
     smokeIsolatedApiKey: async () => ({ ok: false, detail: "not needed" }),
     runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
-      for (const frame of frames)
+      for (const frame of input)
         for (const event of opts.parseEvent?.(frame, opts.spec.session_id) ?? []) yield event;
       yield { type: "completed", session_id: opts.spec.session_id, ts: new Date().toISOString() };
     },
@@ -123,7 +123,7 @@ describe("Cursor command outcomes through the durable event log (#450)", () => {
       },
     });
     expect(handoff?.["tool"]?.["exit_code"]).toBeUndefined();
-    // The complete sanitized native result survives redaction and persistence.
+    // The complete native result survives persistence exactly.
     for (const id of ["c-bg-timeout", "c-bg-request", "c-timeout", "c-abort"])
       expect(stored.get(id)?.["payload"]?.["native_result"], id).toEqual(nativeResult(id));
     expect(stored.get("c-exit0")?.["tool"]).toMatchObject({
@@ -164,6 +164,27 @@ describe("Cursor command outcomes through the durable event log (#450)", () => {
       "c-abort": "failed",
       "c-spawn": "failed",
     });
+  });
+
+  // INV-146: a completed command carries no native payload, so its bounded
+  // summary is the only copy of its output Claudexor keeps; it stays exact.
+  it("keeps a completed command's output exact in the durable journal", async () => {
+    const token = ["ghp", "E".repeat(36)].join("_");
+    const withOutput = structuredClone(frames);
+    const completed = withOutput.find(
+      (f) => f.type === "tool_call" && f.subtype === "completed" && f.call_id === "c-exit0",
+    );
+    completed!.tool_call.shellToolCall.result.success.stdout = `token=${token}\n`;
+    const result = await runFixture(withOutput);
+    const row = readRunEventsWithIntegrity({ runDir: result.runDir }).events.find(
+      (event) =>
+        event["type"] === "harness.event" &&
+        (event["payload"] as Record<string, any>)?.["tool"]?.["use_id"] === "c-exit0" &&
+        (event["payload"] as Record<string, any>)?.["type"] === "tool_result",
+    );
+    const tool = (row?.["payload"] as Record<string, any>)?.["tool"];
+    expect(tool?.["status"]).toBe("ok");
+    expect(String(tool?.["content_summary"])).toContain(`token=${token}`);
   });
 
   it("builds the continuation packet without calling an unconfirmed command completed", async () => {

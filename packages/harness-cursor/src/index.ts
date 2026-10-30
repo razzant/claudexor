@@ -146,7 +146,7 @@ type CursorRuntimeDeps = {
   apiSmokeFailureCacheTtlMs: number;
   nowMs: () => number;
   runCliHarness: typeof runCliHarnessDefault;
-  /** INV-062: profile secrets are resolved transiently, never logged. */
+  /** INV-146: profile secrets are resolved transiently, never logged. */
   resolveProfileSecret: (ref: string) => string | null;
 };
 

@@ -390,3 +390,14 @@ describe("SQL conversation parity with frozen 820e849cd", () => {
     expect(sql.getTurn(second.id)?.prompt).toBe("new-second");
   });
 });
+
+describe("SQL thread prompts are working content (INV-146)", () => {
+  it("stores and returns a credential-shaped turn prompt exactly", () => {
+    const thread = sql.createThread({ title: "", repoRoot: "/fixture", workspace: "isolated" });
+    // Synthetic fixture assembled at runtime; never a real credential.
+    const prompt = `review: expect(auth).toBe("Bearer ${"f".repeat(32)}") and sk-${"a".repeat(24)}`;
+    const turn = sql.createTurn(thread.id, prompt);
+    expect(sql.getTurn(turn.id)?.prompt).toBe(prompt);
+    expect(sql.turnsFor(thread.id).map((row) => row.prompt)).toEqual([prompt]);
+  });
+});

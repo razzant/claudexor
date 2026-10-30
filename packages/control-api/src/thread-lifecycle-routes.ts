@@ -6,7 +6,6 @@ import {
   ControlThreadApplyRequest,
   ControlThreadApplyResponse,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import type { DaemonControlApiOptions, DaemonRunRecord } from "./daemon-server.js";
 import { projectThread } from "./thread-projection.js";
 import type { ThreadTurnRouteCtx } from "./thread-turn-routes.js";
@@ -136,7 +135,6 @@ export async function handleThreadLifecycleRoutes(
   await chainThreadMutation(ctx.turnCtx.threadTurnChains, threadId, async () => {
     try {
       const body = ControlThreadApplyRequest.parse(await ctx.readBody(req));
-      assertNoInlineSecretValues(body);
       const snapshot = await detail(threadId);
       const thread = snapshot.thread as {
         repo?: { root?: string } | null;

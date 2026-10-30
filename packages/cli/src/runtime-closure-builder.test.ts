@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { BETTERLEAKS_RELEASES } from "@claudexor/delivery";
 import { assertLinkFreeExtractedTree } from "../../../scripts/lib/remote-runtime-archive.mjs";
 
 const script = resolve(import.meta.dirname, "../../../scripts/build-runtime-closure.mjs");
@@ -170,6 +171,65 @@ describe("build-runtime-closure", () => {
     expect(manifest.minAppVersion).toMatch(/^\d+\.\d+\.\d+$/);
     const tarball = readFileSync(join(out, `claudexor-runtime-${version}.tar.gz`));
     expect(createHash("sha256").update(tarball).digest("hex")).toBe(manifest.sha256);
+  });
+
+  it("carries bundled darwin publication scanners only as their pinned, recorded bytes (INV-146)", () => {
+    const app = fakeAppBundle(work);
+    const native = join(app, "Contents", "Resources", "native");
+    const stage = (key: string, bytes = `${key} signed scanner\n`) => {
+      const dir = join(native, "betterleaks", key);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "betterleaks"), bytes);
+      writeFileSync(join(dir, "LICENSE"), "MIT License\n");
+      writeFileSync(
+        join(dir, "provenance.json"),
+        JSON.stringify({
+          name: "betterleaks",
+          version: "1.9.0",
+          platform: key,
+          license: "MIT",
+          upstreamBinarySha256: BETTERLEAKS_RELEASES[key]!.binarySha256,
+          bundledSha256: createHash("sha256").update(bytes).digest("hex"),
+        }),
+      );
+      return dir;
+    };
+    const release = (out: string) =>
+      execFileSync(
+        process.execPath,
+        [script, "--app-bundle", app, "--version", version, "--out", join(work, out)],
+        {
+          encoding: "utf8",
+          stdio: "pipe",
+          env: {
+            ...process.env,
+            CLAUDEXOR_BUILD_SHA: FAKE_BUILD_SHA,
+            CLAUDEXOR_REQUIRE_BETTERLEAKS: "1",
+          },
+        },
+      );
+    expect(() => release("none")).toThrow(
+      /requires the darwin-arm64 and darwin-x64 publication scanners/,
+    );
+    stage("darwin-arm64");
+    stage("darwin-x64");
+    release("out");
+    const listing = execFileSync(
+      "tar",
+      ["-tzf", join(work, "out", `claudexor-runtime-${version}.tar.gz`)],
+      { encoding: "utf8" },
+    ).split("\n");
+    for (const key of ["darwin-arm64", "darwin-x64"])
+      for (const name of ["betterleaks", "LICENSE", "provenance.json"])
+        expect(listing).toContain(`native/betterleaks/${key}/${name}`);
+    writeFileSync(join(native, "betterleaks", "darwin-x64", "betterleaks"), "changed\n");
+    expect(() => release("tampered")).toThrow(/darwin-x64 publication scanner does not match/);
+    rmSync(join(stage("darwin-x64"), "provenance.json"));
+    expect(() => release("unrecorded")).toThrow(/darwin-x64 publication scanner does not match/);
+    stage("darwin-x64");
+    // The universal closure never carries another platform's build.
+    stage("linux-x64");
+    expect(() => release("foreign")).toThrow(/only darwin publication scanners/);
   });
 
   it("refuses a closure carrying a forbidden .node native addon (D-2)", () => {

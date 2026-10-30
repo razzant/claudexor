@@ -33,7 +33,7 @@ export const COLLAPSE_PREFIX_CHARS = 200;
 export interface ContinuityTurn {
   /** Turn id (checkpoint math keys off this). */
   id: string;
-  /** The user's message for the turn (already redacted). */
+  /** The user's message for the turn, exactly as sent (INV-146). */
   prompt: string;
   /** The turn's primary output text (final/answer.md), "" when none. */
   outputText: string;

@@ -9,6 +9,8 @@ import { join } from "node:path";
 import type { ArtifactStore, RunPaths } from "@claudexor/artifact-store";
 import type { BudgetLedger } from "@claudexor/budget";
 import {
+  AnswerAssembly,
+  appendHarnessEvent,
   countsAsAgentProgress,
   type InteractionChannel,
   type ProcessingAdmission,
@@ -22,7 +24,7 @@ import type {
   HarnessRunSpec,
   Intent,
 } from "@claudexor/schema";
-import { appendLine, redactSecrets, safeInvoke } from "@claudexor/util";
+import { redactSecrets, safeInvoke } from "@claudexor/util";
 import {
   finalizeAttempt,
   unrecoveredToolErrorFailure,
@@ -50,13 +52,11 @@ import { declaredFailure, type DeclaredFailure } from "./runTerminalResults.js";
 import { endsPendingLimit, pinnedTypedLimit } from "./quota-refusal-scope.js";
 import { marksAgentProgress } from "./attemptOutputMarkers.js";
 import { runModelGovernedRoute } from "./modelGovernance.js";
-import { CountedAnswerAssembly } from "./secretDiff.js";
 import type { RoutedAdapter, RunInput } from "./orchestrator.js";
 import {
   harnessEventPayload,
   observeAuthSwitch,
   observeBudgetSignals,
-  redactHarnessEvent,
   safeErrorMessage,
 } from "./runSupport.js";
 
@@ -72,7 +72,6 @@ export interface PlannerAttemptOutcome {
   harnessFailedBeforeReport: boolean;
   reportProblem?: UnwrappedAnswer["reportProblem"];
   text: string | null;
-  answerMatches?: number;
   telemetry: AttemptTelemetry | null;
   budgetDenied: boolean;
   budgetDenial?: BudgetDenial | null;
@@ -88,7 +87,6 @@ export function plannerAttemptSummary(outcome: PlannerAttemptOutcome) {
     outcomeClass: outcome.outcomeClass,
     error: outcome.error,
     declaredFailure: outcome.declaredFailure,
-    answerMatches: outcome.answerMatches,
   };
 }
 
@@ -202,7 +200,7 @@ export async function runPlannerAttempt(
     return {
       ...prepared,
       attemptEventsPath: join(paths.attemptsDir, attemptId, "events.jsonl"),
-      answer: new CountedAnswerAssembly(),
+      answer: new AnswerAssembly(),
       telemetry: createAttemptTelemetry(
         prepared.knobs.webPolicy,
         contract.external_context.web_required,
@@ -286,52 +284,51 @@ export async function runPlannerAttempt(
         stopSignal: input.signal,
       });
       for await (const ev of watchedPlan) {
-        const safeEv = redactHarnessEvent(ev);
         // A read after Stop is evidence only: stored, never shown live.
         const stoppedBefore = input.signal?.aborted === true;
-        const shown = !stoppedBefore && safeEv.payload?.["buffered"] !== true;
-        if (shown) safeInvoke(input.onHarnessEvent, safeEv);
-        if (args.laneRun && !stoppedBefore) observeNativeSessionEvent(input, adapter.id, safeEv);
-        observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+        const shown = !stoppedBefore && ev.payload?.["buffered"] !== true;
+        if (shown) safeInvoke(input.onHarnessEvent, ev);
+        if (args.laneRun && !stoppedBefore) observeNativeSessionEvent(input, adapter.id, ev);
+        observeAuthSwitch(log, adapter.id, attemptId, ev);
         // Re-sampled: the callback above may itself have pressed Stop.
         log.emit(
           "harness.event",
-          harnessEventPayload(adapter.id, attemptId, safeEv),
+          harnessEventPayload(adapter.id, attemptId, ev),
           shown && !input.signal?.aborted,
         );
-        appendLine(attemptEventsPath, JSON.stringify(safeEv));
+        appendHarnessEvent(attemptEventsPath, ev);
         // After Stop the watchdog drains the cancelled source within its
         // cleanup bound: what it still reports is recorded, never used.
         // Rechecked after the callback, which can itself press Stop.
         if (input.signal?.aborted) continue;
-        observeAttemptTelemetry(telemetry, safeEv);
-        if (safeEv.rate_limit)
+        observeAttemptTelemetry(telemetry, ev);
+        if (ev.rate_limit)
           lastLimit = {
-            resetsAt: safeEv.rate_limit.resets_at ?? null,
-            constraintId: safeEv.rate_limit.constraint_id ?? null,
+            resetsAt: ev.rate_limit.resets_at ?? null,
+            constraintId: ev.rate_limit.constraint_id ?? null,
           };
         // Agent work after the limit means the vendor's retry recovered, and the
         // vendor's own typed non-quota failure ends the try for its own cause:
         // either way that limit no longer explains how the try ends.
-        else if (marksAgentProgress(safeEv) || endsPendingLimit(safeEv)) lastLimit = null;
-        if (safeEv.plan_progress) {
+        else if (marksAgentProgress(ev) || endsPendingLimit(ev)) lastLimit = null;
+        if (ev.plan_progress) {
           log.emit("plan.progress", {
             attempt_id: attemptId,
             harness_id: adapter.id,
-            items: safeEv.plan_progress.items,
+            items: ev.plan_progress.items,
           });
         }
-        observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
-        deps.quotaEventSink?.(adapter.id, safeEv);
-        if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-          cost += safeEv.usage.cost_usd;
-          if (safeEv.usage.estimated) costEstimated = true;
+        observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
+        deps.quotaEventSink?.(adapter.id, ev);
+        if (ev.type === "usage" && ev.usage?.cost_usd) {
+          cost += ev.usage.cost_usd;
+          if (ev.usage.estimated) costEstimated = true;
           log.emit("budget.observation", {
             harness_id: adapter.id,
             attempt_id: attemptId,
             kind: "spend",
-            usd: safeEv.usage.cost_usd,
-            estimated: safeEv.usage.estimated === true,
+            usd: ev.usage.cost_usd,
+            estimated: ev.usage.estimated === true,
           });
         }
         const streamDenial = updateProcessingStreamHold(
@@ -349,9 +346,9 @@ export async function runPlannerAttempt(
           void adapter.cancel?.(spec.session_id)?.catch(() => {});
           break;
         }
-        answer.observeCounted(ev, safeEv);
-        if (safeEv.type === "error")
-          harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+        answer.observe(ev);
+        if (ev.type === "error")
+          harnessError = ev.error ? redactSecrets(ev.error) : "harness emitted an error";
       }
     }
   } catch (error) {
@@ -378,7 +375,7 @@ export async function runPlannerAttempt(
   const planUnwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", planWorkMode, {
     sideToolReport: telemetry.sideToolWorkReport ?? undefined,
   });
-  const planText = redactSecrets(planUnwrapped.deliverable);
+  const planText = planUnwrapped.deliverable;
   const hasPlanText = planText.trim().length > 0;
   const harnessFailedBeforeReport = harnessError !== null;
   const webBlocked = webUnsatisfied(telemetry);
@@ -475,7 +472,6 @@ export async function runPlannerAttempt(
     harnessFailedBeforeReport,
     reportProblem: planUnwrapped.reportProblem,
     text,
-    answerMatches: answer.secretLikeMatches(),
     telemetry,
     budgetDenied: false,
   };

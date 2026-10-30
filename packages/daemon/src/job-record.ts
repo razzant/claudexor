@@ -52,8 +52,7 @@ export function resultReason(result: unknown): string | null {
 }
 
 export function resultSummary(result: unknown): string | null {
-  const summary = resultString(result, "summary");
-  return summary === null ? null : redactSecrets(summary);
+  return resultString(result, "summary");
 }
 
 export function publicJobRecord(record: JobRecord): JobRecord {
@@ -64,13 +63,13 @@ export function publicJobRecord(record: JobRecord): JobRecord {
       ? { errorRequiredActions: safeProblemRequiredActions(record.errorRequiredActions) }
       : {}),
     ...(record.errorContext ? { errorContext: safeProblemContext(record.errorContext) } : {}),
-    params: redactParams(
+    // Params are the exact request (Exact Retry and Run Again read them back).
+    params:
       record.params &&
-        typeof record.params === "object" &&
-        (record.params as { kind?: string }).kind === "account_reset"
+      typeof record.params === "object" &&
+      (record.params as { kind?: string }).kind === "account_reset"
         ? { kind: "account_reset", request: (record.params as { request: unknown }).request }
         : record.params,
-    ),
   };
 }
 
@@ -78,16 +77,4 @@ function resultString(result: unknown, key: string): string | null {
   if (!result || typeof result !== "object" || Array.isArray(result)) return null;
   const value = (result as Record<string, unknown>)[key];
   return typeof value === "string" ? value : null;
-}
-
-function redactParams(value: unknown): unknown {
-  if (typeof value === "string") return redactSecrets(value);
-  if (Array.isArray(value)) return value.map(redactParams);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, child]) => [
-      key,
-      key === "prompt" && typeof child === "string" ? redactSecrets(child) : redactParams(child),
-    ]),
-  );
 }

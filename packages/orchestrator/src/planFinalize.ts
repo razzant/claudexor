@@ -5,7 +5,7 @@ import {
   type ActiveTaskContract,
   type CouncilProjection,
 } from "@claudexor/schema";
-import { newId, redactSecrets } from "@claudexor/util";
+import { newId } from "@claudexor/util";
 import type { ArtifactStore, RunPaths } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import type { BudgetLedger } from "@claudexor/budget";
@@ -16,7 +16,6 @@ import type { PlanRunDeps } from "./planRun.js";
 import { extractPlanQuestions } from "./planQuestions.js";
 import { emitPlanTerminal, resolvePlanTerminalFacts } from "./planTerminal.js";
 import { councilDegradationNote } from "./council.js";
-import { answerSecretLikeFinding, secretLikeSummaryLine } from "./secretDiff.js";
 
 type PlanAttemptSummary = ReturnType<typeof plannerAttemptSummary>;
 
@@ -60,11 +59,8 @@ export function finalizePlanRun(
   const winnerHarness = winner?.id ?? "(none)";
   const winnerAttemptId =
     args.winnerAttemptId ?? planAttempts.find((p) => p.status === "success")?.attemptId ?? null;
-  const secretLike = answerSecretLikeFinding(
-    planAttempts.find((p) => p.attemptId === winnerAttemptId)?.answerMatches,
-  );
   // final/plan.md is the PURE plan body (implement freezes+hashes it; V6a).
-  const planDoc = redactSecrets(winner?.text ?? "(no output)");
+  const planDoc = winner?.text ?? "(no output)";
   store.writeText(join(paths.finalDir, "plan.md"), planDoc + "\n");
   // Engine-parsed open questions (final/questions.json): the ONE artifact plan
   // readiness derives from. For council this runs on the MERGE output only.
@@ -85,7 +81,6 @@ export function finalizePlanRun(
       diffstat: { files: 0, additions: 0, deletions: 0 },
       blockers: 0,
       adopted: null,
-      ...(secretLike ? { secret_like: secretLike } : {}),
     },
   });
   const readiness = derivePlanReadiness(PlanQuestionsArtifact.parse(parsedQuestions));
@@ -102,13 +97,12 @@ export function finalizePlanRun(
       `# Run ${runId} (plan)`,
       "",
       lifecycleLine,
-      ...(secretLike ? [secretLikeSummaryLine(secretLike)] : []),
       council
         ? `- Council: merged by ${council.mergedBy ?? "(none)"}; inputs: ${councilInputs}; ${council.requested} member(s) requested`
         : `- Planner: ${winnerHarness}`,
       `- Plan: final/plan.md`,
       `- Open questions: ${readiness.questionCount}${parsedQuestions.parse === "none_found" ? " (no tagged block — unverified)" : ""}`,
-      `- Goal: ${redactSecrets(input.prompt).slice(0, 400)}`,
+      `- Goal: ${input.prompt.slice(0, 400)}`,
       ...(councilNote ? [`- Council note: ${councilNote}`] : []),
       ...(failedPlanners.length > 0 && !council
         ? [

@@ -63,12 +63,11 @@ describe("raw context packet honours ProjectConfig.context (#147)", () => {
     });
   });
 
-  it("refuses a missing, an uncommitted or a sensitive mandatory file before anything is sent", async () => {
+  it("refuses a missing or an uncommitted mandatory file before anything is sent", async () => {
     const root = repo({ "README.md": "# repo\n", ".env": "TOKEN=1\n" }, { "NEW.md": "new\n" });
     for (const [mandatory, cause] of [
       ["GONE.md", "GONE.md (missing or unreadable)"],
       ["NEW.md", "NEW.md (missing base-tree evidence)"],
-      [".env", ".env ("],
     ] as const) {
       await expect(
         buildRawContextPacket(root, "HEAD", { mandatory: [mandatory] }),
@@ -80,6 +79,12 @@ describe("raw context packet honours ProjectConfig.context (#147)", () => {
         message: expect.stringContaining(cause),
       });
     }
+  });
+
+  it("delivers a credential-named mandatory file exactly, like any project file (INV-146)", async () => {
+    const root = repo({ "README.md": "# repo\n", ".env": "TOKEN=1\n" });
+    const packet = await buildRawContextPacket(root, "HEAD", { mandatory: [".env"] });
+    expect(packet.readable_files.find((file) => file.path === ".env")?.content).toBe("TOKEN=1\n");
   });
 
   it("honours include and exclude for optional files", async () => {

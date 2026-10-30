@@ -39,7 +39,7 @@ const oauthCredential = (
   ...overrides,
 });
 
-describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
+describe("claude oauth/usage quota source (W5.3, INV-146)", () => {
   // The source remembers proven vendor rejections per token in process
   // memory (#263); every test starts with an empty memory.
   beforeEach(() => forgetClaudeOauthRejections());
@@ -696,7 +696,7 @@ describe("claude credential-file store off macOS (Linux quota parity)", () => {
     for (const dir of __reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
   // Redaction bait is assembled at runtime so no token-like literal ever
-  // lands in the source tree (secret-scan CI step, INV-062).
+  // lands in the source tree (secret-scan CI step, INV-146).
   const bait = ["sk", "ant", "oat01", "b".repeat(24)].join("-");
 
   it("reads both vendor credential shapes from .credentials.json", async () => {

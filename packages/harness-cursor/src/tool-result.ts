@@ -1,5 +1,4 @@
 import { commandOutcomeUnconfirmed, type ToolRef } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 
 type NativeObject = Record<string, unknown>;
 type CommandFacts = Pick<ToolRef, "exit_code" | "command_outcome">;
@@ -18,7 +17,7 @@ const BACKGROUND_REASONS: Partial<Record<string, "timeout" | "requested">> = {
 export interface CursorToolResult {
   status: NonNullable<ToolRef["status"]>;
   facts: CommandFacts;
-  /** Complete sanitized native shell result when the command end is unconfirmed. */
+  /** Complete native shell result, kept exactly, when the command end is unconfirmed. */
   payload?: { native_result: unknown };
 }
 
@@ -46,7 +45,7 @@ export function classifyCursorToolResult(
   const status = denied ? "denied" : failed ? "error" : "ok";
   const facts = variant === "shell" && !denied ? shellFacts(native, status) : {};
   if (!commandOutcomeUnconfirmed(facts.command_outcome)) return { status, facts };
-  const evidence = result === undefined ? null : JSON.parse(redactSecrets(JSON.stringify(result)));
+  const evidence = result === undefined ? null : (JSON.parse(JSON.stringify(result)) as unknown);
   return { status, facts, payload: { native_result: evidence } };
 }
 

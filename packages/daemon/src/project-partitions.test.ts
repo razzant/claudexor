@@ -171,7 +171,7 @@ describe("SqlCommandRouter", () => {
     await restarted.close();
   });
 
-  it("redacts delivery failures before the command journal accepts them (INV-062)", async () => {
+  it("redacts delivery failures before the command journal accepts them (INV-146)", async () => {
     const f = await fixture();
     const token = `sk-${"a".repeat(48)}`;
     const delivery = f.partitions.beginDelivery(

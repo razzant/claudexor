@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { ControlJournalEvent, type ControlJournalEvent as JournalEvent } from "@claudexor/schema";
 import { requestGone } from "./request-liveness.js";
-import { redactedSseLine } from "./sse-shared.js";
+import { sseDataLine } from "./sse-shared.js";
 
 /** Opaque positions from the journal owner; the route never decodes them. */
 export interface JournalEventPageRequest {
@@ -104,7 +104,7 @@ async function streamPartition(
   let position = first.position;
   const deliver = async (events: readonly JournalEvent[]): Promise<boolean> => {
     for (const event of events) {
-      const frame = `id: ${event.cursor}\nevent: ${event.type}\ndata: ${redactedSseLine(JSON.stringify(event))}\n\n`;
+      const frame = `id: ${event.cursor}\nevent: ${event.type}\ndata: ${sseDataLine(JSON.stringify(event))}\n\n`;
       if (res.write(frame)) continue;
       if (gone()) return false;
       await drained(res);

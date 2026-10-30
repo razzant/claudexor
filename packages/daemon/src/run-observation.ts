@@ -1,21 +1,13 @@
 import { createHash } from "node:crypto";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { RunObservationRecord, type RunWaitManySummary } from "@claudexor/schema";
-import { containsSecretLikeToken } from "@claudexor/util";
 import { digestPendingIdentities, type InteractionRegistry } from "./interactions.js";
 import type { CommandQueries, PendingIdentityDigest } from "./store-contracts.js";
 import { StoreError } from "./store/errors.js";
 
-/** Callers echo tokens through surfaces that refuse secret-like strings, so a
- * digest the shared policy would flag is re-derived from the same facts; every
- * other token keeps its bytes. */
+/** Body-free observation token: a digest of the observed facts. */
 function observationToken(facts: readonly unknown[]): string {
-  for (let attempt = 0; ; attempt++) {
-    const token = createHash("sha256")
-      .update(JSON.stringify(attempt === 0 ? facts : [...facts, attempt]))
-      .digest("base64url");
-    if (attempt === 8 || !containsSecretLikeToken(token)) return token;
-  }
+  return createHash("sha256").update(JSON.stringify(facts)).digest("base64url");
 }
 
 function unavailable(

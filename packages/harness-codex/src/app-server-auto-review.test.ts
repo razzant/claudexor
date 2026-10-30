@@ -167,7 +167,6 @@ describe("native automatic review handback", () => {
     { reviewId: null },
     { review: { status: "denied", riskLevel: "unknown-risk" } },
     { action: { type: "applyPatch", cwd: process.cwd(), files: ["file.txt"] } },
-    { action: { type: "command", source: "unifiedExec", command: "cat .env", cwd: process.cwd() } },
     { action: { type: "command", source: "unifiedExec", command: "pwd", cwd: "/" } },
     { action: { type: "command", source: "unknown", command: "pwd", cwd: process.cwd() } },
     {
@@ -187,9 +186,19 @@ describe("native automatic review handback", () => {
         payload: expect.objectContaining({ code: "codex_auto_review_not_offered" }),
       }),
     ]);
-    expect(JSON.stringify(events)).not.toContain(".env");
     expect(t.asks).toEqual([]);
     expect(await t.review.takeRetries()).toEqual([]);
+  });
+
+  it("offers a credential-named command in the workspace like any other (INV-146)", async () => {
+    const t = setup();
+    t.review.observe(
+      denial({
+        action: { type: "command", source: "unifiedExec", command: "cat .env", cwd: process.cwd() },
+      }),
+    );
+    expect(t.review.interactions("turn", "Blocked")).toHaveLength(1);
+    expect(t.asks[0]!.questions[0]!.question).toContain("cat .env");
   });
 
   it.each(["readonly", "full", "inherit_native"])(

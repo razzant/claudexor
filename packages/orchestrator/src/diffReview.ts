@@ -11,7 +11,7 @@ import type { AuthPreference, ProviderFamily, ReviewFinding } from "@claudexor/s
 import { HarnessUnavailableError, runCapture, runCaptureRaw } from "@claudexor/core";
 import { revalidateFindings, type ReviewerSpec, type reviewCandidate } from "@claudexor/review";
 import { verifySealedEvidencePacket, writeEvidencePacket } from "@claudexor/context";
-import { containsSecretLikeToken, ensureDir, redactSecrets, writeJson } from "@claudexor/util";
+import { ensureDir, writeJson } from "@claudexor/util";
 
 export interface FrozenDiffReviewInput {
   evidenceDir: string;
@@ -73,22 +73,6 @@ export async function runDiffReview(
     ? await verifyFrozenReviewPacket(input.repoRoot, input.frozen, true)
     : undefined;
   const diff = frozen?.diff ?? input.diff ?? "";
-  // INV-062: raw secrets must never become review artifacts. The fence lives
-  // HERE so every caller (CLI verb, commit gate, future surfaces) is covered
-  // before any evidence write or reviewer call — and it covers EVERY
-  // artifact-bound string, not just the diff.
-  for (const [label, text] of [
-    ["diff", diff],
-    ["userIntent", input.userIntent],
-    ["tests", input.tests],
-    ["decidedTradeoffs", input.decidedTradeoffs],
-  ] as const) {
-    if (typeof text === "string" && containsSecretLikeToken(text)) {
-      throw new Error(
-        `reviewDiff: ${label} contains a secret-like token; refusing review (remove the secret first)`,
-      );
-    }
-  }
   const ignoredSettings: string[] = [];
   const reviewers = await deps.resolveReviewers(input, (detail) => {
     if (!ignoredSettings.includes(detail)) ignoredSettings.push(detail);
@@ -107,9 +91,7 @@ export async function runDiffReview(
   const artifactsDir = input.frozen?.artifactsDir ?? join(baseDir!, "reviewers");
   if (!input.frozen) {
     writeEvidencePacket(evidenceDir, {
-      userIntent: redactSecrets(
-        input.userIntent ?? "Review this staged diff for defects before commit.",
-      ),
+      userIntent: input.userIntent ?? "Review this staged diff for defects before commit.",
       diff,
       tests: input.tests ?? "(no test evidence supplied)",
       decidedTradeoffs: input.decidedTradeoffs,

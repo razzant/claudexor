@@ -6,7 +6,6 @@ import { bindIdempotencyInTx } from "./idempotency.js";
 import { runMutation } from "./mutation.js";
 import { Obligations, type ObligationEffects, type ObligationRow } from "./obligations.js";
 import {
-  assertContentAllowed,
   putResourceInTx,
   putUploadInTx,
   readResourceRow,
@@ -100,12 +99,6 @@ export class PublishBlob {
         409,
         "upload_size_mismatch",
       );
-    try {
-      assertContentAllowed(upload.request, bytes);
-    } catch (error) {
-      this.uploads.cancel(id);
-      throw error;
-    }
     const sha = sha256Hex(bytes);
     if (expectedSha256 !== undefined && expectedSha256 !== `sha256:${sha}`)
       throw resourceError(
@@ -182,11 +175,11 @@ export class PublishBlob {
     }
     const sha = resourceSha(resource);
     const path = this.blobs.filePath(sha);
-    const bytes = verifiedResourceBytes(
+    // Integrity: the bytes being published are exactly the finalized digest.
+    verifiedResourceBytes(
       resource,
       existsSync(path) ? path : this.uploads.partPath(upload.status.uploadId),
     );
-    assertContentAllowed(resource, bytes);
     const linked = this.blobs.publishLink(this.uploads.partPath(upload.status.uploadId), sha);
     const generation = effects ? effects.register(this.blobs.dir) : linked.generation;
     // The part stays through the durability barrier. Only the post-clear hook removes it.

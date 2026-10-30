@@ -73,7 +73,7 @@ export const WebEvidenceRecord = z
       .string()
       .nullable()
       .default(null)
-      .describe("Redacted target (query/url) of the web activity, when any."),
+      .describe("Target (query/url) of the web activity as issued, when any."),
     error_summary: z
       .string()
       .nullable()
@@ -93,7 +93,7 @@ export const ToolErrorRecord = z
       .string()
       .nullable()
       .default(null)
-      .describe("Redacted target of the tool use, when known."),
+      .describe("Target of the tool use as issued, when known."),
     summary: z.string().describe("Redacted error summary."),
     /** True when a later successful result is attributable to this failed invocation. */
     recovered: z

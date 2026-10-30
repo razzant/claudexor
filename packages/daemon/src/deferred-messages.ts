@@ -13,7 +13,6 @@ import {
   type DeferredMessageStopReport,
 } from "@claudexor/schema";
 import {
-  assertNoInlineSecretValues,
   safeProblemContext,
   safeProblemMessage,
   safeProblemRequiredActions,
@@ -59,7 +58,6 @@ export class DeferredMessages {
     const owner = this.owner(target);
     const prior = owner.replay(request, idempotencyKey);
     if (prior) return prior;
-    assertNoInlineSecretValues(request, "$", "deferred message");
     if (this.closing) throw problem("daemon_stopping", "daemon is stopping", 503);
     let captured: CapturedRunStart | undefined;
     if (request.action === "create") {

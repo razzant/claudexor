@@ -1852,7 +1852,7 @@
                     "null"
                   ],
                   "default": null,
-                  "description": "Redacted target (query/url) of the web activity, when any."
+                  "description": "Target (query/url) of the web activity as issued, when any."
                 },
                 "errorSummary": {
                   "type": [
@@ -1868,7 +1868,7 @@
                     "null"
                   ],
                   "default": null,
-                  "description": "Artifact path holding the raw (redacted) evidence detail."
+                  "description": "Artifact path holding the full evidence record."
                 },
                 "available": {
                   "type": "boolean",
@@ -3434,7 +3434,7 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Human-readable event detail. For typed harness text, the complete redacted text with original whitespace; title may be abbreviated."
+                "description": "Human-readable event detail. For typed harness text, the complete text as journaled, with original whitespace; title may be abbreviated."
               },
               "textKind": {
                 "anyOf": [
@@ -3512,7 +3512,7 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Redacted tool target for tool events."
+                "description": "Tool target for tool events, bounded, as the agent issued it."
               },
               "errorSummary": {
                 "type": [
@@ -3520,7 +3520,7 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Redacted error detail for error events."
+                "description": "Error detail: a failed tool's own output, unmasked; for an error event, its masked diagnostic."
               },
               "ignoredSettings": {
                 "type": "array",

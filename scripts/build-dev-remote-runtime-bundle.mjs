@@ -28,6 +28,7 @@ import {
   signRemoteRuntimeManifest,
   verifyRemoteRuntimeManifest,
 } from "./lib/remote-runtime-manifest-contract.mjs";
+import { downloadArchive, pinnedRelease } from "./lib/betterleaks-stage.mjs";
 
 function option(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -72,7 +73,19 @@ function checkedNodeArchive({ target, nodeVersion, expectedSha256, cacheDirector
   return path;
 }
 
-function main() {
+/** The pinned publication-scanner archive for one target, cached like Node. */
+async function checkedScannerArchive({ target, cacheDirectory }) {
+  const release = pinnedRelease(target);
+  const path = join(cacheDirectory, release.asset);
+  if (existsSync(path) && sha256File(path) !== release.archiveSha256) rmSync(path, { force: true });
+  if (!existsSync(path)) await downloadArchive(target, cacheDirectory);
+  if (sha256File(path) !== release.archiveSha256) {
+    throw new Error(`${target} Betterleaks archive does not match the pinned SHA-256`);
+  }
+  return path;
+}
+
+async function main() {
   const version = option("version");
   const buildSha = option("build-sha");
   const resources = option("resources");
@@ -122,6 +135,7 @@ function main() {
       expectedSha256,
       cacheDirectory,
     });
+    const scannerArchive = await checkedScannerArchive({ target, cacheDirectory });
     execFileSync(
       process.execPath,
       [
@@ -140,6 +154,8 @@ function main() {
         expectedSha256,
         "--node-version",
         nodeVersion,
+        "--betterleaks-archive",
+        scannerArchive,
         "--out",
         assetsDirectory,
       ],
@@ -201,7 +217,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   process.stderr.write(`build-dev-remote-runtime-bundle failed: ${String(error)}\n`);
   process.exit(1);

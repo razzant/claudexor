@@ -7,7 +7,6 @@ import type { CapturedWorkspaceDiff } from "./manager.js";
 export function incompleteWorkspaceCapture(error: unknown): CapturedWorkspaceDiff {
   return {
     diff: "",
-    binarySecretPaths: [],
     captureIncomplete: true,
     captureFailure: error instanceof Error ? error : new WorkspaceError(String(error)),
   };

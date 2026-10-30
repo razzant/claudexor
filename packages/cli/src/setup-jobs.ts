@@ -223,7 +223,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions) {
       ...(command ? { command } : {}),
     });
     // Both transient sidecars die with the job: the device-code disclosure
-    // (INV-062 / D-17) and the one-shot sign-in input's pasted code.
+    // (INV-146 / D-17) and the one-shot sign-in input's pasted code.
     removeSetupDeviceCodeSidecar(store.paths(jobId).runnerDeviceCode);
     rmSync(store.paths(jobId).runnerInput, { force: true });
     logAfterMutation(jobId, message);

@@ -256,3 +256,26 @@ describe("Grok finality and vendor failures", () => {
     ).toEqual([]);
   });
 });
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped file path in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const out = createGrokParser().parseEvent(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "g1",
+              name: "write",
+              input: { file_path: `/workspace/${token}.txt` },
+            },
+          ],
+        },
+      },
+      "s",
+    );
+    expect(out?.find((e) => e.type === "tool_call")?.tool?.target).toBe(`/workspace/${token}.txt`);
+  });
+});

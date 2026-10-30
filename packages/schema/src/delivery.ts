@@ -1,6 +1,38 @@
 import { z } from "zod/v3";
 import { FinalVerifyRecord } from "./decision.js";
 
+/** Why the publication scanner stopped `pr` before anything left the machine
+ * (INV-146). Findings name rule and place only, never the matched text. */
+export const PublicationRefusal = z
+  .object({
+    code: z
+      .enum([
+        "publication_scan_findings",
+        "publication_scan_unavailable",
+        "publication_scan_failed",
+      ])
+      .describe(
+        "findings = the scanner reported secret-like content; unavailable = no pinned scanner; failed = the scan could not prove its result.",
+      ),
+    detail: z.string().describe("Human-readable refusal, without any matched value."),
+    findings: z
+      .array(
+        z
+          .object({
+            ruleId: z.string().describe("Scanner rule that matched."),
+            location: z.string().describe("Outgoing file path or metadata label."),
+            line: z.number().int().nullable().describe("1-based line, when known."),
+            commit: z.string().nullable().describe("Outgoing commit holding the finding."),
+          })
+          .strict(),
+      )
+      .optional()
+      .describe("Present for publication_scan_findings."),
+  })
+  .strict()
+  .describe("Typed publication-scanner refusal of a `pr` delivery.");
+export type PublicationRefusal = z.infer<typeof PublicationRefusal>;
+
 /** Immutable evidence for one DeliveryService attempt, shared by every apply surface. */
 export const DeliveryReceipt = z
   .object({
@@ -13,6 +45,9 @@ export const DeliveryReceipt = z
     detail: z.string().optional(),
     treeMutated: z.boolean().optional(),
     refused: z.boolean().optional(),
+    publicationRefusal: PublicationRefusal.optional().describe(
+      "Set when the publication scanner refused a `pr` delivery before any branch, commit or push.",
+    ),
     /** #26: TRUE when this delivery was an idempotent already-applied no-op —
      * the tree was already this patch's exact postimage (reverse `git apply
      * --check` clean), so `applied:true` with NO mutation. Distinguishes a

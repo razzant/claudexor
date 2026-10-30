@@ -56,63 +56,16 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import {
-  assertNoInlineSecretValues,
-  containsSecretLikeToken,
   ensureCanonicalPrivateDirectory,
   fsyncDirectory,
   hashJson,
   newId,
   redactSecrets,
+  sensitiveResourcePolicy,
   sha256,
   stableStringify,
   userConfigDir,
 } from "./index.js";
-
-describe("assertNoInlineSecretValues schema-awareness (W8/G7)", () => {
-  const secret = "sk-or-v1-" + "c".repeat(40);
-
-  it("rejects a secret-like VALUE anywhere, including inside outputSchema", () => {
-    expect(() => assertNoInlineSecretValues({ prompt: `use ${secret}` })).toThrow();
-    // A secret hidden in a schema const/default/enum literal is still caught.
-    expect(() =>
-      assertNoInlineSecretValues({
-        outputSchema: { type: "object", properties: { k: { const: secret } } },
-      }),
-    ).toThrow();
-  });
-
-  it("rejects secret-NAMED keys OUTSIDE a schema (env/token/password)", () => {
-    expect(() => assertNoInlineSecretValues({ env: { X: "1" } })).toThrow();
-    expect(() => assertNoInlineSecretValues({ api_key: "whatever" })).toThrow();
-  });
-
-  it("rejects a real secret embedded in a schema property KEY (valuesOnly relaxes only the name heuristic)", () => {
-    expect(() =>
-      assertNoInlineSecretValues({
-        outputSchema: {
-          type: "object",
-          properties: { [`leaked-${secret}`]: { type: "string" } },
-        },
-      }),
-    ).toThrow(/secret-like/);
-  });
-
-  it("ALLOWS legitimate schema property names token/password/env (field names, not secrets)", () => {
-    expect(() =>
-      assertNoInlineSecretValues({
-        outputSchema: {
-          type: "object",
-          properties: {
-            token: { type: "string" },
-            password: { type: "string" },
-            env: { type: "string" },
-          },
-          required: ["token"],
-        },
-      }),
-    ).not.toThrow();
-  });
-});
 
 describe("util", () => {
   it("hashes JSON stably regardless of key order", () => {
@@ -131,12 +84,16 @@ describe("util", () => {
     expect(a.startsWith("run-")).toBe(true);
   });
 
+  /** Whether the diagnostic-masking rules match (the primitive `redactSecrets` uses). */
+  const detects = (text: string) =>
+    sensitiveResourcePolicy.inspectContent(text).containsSensitiveContent;
+
   it("redacts obvious secret tokens", () => {
     const redacted = redactSecrets("token ghp_" + "a".repeat(36) + " end");
     expect(redacted).toContain("[redacted]");
     expect(redacted).not.toContain("ghp_aaaa");
-    expect(containsSecretLikeToken("token ghp_" + "a".repeat(36))).toBe(true);
-    expect(containsSecretLikeToken("ordinary prompt")).toBe(false);
+    expect(detects("token ghp_" + "a".repeat(36))).toBe(true);
+    expect(detects("ordinary prompt")).toBe(false);
   });
 
   it("redacts Cursor keys, OpenRouter keys, Bearer tokens and JWTs (v0.9 hygiene)", () => {
@@ -147,11 +104,11 @@ describe("util", () => {
     expect(redactSecrets(openrouter)).toBe("[redacted]");
     expect(redactSecrets(jwt)).toBe("[redacted]");
     expect(redactSecrets("Authorization: Bearer " + "d".repeat(40))).toContain("[redacted]");
-    expect(containsSecretLikeToken(cursor)).toBe(true);
-    expect(containsSecretLikeToken(jwt)).toBe(true);
+    expect(detects(cursor)).toBe(true);
+    expect(detects(jwt)).toBe(true);
     // Length-gated: ordinary prose must not be redacted.
-    expect(containsSecretLikeToken("Bearer of good news")).toBe(false);
-    expect(containsSecretLikeToken("the key_ to success")).toBe(false);
+    expect(detects("Bearer of good news")).toBe(false);
+    expect(detects("the key_ to success")).toBe(false);
   });
 
   it("redacts PEM blocks, Google ya29 tokens, npm tokens, and xoxe/xoxc Slack classes", () => {
@@ -165,7 +122,7 @@ describe("util", () => {
     expect(redactSecrets("xoxe-" + "g1-".repeat(8))).toContain("[redacted]");
     expect(redactSecrets("xoxc-" + "h".repeat(20))).toBe("[redacted]");
     // Prose stays untouched.
-    expect(containsSecretLikeToken("the npm_ prefix and ya29 are token families")).toBe(false);
+    expect(detects("the npm_ prefix and ya29 are token families")).toBe(false);
   });
 
   it("rejects unsafe CLAUDEXOR_CONFIG_DIR overrides", () => {

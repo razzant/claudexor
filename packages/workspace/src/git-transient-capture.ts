@@ -1,8 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CaptureOutputExceeded, parseUnifiedDiff, WorkspaceError } from "@claudexor/core";
-import { containsSecretLikeToken } from "@claudexor/util";
+import { CaptureOutputExceeded, WorkspaceError } from "@claudexor/core";
 import {
   nestedRepositoryExcludes,
   untrackedNestedRepositories,
@@ -11,10 +10,9 @@ import { assertNoBinaryStubs, git, gitEnv } from "./git-run.js";
 
 /**
  * Capture the current worktree against an exact base without writing its blobs
- * into the user's Git object database. In-place harness output is untrusted
- * until the secret fence has inspected the resulting patch; `snapshotTree`
- * would otherwise leave a dangling raw-secret blob even when artifact
- * persistence later refused the patch.
+ * into the user's Git object database. In-place harness output is not yet
+ * accepted work; `snapshotTree` would otherwise leave dangling blobs of output
+ * the user never adopted.
  *
  * Git still owns filename, mode, symlink, binary, ignored-file, and untracked
  * semantics. A scratch index plus an isolated temporary object directory holds
@@ -25,10 +23,6 @@ export interface TransientDiffCapture {
   captureIncomplete: boolean;
   captureFailure?: CaptureOutputExceeded;
   patch: string;
-  /** Changed binary files whose pre- or postimage holds secret-like bytes (or
-   * could not be read for inspection). The exact patch still carries their
-   * payload; a persisted COPY withholds it and discloses these paths (INV-062). */
-  binarySecretPaths: string[];
   /** Untracked directories holding their own Git repository. A patch cannot
    * carry another repository (Git would record a commit link, or refuse a
    * repository without a commit), so they are left out of the capture and
@@ -93,38 +87,15 @@ export async function captureWorkingTreeTransient(
       throw new WorkspaceError(`transient diff failed: ${diff.stderr.trim()}`);
     }
     assertNoBinaryStubs(diff.stdout, `transient git diff ${baseSha}`);
-    const flagged = new Set<string>();
-    for (const file of parseUnifiedDiff(diff.stdout).files.filter((entry) => entry.binary)) {
-      const blobs = [
-        ...(!file.added && file.oldPath ? [{ tree: baseSha, path: file.oldPath }] : []),
-        ...(!file.deleted && file.newPath
-          ? [{ tree: writeTree.stdout.trim(), path: file.newPath }]
-          : []),
-      ];
-      for (const blob of blobs) {
-        try {
-          const content = await gitEnv(repo, ["show", `${blob.tree}:${blob.path}`], env);
-          // An unreadable blob is unprovable, so its payload is withheld too.
-          if (content.code === 0 && !containsSecretLikeToken(content.stdout)) continue;
-        } catch (error) {
-          // A complete compressed patch may carry a much larger blob. Failed
-          // inspection withholds that payload, not the already complete patch.
-          if (!(error instanceof CaptureOutputExceeded)) throw error;
-        }
-        flagged.add(file.newPath ?? file.oldPath ?? blob.path);
-        break;
-      }
-    }
     return {
       patch: diff.stdout,
-      binarySecretPaths: [...flagged],
       captureIncomplete: false,
       ...(nested.length ? { excludedNestedRepositories: nested } : {}),
     };
   } catch (error) {
     primaryError = error;
     if (error instanceof CaptureOutputExceeded)
-      return { patch: "", binarySecretPaths: [], captureIncomplete: true, captureFailure: error };
+      return { patch: "", captureIncomplete: true, captureFailure: error };
     throw error;
   } finally {
     // Unlike ordinary best-effort scratch cleanup, this directory may contain

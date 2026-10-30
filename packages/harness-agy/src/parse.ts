@@ -1,5 +1,5 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 
 type Json = any;
 
@@ -236,14 +236,16 @@ function stepUsage(raw: unknown): HarnessEvent["usage"] | null {
   return Object.keys(usage).length ? usage : null;
 }
 
+/** Bounded tool output or terminal detail. Tool output is what the model saw
+ * and stays unmasked (INV-146); a terminal error is masked by the journal seam. */
 function summarize(value: unknown): string {
   if (typeof value === "string")
-    return value.trim() ? redactSecrets(value).trim().replace(/\s+/g, " ").slice(0, 1000) : "";
+    return value.trim() ? value.trim().replace(/\s+/g, " ").slice(0, 1000) : "";
   // A non-string detail (the vendor sometimes nests an object) must not be
   // silently dropped into a generic message (Ф0 review #7).
   if (value === null || value === undefined) return "";
   try {
-    return redactSecrets(JSON.stringify(value)).trim().slice(0, 1000);
+    return JSON.stringify(value).trim().slice(0, 1000);
   } catch {
     return "";
   }
@@ -251,7 +253,8 @@ function summarize(value: unknown): string {
 
 function boundedTarget(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
-  return redactSecrets(value).slice(0, 500);
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return value.slice(0, 500);
 }
 
 function stringOrUndef(v: unknown): string | undefined {

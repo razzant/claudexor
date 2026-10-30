@@ -8,12 +8,12 @@ import type { DaemonRunRecord } from "./run-record.js";
 import { projectionRead } from "./projection-context.js";
 
 /**
- * The ONE interpretation point for a run's saved patch (INV-062).
+ * The ONE interpretation point for a run's saved patch.
  *
- * `final/patch.diff` is byte-exact unless the work product says
- * `persisted_patch: redacted`; then it is a display-only copy with secret-like
- * strings hidden and every consumer that applies, checks, hashes or binds a
- * decision to "the patch" must read the private exact patch object instead.
+ * `final/patch.diff` is byte-exact. Only a historical run whose work product
+ * says `persisted_patch: redacted` saved a display-only copy with secret-like
+ * strings hidden; every consumer that applies, checks, hashes or binds a
+ * decision to "the patch" then reads that run's private exact patch object.
  * `unavailable` means that object is missing or corrupt: `patch` then still
  * holds the saved copy for display, and nothing may be applied from it.
  */
@@ -75,12 +75,4 @@ export function runPatchDigest(
       return resolved.patch !== null && !resolved.unavailable ? sha256(resolved.patch) : null;
     },
   );
-}
-
-/** A blob-only finding is invisible to a text scan of the patch, so the `pr`
- * publishing refusal reads the run's own disclosure for it. */
-export function runPatchHasSecretLikeBinary(rec: DaemonRunRecord): boolean {
-  const meta = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct)?.meta;
-  const finding = meta?.["secret_like"] as { binary_paths?: unknown } | undefined;
-  return Array.isArray(finding?.binary_paths) && finding.binary_paths.length > 0;
 }

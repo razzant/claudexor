@@ -51,10 +51,10 @@ export function projectImmediateRunDetail(
 }
 
 /**
- * INV-062 disclosure as a consumable fact. `run_result` answers with the
- * primary output first, so the summary.md disclosure line never reaches an MCP
- * host; this projects the same record from `workProduct.meta`. Null when the
- * run hid nothing (or the record is absent/malformed).
+ * Historical disclosure as a consumable fact: runs written under the retired
+ * INV-062 masked their saved copies and recorded what they hid in
+ * `workProduct.meta.secret_like`. Current runs save exact bytes (INV-146) and
+ * record nothing, so this is null for them (and for an absent/malformed record).
  */
 export function projectSecretLikeDisclosure(
   detail: Record<string, unknown> | null,

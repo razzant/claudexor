@@ -130,7 +130,7 @@ try {
   // Execute only the full-gate receipt's verified, self-contained candidate
   // verifier bytes. Mutable workspace dist is never release authority.
   const verifierUrl = `data:text/javascript;base64,${runtime.verifierBytes.toString("base64")}`;
-  const { containsSecretLikeToken, verifySealedEvidencePacket } = await import(verifierUrl);
+  const { verifySealedEvidencePacket } = await import(verifierUrl);
 
   const packet = verifySealedEvidencePacket({ evidenceDir, candidateSha, candidateTree });
   const freeze = parseJson(
@@ -166,10 +166,7 @@ try {
     throw new Error("review artifacts must contain exactly two real reviewer directories");
   }
   const artifacts = reviewerEntries.map((entry) =>
-    readReviewerArtifact(
-      realDirectory(join(artifactsDir, entry.name), `reviewer ${entry.name}`),
-      containsSecretLikeToken,
-    ),
+    readReviewerArtifact(realDirectory(join(artifactsDir, entry.name), `reviewer ${entry.name}`)),
   );
   const reviews = OWNER_REVIEW_PANEL.map((required) => {
     const matches = artifacts.filter((artifact) => artifact.metadata.slot === required.slot);
@@ -234,8 +231,10 @@ try {
   process.exit(1);
 }
 
-function readReviewerArtifact(dir, containsSecretLikeToken) {
-  const read = (name, label) => readArtifact(join(dir, name), label, containsSecretLikeToken);
+/** Reviewer sources are read exactly (INV-146): their text never enters the
+ * attestation, only their digests and the validated metadata fields do. */
+function readReviewerArtifact(dir) {
+  const read = (name, label) => readArtifact(join(dir, name), label);
   const metadataBytes = read("metadata.json", "reviewer metadata");
   const reportBytes = read("report.md", "reviewer report");
   return {
@@ -346,10 +345,9 @@ function requireIdentity(metadata, expected, label) {
   }
 }
 
-function readArtifact(path, label, containsSecretLikeToken) {
+function readArtifact(path, label) {
   const bytes = readStable(path, label);
-  const text = decodeReviewUtf8(bytes, label);
-  if (containsSecretLikeToken(text)) throw new Error(`${label} contains a secret-like token`);
+  decodeReviewUtf8(bytes, label); // strict UTF-8, or the artifact refuses
   return bytes;
 }
 

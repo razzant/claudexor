@@ -135,7 +135,13 @@ aggregate usage record: uncached input, cache reads and cache writes are disjoin
 buckets whose sum is the input total, and an all-zero record, which Grok emits
 when it cannot account for usage, is treated as unknown rather than free. Thinking signatures are
 discarded. A top-level error frame fails the turn; a result that still follows
-contributes its usage once and never an answer. Vendor and stderr quota
+contributes its usage once and never an answer. A failed result (`is_error` or a
+non-success subtype) becomes the turn's error from its `errors`, else its
+`error`, else its `result` text, and that error is a masked diagnostic. Whether
+Grok ever puts otherwise unstreamed model text in a failed result's `result` is
+not established: the recorded fixtures are successful streams and a quota
+failure carrying `errors`, and no documented contract covers it. If it did,
+that text would be kept only in masked form. Vendor and stderr quota
 failures become typed `rate_limit` signals, stored as `grok_rate_limit`
 cooldowns for routing and rotation; remaining allowance stays unknown.
 
@@ -168,15 +174,15 @@ project configuration. Auxiliary writable roots, engine MCP injection, live
 input, WorkReport transport, cross-account session moves and native-store
 pruning are unsupported.
 
-A `.grok/` directory holds Grok's configuration, login and sessions, so
-Claudexor treats it as a credential store wherever it appears, as it treats
-`.claude/`: context never includes it, and a directory run never copies or
-publishes it. A copied directory run whose selected scope contains it (for
-example `--scope-path .` over a folder with a project `.grok/`) is refused
-before it starts; a writable in-place run over such a scope ends without a
-published result, while its direct edits stay in place. Select the inputs with
-repeated `--scope-path` values that leave `.grok/` out. Git-backed runs are not
-affected.
+A `.grok/` directory holds Grok's configuration, login and sessions. Inside an
+authorized project it is ordinary project content, like `.claude/` (INV-146):
+context, directory copies, captures and results include it when the selected
+scope does, and nothing is refused for it. Claudexor's own Grok account homes
+live outside every project. The path guard applies only to importing an
+arbitrary host file (`upload-import`, the MCP document source), which refuses
+credential-store paths such as `.grok/` wherever they are. To keep a project's
+`.grok/` out of a run, select the inputs with `--scope-path` values that leave
+it out.
 
 ## Qualification
 

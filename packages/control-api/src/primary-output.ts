@@ -1,6 +1,5 @@
 import { closeSync, lstatSync, openSync, readSync } from "node:fs";
 import { ControlPrimaryOutput, type RunFacts, type RunFailure } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import { safeArtifactPath } from "./artifact-paths.js";
 import type { DaemonRunRecord } from "./daemon-server.js";
@@ -9,7 +8,8 @@ import { TERMINAL_STATES } from "./sse-shared.js";
 import { projectionRead } from "./projection-context.js";
 
 const PRIMARY_OUTPUT_PREVIEW_BYTES = 256 * 1024;
-const REDACTION_OVERLAP_BYTES = 1024;
+/** Read past the cap so truncation always sees whether more text follows. */
+const READ_LOOKAHEAD_BYTES = 1024;
 
 function decodeValidUtf8(data: Buffer): string {
   for (let trim = 0; trim <= 3 && trim <= data.length; trim += 1) {
@@ -57,7 +57,7 @@ function previewUncached(
     // A reference still needs the canonical bounded nonblank-output check;
     // a nonempty whitespace-only patch must not become a ready deliverable.
     const readLimit = metadataOnly ? PRIMARY_OUTPUT_PREVIEW_BYTES : maxBytes;
-    const length = Math.min(st.size, readLimit + REDACTION_OVERLAP_BYTES);
+    const length = Math.min(st.size, readLimit + READ_LOOKAHEAD_BYTES);
     const data = Buffer.alloc(length);
     const fd = openSync(path, "r");
     try {
@@ -65,12 +65,12 @@ function previewUncached(
     } finally {
       closeSync(fd);
     }
-    const redacted = redactSecrets(decodeValidUtf8(data));
-    if (metadataOnly) return redacted.trim() ? { text: "", bytes: st.size, truncated: true } : null;
+    const text = decodeValidUtf8(data);
+    if (metadataOnly) return text.trim() ? { text: "", bytes: st.size, truncated: true } : null;
     return {
-      text: truncateUtf8(redacted, maxBytes),
+      text: truncateUtf8(text, maxBytes),
       bytes: st.size,
-      truncated: st.size > length || Buffer.byteLength(redacted, "utf8") > maxBytes,
+      truncated: st.size > length || Buffer.byteLength(text, "utf8") > maxBytes,
     };
   } catch {
     return null;

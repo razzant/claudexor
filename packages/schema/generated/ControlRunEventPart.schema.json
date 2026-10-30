@@ -99,7 +99,7 @@
         "totalBytes": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "description": "UTF-8 byte length of the event's complete stream serialization: the redacted JSON line the run event stream delivers."
+          "description": "UTF-8 byte length of the event's complete stream serialization: the stored JSON line the run event stream delivers."
         },
         "sha256": {
           "type": "string",

@@ -41,7 +41,7 @@ describe("writeFailure vendorFailure", () => {
     expect(written({ ...base, vendorFailure: null }).vendorFailure).toBeNull();
   });
 
-  it("redacts a secret-like token inside the vendor's words and keeps null parts null (INV-062)", () => {
+  it("redacts a secret-like token inside the vendor's words and keeps null parts null (INV-146)", () => {
     // Assembled at runtime so the source never holds a contiguous secret-like token.
     const token = ["sk-or-v1", "c".repeat(40)].join("-");
     const failure = written({

@@ -101,7 +101,7 @@ function safeIssueMessage(issue: StructuralZodIssue): string {
  * Returns a normalized typed error the shared `problemBody` projection already
  * knows how to serialize (code/message/fieldErrors/context). A non-ZodError, or
  * a typed error that already owns `code`/`fieldErrors` (idempotency_key_required,
- * inline_secret_rejected, invalid JSON body, 413), is returned UNCHANGED — this
+ * invalid JSON body, 413), is returned UNCHANGED — this
  * only normalizes structural validation exceptions at the request boundary and
  * never reinterprets a service-output or internal error as a user field error.
  */

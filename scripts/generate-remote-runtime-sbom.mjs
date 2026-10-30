@@ -3,6 +3,11 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  BETTERLEAKS_RELEASE_URL,
+  BETTERLEAKS_RELEASES,
+  BETTERLEAKS_VERSION,
+} from "../packages/delivery/src/publication-scanner-pin.ts";
 
 const directory = resolve(process.argv[2] ?? "");
 const version = process.argv[3] ?? "";
@@ -128,6 +133,31 @@ const nodePackages = archives.map((archive) => {
   };
 });
 
+const scannerPackages = archives.map((archive) => {
+  const release = BETTERLEAKS_RELEASES[archive.target];
+  if (!release) throw new Error(`no pinned publication scanner for ${archive.target}`);
+  return {
+    SPDXID: spdxId(`betterleaks-${archive.target}`, BETTERLEAKS_VERSION),
+    name: `Betterleaks publication scanner (${archive.target})`,
+    versionInfo: BETTERLEAKS_VERSION,
+    downloadLocation: `${BETTERLEAKS_RELEASE_URL}/${release.asset}`,
+    filesAnalyzed: false,
+    licenseConcluded: "MIT",
+    licenseDeclared: "MIT",
+    copyrightText: "NOASSERTION",
+    primaryPackagePurpose: "APPLICATION",
+    checksums: [{ algorithm: "SHA256", checksumValue: release.binarySha256 }],
+    externalRefs: [
+      {
+        referenceCategory: "PACKAGE-MANAGER",
+        referenceType: "purl",
+        referenceLocator: `pkg:github/betterleaks/betterleaks@v${encodeURIComponent(BETTERLEAKS_VERSION)}`,
+      },
+    ],
+    comment: `Digest-pinned publication scanner packaged inside ${archive.name} (archive ${release.archiveSha256}).`,
+  };
+});
+
 const files = archives.map((archive) => ({
   SPDXID: `SPDXRef-RemoteRuntimeArchive-${archive.index + 1}`,
   fileName: archive.name,
@@ -155,6 +185,11 @@ const relationships = [
       relationshipType: "CONTAINS",
       relatedSpdxElement: nodePackages[index].SPDXID,
     },
+    {
+      spdxElementId: targetPackage.SPDXID,
+      relationshipType: "CONTAINS",
+      relatedSpdxElement: scannerPackages[index].SPDXID,
+    },
     ...dependencies.map((dependency) => ({
       spdxElementId: targetPackage.SPDXID,
       relationshipType: "CONTAINS",
@@ -162,7 +197,13 @@ const relationships = [
     })),
   ]),
 ];
-const packages = [product, ...targetPackages, ...nodePackages, ...dependencies].sort(
+const packages = [
+  product,
+  ...targetPackages,
+  ...nodePackages,
+  ...scannerPackages,
+  ...dependencies,
+].sort(
   (left, right) =>
     left.name.localeCompare(right.name) || left.versionInfo.localeCompare(right.versionInfo),
 );

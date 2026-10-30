@@ -22,7 +22,6 @@ import {
   validateOptionalNonEmptyString,
   validateSurfaceRunControls,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 import { journalRecoveryTools } from "./recovery-tools.js";
 import { formatRunResult, structuredRunResult } from "./run-result-format.js";
 import { assertNoPluginArtifactSkew } from "./plugin-skew.js";
@@ -206,21 +205,7 @@ function validateToolArguments(tool: McpTool, args: unknown): string | null {
   const runControlError = validateSurfaceRunControls(
     tool.runMode ? { ...obj, mode: tool.runMode } : obj,
   );
-  if (runControlError) return runControlError;
-  return validateNoInlineSecrets(obj, "MCP tool arguments");
-}
-
-function validateNoInlineSecrets(value: unknown, context: string): string | null {
-  try {
-    assertNoInlineSecretValues(value, "$", context);
-    return null;
-  } catch (err) {
-    // MCP tool failures are text results (until structured outputs land):
-    // prefix the machine-readable class so hosts can branch on it.
-    const code = errorCode(err);
-    const message = err instanceof Error ? err.message : String(err);
-    return code ? `${code}: ${message}` : message;
-  }
+  return runControlError;
 }
 
 export interface RunnerHooks {

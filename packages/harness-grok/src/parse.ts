@@ -134,7 +134,8 @@ export function createGrokParser() {
                       ? "file"
                       : "other",
             use_id: string(block.id) || undefined,
-            target: target ? redactSecrets(target).slice(0, 500) : undefined,
+            // The agent's own tool input (INV-146): bounded, never masked.
+            target: target ? target.slice(0, 500) : undefined,
           };
           if (tool.use_id) tools.set(tool.use_id, tool);
           events.push({ ...base, type: "tool_call", text: name, tool });
@@ -157,7 +158,8 @@ export function createGrokParser() {
           });
           continue;
         }
-        const detail = redactSecrets(string(block.content)).slice(0, 1000);
+        // The tool output the model saw, bounded and unmasked (INV-146).
+        const detail = string(block.content).slice(0, 1000);
         events.push({
           ...base,
           type: "tool_result",

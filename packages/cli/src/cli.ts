@@ -72,7 +72,6 @@ import { retryCommand, runAgainCommand } from "./retry-command.js";
 import { dispatchRetainedCommand } from "./retained-command-dispatch.js";
 import { uploadCommand } from "./upload-command.js";
 import { UPLOAD_COMMAND_SPECS } from "./upload-command-specs.js";
-import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import { resolveLocalAttachment, type LocalAttachment } from "./local-attachment.js";
 import { uploadLocalAttachment } from "./attachment-upload.js";
 import {
@@ -411,30 +410,7 @@ async function orchestrate(
   try {
     const cliTests = testCommands(args) ?? [];
     tests = cliTests.length > 0 ? cliTests : undefined;
-    assertCliRunParamsHaveNoInlineSecrets({
-      prompt,
-      instructions: resolvedInstructions,
-      attachments: attachmentRequest,
-      mode,
-      harnesses: resolvedHarnesses,
-      primaryHarness: resolvedPrimaryHarness,
-      model: resolvedModel,
-      effort: resolvedEffort,
-      processingPreference,
-      review,
-      reviewerPanel: resolvedReviewerPanel,
-      reviewerModels: resolvedReviewerModels,
-      reviewerEfforts: reviewerEffortOverrides,
-      tests,
-      protectedPathApprovals: resolvedProtectedPathApprovals,
-      paidBudget,
-      access: resolvedAccess,
-      web: resolvedWebPolicy,
-      externalContextPolicy: resolvedWebPolicy,
-      synthesis: resolvedSynthesis,
-    });
   } catch (err) {
-    // Preserves the typed `inline_secret_rejected` code (never echoing the token).
     return renderOutputFailure(outputMode, err, {
       defaultCategory: "usage",
       messagePrefix: "claudexor:",

@@ -3,6 +3,7 @@ import {
   abortSignalFromSpec,
   effortResolutionEvent,
   HarnessUnavailableError,
+  maskHarnessEventDiagnostics,
   promptWithInstructions,
   throwIfEffortRejected,
 } from "@claudexor/core";
@@ -17,6 +18,41 @@ import { connectAcp, type AcpObservation } from "./transport.js";
 
 export const ACP_DISCLOSURE =
   "ACP preview: readonly uses a CLI tool allowlist; workspace writes and shell commands are not sandboxed. Permission callbacks may be absent (github/copilot-cli#4537); write containment is unproven. Network is uncontrolled; cost may be unknown; live input and MCP injection are unavailable.";
+
+/**
+ * The stored view of one ACP event (INV-146). The managed token the engine
+ * injected never leaves the adapter, wherever it appears (credential
+ * management). Diagnostics are masked: the shared typed seam covers error
+ * events and diagnostic payload keys, and a raw JSON-RPC error frame from the
+ * agent is the vendor's diagnostic too. Everything else, the answer and the raw
+ * frames carrying it included, stays exact.
+ */
+function acpStoredEvent(event: HarnessEvent, token: string): HarnessEvent {
+  const exact = token
+    ? (JSON.parse(
+        JSON.stringify(event, (_key, value: unknown) =>
+          typeof value === "string" ? value.split(token).join("[REDACTED]") : value,
+        ),
+      ) as HarnessEvent)
+    : event;
+  const frame = exact.payload?.["acp_frame"] as { direction?: string; line?: string } | undefined;
+  const stored = maskHarnessEventDiagnostics(exact);
+  if (frame?.direction !== "agent" || typeof frame.line !== "string" || !isErrorFrame(frame.line))
+    return stored;
+  return {
+    ...stored,
+    payload: { ...stored.payload, acp_frame: { ...frame, line: redactSecrets(frame.line) } },
+  };
+}
+
+function isErrorFrame(line: string): boolean {
+  try {
+    const message = JSON.parse(line) as unknown;
+    return typeof message === "object" && message !== null && "error" in message;
+  } catch {
+    return false;
+  }
+}
 
 export interface AcpRunOptions {
   probe?: boolean;
@@ -199,15 +235,7 @@ export function acpRunner(entry: AcpEntry) {
         }
       })();
       try {
-        for await (const event of queue.read()) {
-          // Redact before storage, including unknown wire fields and error diagnostics.
-          const json = JSON.stringify(event, (_key, value: unknown) =>
-            typeof value === "string"
-              ? redactSecrets(token ? value.split(token).join("[REDACTED]") : value)
-              : value,
-          );
-          yield JSON.parse(json) as HarnessEvent;
-        }
+        for await (const event of queue.read()) yield acpStoredEvent(event, token);
       } finally {
         queue.close();
         try {

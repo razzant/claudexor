@@ -18,8 +18,6 @@ import type { Stats } from "node:fs";
 import { dirname, extname, join, relative as pathRelative, resolve, sep } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import { CLAUDEXOR_ARTIFACT_DIR, summarizeDiffPaths } from "@claudexor/core";
-import { containsSecretLikeToken } from "@claudexor/util";
-import { assertPersistableText, persistedPatchCopy } from "./persistedPatch.js";
 
 const RASTER_OUTPUT_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -48,26 +46,50 @@ function writeNoFollow(path: string, data: string | Buffer, mode: number, replac
   }
 }
 
-function rasterBytesIfSafe(
-  source: string,
-  maxBytes = MAX_OUTPUT_BYTES,
-): {
-  bytes: Buffer;
-  mode: number;
-} | null {
+/** Why a produced raster was not kept, by size and file shape only (never by
+ * what its bytes look like). Recorded beside `produced_files` so a reader sees
+ * every image the run linked or wrote but did not save. */
+export type ProducedOmissionReason =
+  | "over_file_cap"
+  | "over_total_cap"
+  | "unreadable"
+  | "not_regular_file"
+  | "symlink"
+  | "unsafe_path";
+
+export interface ProducedOmission {
+  path: string;
+  reason: ProducedOmissionReason;
+  /** Size observed before the decision; null when it could not be read. */
+  bytes: number | null;
+}
+
+type RasterRead =
+  | { ok: true; bytes: Buffer; mode: number }
+  | { ok: false; reason: ProducedOmissionReason; bytes: number | null };
+
+function rasterBytes(source: string, maxBytes = MAX_OUTPUT_BYTES, totalCapped = false): RasterRead {
   let fd: number | null = null;
+  let size: number | null = null;
+  const tooLarge = (): RasterRead => ({
+    ok: false,
+    reason: totalCapped ? "over_total_cap" : "over_file_cap",
+    bytes: size,
+  });
   try {
     fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > maxBytes) return null;
+    size = stat.size;
+    if (!stat.isFile()) return { ok: false, reason: "not_regular_file", bytes: null };
+    if (stat.size > maxBytes) return tooLarge();
     const bytes = readFileSync(fd);
-    if (bytes.length > maxBytes || containsSecretLikeToken(bytes.toString("latin1"))) return null;
-    return { bytes, mode: stat.mode & 0o777 };
+    size = bytes.length;
+    if (bytes.length > maxBytes) return tooLarge();
+    return { ok: true, bytes, mode: stat.mode & 0o777 };
   } catch {
-    // Detection callers interpret an unreadable raster as an unprovable secret
-    // risk; persistence callers skip it. Never let a filesystem race turn the
-    // fail-closed artifact fence into an untyped attempt crash.
-    return null;
+    // An unreadable or raced raster is skipped and disclosed; a filesystem
+    // race never turns into an untyped attempt crash.
+    return { ok: false, reason: "unreadable", bytes: size };
   } finally {
     if (fd !== null) {
       try {
@@ -79,12 +101,25 @@ function rasterBytesIfSafe(
   }
 }
 
-function copyRasterIfSafe(source: string, target: string, maxBytes: number): number | null {
-  const safe = rasterBytesIfSafe(source, maxBytes);
-  if (!safe) return null;
+function copyRaster(
+  source: string,
+  target: string,
+  maxBytes: number,
+  totalCapped: boolean,
+):
+  | { ok: true; bytes: number }
+  | { ok: false; reason: ProducedOmissionReason; bytes: number | null } {
+  const read = rasterBytes(source, maxBytes, totalCapped);
+  if (!read.ok) return read;
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  writeNoFollow(target, safe.bytes, safe.mode, false);
-  return safe.bytes.length;
+  writeNoFollow(target, read.bytes, read.mode, false);
+  return { ok: true, bytes: read.bytes.length };
+}
+
+/** The per-file cap, shrunk to what is left of the combined budget. */
+function rasterBudget(total: number): { maxBytes: number; totalCapped: boolean } {
+  const left = MAX_TOTAL_BYTES - total;
+  return { maxBytes: Math.min(MAX_OUTPUT_BYTES, left), totalCapped: left < MAX_OUTPUT_BYTES };
 }
 
 type CandidatePathStatus =
@@ -235,17 +270,33 @@ export function persistCandidateOutputs(input: {
   worktreePath: string;
   attemptDir: string;
   changedPaths: readonly string[];
-}): string[] {
+}): { preserved: string[]; omitted: ProducedOmission[] } {
   const root = resolve(input.worktreePath);
   let total = 0;
   const preserved: string[] = [];
+  const omitted: ProducedOmission[] = [];
+  const omittedPaths = new Set<string>();
+  const omit = (path: string, reason: ProducedOmissionReason, bytes: number | null) => {
+    if (omittedPaths.has(path)) return;
+    omittedPaths.add(path);
+    omitted.push({ path, reason, bytes });
+  };
   const candidates = new Map<string, { relative: string; source: string }>();
 
   for (const raw of input.changedPaths) {
     if (!RASTER_OUTPUT_EXTENSIONS.has(extname(raw).toLowerCase())) continue;
     const status = candidatePathStatus(root, raw);
-    if (status.kind !== "safe" || !status.stat.isFile()) continue;
+    // A link to a file that does not exist names nothing the run produced.
+    if (status.kind === "missing") continue;
+    if (status.kind !== "safe") {
+      omit(raw, status.kind === "symlink" ? "symlink" : "unsafe_path", null);
+      continue;
+    }
     const relative = pathRelative(root, status.path).split("\\").join("/");
+    if (!status.stat.isFile()) {
+      omit(relative, "not_regular_file", null);
+      continue;
+    }
     let identity: string;
     try {
       // realpath returns the filesystem's canonical spelling, so case and
@@ -254,6 +305,7 @@ export function persistCandidateOutputs(input: {
       // source used by the no-follow copy fence.
       identity = realpathSync.native(status.path);
     } catch {
+      omit(relative, "unreadable", null);
       continue;
     }
     if (!candidates.has(identity)) {
@@ -263,16 +315,16 @@ export function persistCandidateOutputs(input: {
 
   for (const { relative, source } of candidates.values()) {
     const target = join(input.attemptDir, "produced", relative);
-    const copied = copyRasterIfSafe(
-      source,
-      target,
-      Math.min(MAX_OUTPUT_BYTES, MAX_TOTAL_BYTES - total),
-    );
-    if (copied === null) continue;
-    total += copied;
+    const budget = rasterBudget(total);
+    const copied = copyRaster(source, target, budget.maxBytes, budget.totalCapped);
+    if (!copied.ok) {
+      omit(relative, copied.reason, copied.bytes);
+      continue;
+    }
+    total += copied.bytes;
     preserved.push(relative);
   }
-  return preserved;
+  return { preserved, omitted };
 }
 
 /**
@@ -296,62 +348,13 @@ export function collectArtifactDirMedia(input: {
     const status = candidatePathStatus(root, rel);
     if (status.kind !== "safe" || !status.stat.isFile()) continue;
     const target = join(input.attemptDir, "produced", rel);
-    const copied = copyRasterIfSafe(
-      status.path,
-      target,
-      Math.min(MAX_OUTPUT_BYTES, MAX_TOTAL_BYTES - total),
-    );
-    if (copied === null) continue;
-    total += copied;
+    const budget = rasterBudget(total);
+    const copied = copyRaster(status.path, target, budget.maxBytes, budget.totalCapped);
+    if (!copied.ok) continue;
+    total += copied.bytes;
     preserved.push(rel);
   }
   return preserved;
-}
-
-export function candidateOutputsContainSecret(input: {
-  worktreePath: string;
-  changedPaths: readonly string[];
-  artifactRelativeDir: string | null;
-}): boolean {
-  return candidateOutputSecretRisk(input).risky;
-}
-
-export function candidateOutputSecretRisk(input: {
-  worktreePath: string;
-  changedPaths: readonly string[];
-  artifactRelativeDir: string | null;
-}): {
-  risky: boolean;
-  riskyPaths: string[];
-  nonReversiblePaths: string[];
-  artifactDirectoryUnsafe: boolean;
-} {
-  const root = resolve(input.worktreePath);
-  const artifactMedia = artifactMediaPaths(root, input.artifactRelativeDir);
-  const riskyPaths: string[] = [];
-  const nonReversiblePaths: string[] = [];
-  const paths = [...input.changedPaths, ...artifactMedia.paths];
-  for (const relative of new Set(paths)) {
-    if (!RASTER_OUTPUT_EXTENSIONS.has(extname(relative).toLowerCase())) continue;
-    const status = candidatePathStatus(root, relative);
-    if (status.kind === "missing") continue;
-    if (status.kind !== "safe" || !status.stat.isFile()) {
-      riskyPaths.push(relative);
-      // A text patch can represent the symlink or special-file directory
-      // entry, but rollback cannot prove anything about bytes reached through
-      // that entry. Never collapse it to a followed realpath identity.
-      nonReversiblePaths.push(relative);
-      continue;
-    }
-    const safe = rasterBytesIfSafe(status.path);
-    if (!safe) riskyPaths.push(relative);
-  }
-  return {
-    risky: artifactMedia.unsafe || riskyPaths.length > 0,
-    riskyPaths,
-    nonReversiblePaths,
-    artifactDirectoryUnsafe: artifactMedia.unsafe,
-  };
 }
 
 export function rasterLinksInMarkdown(markdown: string): string[] {
@@ -375,38 +378,32 @@ export function writeCandidateAttemptArtifacts(input: {
   artifactRelativeDir: string | null;
   /** The EXACT candidate diff: diffstat and changed paths are computed on it. */
   diff: string;
-  /** The saved copy when it differs from the exact diff (secret-like strings
-   * hidden); `patch.diff` never holds anything else (INV-062). */
-  persistedDiff?: string;
   /** False when no candidate patch may be retained (readonly or uncaptured):
    * even an empty patch.diff would falsely imply an inspectable patch exists. */
   persistPatch?: boolean;
   /** False for an uncaptured candidate: no answer-adjacent or artifact-dir
-   * media is retained. An individual secret-like raster is skipped either way. */
+   * media is retained. */
   persistProducedMedia?: boolean;
   answerText?: string;
   record: Record<string, unknown>;
-}): string[] {
+}): { produced: string[]; omitted: ProducedOmission[] } {
   // A capture refusal must not strand the completed answer only in memory or
-  // the stream transcript. Persist the already-redacted selected answer per attempt.
+  // the stream transcript. Persist the exact selected answer per attempt.
   if (input.answerText) {
-    assertPersistableText("attempt answer", input.answerText);
     input.store.writeText(join(input.attemptDir, "answer.md"), input.answerText);
   }
   const persistPatch = input.persistPatch !== false;
   if (persistPatch) {
-    const saved = input.persistedDiff ?? persistedPatchCopy(input.diff, []).text;
-    assertPersistableText("attempt patch copy", saved);
-    input.store.writePatch(join(input.attemptDir, "patch.diff"), saved);
+    input.store.writePatch(join(input.attemptDir, "patch.diff"), input.diff);
   }
   const stats = summarizeDiffPaths(input.diff);
   // Build one candidate path set before the first filesystem write. A raster
   // may be both linked from markdown and discovered under the owned artifact
   // directory; copying each source in a separate pass would race itself on the
   // O_EXCL destination and would incorrectly grant each pass its own byte cap.
-  const produced =
+  const { preserved: produced, omitted } =
     input.persistProducedMedia === false
-      ? []
+      ? { preserved: [], omitted: [] }
       : persistCandidateOutputs({
           worktreePath: input.worktreePath,
           attemptDir: input.attemptDir,
@@ -428,8 +425,38 @@ export function writeCandidateAttemptArtifacts(input: {
         }
       : {}),
     produced_files: produced,
+    ...(omitted.length ? { produced_omitted: omitted } : {}),
   });
-  return produced;
+  return { produced, omitted };
+}
+
+/** `\n`-prefixed omission line for a summary template; "" when nothing was left out. */
+export function producedOmissionDisclosure(
+  omitted: readonly ProducedOmission[] | undefined,
+): string {
+  const line = producedOmissionSummaryLine(omitted);
+  return line ? `\n${line}` : "";
+}
+
+/** One `summary.md` line naming every produced image that was not saved, with
+ * its size and reason; null when nothing was left out. */
+export function producedOmissionSummaryLine(
+  omitted: readonly ProducedOmission[] | undefined,
+): string | null {
+  if (!omitted?.length) return null;
+  const reasons: Record<ProducedOmissionReason, string> = {
+    over_file_cap: `over the ${MAX_OUTPUT_BYTES / 1024 / 1024} MiB per-image cap`,
+    over_total_cap: `over the ${MAX_TOTAL_BYTES / 1024 / 1024} MiB combined image budget`,
+    unreadable: "unreadable",
+    not_regular_file: "not a regular file",
+    symlink: "a symbolic link",
+    unsafe_path: "outside the workspace or behind a link",
+  };
+  const named = omitted
+    .slice(0, 5)
+    .map((o) => `${o.path}: ${reasons[o.reason]}${o.bytes === null ? "" : `, ${o.bytes} bytes`}`);
+  if (omitted.length > 5) named.push(`+${omitted.length - 5} more`);
+  return `- Images not saved: ${omitted.length} (${named.join("; ")})`;
 }
 
 /** Copy preserved winner outputs into the run root so relative markdown links

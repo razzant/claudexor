@@ -64,6 +64,8 @@ import {
   buildFileBackedSynthesisInput,
   materializeWinnerOutputs,
   stageFileBackedContext,
+  producedOmissionDisclosure,
+  producedOmissionSummaryLine,
   writeCandidateAttemptArtifacts,
 } from "./candidateOutputs.js";
 import { processAttemptUsage } from "./attemptUsage.js";
@@ -198,6 +200,8 @@ import {
 import {
   acceptedTryOutput,
   AccessProfileIncompatibleError,
+  AnswerAssembly,
+  appendHarnessEvent,
   AuxiliaryWritableRootsUnsupportedError,
   CLAUDEXOR_BROWSER_ARTIFACT_SUBDIR,
   countsAsAgentProgress,
@@ -249,7 +253,6 @@ import {
 import {
   promptWithEngineConstraints,
   sleep,
-  redactHarnessEvent,
   harnessEventPayload,
   safeErrorMessage,
   renderSummary,
@@ -368,7 +371,6 @@ import {
 } from "@claudexor/budget";
 import {
   readTextSafe,
-  appendLine,
   hashJson,
   newId,
   noProjectRepoRoot,
@@ -2492,7 +2494,7 @@ export class Orchestrator {
     // QA-024: emit the belt-failure disclosure event at most once per attempt.
     let beltFailureDisclosed = false;
     const errors: string[] = [];
-    let answer = new secretDiff.CountedAnswerAssembly();
+    let answer = new AnswerAssembly();
     let currentCapture: Awaited<ReturnType<WorkspaceManager["captureDiff"]>> | undefined;
     const retryPolicy = transientRetryPolicy(this.config(contract.repo.root));
     // QA-024: the delegation belt is the ONLY engine-owned extra MCP server
@@ -2538,7 +2540,7 @@ export class Orchestrator {
         currentCapture = undefined;
         // A3 per-try isolation: no output, progress marker or model proof crosses tries.
         if (nativeTry > 0) {
-          answer = new secretDiff.CountedAnswerAssembly();
+          answer = new AnswerAssembly();
           beginNativeRetry(telemetry);
         }
         const clearFileBackedContext = stageFileBackedContext(
@@ -2581,30 +2583,29 @@ export class Orchestrator {
             const stopped = signal?.aborted === true;
             if (!stopped) rawPatch = captureRawPatchEnvelope(sizeRawContext !== null, rawPatch, ev);
             if (ev.type === "patch_produced") continue;
-            const safeEv = redactHarnessEvent(ev);
-            if (directory) observeDirectoryPaths(observedPaths, safeEv, envelope.worktree_path);
+            if (directory) observeDirectoryPaths(observedPaths, ev, envelope.worktree_path);
             const capped = dropDeltaPastBudget(
-              safeEv,
+              ev,
               deltaFlood,
               Orchestrator.MAX_DELTAS_PER_ATTEMPT,
               (t, p) => log?.emit(t, p),
               adapter.id,
               attemptId,
             );
-            const display = !stopped && !capped && safeEv.payload?.["buffered"] !== true;
-            log?.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv), display);
+            const display = !stopped && !capped && ev.payload?.["buffered"] !== true;
+            log?.emit("harness.event", harnessEventPayload(adapter.id, attemptId, ev), display);
             if (signal?.aborted) continue; // a live observer may itself have pressed Stop
-            if (display) safeInvoke(onHarnessEvent, safeEv);
-            observeAuthSwitch(log, adapter.id, attemptId, safeEv);
-            observeAttemptTelemetry(telemetry, safeEv);
-            const mismatch = continuity.observe(safeEv, runSpec, telemetry.outputMarkers);
+            if (display) safeInvoke(onHarnessEvent, ev);
+            observeAuthSwitch(log, adapter.id, attemptId, ev);
+            observeAttemptTelemetry(telemetry, ev);
+            const mismatch = continuity.observe(ev, runSpec, telemetry.outputMarkers);
             if (mismatch) {
               harnessErrored = true;
               errors.push(mismatch);
               break;
             }
             if (inPlaceEnvelope && continuity.mayPublishSession)
-              observeNativeSessionEvent(runInput, adapter.id, safeEv);
+              observeNativeSessionEvent(runInput, adapter.id, ev);
             // QA-024: the injected delegation belt's MCP server reported a
             // terminal startup failure. Disclose it ONCE while live; recoverable
             // exact tool-result failures are evaluated at attempt finalization.
@@ -2623,10 +2624,10 @@ export class Orchestrator {
                 reason: "mcp_server_failed_to_start",
               });
             }
-            emitPlanProgress((t, p) => log?.emit(t, p), adapter.id, attemptId, safeEv);
-            if (safeEv.type === "usage") {
+            emitPlanProgress((t, p) => log?.emit(t, p), adapter.id, attemptId, ev);
+            if (ev.type === "usage") {
               const usage = processAttemptUsage({
-                event: safeEv,
+                event: ev,
                 telemetry,
                 harnessId: adapter.id,
                 attemptId,
@@ -2644,17 +2645,17 @@ export class Orchestrator {
                 break;
               }
             }
-            if (safeEv.type === "error") {
+            if (ev.type === "error") {
               harnessErrored = true;
-              errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
+              errors.push(redactSecrets(ev.error ?? ev.text ?? "harness emitted error"));
             }
             // Capture assistant prose so an answer-only turn (no file changes) still
             // has an honest output artifact; a TYPED final message wins verbatim.
-            answer.observeCounted(ev, safeEv);
+            answer.observe(ev);
             // Observe ALL budget/quota signals (one codex usage event carries
             // BOTH spend and quota); pressure disclosed once per attempt.
-            observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
-            this.deps.quotaEventSink?.(adapter.id, safeEv);
+            observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
+            this.deps.quotaEventSink?.(adapter.id, ev);
           }
           if (sizeRawContext && !harnessErrored)
             await consumeRawPatchEnvelope({
@@ -2769,15 +2770,12 @@ export class Orchestrator {
       workReportMode,
       { sideToolReport: telemetry.sideToolWorkReport ?? undefined },
     );
-    const redacted = redactSecrets(unwrapped.deliverable);
-    // INV-062: the (already redacted) answer is kept whatever the patch holds.
-    const answerText = redacted.trim().length > 0 ? redacted : undefined;
+    const answerText = unwrapped.deliverable.trim().length > 0 ? unwrapped.deliverable : undefined;
     if (directory) await captureDirectory();
     const captured: secretDiff.CandidateCapture = directory
       ? { diff: "", captureRefusal: directoryCapture.refusal }
       : await secretDiff.captureCandidateWorkspace({
-          ...{ wsm, envelope, inPlace: inPlaceEnvelope, projectRoot: store.repoRoot },
-          ...{ answerText, answerMatches: answer.secretLikeMatches() },
+          ...{ wsm, envelope, inPlace: inPlaceEnvelope },
           holder: { runId: paths.runId, runDir: paths.root },
           incompleteCapture: currentCapture?.captureIncomplete ? currentCapture : undefined,
         });
@@ -2867,14 +2865,14 @@ export class Orchestrator {
       aborted: signal?.aborted === true,
       authMode: telemetry.authMode,
     });
-    const producedFiles = AC.withAttemptFailureCost(
+    const { produced: producedFiles, omitted: producedOmitted } = AC.withAttemptFailureCost(
       () =>
         writeCandidateAttemptArtifacts({
           store,
           attemptDir,
           worktreePath: envelope.worktree_path,
           artifactRelativeDir,
-          ...{ diff, persistedDiff: captured.persistedDiff },
+          diff,
           persistPatch: !directory && captureRefusal === undefined && isMutatingAccess(access),
           persistProducedMedia: !directory && captureRefusal === undefined,
           answerText,
@@ -2935,6 +2933,7 @@ export class Orchestrator {
       reviewCwd: envelope.worktree_path,
       baseSha: envelope.base_sha ?? undefined,
       producedFiles,
+      ...(producedOmitted.length ? { producedOmitted } : {}),
       gates,
       cost,
       errored,
@@ -3113,7 +3112,7 @@ export class Orchestrator {
     const reviewDir = join(paths.root, "review-evidence");
     if (contract.review_requested !== false)
       writeEvidencePacket(reviewDir, {
-        userIntent: redactSecrets(input.prompt),
+        userIntent: input.prompt,
         diff: "(per-candidate diffs are supplied to reviewers individually)\n",
         tests: renderTestsEvidence(contract),
       });
@@ -3422,7 +3421,7 @@ export class Orchestrator {
                 harness: adapter.id,
                 profileId: input.credentialProfileId ?? null,
                 priorPrompt: input.prompt,
-                priorOutput: run.answerText ?? run.persistedDiff ?? run.diff ?? "",
+                priorOutput: run.answerText ?? run.diff ?? "",
               }),
             );
             // Reserve the continuation lease BEFORE any disclosure: a denied lease
@@ -4317,7 +4316,7 @@ export class Orchestrator {
             evidences,
             synth.reason,
             actualReviewVerified,
-            secretDiff.secretLikeSummaryLine(winnerRun.secretLike),
+            producedOmissionSummaryLine(winnerRun?.producedOmitted),
           ),
           racePool(),
         ),
@@ -4681,7 +4680,7 @@ export class Orchestrator {
     const reviewDir = join(paths.root, "review-evidence");
     if (contract.review_requested !== false)
       writeEvidencePacket(reviewDir, {
-        userIntent: redactSecrets(input.prompt),
+        userIntent: input.prompt,
         diff: "(per-attempt)\n",
         tests: renderTestsEvidence(contract),
       });
@@ -5499,14 +5498,14 @@ export class Orchestrator {
           },
         });
       }
-      // INV-062: the answer is kept for every convergence result, patch or files.
+      // The exact answer is kept for every convergence result, patch or files.
       if (lastRun.answerText) {
         store.writeText(join(paths.finalDir, "answer.md"), lastRun.answerText);
         log.emit("output.ready", { kind: "answer", path: "final/answer.md" });
       }
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `${withPoolAttempts(`# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}${secretDiff.summaryDisclosure(lastRun.secretLike)}`, convPool)}\n`,
+        `${withPoolAttempts(`# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}${producedOmissionDisclosure(lastRun.producedOmitted)}`, convPool)}\n`,
       );
       // Lifecycle invariant (all modes): output.ready precedes the terminal
       // event so a client that applied the terminal event has the output.
@@ -5988,10 +5987,8 @@ export class Orchestrator {
         }
         const text = outcome.text ?? "(no output)";
         plans.push({ id: outcome.harnessId, text });
-        store.writeText(
-          join(paths.root, "plans", `${outcome.harnessId}.md`),
-          redactSecrets(text) + "\n",
-        );
+        // The planner's own saved copy keeps its exact text (INV-146).
+        store.writeText(join(paths.root, "plans", `${outcome.harnessId}.md`), text + "\n");
         // Solo planning (D31): the FIRST successful planner is the plan; later
         // pool members are a sequential fallback chain (ask parity), not
         // parallel co-authors. Council re-enables the multi-draft round.
@@ -6623,7 +6620,7 @@ export class Orchestrator {
           readonlyWorkEnvelope,
         );
         const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
-        const answer = new secretDiff.CountedAnswerAssembly();
+        const answer = new AnswerAssembly();
         const telemetry = createAttemptTelemetry(
           knobs.webPolicy,
           contract.external_context.web_required,
@@ -6740,7 +6737,7 @@ export class Orchestrator {
           // A3 per-try isolation (candidate-lane parity): a failed try's output,
           // progress markers and model proof never carry into the next try.
           if (nativeTry > 0) {
-            answer = new secretDiff.CountedAnswerAssembly();
+            answer = new AnswerAssembly();
             beginNativeRetry(telemetry);
           }
           const runSpec =
@@ -6781,30 +6778,29 @@ export class Orchestrator {
               stopSignal: input.signal, // after Stop: drained events are recorded, never used
             });
             for await (const ev of watchedReport) {
-              const safeEv = redactHarnessEvent(ev);
               // A read after Stop is stored evidence only; a callback may itself press Stop.
-              const shown = !input.signal?.aborted && safeEv.payload?.["buffered"] !== true;
-              if (shown) safeInvoke(input.onHarnessEvent, safeEv);
-              observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+              const shown = !input.signal?.aborted && ev.payload?.["buffered"] !== true;
+              if (shown) safeInvoke(input.onHarnessEvent, ev);
+              observeAuthSwitch(log, adapter.id, attemptId, ev);
               const live = shown && !input.signal?.aborted; // the callback may have pressed Stop
-              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv), live);
-              appendLine(attemptEventsPath, JSON.stringify(safeEv));
+              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, ev), live);
+              appendHarnessEvent(attemptEventsPath, ev);
               if (input.signal?.aborted) continue;
-              observeAttemptTelemetry(telemetry, safeEv);
-              const mismatch = continuity.observe(safeEv, runSpec, telemetry.outputMarkers);
+              observeAttemptTelemetry(telemetry, ev);
+              const mismatch = continuity.observe(ev, runSpec, telemetry.outputMarkers);
               if (mismatch) {
                 harnessError = mismatch;
                 break;
               }
               if (laneRun && continuity.mayPublishSession)
-                observeNativeSessionEvent(input, adapter.id, safeEv);
-              emitPlanProgress((t, p) => log.emit(t, p), adapter.id, attemptId, safeEv);
+                observeNativeSessionEvent(input, adapter.id, ev);
+              emitPlanProgress((t, p) => log.emit(t, p), adapter.id, attemptId, ev);
               // read-only routes burn quota too (the orchestrate PLANNER is
               // the loudest) — same single owner as the agent loop.
-              observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
-              this.deps.quotaEventSink?.(adapter.id, safeEv);
+              observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
+              this.deps.quotaEventSink?.(adapter.id, ev);
               const spend = observeReadonlySpend(
-                safeEv,
+                ev,
                 (t, p) => log.emit(t, p),
                 adapter.id,
                 attemptId,
@@ -6828,9 +6824,9 @@ export class Orchestrator {
                 break;
               }
               // A TYPED final message wins verbatim over joined narration.
-              answer.observeCounted(ev, safeEv);
-              if (safeEv.type === "error")
-                harnessError = redactSecrets(safeEv.error || "harness emitted an error");
+              answer.observe(ev);
+              if (ev.type === "error")
+                harnessError = ev.error ? redactSecrets(ev.error) : "harness emitted an error";
             }
           } catch (err) {
             harnessError = safeErrorMessage(err);
@@ -6915,7 +6911,7 @@ export class Orchestrator {
       // Trim symmetrically with the plan path: a whitespace-only answer is not
       // a delivered report (the final-artifact wrapper heading would otherwise
       // make it read as present content by construction).
-      const report = redactSecrets(roUnwrapped.deliverable).trim();
+      const report = roUnwrapped.deliverable.trim();
       const unrecovered = unrecoveredToolErrors(telemetry);
       const webBlocked = webUnsatisfied(telemetry);
       const reportPresent = report.length > 0;
@@ -7004,7 +7000,6 @@ export class Orchestrator {
         harnessId: adapter.id,
         status: scoutInterrupted ? "failed" : "success",
         report: report || "(no output)",
-        answerMatches: answer.secretLikeMatches(),
         error: scoutInterrupted ? "context capacity exhausted before the scout completed" : null,
         telemetry,
         ...(scoutInterrupted ? { interrupted: true } : {}),
@@ -7241,9 +7236,8 @@ export class Orchestrator {
     // whole decision + reducer spawn lives in deepScanReducer.ts (its owner).
     let deepScanSynthesis: DeepScanSynthesis | null = null;
     let reducedReport: string | null = null;
-    let answerMatches = succeeded.reduce((sum, a) => sum + (a.answerMatches ?? 0), 0);
     if (opts.deepScan) {
-      ({ deepScanSynthesis, reducedReport, answerMatches } = await resolveDeepScanSynthesis(
+      ({ deepScanSynthesis, reducedReport } = await resolveDeepScanSynthesis(
         this.deepScanReducerDeps(input, contract, log),
         {
           succeeded,
@@ -7349,12 +7343,11 @@ export class Orchestrator {
     const harnessLabel = attempts
       .map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`)
       .join(", ");
-    const secretLike = secretDiff.answerSecretLikeFinding(answerMatches);
     // A delivered report that still ends unsuccessfully or blocked keeps it and names every failed try.
     const reportPool = terminalPoolAttempts(terminalFacts, attempts);
     store.writeText(
       join(paths.finalDir, "summary.md"),
-      `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}${secretDiff.summaryDisclosure(secretLike)}\n\n${withPoolAttempts(report, reportPool)}\n`,
+      `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${withPoolAttempts(report, reportPool)}\n`,
     );
     const reportProducerAttemptId =
       opts.deepScan &&
@@ -7373,7 +7366,6 @@ export class Orchestrator {
         mode: opts.mode,
         intent: opts.intent,
         read_only: true,
-        ...(secretLike ? { secret_like: secretLike } : {}),
       },
     });
     log.emit("work_product.emitted", { kind: "report", winner: reportProducerAttemptId });
@@ -7431,7 +7423,7 @@ export class Orchestrator {
       facts: terminalFacts,
       winner: null,
       runDir: paths.root,
-      summary: withPoolAttempts(redactSecrets(report).slice(0, 400), reportPool),
+      summary: withPoolAttempts(report.slice(0, 400), reportPool),
       candidates: candidateSummaries,
     };
   }

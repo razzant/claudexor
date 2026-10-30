@@ -6,7 +6,6 @@ import { ArtifactStore } from "@claudexor/artifact-store";
 import type { HarnessAdapter } from "@claudexor/core";
 import { Orchestrator, type RunInput } from "@claudexor/orchestrator";
 import { ConformanceReport, HarnessManifest, McpRunHandleResult } from "@claudexor/schema";
-import { containsSecretLikeToken } from "@claudexor/util";
 import { projectRecoveryRunDetail } from "./mcp-run-projections.js";
 
 const roots: string[] = [];
@@ -51,7 +50,7 @@ function harness(id: string, reply: string, narration: string): HarnessAdapter {
 }
 
 async function readOnlyRun(input: Partial<RunInput>, secretOutput: boolean) {
-  const repo = mkdtempSync(join(tmpdir(), "readonly-disclosure-"));
+  const repo = mkdtempSync(join(tmpdir(), "readonly-exact-"));
   roots.push(repo);
   // Build fake credentials only at runtime; never store a secret-shaped literal.
   const secret = ["sk", "a".repeat(24)].join("-");
@@ -85,26 +84,18 @@ async function readOnlyRun(input: Partial<RunInput>, secretOutput: boolean) {
     finalSummary: summary,
     primaryOutput: { kind: input.mode === "plan" ? "plan" : "report", path, text: output },
   };
-  for (const text of [
-    output,
-    summary,
-    JSON.stringify(workProduct),
-    readFileSync(join(result.runDir, "events.jsonl"), "utf8"),
-  ]) {
-    expect(containsSecretLikeToken(text)).toBe(false);
-    expect(text.includes(secret)).toBe(false);
-  }
-  return { result, output, summary, workProduct, detail };
+  const events = readFileSync(join(result.runDir, "events.jsonl"), "utf8");
+  return { result, output, summary, workProduct, detail, events, secret };
 }
 
-describe("read-only secret-like disclosure from raw events through artifacts to MCP", () => {
+describe("read-only answers stay exact from raw events through artifacts to MCP (INV-146)", () => {
   it.each([
     { mode: "ask" as const },
     { mode: "plan" as const },
     { mode: "ask" as const, deepScan: true, n: 1 },
     { mode: "ask" as const, deepScan: true, n: 2 },
     { mode: "plan" as const, council: true, n: 2 },
-  ])("keeps and discloses the selected answer for %j", async (input) => {
+  ])("keeps the selected credential-shaped answer exactly for %j", async (input) => {
     const run = await readOnlyRun(input, true);
     expect(run.workProduct.producer_attempt_id).toBe(
       input.mode === "plan"
@@ -115,36 +106,19 @@ describe("read-only secret-like disclosure from raw events through artifacts to 
           ? "synth"
           : "a01",
     );
-    expect(run.output).toContain("Keep this answer: [redacted] and [redacted].");
-    expect
-      .soft(run.workProduct.meta["secret_like"])
-      .toMatchObject({ answer_matches: 2, total_matches: 2 });
-    expect.soft(run.summary).toContain("2 hidden in the answer");
+    // A reducer/council merge is the fake's deterministic merge; every other
+    // selected answer is the harness's exact final text.
+    if (!("council" in input) && !("deepScan" in input && input.n === 2))
+      expect(run.output).toContain(`Keep this answer: ${run.secret} and ${run.secret}.`);
+    expect(run.output).not.toContain("[redacted]");
+    expect(run.events).toContain(run.secret);
+    expect(run.workProduct.meta["secret_like"]).toBeUndefined();
+    expect(run.summary).not.toContain("Secret-like strings:");
     for (const mode of ["__run_result", "__run_status"]) {
       const projected = McpRunHandleResult.parse(
         projectRecoveryRunDetail(mode, run.result.runId, run.detail),
       );
-      expect.soft(projected.secretLike).toEqual({
-        answerMatches: 2,
-        totalMatches: 2,
-        files: [],
-        binaryPaths: [],
-        mediaWithheld: [],
-        persistedPatch: "exact",
-        exactPatchRecorded: null,
-      });
+      expect(projected.secretLike).toBeNull();
     }
   });
-
-  it.each(["ask", "plan"] as const)(
-    "%s: a clean final supersedes discarded narration counts",
-    async (mode) => {
-      const run = await readOnlyRun({ mode }, false);
-      expect(run.workProduct.meta["secret_like"]).toBeUndefined();
-      expect(run.summary).not.toContain("Secret-like strings:");
-      expect(
-        projectRecoveryRunDetail("__run_result", run.result.runId, run.detail)["secretLike"],
-      ).toBeNull();
-    },
-  );
 });

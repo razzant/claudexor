@@ -5,8 +5,8 @@ import type { AttemptOutcomeClass } from "./attemptFinalize.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import type { DeclaredFailure } from "./runTerminalResults.js";
 import type { AppliedAttemptFacts } from "./delegatedHome.js";
+import type { ProducedOmission } from "./candidateOutputs.js";
 import type { CaptureRefusal } from "./secretDiff.js";
-import type { SecretLikeFinding } from "./persistedPatch.js";
 import { toolWarnings } from "./attemptTelemetry.js";
 import { directoryHasOutput, type DirectoryCandidate } from "./directoryCandidate.js";
 import { gatesPassed } from "@claudexor/review";
@@ -23,6 +23,8 @@ export interface CandidateRun extends ContinuityTerminalFacts {
   reviewCwd?: string;
   baseSha?: string;
   producedFiles?: string[];
+  /** Produced images that were not saved, with size and reason. */
+  producedOmitted?: ProducedOmission[];
   gates: GateResult[];
   cost: number;
   errored: boolean;
@@ -30,16 +32,11 @@ export interface CandidateRun extends ContinuityTerminalFacts {
   errors: string[];
   telemetry: AttemptTelemetry;
   infraPhase?: "workspace" | "harness";
-  /** The saved copy of `diff` when secret-like strings had to be hidden in it
-   * (INV-062). `diff` itself is always the exact patch; absent = identical. */
-  persistedDiff?: string;
-  /** Disclosure of what the saved copies hide: paths and counts, never values. */
-  secretLike?: SecretLikeFinding;
   /** The candidate's changes could not be captured at all. Secret-like content
    * is never a refusal; this is the honest name of a failed capture. */
   captureRefusal?: CaptureRefusal;
-  /** Where the exact bytes of an isolated candidate still are when its private
-   * exact patch object could not be written (the envelope is kept, not deleted). */
+  /** Where the exact bytes of an isolated candidate still are when its capture
+   * was incomplete (the envelope is kept, not deleted). */
   exactBytesRetainedAt?: string;
   /** Untracked nested repositories the capture left out of `diff` (exact
    * paths); the attempt record and the final work product disclose them. */

@@ -205,9 +205,13 @@ entries; do not invent an `@profile` mini-grammar.
   turns can change the live project tree. Choose `isolated` explicitly when you
   want a persistent thread worktree and a later Apply step. Standalone CLI/MCP
   candidate runs still use external isolated envelopes.
-- A secret-like value inside a prompt is hard-blocked at every ingress with
-  the typed `inline_secret_rejected` error. Store credentials with
-  `claudexor secrets set` and reference them; there is no bypass flag.
+- Prompts, instructions, messages and attachments reach the selected harness
+  exactly, including credential-shaped test fixtures, and stay in the local
+  run records. Claudexor does not refuse or mask them by pattern. Keys that
+  Claudexor itself uses belong in `claudexor secrets set`. Only `pr` delivery
+  checks content: the pinned Betterleaks scanner reads what would be pushed,
+  and a finding (`publication_scan_findings`), an unavailable scanner or a
+  failed scan refuses before anything is published.
 
 ## After a mutating run
 

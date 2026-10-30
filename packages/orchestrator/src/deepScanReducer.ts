@@ -13,8 +13,13 @@ import type {
   HarnessRunSpec,
 } from "@claudexor/schema";
 import type { BudgetLedger } from "@claudexor/budget";
-import { countsAsAgentProgress, withInactivityWatchdog } from "@claudexor/core";
-import { appendLine, redactSecrets, safeInvoke } from "@claudexor/util";
+import {
+  AnswerAssembly,
+  appendHarnessEvent,
+  countsAsAgentProgress,
+  withInactivityWatchdog,
+} from "@claudexor/core";
+import { redactSecrets, safeInvoke } from "@claudexor/util";
 import type { RunPaths } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import { buildDeepScanReducerPrompt } from "@claudexor/synthesis";
@@ -22,12 +27,7 @@ import { type BudgetDenial, classifyBudgetFailure } from "./budgetFailure.js";
 import type { RoutedAdapter } from "./orchestrator.js";
 import { finalizeAttempt } from "./attemptFinalize.js";
 import { unwrapWorkReportEnvelope, type WorkReportEnvelopeMode } from "./workReportEnvelope.js";
-import {
-  redactHarnessEvent,
-  harnessEventPayload,
-  observeBudgetSignals,
-  safeErrorMessage,
-} from "./runSupport.js";
+import { harnessEventPayload, observeBudgetSignals, safeErrorMessage } from "./runSupport.js";
 import {
   type AttemptTelemetry,
   createAttemptTelemetry,
@@ -37,7 +37,6 @@ import {
 } from "./attemptTelemetry.js";
 import { settleGrantedAttemptLease } from "./attemptUsageCost.js";
 import { runModelGovernedRoute } from "./modelGovernance.js";
-import { CountedAnswerAssembly } from "./secretDiff.js";
 
 /** The reducer runs under the fixed `synth` attempt id (roster/cost visible). */
 export const DEEP_SCAN_REDUCER_ATTEMPT_ID = "synth";
@@ -120,7 +119,7 @@ export interface DeepScanReducerArgs {
 }
 
 export type DeepScanReducerResult =
-  | { status: "success"; report: string; answerMatches: number }
+  | { status: "success"; report: string }
   | { status: "failed"; error: string }
   | { status: "budget_denied"; denial: BudgetDenial }
   // Outer cancellation discards partial synthesis and stays distinct from failure.
@@ -295,33 +294,32 @@ export async function runDeepScanReducer(
     built.model,
   );
   settlementTelemetry = telemetry;
-  const answer = new CountedAnswerAssembly();
+  const answer = new AnswerAssembly();
   const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
   const budgetSignalState = { quotaPressureDisclosed: false };
   let harnessError: string | null = null;
   let stoppedDuringRun: ReducerStop | null = null;
   const observeEvent = (event: HarnessEvent, acceptDeliverable: boolean): void => {
-    const safeEv = redactHarnessEvent(event);
     log.emit(
       "harness.event",
-      harnessEventPayload(adapter.id, attemptId, safeEv),
-      safeEv.payload?.["buffered"] !== true,
+      harnessEventPayload(adapter.id, attemptId, event),
+      event.payload?.["buffered"] !== true,
     );
-    appendLine(attemptEventsPath, JSON.stringify(safeEv));
-    if (!acceptDeliverable && !REDUCER_CLEANUP_EVENT_TYPES.has(safeEv.type)) return;
-    if (safeEv.payload?.["buffered"] !== true) safeInvoke(args.onHarnessEvent, safeEv);
-    observeAttemptTelemetry(telemetry, safeEv);
-    observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
-    deps.quotaEventSink?.(adapter.id, safeEv);
-    if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-      cost += safeEv.usage.cost_usd;
-      if (safeEv.usage.estimated) costEstimated = true;
+    appendHarnessEvent(attemptEventsPath, event);
+    if (!acceptDeliverable && !REDUCER_CLEANUP_EVENT_TYPES.has(event.type)) return;
+    if (event.payload?.["buffered"] !== true) safeInvoke(args.onHarnessEvent, event);
+    observeAttemptTelemetry(telemetry, event);
+    observeBudgetSignals(ledger, log, adapter.id, attemptId, event, budgetSignalState);
+    deps.quotaEventSink?.(adapter.id, event);
+    if (event.type === "usage" && event.usage?.cost_usd) {
+      cost += event.usage.cost_usd;
+      if (event.usage.estimated) costEstimated = true;
       log.emit("budget.observation", {
         harness_id: adapter.id,
         attempt_id: attemptId,
         kind: "spend",
-        usd: safeEv.usage.cost_usd,
-        estimated: safeEv.usage.estimated === true,
+        usd: event.usage.cost_usd,
+        estimated: event.usage.estimated === true,
       });
     }
     const streamDenial = updateProcessingStreamHold(
@@ -336,9 +334,9 @@ export async function runDeepScanReducer(
       processingDenial ??= streamDenial;
       requestStop("budget");
     }
-    if (acceptDeliverable && !streamDenial) answer.observeCounted(event, safeEv);
-    if (safeEv.type === "error") {
-      harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+    if (acceptDeliverable && !streamDenial) answer.observe(event);
+    if (event.type === "error") {
+      harnessError = event.error ? redactSecrets(event.error) : "harness emitted an error";
     }
   };
   const drainAfterStop = async (
@@ -426,7 +424,7 @@ export async function runDeepScanReducer(
   const unwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", built.workReportMode, {
     sideToolReport: telemetry.sideToolWorkReport ?? undefined,
   });
-  const report = redactSecrets(unwrapped.deliverable);
+  const report = unwrapped.deliverable;
   const finalized = finalizeAttempt({
     deliverableEvidence: report.trim().length > 0,
     harnessErrored: harnessError !== null,
@@ -490,7 +488,7 @@ export async function runDeepScanReducer(
     status: "success",
     ...telemetrySummary(telemetry),
   });
-  return { status: "success", report, answerMatches: answer.secretLikeMatches() };
+  return { status: "success", report };
 }
 
 /** Run the reducer only when multiple reports and an eligible route exist. */
@@ -501,7 +499,6 @@ export async function resolveDeepScanSynthesis(
       attemptId: string;
       harnessId: string;
       report: string;
-      answerMatches?: number;
       telemetry: AttemptTelemetry;
     }[];
     adapters: RoutedAdapter[];
@@ -520,7 +517,6 @@ export async function resolveDeepScanSynthesis(
 ): Promise<{
   deepScanSynthesis: DeepScanSynthesis;
   reducedReport: string | null;
-  answerMatches: number;
 }> {
   const unreduced = (
     status: "skipped" | "failed",
@@ -529,7 +525,6 @@ export async function resolveDeepScanSynthesis(
   ) => ({
     deepScanSynthesis: { status, reducer_attempt_id: reducerAttemptId, reason },
     reducedReport: null,
-    answerMatches: args.succeeded.reduce((sum, scout) => sum + (scout.answerMatches ?? 0), 0),
   });
   if (args.succeeded.length < 2) {
     return unreduced("skipped", "single scout report needs no merge");
@@ -571,7 +566,6 @@ export async function resolveDeepScanSynthesis(
         reason: null,
       },
       reducedReport: reduced.report,
-      answerMatches: reduced.answerMatches,
     };
   }
   // DeepScanSynthesis has no cancelled member; the outer run still terminalizes cancelled.

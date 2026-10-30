@@ -356,6 +356,20 @@ Tests and local smokes must never touch real user state:
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public
   CLI cannot select a storage backend.
+- `pr` delivery tests that exercise the real publication scanner run only when
+  `CLAUDEXOR_BETTERLEAKS_PATH` names the pinned build; provision it with
+  `node scripts/provision-betterleaks.mjs --dest <file>` (CI does this before
+  its publication scan). Their transport is a local bare remote and a fake
+  `gh`; nothing is pushed off the machine. See
+  [Publication scanner](ARCHITECTURE.md#publication-scanner).
+- On macOS, `scripts/build-engine-resources.sh` stages the pinned darwin
+  scanners into `native/betterleaks/`. It downloads the two official archives
+  unless `CLAUDEXOR_BETTERLEAKS_ARCHIVES` names a directory that already holds
+  them; both digests are checked either way. A development build that cannot
+  stage them prints a warning and ships none, so its `pr` refuses as
+  unavailable; `CLAUDEXOR_REQUIRE_BETTERLEAKS=1` (release, macOS CI) makes that
+  an error. `build-remote-runtime.mjs` takes the target's archive with
+  `--betterleaks-archive`.
 - Model-response changes exercise the actual adapter through the model-operation
   and resource/HTTP owners with injected provider I/O. Pin byte-faithful failed
   SSE and HTTP-body evidence, original exception causes, legacy query/result
@@ -722,9 +736,10 @@ Use this split:
 
 Local operator guidance belongs in gitignored local files such as `AGENTS.md`.
 Temporary adversarial review packets and release scratch belong outside public
-docs. Review gates must be file-backed and diagnosable: persist local/redacted
-per-reviewer artifacts and progress events, and point reviewers at evidence
-files instead of embedding large diffs in process argv.
+docs. Review gates must be file-backed and diagnosable: persist local
+per-reviewer artifacts (reviewer text exact, diagnostic copies masked) and
+progress events, and point reviewers at evidence files instead of embedding
+large diffs in process argv.
 
 ## Governance Rules
 

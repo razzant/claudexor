@@ -234,27 +234,30 @@ describe("ordinary directory workspaces", () => {
   });
 });
 
-// A vendor state root (auth, config, sessions) is a credential-store path for
-// the shared sensitive-resource policy: selected for capture it is refused,
-// never copied or published. A scope that leaves it out keeps working.
+// A vendor state root (auth, config, sessions) inside a selected project folder
+// is ordinary project content (INV-146): it is copied, captured and published
+// like any other folder. The credential-store path class only guards imports
+// of arbitrary host files.
 describe("vendor state directories in a selected folder", () => {
   it.each([".grok", ".claude"])(
-    "refuses a selected %s directory and keeps a scope that excludes it working",
+    "copies and captures a selected %s directory like any other project folder (INV-146)",
     async (dir) => {
       const f = await fixture();
       await mkdir(join(f.source, dir, "sessions"), { recursive: true });
       await writeFile(join(f.source, dir, "config.toml"), "[cli]\n");
       await writeFile(join(f.source, dir, "sessions", "s.jsonl"), '{"role":"user"}\n');
-      // Isolated copy of the whole folder: refused while the copy is prepared.
-      await expect(
-        f.manager.create({
-          taskId: "t",
-          attemptId: "copy",
-          workspaceKind: "directory",
-          scopePaths: ["."],
-        }),
-      ).rejects.toThrow("Selected file uses a credential-resource path; no artifact was published");
-      // Writable in-place whole-folder work: refused at capture, nothing published.
+      const copied = await f.manager.create({
+        taskId: "t",
+        attemptId: "copy",
+        workspaceKind: "directory",
+        scopePaths: ["."],
+      });
+      expect(await readFile(join(copied.worktree_path, dir, "config.toml"), "utf8")).toBe(
+        "[cli]\n",
+      );
+      await writeFile(join(copied.worktree_path, dir, "config.toml"), "[cli]\nx = 1\n");
+      const captured = await f.manager.captureFiles(copied, join(f.root, "run-copy"));
+      expect(captured.changedPaths).toEqual([`${dir}/config.toml`]);
       const live = await f.manager.create({
         taskId: "t",
         attemptId: "live",
@@ -263,34 +266,9 @@ describe("vendor state directories in a selected folder", () => {
         scopePaths: ["."],
       });
       await writeFile(join(f.source, "src", "a.txt"), "live\r\n");
-      await expect(f.manager.captureFiles(live, join(f.root, "run-live"))).rejects.toThrow(
-        "no artifact was published",
-      );
-      await expect(readdir(join(f.root, "run-live", "final", "files"))).rejects.toThrow();
-      // Surviving paths: copied and in-place scopes that leave the directory out.
-      const copied = await f.manager.create({
-        taskId: "t",
-        attemptId: "scoped",
-        workspaceKind: "directory",
-        scopePaths: ["src", "unselected.txt"],
-      });
-      expect((await readdir(copied.worktree_path)).sort()).toEqual(["src", "unselected.txt"]);
-      await writeFile(join(copied.worktree_path, "src", "a.txt"), "after\r\n");
-      const captured = await f.manager.captureFiles(copied, join(f.root, "run-scoped"));
-      expect(captured.changedPaths).toEqual(["src/a.txt"]);
-      const direct = await f.manager.create({
-        taskId: "t",
-        attemptId: "live-scoped",
-        workspaceKind: "directory",
-        inPlace: true,
-        scopePaths: ["src"],
-      });
-      await writeFile(join(f.source, "src", "a.txt"), "direct\r\n");
-      const directCapture = await f.manager.captureFiles(direct, join(f.root, "run-direct"));
-      expect(directCapture.changedPaths).toEqual(["src/a.txt"]);
-      for (const manifest of [captured.manifest, directCapture.manifest])
-        expect(manifest.entries.some((entry) => entry.path.startsWith(dir))).toBe(false);
-      expect(await readFile(join(f.source, dir, "config.toml"), "utf8")).toBe("[cli]\n");
+      const direct = await f.manager.captureFiles(live, join(f.root, "run-live"));
+      expect(direct.changedPaths).toContain("src/a.txt");
+      expect(direct.manifest.entries.some((entry) => entry.path.startsWith(dir))).toBe(true);
     },
   );
 

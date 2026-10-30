@@ -1162,7 +1162,7 @@
       "path": "/v2/runs/:id/events/:id",
       "mutating": false,
       "applicability": "run",
-      "summary": "Read one bounded part of one validated run event by seq, in the exact redacted serialization the run event stream delivers.",
+      "summary": "Read one bounded part of one validated run event by seq, in the exact stored serialization the run event stream delivers.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [

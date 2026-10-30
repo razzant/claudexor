@@ -8,7 +8,7 @@ import {
   type EventReplayCursor,
   type EventReplayFrame,
 } from "./event-replay-batch.js";
-import { redactedSseLine, streamLineIdentity } from "./sse-shared.js";
+import { sseDataLine, streamLineIdentity } from "./sse-shared.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -47,7 +47,7 @@ function oldReplay(text: string, lastEventId: number): EventReplayFrame[] {
       return {
         seq,
         type,
-        data: redactedSseLine(raw),
+        data: sseDataLine(raw),
         terminal: ["run.completed", "run.failed", "run.blocked"].includes(type),
       };
     })
@@ -155,7 +155,7 @@ describe("finite event replay", () => {
     expect(collect(log(text), 50).frames).toEqual(oldReplay(text, 50));
   });
 
-  it("preserves UTF-8 carry and redacts a complete event across byte batches", () => {
+  it("preserves UTF-8 carry and delivers a complete event exactly across byte batches", () => {
     const secret = "sk-proj-" + "a".repeat(48);
     const prefix = '{"type":"text","seq":1,"text":"';
     const text =
@@ -164,7 +164,7 @@ describe("finite event replay", () => {
     const actual = collect(path, 0);
     expect(actual.frames).toEqual(oldReplay(text, 0));
     expect(actual.frames[0]!.data).toContain("😀");
-    expect(actual.frames[0]!.data).not.toContain(secret);
+    expect(actual.frames[0]!.data).toContain(secret);
     expect(actual.batches).toBeGreaterThan(2);
   });
 

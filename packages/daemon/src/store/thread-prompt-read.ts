@@ -7,8 +7,10 @@ import {
 import type { BlobFiles } from "./blob-files.js";
 import type { EngineStore } from "./store.js";
 
-/** Prompt blobs are immutable, already redacted by the turn owner before hashing.
- * SQL substr bounds inline allocation; file reads allocate only maxBytes+1. */
+/** Prompt blobs are immutable and hold the turn's exact prompt (INV-146); a turn
+ * written under the retired INV-062 keeps the masked prompt it stored then, read
+ * back as stored. SQL substr bounds inline allocation; file reads allocate only
+ * maxBytes+1. */
 export function readThreadPromptPart(
   store: EngineStore,
   blobs: BlobFiles,

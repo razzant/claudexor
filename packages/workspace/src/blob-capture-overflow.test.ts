@@ -41,5 +41,4 @@ it("keeps a complete binary patch when only secret inspection exceeds the buffer
   const captured = await captureWorkingTreeTransient(root, "HEAD");
   expect(captured.captureIncomplete).toBe(false);
   expect(captured.patch).toContain("GIT binary patch");
-  expect(captured.binarySecretPaths).toEqual(["binary.bin"]);
 });

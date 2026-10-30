@@ -5,7 +5,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +23,29 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture({ darwin = false } = {}) {
+/** Stand-in for scripts/provision-betterleaks.mjs: logs its argv; `--stage`
+ * writes a scanner answering `version` with `version`, and
+ * `--refresh-provenance` logs how many signatures each staged copy carries. */
+function provisionerStub(log, { fail = false, version = "1.9.0" } = {}) {
+  return `import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const args = process.argv.slice(2);
+if (${fail}) process.exit(1);
+if (args[0] === "--stage") {
+  for (const key of args[args.indexOf("--platforms") + 1].split(",")) {
+    mkdirSync(join(args[1], "betterleaks", key), { recursive: true });
+    writeFileSync(join(args[1], "betterleaks", key, "betterleaks"), "#!/bin/sh\\necho ${version}\\n", { mode: 0o755 });
+  }
+} else {
+  const root = join(args[1], "betterleaks");
+  args.push(readdirSync(root).sort().map((key) =>
+    (readFileSync(join(root, key, "betterleaks"), "utf8").match(/# signature/g) ?? []).length));
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
+`;
+}
+
+function fixture({ darwin = false, scanner = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "engine-resource-stage-"));
   roots.push(root);
   const repo = join(root, "repo");
@@ -38,7 +62,19 @@ function fixture({ darwin = false } = {}) {
       "#!/bin/sh\nprintf 'claudexor-process-identity-v2\\t%s\\t1\\t1\\t000001\\n' \"$2\"\n",
       { mode: 0o755 },
     );
-    writeFileSync(join(bin, "uname"), "#!/bin/sh\nprintf 'Darwin\\n'\n", { mode: 0o755 });
+    writeFileSync(
+      join(bin, "uname"),
+      "#!/bin/sh\nif [ \"$1\" = -m ]; then printf 'arm64\\n'; else printf 'Darwin\\n'; fi\n",
+      { mode: 0o755 },
+    );
+  }
+  const scannerLog = join(root, "provision.log");
+  if (scanner) {
+    writeFileSync(
+      join(repo, "scripts/provision-betterleaks.mjs"),
+      provisionerStub(scannerLog, scanner),
+    );
+    symlinkSync(process.execPath, join(bin, "node"));
   }
   writeFileSync(
     join(bin, "pnpm"),
@@ -80,8 +116,9 @@ printf '# signature\\n' >> "$target"
     CLAUDEXOR_WIN32_CONPTY_SHA256: "",
     CLAUDEXOR_REQUIRE_WIN32_CONPTY_HELPER: "0",
     SIGN_IDENTITY: darwin ? "fixture" : "",
+    CLAUDEXOR_REQUIRE_BETTERLEAKS: "0",
   };
-  return { root, script, native, out, env };
+  return { root, script, native, out, env, scannerLog };
 }
 
 shellTest(
@@ -130,6 +167,52 @@ shellTest(
     expect(existsSync(join(f.out, "native"))).toBe(false);
   },
 );
+
+shellTest(
+  "Darwin bundles the pinned scanner for both macOS architectures, signed before provenance",
+  () => {
+    const f = fixture({ darwin: true, scanner: {} });
+    const result = spawnSync("/bin/bash", [f.script, f.out], { env: f.env, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const native = join(realpathSync(f.out), "native");
+    expect(
+      readFileSync(f.scannerLog, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([
+      ["--stage", native, "--platforms", "darwin-arm64,darwin-x64"],
+      // Provenance is refreshed after each staged copy was signed exactly once.
+      ["--refresh-provenance", native, [1, 1]],
+    ]);
+  },
+);
+
+shellTest.each([
+  { name: "a required build without a stageable scanner", stub: { fail: true }, require: "1" },
+  { name: "a scanner that fails its version probe", stub: { version: "1.8.0" }, require: "0" },
+])("Darwin refuses $name", ({ stub, require }) => {
+  const f = fixture({ darwin: true, scanner: stub });
+  const result = spawnSync("/bin/bash", [f.script, f.out], {
+    env: { ...f.env, CLAUDEXOR_REQUIRE_BETTERLEAKS: require },
+    encoding: "utf8",
+  });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(
+    stub.fail ? /requires the pinned publication scanner/ : /failed its offline version probe/,
+  );
+});
+
+shellTest("Darwin development builds without a stageable scanner say so and ship none", () => {
+  const f = fixture({ darwin: true, scanner: { fail: true } });
+  const result = spawnSync("/bin/bash", [f.script, f.out], { env: f.env, encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stderr).toMatch(/publication scanner not bundled/);
+  expect(existsSync(join(f.out, "native/betterleaks"))).toBe(false);
+  expect(
+    readFileSync(join(f.out, "native/claudexor-process-identity"), "utf8").match(/# signature/g),
+  ).toHaveLength(1);
+});
 
 shellTest.each(["missing", "failed_probe"])("Darwin refuses a %s native helper", (failure) => {
   const f = fixture({ darwin: true });

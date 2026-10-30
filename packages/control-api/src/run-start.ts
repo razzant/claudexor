@@ -20,7 +20,6 @@ import {
   taskGroupLaunchMetadata,
 } from "@claudexor/schema";
 import {
-  assertNoInlineSecretValues,
   noProjectRepoRoot,
   safeProblemContext,
   safeProblemMessage,
@@ -240,7 +239,6 @@ export function normalizeRunStartRequest(
   raw: unknown,
   options: RunStartNormalizationOptions = {},
 ): ControlRunStartRequest {
-  assertNoInlineSecretValues(raw);
   return normalizeRunStart(ControlRunStartRequest.parse(raw ?? {}), options);
 }
 
@@ -402,7 +400,6 @@ export async function handleRunCreate(
   try {
     idempotencyKey = requiredIdempotencyKey(req);
     const body = await resolveContinuationBody(ctx.daemon, await ctx.readBody(req));
-    assertNoInlineSecretValues(body);
     recorded = recordedRunStartReplayProjection(RecordedControlRunStartRequest.parse(body));
   } catch (error) {
     return ctx.requestError(res, error);

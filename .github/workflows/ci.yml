@@ -25,19 +25,6 @@ jobs:
           # the gate fails loudly on unreachable parents rather than skip).
           fetch-depth: 0
 
-      # Secret scan runs FIRST — before any toolchain/lifecycle step can read
-      # or echo repository contents. The patterns cannot self-match their own
-      # literals (each embeds a `[` that breaks the class), so workflow files
-      # are scanned too; verified empirically.
-      - name: Secret scan
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git grep -InE '(\bsk-[A-Za-z0-9_-]{20,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-or-[A-Za-z0-9_-]{20,}|\bghp_[A-Za-z0-9_]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|xox[baeprs]-[A-Za-z0-9-]{10,}|\bnpm_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- . ':!pnpm-lock.yaml'; then
-            echo "::error::Potential token-like secret found in tracked files."
-            exit 1
-          fi
-
       # No `version:` here — pnpm/action-setup reads the `packageManager` field in package.json
       # (the pinned pnpm version). Specifying both causes
       # ERR_PNPM_BAD_PM_VERSION.
@@ -49,6 +36,25 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
+
+      # The publication scan runs before any dependency install or lifecycle
+      # step can read or echo repository contents. It is the same pinned
+      # Betterleaks adapter `pr` delivery uses (INV-146), loaded from source
+      # with Node's type stripping: the outgoing commit range (merges and commit
+      # messages included) plus the complete tracked tree (attributes committed
+      # in it do not apply; the runner's Git configuration does), live
+      # validation off, findings by rule and place only.
+      - name: Provision publication scanner (pinned Betterleaks)
+        run: |
+          node scripts/provision-betterleaks.mjs --dest "$RUNNER_TEMP/betterleaks/betterleaks"
+          # Later test steps exercise the same pinned binary in `pr` delivery tests.
+          echo "CLAUDEXOR_BETTERLEAKS_PATH=$RUNNER_TEMP/betterleaks/betterleaks" >> "$GITHUB_ENV"
+
+      - name: Publication scan
+        env:
+          CLAUDEXOR_BETTERLEAKS_PATH: ${{ runner.temp }}/betterleaks/betterleaks
+          SCAN_RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}
+        run: node scripts/publication-scan.mjs --repo . --range "$SCAN_RANGE" --tree HEAD
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -464,6 +470,9 @@ jobs:
         shell: bash
         env:
           CLAUDEXOR_BUILD_SHA: ${{ github.sha }}
+          # Stage, sign-free provenance and the offline version probe of the
+          # bundled darwin publication scanners are part of this build.
+          CLAUDEXOR_REQUIRE_BETTERLEAKS: "1"
         run: |
           set -euo pipefail
           resources="$RUNNER_TEMP/engine-resources"

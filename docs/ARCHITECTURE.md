@@ -116,10 +116,9 @@ a revert anchor, then emits the failed terminal; this records unavoidable live
 bytes honestly without treating them as reviewed success. Direct directory
 effects instead use the [file-result contract](#directory-execution), with no
 unproved revert anchor. Secret-like output takes no exception on this path:
-the live bytes stay where the harness wrote them, the WorkProduct and its revert
-anchor are recorded as for any other turn, and INV-062 hides the matches only in
-the persisted and served copies (see
-[Secret-like output: keep and mask](#secret-like-output-keep-and-mask)). The one
+the live bytes stay where the harness wrote them, and the WorkProduct, its
+exact patch and its revert anchor are recorded as for any other turn (see
+[Exact working content](#exact-working-content)). The one
 remaining capture-time refusal is a capture that could not observe the changes
 at all; it is recorded as `capture_refused` with `applied_review_blocked` and no
 anchor, never as a rollback. In a mixed
@@ -1026,8 +1025,8 @@ complete content of a [directory file result](#directory-execution).
 Browser-produced media is written below one envelope-owned child,
 `.claudexor-artifacts/<envelope-id>/`, never into a shared Claudexor-owned
 project namespace. A persisted ownership marker outside the project binds the
-exact child used by Browser output, candidate-media collection, diff exclusion,
-secret scanning, and cleanup. A pre-existing `.claudexor-artifacts` root and
+exact child used by Browser output, candidate-media collection, diff exclusion
+and cleanup. A pre-existing `.claudexor-artifacts` root and
 every sibling remain ordinary project/user state: they are captured when
 changed and are never recursively removed by run disposal. The envelope owner
 record also persists the original envelope id and whether the workspace is
@@ -1861,67 +1860,99 @@ wire-patchable as `profileLimitAction` on `GET/POST /v2/settings` (the app's
 tri-state auto-switch control: Off=`fail` / Auto / On=`rotate`); rotation
 order and headroom keep their stored values.
 
-### Secret-like output: keep and mask
+### Exact working content
 
-INV-062 separates two things that used to be one check. A secret-like value in
-an INPUT (prompt, run params, instructions) is still hard-blocked at every
-ingress. A secret-like string in agent OUTPUT is no longer a reason to roll
-back, discard or fail anything: the content policy
-(`sensitiveResourcePolicy`, one rule set for redaction and detection) is a
-persistence classifier.
+INV-146 (which retired INV-062) treats credential-shaped text like any other
+text. Nothing on the working path refuses, masks, omits or withholds content
+because it looks like a key, a bearer header, a PEM block or a JWT, or because
+its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
 
-- **Exact bytes are untouched.** The changed files (in-place tree or candidate
-  envelope), the in-memory candidate diff, the patch a race adopts, the
-  synthesis input and every digest keep the bytes the agent wrote. The check
-  never mutates the project.
-- **Saved copies hide the matches.** `attempts/<a>/patch.diff`,
-  `final/patch.diff` and the reviewer packet `DIFF.patch` are written from
-  `persistedPatchCopy`: each absorbed content line of a match becomes `[redacted]`
-  with its diff prefix and line ending preserved, and diff structure lines
-  (file headers, `@@` hunk headers, the no-newline marker) stay verbatim, so
-  the copy keeps its file records and hunk counts; the payload of a
-  binary file whose pre- or postimage holds (or cannot be proven free of)
-  secret-like bytes is withheld, and the copy opens with a one-line notice.
-  A copy with nothing to hide is byte-identical to the exact diff and carries
-  no notice. A reviewer workspace copy still omits files with secret-like
-  content; the reviewer judges the saved diff. Events, retained output, gate
-  tails, reviewer artifacts and the answer are redacted as before; the answer
-  is always kept.
-- **Images.** A raster that matches the policy, cannot be read or exceeds the
-  size cap is not copied into `produced/`; the run continues.
-- **Disclosure, never values.** `attempts/<a>/attempt.yaml` and
-  `final/work_product.yaml` meta carry `secret_like`: per-file `path`,
-  `matches` and rule `kinds`, `binary_paths`, `media_withheld`,
-  `answer_matches` (counted before the first redaction) and `total_matches`.
-  `final/summary.md` adds one line, and the MCP read tools project the same
-  record as `secretLike`. Read-only Ask, Plan and their reducers use the same
-  pre-redaction answer counter: the selected final answer supplies the count,
-  or the sum of the retained scouts when deep-scan returns a raw bundle.
-- **Apply binds to the exact digest.** `meta.patch_sha256` is always the digest
-  of the exact patch, so a redacted copy cannot pass the apply gate on any
-  route. When the saved copy differs, meta records `persisted_patch: redacted`
-  and `exact_patch_object` (the digest), and the exact bytes are stored in the
-  private per-project object store that also holds revert anchors
-  (`<project runtime>/anchors/objects`, mode 0600, never listed or served). One
-  resolver serves deferred Apply, apply/check, `accept_clean_patch`, the
+- **Ingress.** CLI, `POST /v2/runs`, thread turns, live and deferred messages,
+  interaction answers, MCP and ACP accept prompts, instructions, output
+  schemas and test commands as typed by their strict schemas; there is no
+  `inline_secret_rejected` code. The task contract (`context/task.yaml`), the
+  command journal, served job params, thread history, `run.created` and the
+  command-list preview carry the exact text, so Exact Retry, Run Again,
+  continuation and later turns read back what was sent.
+- **Events and answers.** Harness events are journaled with their working
+  content exact; the answer, plan, read-only report, deep-scan reducer output,
+  retained output and SSE frames are the bytes the harness produced. Every
+  journal writer (the run's `events.jsonl` through `harnessEventPayload`, and
+  the planner, read-only, deep-scan and reviewer attempt journals through
+  `appendHarnessEvent`) passes the event through one typed seam,
+  `maskHarnessEventDiagnostics` in `@claudexor/core`: it masks an event's
+  `error`, an error event's text and every value of its native payload except
+  the model's own `partial_output` (a failed raw-API completion's bounded
+  partial text, kept exact and never adopted as the answer), and the diagnostic
+  payload keys (`vendor_failure`, `stderr_tail`, `stderr`, `launch_advisory`,
+  `provider_error`, `error`) and nothing else; a source scan
+  in its test fails if a writer bypasses it. Adapters do not mask working
+  content either: the ACP adapter removes only the managed token it injected
+  and masks only the raw lines of the agent's JSON-RPC error frames (every
+  other raw frame stays exact); the Claude adapter masks a native
+  API failure's prose where it is not an error event (the CLI's synthetic
+  API-error turn and the result's status copy), while a successful answer and
+  the partial output of any other non-success result stay exact; the Codex
+  adapter masks the text and native fields of an in-turn retry notice and of a
+  native warning where it creates them. Claude
+  `AskUserQuestion` text and options are shown exactly, and answers are keyed
+  by the native question text. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
+  tool results keep unmasked summaries of their output (`content_summary`, and
+  a failed tool's own `error_summary`) within each adapter's existing bound and
+  whitespace normalization: for a completed tool that summary is the only copy
+  of its output Claudexor keeps. The work report's required inputs stay
+  exact in telemetry and run facts, a planner's own `plans/<harness>.md` copy
+  is its exact text, and the gate argv disclosed to a candidate is the argv the
+  gate runner executes. Masking never replaces the only copy of working
+  content (model-authored or user-provided material) in an answer, event or
+  record. Engine and vendor diagnostics (errors, stderr tails, auth and probe
+  output, vendor failure text, retry and entitlement notices, native warnings)
+  are not working content: `redactSecrets` masks them and they may be retained
+  only in masked form (the run telemetry's web and tool-error summaries are
+  masked copies of the journaled tool results). When Cursor cannot confirm that a shell command ended, the
+  complete native result it keeps (`native_result`: the command and its
+  output) is that record and stays exact like the tool target.
+- **Patches.** `attempts/<a>/patch.diff` and `final/patch.diff` hold the exact
+  patch; `patch_sha256` is its digest. Review, synthesis, gates and apply all
+  read that one patch, with no second masked copy and no extra exact-object
+  store. Rasters are copied into `produced/` by size and symlink rules only;
+  an image the run wrote or linked but that was not saved (over the 16 MiB
+  per-image cap or the 32 MiB combined budget, unreadable, not a regular file,
+  a symlink or outside the workspace) is recorded as `produced_omitted`
+  (`path`, `bytes`, `reason`) in `attempt.yaml` and the final work-product
+  meta, and named on one `summary.md` line ("Images not saved").
+- **Review and context.** `DIFF.patch`, `USER_INTENT.md` and the other packet
+  files are exact; sealed packets are verified by manifest and digest, not
+  scanned. Reviewer workspaces and context packs include credential-named and
+  credential-shaped project files; root and symlink containment, the
+  `.git`/`node_modules`/runtime exclusions and the candidate inventory still
+  decide what crosses.
+- **Execution.** Gate commands are not refused for their text; Codex
+  approval reviews are offered for credential-shaped commands and paths inside
+  the run's cwd and granted roots (size and root checks remain).
+- **Attachments and served files.** Uploads and attachments are checked for
+  digest and size, not name or content. Run artifacts,
+  `/v2/projects/:id/outputs` and `/v2/runs/:id/produced` serve exact bytes
+  under their path and size caps.
+- **What still guards credentials.** Engine-owned credentials stay in their
+  physical stores (scoped homes outside every worktree, INV-063; Claudexor
+  secrets and account homes under the runtime root), behind daemon
+  authentication, explicit grants, read-only/trust policy, root and symlink
+  containment and digest integrity. Importing an arbitrary host file
+  (`upload-import`, the MCP document source) keeps its path-class guard,
+  because that boundary can reach outside any authorized project. Policy risk
+  still rates changes to credential-named paths as critical for review.
+- **Leaving the machine.** Local `apply`, `branch` and `commit` are allowed
+  without any scan. `pr` is gated by the publication scanner (below).
+- **Historical runs.** A run written under INV-062 may carry
+  `persisted_patch: redacted`, `exact_patch_object` and `secret_like`. One
+  resolver still binds deferred Apply, apply/check, `accept_clean_patch`, the
   `accept_risk` digest binding, thread contribution checks and RunFacts
-  eligibility. A missing, unrecorded or corrupt object answers the typed 409
-  `patch_exact_bytes_unavailable` before any tree is touched. The gate checks
-  work-product integrity before the override-pending permission. An isolated
-  candidate's object is written while its envelope still exists; if that write
-  fails the envelope is kept rather than deleted.
-- **Leaving the machine.** Local `apply`, `branch` and `commit` are allowed.
-  `pr` is refused by `verifyAndDeliver` for a text match or a recorded blob-only
-  binary finding, before the fresh verifier, the caller's authorization and
-  any push.
-- **Served files.** Text artifacts are redacted when served. Media and other
-  binaries from run artifacts, `/v2/projects/:id/outputs` and
-  `/v2/runs/:id/produced` pass the same content policy; a matching file answers
-  409 `secret_like_content_withheld`. A raw patch artifact that still matches
-  answers 409 as before.
-- **Raw API.** A raw patch proposal with secret-like content is no longer
-  refused early; scope, preimage and digest evidence are enforced unchanged and
-  the proposal reaches saved artifacts only through the same capture.
+  eligibility to that private exact object, answering the typed 409
+  `patch_exact_bytes_unavailable` when it is missing; the MCP read tools still
+  project its `secretLike` disclosure. Masked copies are never restored.
+- **Raw API.** A raw patch proposal with secret-like content is not refused;
+  scope, preimage and digest evidence are enforced unchanged.
 - **Capture refusal.** A capture that cannot observe the changes (a thrown
   capture, a non-Git folder without a baseline, a `diff` that cannot read a
   file) remains a refusal under its own name: `capture_refusal` on the attempt,
@@ -1930,21 +1961,133 @@ persistence classifier.
   untracked folder holding its own Git repository that the worktree's
   `.gitmodules` does not declare is left out of the candidate capture and of
   the in-place turn snapshot instead of failing them. The capture names it,
-  top-relative, as `excluded_nested_repositories` (redacted) on the attempt
-  and in the final work product's meta; a declared submodule is captured as
-  its commit link. An isolated envelope is not kept for such a folder: its
-  bytes go with the envelope.
+  top-relative, as `excluded_nested_repositories` on the attempt and in the
+  final work product's meta; a declared submodule is captured as its commit
+  link. An isolated envelope is not kept for such a folder: its bytes go with
+  the envelope.
 
-Deliberate limits. A real secret an agent wrote stays in the tree or is applied
-exactly: the agent already had a shell there, and the disclosure names the
-files. The exact object and the post-turn snapshot hold the same bytes as the
-tree; their lifetime follows [disk retention](#7-control-api), including unnamed
-objects from isolated candidates that later lose their race. Applying `final/patch.diff` outside Claudexor applies `[redacted]`; the
-notice says so. Directory results still fail closed on their content scan
-(their manifest has no per-file `withheld` form). A token split across two
-events is redacted per event, vendor session transcripts are outside this
-boundary, and a host that keeps its own exact patch copy of a delegated child
-owns that copy.
+### Publication scanner
+
+`pr` is the one delivery that sends bytes off this machine, and the one
+content check. `packages/delivery/src/publication-scan.ts` drives the pinned
+open-source scanner Betterleaks 1.9.0 (MIT). The pin
+(`packages/delivery/src/publication-scanner-pin.ts`, which also locates the
+executable) lists, per platform
+(darwin, linux, win32 × arm64, x64), the official release archive digest and
+the extracted binary digest. Runtime never downloads. The executable is, in
+order: the file named by `CLAUDEXOR_BETTERLEAKS_PATH` (the only candidate when
+set), the copy bundled beside the engine bundle under
+`native/betterleaks/<platform>/`, or the provisioned copy at
+`<config root>/tools/betterleaks/1.9.0/<platform>/`. Explicit and provisioned
+copies must match the binary pin. A bundled copy must match it too, or be the
+release's signed copy of it: macOS signing rewrites the executable, so its
+`provenance.json` names the pinned upstream digest and records the digest of
+the bundled bytes. That record lives in the same release-owned resource tree as
+the engine code, so it catches a wrong or altered staging, not someone who can
+already rewrite the engine bundle. A present bundled copy that does not match
+is refused, never skipped in favour of another candidate.
+
+Distribution. `scripts/lib/betterleaks-stage.mjs` is the one staging step: it
+checks the official archive and the binary against the pin and the MIT license,
+then writes `betterleaks`, `LICENSE` and `provenance.json`. The engine-resource
+build stages darwin-arm64 and darwin-x64 for the universal macOS app and its
+update closure; release builds sign them in place with the other native helpers
+and then record the signed digests. The closure builder accepts only those two
+and, with `CLAUDEXOR_REQUIRE_BETTERLEAKS=1` (release and macOS CI), requires
+both. Each per-target SSH runtime archive carries only its own target's build
+under `lib/native/betterleaks/<target>/`, which `verify-remote-runtime-archive.mjs`
+checks. The release and remote-runtime SBOMs list every bundled scanner with
+its upstream source and digest. The npm packages have no per-platform payload
+and carry no scanner: an npm-installed CLI uses `CLAUDEXOR_BETTERLEAKS_PATH`
+or the provisioned copy. `scripts/provision-betterleaks.mjs` is the explicit
+setup/CI step for that copy (it downloads or takes `--from-archive`, checks
+both digests and installs the binary with its license); from an npm install,
+the binary extracted from the official v1.9.0 archive for the platform works
+the same way through `CLAUDEXOR_BETTERLEAKS_PATH`. With no matching scanner
+`pr` refuses `publication_scan_unavailable`; local apply, branch and commit
+are unaffected.
+
+For `pr`, `deliverUnlocked` materializes the exact candidate tree, creates the
+commit object it will publish (unreferenced until adopted) and calls
+`gatePublication` before any branch, index, ref or push. The outgoing range is
+bound to the push destinations, the URLs `git push origin` sends to
+(`git remote get-url --push --all origin`: the `pushurl` entries, or every
+`url` when none is set, with `pushInsteadOf` applied). Each is read now with
+`git ls-remote <url>` (never prompting), the tips that exist locally are
+reduced to independent commits, and that destination's range is
+`<commit> --not <those tips>`; each distinct destination is scanned. The fetch
+URL, another remote's refs and stale remote-tracking refs do not shrink it, and
+an unreadable destination refuses with `publication_scan_failed`, naming the
+URL's position, never the URL. After a clean scan delivery pushes exactly that
+commit object (`git push --no-follow-tags --recurse-submodules=no origin
+<commit>:refs/heads/<branch>`), so a branch ref moved in the meantime cannot
+substitute other bytes, and then records the branch's upstream. The scan covers
+that range in Git history mode (so earlier unsent commits are in scope,
+including a secret added and later deleted) plus, in directory mode, the same
+range's commit messages, the branch name, PR title and PR body. `git log -p`
+shows no diff for a merge, so history is read with `--diff-merges=remerge`
+(Git 2.36 or newer): each two-parent merge shows only what it changed beyond
+Git's own automatic merge (a conflict resolution or an "evil" merge), never
+content its parents already carried, so merging the destination into a branch
+does not re-flag what the destination already published. Git has no remerge
+view of an octopus merge; those merges alone are scanned again for what they
+add over their first parent, which can re-flag content a non-first parent
+already published. An older Git rejects the option and the scan fails
+(`publication_scan_failed`), never reads as clean. The PR body
+is copied once into a private file; that copy is both scanned and handed to
+`gh`. Flags are fixed: an explicit default rule config, an empty ignore file,
+`--ignore-gitleaks-allow`, `--validation=false`, `--redact=100`,
+`--exit-code 0` and a JSON report. History is read through a neutral root whose
+`.git` file points at the repository, so the outgoing worktree's
+`.gitleaksignore`/`.betterleaksignore` is not loaded; `BETTERLEAKS_*` and
+`GITLEAKS_*` environment variables are dropped. Only exit 0 with a JSON list
+is clean, and for the history and octopus passes only when Git also proves it
+delivered the whole stream. Betterleaks reports what it read: a `git log`
+killed by a signal before writing to stderr ends the stream early and the
+scanner still exits 0 with a list. Each of those passes therefore runs with
+`GIT_TRACE2_EVENT` pointed at a fresh private directory (other `GIT_TRACE2*`
+variables dropped), and `verifyGitStreamTrace` requires at least one `git log`
+process in the trace and, for every `git log` process (by trace2 session id),
+an `exit` or `atexit` record with code 0 and no `signal` record. No trace, an
+unreadable trace, no `git log`, a missing exit record, a signal or a nonzero
+code refuses with `publication_scan_failed`; the history is not re-read to
+recover. The `git ls-remote --get-url` lookup Betterleaks also runs (exit 128
+without a remote) is not part of the content stream and is ignored. Limits: a
+Git that writes no trace2 events, or a Git trace2.maxFiles setting low enough to
+stop per-process files, refuses rather than passes; the proof was exercised on
+macOS (Homebrew Git 2.53 and Apple Git 2.50, pinned darwin build), not on
+Windows Git. A finding refuses with `publication_scan_findings`; a missing or
+unpinned binary with `publication_scan_unavailable`; a nonzero exit, timeout,
+missing, empty, non-list or malformed report with `publication_scan_failed`.
+The delivery receipt carries `publicationRefusal` (code, detail, and for
+findings rule id, place, line and commit, never the matched text), and the
+run Apply route answers 409 with that code. Nothing local is changed by a
+refusal. Betterleaks redacts the matched value but reports a file path or
+label as given, so every distinct place in the findings (and every tracked
+path a failed tree check names) is itself scanned by the same pinned scanner,
+one private file each: a place it flags is shown as the value-free
+`withheld location (sha256 <12 hex>)`, and when that check cannot run every
+place is withheld; rule, line and commit stay, and the result is never clean.
+The working file and its path are untouched. A name carrying a value the
+scanner does not recognise on its own is shown as is. The repository's CI and release workflows run the same adapter from
+source (Node type stripping) before dependency install, over the event's
+commit range (merges and commit messages included) and the complete tracked
+tree; a release in publish mode also scans the reviewed annotated tag's
+message (`scripts/publication-scan.mjs --tag <name>`). In the tree scan,
+attributes committed in the scanned tree (such as `export-ignore`) do not
+apply while the runner's own Git configuration (such as core.autocrlf) does,
+and the tree's root `.gitleaksignore` and `.betterleaksignore` are scanned as
+ordinary files, never loaded as ignore lists.
+
+Betterleaks applies its own coverage rules: some binary, archive and lockfile
+content is skipped and low-entropy placeholders may not match, so a clean scan
+is not proof that nothing sensitive is present.
+
+Deliberate limits. A real secret placed in a prompt, attachment or project
+file is ordinary task material: it reaches the selected model and stays in
+local run records like the rest of the work, as with other agent tools.
+Publication is the one content check. Vendor session transcripts are outside
+Claudexor's records.
 
 ## 6. Main Execution Paths
 
@@ -2030,7 +2173,9 @@ fails, the run still writes inspectable failure artifacts
 `run.failed`.
 
 Ask also tracks normalized tool lifecycle. `tool_result.is_error === true`
-preserves redacted detail in the event payload and blocks a green verified claim
+keeps the failed tool's own output in the event payload as an unmasked
+summary (the adapter's existing bound and normalization; the run telemetry's
+error summary is a separate masked copy) and blocks a green verified claim
 unless verified recovery exists, but a produced deliverable can still be terminal
 success with warnings. A command result's optional `command_outcome` is separate
 from its tool-call `status`: when it does not report an observed exit (the
@@ -2165,9 +2310,10 @@ materializes only into a clean isolated tree), so a later round after an
 applied patch is refused `raw_patch_requires_isolation`. The project's
 `context` config binds it:
 `mandatory_files` are delivered complete, exempt from the ordinary 256 KiB
-per-file and budget omissions, and a mandatory path that is missing, unreadable,
-sensitive or absent from the bound base tree refuses the attempt before any
-request (`raw_context_mandatory_unavailable`); `include`/`exclude` select the
+per-file and budget omissions, and a mandatory path that is missing, unreadable
+or absent from the bound base tree refuses the attempt before any request
+(`raw_context_mandatory_unavailable`); a credential-like name or content is no
+such cause (INV-146). `include`/`exclude` select the
 optional files. The request's capacity comes from the one catalog read the
 per-spawn model gate makes under that try's credential, the same read that
 admits an explicit model, and the request sends the key that read checked: a
@@ -2313,8 +2459,8 @@ and arbitrates. Best-of requests review; ordinary Single and `--create` do not
 unless explicitly enabled. `--create` runs the same envelope pipeline with the
 create-from-scratch intent (the CLI verb `claudexor create` maps here).
 A candidate whose patch holds secret-like strings is an ordinary working
-candidate: it is gated, reviewed on its saved copy and arbitrated like any other
-(INV-062). A candidate whose changes could not be captured is excluded when
+candidate: it is gated, reviewed on its exact patch and arbitrated like any
+other (INV-146). A candidate whose changes could not be captured is excluded when
 another working candidate survives; an all-uncaptured race, an uncaptured
 in-place candidate, or an injected Delegate-belt failure remains terminal for
 the race.
@@ -2692,9 +2838,9 @@ limit and any explicit global limit described in [Main Execution Paths](#6-main-
 their permit stays occupied until runner settlement, including cancellation, but
 not while awaiting a client's result-digest ACK, and they are not Agent Runs. The command store holds content hashes and resource references, not the
 conversation. A model-purpose upload uses `ResourceStore`'s atomic finalization;
-its contents are not filtered for secret-like text, and it cannot resolve as an
-ordinary Agent attachment. Engine authorization never enters the model payload.
-This narrow content boundary is INV-062, not a general bypass.
+its contents are delivered exactly like every other working input (INV-146),
+and it cannot resolve as an ordinary Agent attachment. Engine authorization
+never enters the model payload.
 
 Result GET returns exact digest-bound bytes without acknowledging them. A client
 accepts custody before ACK and recovers a lost local reply through the same
@@ -2983,10 +3129,7 @@ and run ids after COMMIT, never for a rollback. A host without that feed is
 polled. Pruning, archive and generation changes publish no notice; the
 deadline's full pass reports a target they hide. A stopping daemon aborts the
 read and answers `503 daemon_stopping`.
-Observation tokens are SHA-256 digests of the observed facts; a digest the
-shared secret scan would flag is re-derived from the same facts with an attempt
-counter, so echoed tokens pass MCP input checks and other tokens keep their
-bytes. The bounded wire contract and reconnect example live in
+Observation tokens are SHA-256 digests of the observed facts. The bounded wire contract and reconnect example live in
 [Integrations](INTEGRATIONS.md#observing-and-directing-an-existing-run).
 The `current_served_generations`/`retained_only` qualifiers describe current
 visibility, not a permanent roster. Reads add no execution or approval authority.
@@ -3504,7 +3647,7 @@ not retry automatically.
   mixed and unknown selectors are typed 400 refusals. Selection precedes public
   projection inside the daemon. Single-id and latest-turn reads retain full
   params for detail and Exact Retry; collections carry only the typed summary
-  whitelist and the existing redacted 240-character prompt preview, with no raw
+  whitelist and the existing 240-character prompt preview, with no full
   prompt, instructions, arbitrary params or full results. Thread selections also
   include their direct Delegate children for turn cards, even when the child
   has no thread id. A page crosses RPC
@@ -3632,7 +3775,7 @@ complete. No history stream or durable projection table is introduced.
 
 Shared byte bounds are 32 KiB per prompt preview, 64 KiB per answer, 32 KiB for the
 header, 832 KiB per serialized row and 2 MiB for the complete minified JSON page,
-including escaping, redaction and cursor envelope. Packing reserves a maximum row
+including escaping and cursor envelope. Packing reserves a maximum row
 before decoding it and emits a contiguous traversal prefix. It measures the empty
 envelope once, then adds each serialized row's bytes and its array comma; the
 8 KiB cursor reserve covers later envelope changes. Final schema validation
@@ -3650,12 +3793,12 @@ of distinct paths. Activity transcripts remain explicit per-run expansion reads.
 Primary output is selected once per projected run by the canonical owner. The
 same selected output feeds readiness (pending/finalizing/ready/diagnostic), keeping
 retention and missing-output diagnostics. A patch is an artifact reference, never
-inline patch text. `textBytes` counts delivered redacted UTF-8; `totalTextBytes` is
-null when the full redacted length is unknown. Do not derive a remainder from raw
+inline patch text. `textBytes` counts delivered UTF-8; `totalTextBytes` is
+null when the full length is unknown. Do not derive a remainder from raw
 artifact bytes. `GET /v2/threads/:id/turns/:turnId/prompt` supplies explicit full
 prompt parts for bound and runless refused turns: `offset` defaults to 0,
 `maxBytes` defaults to 32 KiB (4–64 KiB), UTF-8 boundaries are preserved, and
-`totalBytes`/`sha256` identify the immutable stored redacted prompt. U+FEFF remains
+`totalBytes`/`sha256` identify the immutable stored prompt. U+FEFF remains
 part of those bytes at offset zero and at a later part boundary. Concatenate
 through `nextOffset == totalBytes` and verify the SHA-256. Full answers retain the
 existing addressed artifact read.
@@ -3879,7 +4022,7 @@ inspection, resnapshot or terminal collection; it is not a polling heartbeat.
 
 Each `DaemonControlApiServer` owns one lazily created bulk worker. Health,
 handshake and status alone create no thread. Detail projection, child and cold
-summary hydration, detail's exact-patch digests, artifact walks/read-redact operations,
+summary hydration, detail's exact-patch digests, artifact walks/read operations,
 and finite SSE seek/replay batches execute there. Only plain request records and
 results cross the port; daemon services, the registry and database remain with
 their owners. One projection context shares event facts, structured reads,
@@ -3898,7 +4041,7 @@ counts for that answer only. Decision, telemetry, answer, reviews, task contract
 artifacts and live fields stay fresh per request; no complete raw log is kept.
 Per-run SSE replay, bounded thread history, interrupted-output preparation and
 continuation-ancestry recovery retain their separate direct reads.
-Timeline projection validates and redacts only the
+Timeline projection validates only the
 selected rows, with exact omitted/integrity markers. The final detail schema
 validation stays in the worker.
 Bounded thread-history receipts keep their explicit artifact and event byte
@@ -3933,7 +4076,7 @@ is promised.
 ### Event streaming contract (snapshot-then-subscribe)
 
 The run-detail timeline preserves typed harness text as `textKind`
-(`thinking` or `message`) plus `textDelta`. Its `detail` is the full redacted
+(`thinking` or `message`) plus `textDelta`. Its `detail` is the full exact
 text with original whitespace; `title` may be abbreviated. Only an adapter's
 explicit `payload.delta: true` marks a fragment. Consumers can concatenate
 consecutive same-kind, same-attempt deltas verbatim without inserting event
@@ -3982,8 +4125,8 @@ the SQL ledger holds only the lifecycle subset above and cannot rebuild full
 progress. Resume seeks backward to the cursor in finite byte batches, without
 parsing the retained prefix for normal monotonic seq logs. Pre-seq lines retain
 line-number ids; ambiguous legacy/mixed logs conservatively count/scan in finite
-worker jobs. UTF-8 and incomplete-line carry remain across batches. Redaction
-runs on whole events, never on arbitrary text fragments. The stream is
+worker jobs. UTF-8 and incomplete-line carry remain across batches. Frames
+carry whole exact events, never arbitrary text fragments. The stream is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
 fallback; `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
@@ -4071,7 +4214,7 @@ Every page checks its position and head against the generation serving now, so
 a replaced or retired generation closes the stream even when no event was
 delivered yet. Resuming a replaced generation's cursor receives 409 `resnapshot`;
 a removed project's partition keeps its existing 404 `journal_partition_not_found`.
-Reading, digest checks, parsing and redaction of a page run on the
+Reading, digest checks and parsing of a page run on the
 store owner's thread, because the bulk worker holds no database connection;
 that work is bounded by one page or one oversized event.
 
@@ -4092,7 +4235,7 @@ with bounded reconnects (`Last-Event-ID` resume) and exits 1 with "stream
 lost" when the stream ends without a terminal event.
 
 `GET /v2/runs/:id/events/:seq` (query `offset`, `limit`) reads one bounded part
-(at most 64 KiB, never splitting a character) of one event in exactly the redacted line
+(at most 64 KiB, never splitting a character) of one event in exactly the line
 the stream delivers, with its total size and SHA-256, so a reader whose page
 cannot hold that event reassembles it instead of skipping it. It locates the
 event in the run's `events.jsonl` by the id rule it shares with the stream,
@@ -4987,7 +5130,7 @@ tees output so the operator sees the URL/one-time code, and persists a bounded
 ANSI-stripped tail so the daemon can disclose the real failure cause (e.g. the
 ChatGPT "Allow device code login" toggle being off).
 
-**Transient login disclosure (event-store authority, INV-062):** the one-time
+**Transient login disclosure (event-store authority, INV-146 engine credentials):** the one-time
 `userCode` and every captured sign-in URL ride ONLY a transient
 `runner-devicecode.json` sidecar the runner writes and a read-time overlay on
 `ControlSetupJobSnapshot` / `ControlSetupJobEvent`; they are NEVER fields of
@@ -5276,14 +5419,14 @@ approvals.
 `POST /v2/runs/:id/messages` places a message into a run's ACTIVE agent
 attempt while it runs (the nanny's correction that used to wait for the
 terminal or cost a cancel+restart). The body is `{text, expectedAttemptId?}`
-(1..65,536 UTF-16 code units, secret-like values refused like every prompt
+(1..65,536 UTF-16 code units, delivered exactly like every prompt
 ingress), the `Idempotency-Key` is REQUIRED and IS the message id, and the
 route is served through the durable delivery ledger (`run.message`): a replay
 under the same key returns the recorded receipt, a different body under the
 same key is `409 idempotency_conflict`, and a command left non-terminal by a
 daemon restart answers `409 delivery_interrupted`. HTTP carries only transport
-facts (404 unknown run, 501 no service, 400 malformed/secret/too-long/missing
-key, 409 idempotency, 500 receipt-save failure); EVERY typed outcome is HTTP
+facts (404 unknown run, 501 no service, 400 malformed/too-long/missing key,
+409 idempotency, 500 receipt-save failure); EVERY typed outcome is HTTP
 200 — deliberately unlike the answer and control routes — so a client reads
 `outcome`, never the status code. The protocol major stays 3; clients discover
 the route by its row in `GET /v2/operations`.
@@ -5461,9 +5604,12 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    checks, work completion, patch hashes and original-root binding still gate
    every contribution. Secret-like content is not a refusal: the thread
    delivers its live worktree capture, so `apply`, `branch` and `commit` carry
-   the exact bytes the agent wrote; only `pr` refuses, inside
-   `verifyAndDeliver`, for a text match or a blob-only binary finding, before
-   the fresh verifier and any push (INV-062). Delivery reuses
+   the exact bytes the agent wrote; only `pr` can refuse, through the
+   publication gate inside `verifyAndDeliver` before any branch, ref or push:
+   the pinned Betterleaks scan of the outgoing commits (merges and messages
+   included), branch name and PR title and body (`publication_scan_findings`,
+   `publication_scan_unavailable`, `publication_scan_failed`; INV-146). See
+   [Publication scanner](#publication-scanner). Delivery reuses
    `verifyAndDeliver` with a fresh
    verifier and exact target preimage. Success advances the persistent thread
    branch and watermark with committed thread state.
@@ -5514,18 +5660,16 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    admission is determined independently by the semantic run-shape predicate
    above. A bridge failure never fails the run (it is a convenience, not a
    precondition).
-8. **No secret-diff rollback** — the engine performs no mutation on behalf of
-   the secret-like check. The reverse apply that used to remove an in-place
+8. **No secret-diff rollback** — there is no secret-like check, so the engine
+   performs no mutation for one. The reverse apply that used to remove an in-place
    candidate's bytes (and ran without the repository mutation lease) is gone:
-   secret-like output is kept and only its saved and served copies are masked
-   (see [Secret-like output: keep and mask](#secret-like-output-keep-and-mask)).
-   The only extra write is the private exact patch object beside the revert
-   anchors, outside the project tree and the run directory.
+   secret-like output is kept and saved exactly (see
+   [Exact working content](#exact-working-content)).
 9. **In-place browser artifact cleanup** — when Browser is effective, workspace
    prep lazily creates one unique `.claudexor-artifacts/<envelope-id>` child and
    persists an envelope-id-bound ownership marker outside the live tree. Only
    that child is passed as Browser output, excluded from Git/non-Git capture,
-   collected into Evidence, scanned for secret risk, and removed at dispose.
+   collected into Evidence, and removed at dispose.
    A pre-existing shared root is validated as a real directory and preserved;
    sibling/user files are never excluded or deleted. A symlink or non-directory
    root refuses before Browser starts, and cleanup never widens beyond the
@@ -6041,7 +6185,7 @@ repair the format.
 A final-only successful answer without captured files needs no duplicate retained
 document. Captured media references are added from the existing attempt capture, using distinct
 attempt-scoped handles; the original text remains intact. The full retained
-Markdown fetch is redacted like other text, but is not restricted by the log
+Markdown fetch is exact like other text, but is not restricted by the log
 preview fetch ceiling. Inline/native rendering keeps its own preview limits.
 The direct observer delta cap does not truncate public event replay, whose
 existing backpressure and client display bounds remain in force.
@@ -6474,7 +6618,7 @@ standalone receipt through its obligation after the SQL terminal commit.
 `GET /v2/runs/:id` (`runFacts`),
 terminal CLI JSON/JSON-stream output, artifact-only `inspect --json`, MCP
 structured results, and ACP `_meta.claudexor` expose the same parsed object
-without a second redaction or independent projection. A missing receipt retains legacy-run compatibility; a receipt that
+without any redaction or independent projection. A missing receipt retains legacy-run compatibility; a receipt that
 is present but fails parsing or invariant validation is a typed
 `run_facts_invalid` server error and never falls back to legacy outcome or apply
 authority. Readers also bind the receipt's run/task identity (and terminal
@@ -6492,7 +6636,8 @@ sidecars. The process prompt is concise and points the reviewer to those files;
 it must not embed large full diffs in argv. Per-reviewer telemetry records
 requested model/effort, observed model/source, route proof, timing, raw
 normalized stream or transcript, parsed JSON blocks, and parse errors. These
-artifacts are local/redacted run evidence, not public documentation.
+artifacts are local run evidence (reviewer text exact, diagnostics masked), not
+public documentation.
 
 The engine computes reviewer candidate membership once before panel fan-out.
 For a Git-backed source it is the union of tracked files, untracked files not
@@ -6500,15 +6645,15 @@ excluded by Git, and exact paths named by the reviewed diff; only the ancestor
 directories needed to reach those files are traversed. This retains a tracked
 file that later became ignored and an ignored generated file explicitly present
 in the diff, while excluding unrelated ignored local notes and their siblings.
-The shared sensitive-resource path/content policy remains a final exclusion over
-that inventory. Membership follows host path semantics: a literal backslash in
+Symlink containment remains a final exclusion over that inventory; a file's
+name or content never is (INV-146). Membership follows host path semantics: a literal backslash in
 a POSIX file name is never normalized into a directory separator. Without a Git
 inventory the legacy candidate plane is limited to diff-touched postimages.
 Directory results instead supply the complete selected postimage manifest,
 including unchanged selected inputs needed to review the result, through
 `candidatePaths`. A text diff may be empty. The evidence
 directory never inherits either rule: it is copied through its own explicit
-redacted or sealed-packet boundary. Each reviewer artifact records which
+evidence or sealed-packet boundary. Each reviewer artifact records which
 inventory mode was used.
 Reviewer scratch may initialize its own disposable Git metadata for native
 read-only tooling; this never initializes the source directory or changes its
@@ -6619,7 +6764,7 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   `browser: {attempted, satisfied, failed, unused}` receipt; a failed browser
   call remains attributable warning evidence. Claude and Codex keep the
   browser's returned text (page URL, title, snapshot) with its line breaks as
-  the result's bounded, redacted `content_summary`, so the journal shows which
+  the result's bounded, unmasked `content_summary`, so the journal shows which
   page was read. The
   separate explicit Browser capability preflight is unchanged and still refuses
   a pool with no effective Browser lane before a harness starts.
@@ -6922,8 +7067,9 @@ manifest assets, so clients refuse rather than weaken this verifier.
 The app updates its **engine runtime closure** in place without a new DMG. The
 update unit is a `claudexor-runtime-<version>.tar.gz` containing the engine-owned
 resources: the bundled daemon, the setup-login runner, the Browser MCP
-deployment, the native process-identity helper, and the reviewed operator CLI
-used by embedding hosts. App-owned Node, UI, and icons stay outside the
+deployment, the native process-identity helper, the pinned darwin-arm64 and
+darwin-x64 publication scanners (see [Publication scanner](#publication-scanner)),
+and the reviewed operator CLI used by embedding hosts. App-owned Node, UI, and icons stay outside the
 closure, so a Node bump ships a new signed DMG.
 Each release also publishes a **signed** `runtime-manifest.json`. The independent
 `scripts/build-engine-resources.sh` stage bundles the engine; on Darwin, it signs
@@ -6949,7 +7095,11 @@ portable archive root is fixed:
 `claudexord.bundle.cjs`, `claudexor.bundle.cjs`,
 `setup-login-runner.cjs`, `browser-mcp-runtime/`, and
 `native/claudexor-process-identity` plus
-`native/claudexor-conpty-helper.exe`. It deliberately contains no Node runtime.
+`native/claudexor-conpty-helper.exe` and the darwin-arm64 and darwin-x64
+publication scanners under `native/betterleaks/`. It deliberately contains no
+Node runtime. A host on another platform has no bundled scanner for `pr`: it
+sets `CLAUDEXOR_BETTERLEAKS_PATH` to the pinned build or provisions it under
+its config root, otherwise `pr` refuses `publication_scan_unavailable`.
 A host owns the install directory, config root, process, rollback, and exact
 reviewed pin. Its full Node toolchain is the exact version proven by that pin's
 closure smoke; POSIX consumers using local harness install must provide both
@@ -7373,10 +7523,10 @@ code touching one of these areas must honor it or change it explicitly here.
   never substitutes an empty diff and asks reviewers to trust the live tree.
   All `runCaptureRaw` callers share a combined stdout/stderr buffer policy of
   256 MiB (not an RSS bound): capture, delivery/revert Git and reviewer inventory
-  reads refuse larger output. Oversized binary inspection withholds that payload
-  from saved copies without discarding an already complete compressed patch;
-  `pr` refuses it like a secret-like finding (one refusal names both causes),
-  while local apply, branch and commit deliver its exact bytes. Overflow,
+  reads refuse larger output. Binary content is never inspected or withheld:
+  local apply, branch and commit deliver its exact bytes, and `pr` relies on
+  the publication scanner, which skips some binary content by design.
+  Overflow,
   spawn/I/O or scratch-cleanup failure becomes typed workspace evidence,
   including budget/stream, primary cause, cleanup and any available
   incomplete-drain facts. Thread apply refuses an incomplete capture with 409

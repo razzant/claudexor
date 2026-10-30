@@ -11,7 +11,6 @@
  * path (identity), `tool.target` its bounded display.
  */
 import type { HarnessEvent, ToolRef } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 
 type Json = any;
 
@@ -49,7 +48,8 @@ export function codexFileChangeEvents(
       name: "apply_patch",
       kind: "file" as const,
       ...(useId ? { use_id: useId } : {}),
-      ...(path?.trim() ? { target: redactSecrets(path).slice(0, 500) } : {}),
+      // The changed file's own path (INV-146): bounded for display, never masked.
+      ...(path?.trim() ? { target: path.slice(0, 500) } : {}),
       phase,
       ...(status ? { status } : {}),
     },

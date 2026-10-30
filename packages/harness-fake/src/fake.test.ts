@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,7 +98,7 @@ describe("fake harness adapters", () => {
     }
   });
 
-  it("fake-session mints a native id, resumes a carried one, and probes only engine facts", async () => {
+  it("fake-session mints a native id, resumes a carried one, and probes engine facts and prompt digests", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fake-session-"));
     try {
       const first = await collect(
@@ -115,6 +116,10 @@ describe("fake harness adapters", () => {
       expect(started?.payload?.["native_session_id"]).toBe("fake-native-ses-a");
       const probe = first.find((e) => e.payload?.["code"] === "fake_session_probe");
       expect(probe?.payload).toMatchObject({ resumed_from: null, home: "/lane/home", cwd: dir });
+      // The prompt is proven by digest, never echoed.
+      expect(probe?.payload?.["prompt_line_sha256"]).toEqual([
+        createHash("sha256").update("promptLeakCanary").digest("hex"),
+      ]);
       expect(existsSync(join(dir, "FAKE_CHANGE.txt"))).toBe(true);
       expect(JSON.stringify(first)).not.toContain("promptLeakCanary");
       const second = await collect(

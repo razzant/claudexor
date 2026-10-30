@@ -1,7 +1,7 @@
 /**
  * Login-runner IO hygiene and delivery helpers (owner directive 2026-08-04):
  * the bounded ANSI-stripped, secret-redacted, URL-query-redacted output tail
- * that is the ONLY vendor output allowed near a durable surface (INV-062),
+ * that is the ONLY vendor output allowed near a durable surface (INV-146),
  * and the one-shot input-sidecar-to-stdin delivery for
  * url_disclosure_with_input logins.
  */
@@ -42,7 +42,7 @@ export function watchLoginInput(
   /** Called with the value the moment it is delivered. A tty-backed login
    * (ptyStdin) is ECHOED by the terminal line discipline, so the pasted code
    * comes straight back out on the tee'd output — the tail must forget it
-   * before any failure receipt is written (INV-062). */
+   * before any failure receipt is written (INV-146). */
   options: {
     onDelivered?: (value: string) => void;
     windowsConpty?: boolean;
@@ -168,7 +168,7 @@ const URL_QUERY_RE = /(https?:\/\/[^\s"'<>?#]+)\?[^\s"'<>]*/g;
 /** Strip terminal escapes (CSI, OSC, bare ESC, C0 controls except newline),
  * redact secret-like tokens and URL queries, and clamp - diagnostic evidence
  * entering a durable journal/API surface, never a raw vendor log copy
- * (INV-062). */
+ * (INV-146). */
 export function boundedTail(text: string, truncated = false): string {
   const plain = text
     .replace(TERM_ESCAPE_RE, "")

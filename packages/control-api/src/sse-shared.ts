@@ -1,4 +1,3 @@
-import { redactSecrets } from "@claudexor/util";
 import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
 
 /** Daemon job states that end a stream/wait (shared by both SSE surfaces).
@@ -6,13 +5,12 @@ import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
  * ONE projection-owned TERMINAL_LIFECYCLES — no local copy re-derives it. */
 export const TERMINAL_STATES: ReadonlySet<string> = TERMINAL_LIFECYCLES;
 
-/** One SSE data line: secrets redacted, JSON re-minified when parseable. */
-export function redactedSseLine(raw: string): string {
-  const redacted = redactSecrets(raw);
+/** One SSE data line: the exact event, JSON re-minified when parseable. */
+export function sseDataLine(raw: string): string {
   try {
-    return JSON.stringify(JSON.parse(redacted));
+    return JSON.stringify(JSON.parse(raw));
   } catch {
-    return redacted;
+    return raw;
   }
 }
 /**

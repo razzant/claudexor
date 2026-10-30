@@ -1,23 +1,14 @@
 import { parseUnifiedDiff, runCapture, runCaptureRaw } from "@claudexor/core";
-import { existsSync, lstatSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { cp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import {
-  containsSecretLikeToken,
-  newId,
-  readTextSafe,
-  redactSecrets,
-  sensitiveResourcePolicy,
-  writeJson,
-  writeText,
-} from "@claudexor/util";
+import { newId, redactSecrets, sensitiveResourcePolicy, writeJson } from "@claudexor/util";
 import type { ReviewerWorkspace } from "./reviewRuntimeTypes.js";
 
 const BLOCKED_REVIEWER_RUNTIME_ROOTS = new Set(
   "auth cache daemon home homes logs runs secrets state tmp workspaces".split(" "),
 );
-const TEXT_EVIDENCE_SUFFIXES = [".md", ".txt", ".json", ".yaml", ".yml", ".patch"];
 
 export function selectReviewerWorkspaceBaseDir(
   sourceRoot: string,
@@ -75,7 +66,6 @@ export async function prepareReviewerWorkspace(input: {
           sourcePath,
           excludeRoots,
           input.postimagePaths,
-          true,
           input.candidateCopyPaths,
         ),
     });
@@ -182,28 +172,8 @@ async function copyReviewEvidenceEntry(
     }
     return;
   }
-  if (stat.isFile() && shouldTextSanitizeEvidenceFile(sourcePath)) {
-    const raw = readTextSafe(sourcePath);
-    if (raw === null) throw new Error(`could not read review evidence file: ${sourcePath}`);
-    const text = shouldFailClosedEvidenceFile(sourcePath) ? raw : redactSecrets(raw);
-    if (containsSecretLikeToken(text)) {
-      throw new Error(
-        `review evidence file contains a secret-like token: ${relative(sourceEvidenceDir, sourcePath)}`,
-      );
-    }
-    writeText(targetPath, text);
-    return;
-  }
   await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
   await cp(sourcePath, targetPath, { recursive: false, dereference: false });
-}
-
-function shouldTextSanitizeEvidenceFile(path: string): boolean {
-  return TEXT_EVIDENCE_SUFFIXES.some((extension) => path.toLowerCase().endsWith(extension));
-}
-
-function shouldFailClosedEvidenceFile(path: string): boolean {
-  return path.toLowerCase().endsWith(".patch");
 }
 
 function shouldCopyEvidencePacketPath(
@@ -215,14 +185,9 @@ function shouldCopyEvidencePacketPath(
   const resolvedSourcePath = resolve(sourcePath);
   if (isSameOrInside(resolvedSourcePath, targetEvidenceDir)) return false;
   if (isSameOrInside(targetEvidenceDir, resolvedSourcePath)) return false;
-  return shouldCopyReviewerPath(
-    sourceEvidenceDir,
-    resolvedSourceEvidenceDir,
-    resolvedSourcePath,
-    [targetEvidenceDir],
-    new Set(),
-    false,
-  );
+  return shouldCopyReviewerPath(sourceEvidenceDir, resolvedSourceEvidenceDir, resolvedSourcePath, [
+    targetEvidenceDir,
+  ]);
 }
 
 export async function cleanupTemporaryReviewerWorkspaceBaseDir(
@@ -251,7 +216,6 @@ function shouldCopyReviewerPath(
   sourcePath: string,
   excludeRoots: string[],
   postimagePaths = new Set<string>(),
-  enforceContentPolicy = true,
   candidateCopyPaths?: Set<string>,
 ): boolean {
   const resolvedSourcePath = resolve(sourcePath);
@@ -270,15 +234,7 @@ function shouldCopyReviewerPath(
   const normalizedRel = normalizeReviewerRelativePath(rel);
   if (!normalizedRel) return false;
   const parts = normalizedRel.split("/");
-  if (sensitiveResourcePolicy.classifyPath(rel).sensitive) {
-    return false;
-  }
-  if (parts[0] === ".claudexor") {
-    return (
-      isCopyableReviewerClaudexorPath(rel, parts, postimagePaths) &&
-      (!enforceContentPolicy || reviewerFileContentAllowed(resolvedSourcePath))
-    );
-  }
+  if (parts[0] === ".claudexor") return isCopyableReviewerClaudexorPath(rel, parts, postimagePaths);
   if (
     parts.some((part) => [".git", ".adversarial-review", ".turbo", "node_modules"].includes(part))
   ) {
@@ -290,22 +246,7 @@ function shouldCopyReviewerPath(
   ) {
     return false;
   }
-  return (
-    !rel.endsWith(".tsbuildinfo") &&
-    (!enforceContentPolicy || reviewerFileContentAllowed(resolvedSourcePath))
-  );
-}
-
-function reviewerFileContentAllowed(path: string): boolean {
-  let targetStat: Stats;
-  try {
-    targetStat = statSync(path);
-  } catch {
-    return false;
-  }
-  if (!targetStat.isFile()) return true;
-  const content = readTextSafe(path);
-  return content !== null && !sensitiveResourcePolicy.containsSensitiveContent(content);
+  return !rel.endsWith(".tsbuildinfo");
 }
 
 function isCopyableReviewerClaudexorPath(

@@ -123,7 +123,7 @@ function isoOr(value: string | null, now: () => Date): string {
   return new Date(Number.isFinite(at) ? at : now().getTime()).toISOString();
 }
 
-/** Vendor text was redacted at event ingress; redact again like safeMessage (INV-062). */
+/** Vendor failure text is a diagnostic derivative: masked like safeMessage (INV-146). */
 export function redactVendorFailure(vendor: VendorFailureEvidence): VendorFailureEvidence {
   return {
     code: vendor.code === null ? null : redactSecrets(vendor.code),

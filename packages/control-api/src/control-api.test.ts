@@ -1790,7 +1790,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("withholds a served image whose bytes match the secret-like policy; safe media is served as before (INV-062)", async () => {
+  it("serves media whose bytes look credential-shaped exactly, like any other media (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
     // Assembled at runtime so no secret-shaped literal lives in this file.
     const secret = ["sk", "m".repeat(24)].join("-");
@@ -1829,11 +1829,9 @@ describe("DaemonControlApiServer", () => {
           "/projects/prj-media/outputs/leaky.png",
           "/runs/run-d1/artifacts/final/leaky.png",
         ]) {
-          const refused = await get(path);
-          expect(refused.status, path).toBe(409);
-          const body = await refused.text();
-          expect(body).toContain("secret_like_content_withheld");
-          expect(body).not.toContain(secret);
+          const served = await get(path);
+          expect(served.status, path).toBe(200);
+          expect(Buffer.from(await served.arrayBuffer()).equals(leaky), path).toBe(true);
         }
         for (const path of [
           "/runs/run-d1/produced/clean.png",
@@ -1850,39 +1848,25 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("REFUSES to serve `.env`-class credential files (Ф2): typed 409, no bytes leaked, across fetch families", async () => {
+  it("serves `.env`-class project and run files exactly across fetch families (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
-    // Runtime-assembled so this test's own source never holds a contiguous
-    // secret. Matches the anthropic_api_key detector.
+    // Runtime-assembled so this test's own source never holds a contiguous token.
     const secret = ["sk-ant", "A".repeat(40)].join("-");
-    // A `.env` has no file extension, so it took the BINARY path and was served
-    // raw (octet-stream), bypassing redaction — the leak this refusal closes.
     mkdirSync(join(record.runDir as string, "artifacts"), { recursive: true });
     writeFileSync(join(record.runDir as string, "artifacts", ".env"), `API_KEY=${secret}\n`);
     writeFileSync(join(record.runDir as string, "artifacts", ".env.production"), `K=${secret}\n`);
     writeFileSync(join(record.runDir as string, "artifacts", "aws-credentials"), `k=${secret}\n`);
-    // The direct run-artifacts family serves straight from runDir.
     writeFileSync(join(record.runDir as string, ".env"), `API_KEY=${secret}\n`);
     await withDaemonServer(daemon, async (base) => {
-      const paths = [
-        `${base}/runs/run-d1/produced/.env`,
-        `${base}/runs/run-d1/produced/.env.production`,
-        `${base}/runs/run-d1/produced/aws-credentials`,
-        `${base}/runs/run-d1/artifacts/.env`,
-      ];
-      for (const url of paths) {
+      for (const [url, body] of [
+        [`${base}/runs/run-d1/produced/.env`, `API_KEY=${secret}\n`],
+        [`${base}/runs/run-d1/produced/.env.production`, `K=${secret}\n`],
+        [`${base}/runs/run-d1/produced/aws-credentials`, `k=${secret}\n`],
+        [`${base}/runs/run-d1/artifacts/.env`, `API_KEY=${secret}\n`],
+      ] as const) {
         const res = await apiFetch(url, { headers: { authorization: `Bearer ${token}` } });
-        expect(res.status).toBe(409);
-        // The daemon normalizes >=400 JSON to problem+json: the typed `code`
-        // survives and the refusal class rides in `context` (non-reserved field).
-        const body = (await res.json()) as {
-          code?: string;
-          context?: { sensitiveClass?: string };
-        };
-        expect(body.code).toBe("sensitive_file_refused");
-        expect(typeof body.context?.sensitiveClass).toBe("string");
-        // The refusal happens BEFORE any bytes are read: the token never leaks.
-        expect(JSON.stringify(body)).not.toContain(secret);
+        expect(res.status, url).toBe(200);
+        expect(await res.text(), url).toBe(body);
       }
     });
   });
@@ -6571,40 +6555,18 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("redacts secret-like strings from JSON artifacts before serving them", async () => {
+  it("serves JSON and semantic-text artifacts with credential-shaped text exactly (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
-    writeFileSync(
-      join(record.runDir as string, "final", "metadata.json"),
-      JSON.stringify({ token: "sk-" + "a".repeat(24) }),
-    );
-    await withDaemonServer(daemon, async (base) => {
-      const res = await apiFetch(`${base}/runs/run-d1/artifacts/final/metadata.json`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("application/json");
-      const text = await res.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain("sk-" + "a".repeat(24));
-    });
-  });
-
-  it("redacts secret-like text from semantic-text artifacts incl. code/config extensions (semantic-text policy, QA-067)", async () => {
-    const { daemon, record } = fakeDaemon();
-    // Assemble the marker at runtime so the secret scanner does not trip on this
-    // test's own source (repo convention).
+    // Assemble the marker at runtime (repo convention for synthetic fixtures).
     const secret = "sk-" + "b".repeat(24);
     const runDir = record.runDir as string;
-    // One file per newly-covered extension; each carries the marker.
     const cases = [
+      { file: "final/metadata.json", body: JSON.stringify({ token: secret }) },
       { file: "final/report.csv", body: `col\n${secret}\n` },
       { file: "final/data.xml", body: `<r><k>${secret}</k></r>` },
       { file: "final/pic.svg", body: `<svg><desc>${secret}</desc></svg>` },
       { file: "final/notes.markdown", body: `# t\n${secret}\n` },
       { file: "final/raw.text", body: `${secret}\n` },
-      // Newly-covered code/config extensions (QA-067 broadening): each falls
-      // through `contentType` to application/octet-stream, so without the
-      // semantic-text set they would skip redaction on the binary path.
       { file: "final/mod.ts", body: `const k = "${secret}";\n` },
       { file: "final/app.py", body: `k = "${secret}"\n` },
       { file: "final/config.toml", body: `key = "${secret}"\n` },
@@ -6616,70 +6578,41 @@ describe("DaemonControlApiServer", () => {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(res.status, c.file).toBe(200);
-        const text = await res.text();
-        expect(text, c.file).toContain("[redacted]");
-        expect(text, c.file).not.toContain(secret);
+        expect(await res.text(), c.file).toBe(c.body);
       }
     });
   });
 
-  it("rejects secret-like string values in run params before enqueue", async () => {
-    const { daemon } = fakeDaemon();
-    const secret = "sk-" + "c".repeat(24);
-    await withDaemonServer(daemon, async (base) => {
-      const start = await apiFetch(`${base}/runs`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: "safe", mode: "ask", tests: [`echo ${secret}`] }),
-      });
-      expect(start.status).toBe(400);
-      expect(await start.text()).toContain("secret-like value is not accepted");
-    });
-  });
-
-  it("rejects a secret-like value inside the PROMPT itself on POST /runs and POST /threads/:id/turns (hard block, 400)", async () => {
-    const { daemon } = fakeDaemon();
+  it("accepts credential-shaped prompts and run params on POST /runs exactly (INV-146)", async () => {
+    const base0 = fakeDaemon();
+    const enqueued: unknown[] = [];
+    const daemon: DaemonFacadeClient = {
+      ...base0.daemon,
+      async enqueue(...args: Parameters<DaemonFacadeClient["enqueue"]>) {
+        enqueued.push(args[0]);
+        return base0.daemon.enqueue(...args);
+      },
+    };
     const secret = "sk-" + "d".repeat(24);
+    const prompt = `review: expect(auth).toBe("Bearer ${secret}")`;
     await withDaemonServer(daemon, async (base) => {
       const start = await apiFetch(`${base}/runs`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ prompt: `use ${secret} to auth`, mode: "agent" }),
+        body: JSON.stringify({
+          prompt,
+          mode: "agent",
+          scope: { kind: "project", root: tmpdir() },
+          tests: [{ program: "echo", args: [secret] }],
+        }),
       });
-      expect(start.status).toBe(400);
-      const body = (await start.json()) as { message: string; code?: string };
-      expect(body.message).toContain("durable run artifacts");
-      // The machine-readable class rides the envelope, not just prose.
-      expect(body.code).toBe("inline_secret_rejected");
+      expect(start.status, await start.clone().text()).toBe(200);
     });
+    expect(JSON.stringify(enqueued)).toContain(JSON.stringify(prompt).slice(1, -1));
+    expect(JSON.stringify(enqueued)).toContain(secret);
 
-    // The thread-turn ingress (REPL/app path): the fence runs BEFORE thread
-    // resolution, so a minimal threads-capable server proves the block
-    // without a real thread. createThreadTurn must never be reached.
-    let turnCreated = 0;
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const turn = await apiFetch(`${base}/threads/th-any/turns`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ prompt: `retry with ${secret}` }),
-        });
-        expect(turn.status).toBe(400);
-        const turnBody = (await turn.json()) as { message: string; code?: string };
-        expect(turnBody.message).toContain("durable run artifacts");
-        expect(turnBody.code).toBe("inline_secret_rejected");
-        expect(turnCreated).toBe(0);
-      },
-      undefined,
-      {
-        threadDetail: async () => ({ thread: {}, sessions: [], turns: [] }),
-        createThreadTurn: async () => {
-          turnCreated += 1;
-          return {};
-        },
-      },
-    );
+    // The thread-turn ingress has no fence either; exact turn storage is
+    // pinned in packages/daemon/src/store/thread-contract.test.ts.
   });
 
   it("fronts the durable daemon registry for start/list/cancel and tails events.jsonl", async () => {
@@ -7898,7 +7831,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  describe("saved patch copies with hidden secret-like strings (INV-062, V4C T2)", () => {
+  describe("historical saved patch copies with hidden secret-like strings (retired INV-062)", () => {
     // Assembled at runtime so no secret-shaped literal lives in this file.
     const secret = ["sk", "x".repeat(24)].join("-");
     const exactPatch = [
@@ -8162,50 +8095,43 @@ describe("DaemonControlApiServer", () => {
       }, "blocked");
     });
 
-    it.each([
-      { finding: "text", meta: undefined },
-      {
-        finding: "blob-only",
-        meta: "  secret_like:\n    files: []\n    binary_paths:\n      - assets/x.bin\n    media_withheld: []\n    answer_matches: 0\n    total_matches: 0",
-      },
-    ])(
-      "refuses 'pr' delivery for a $finding finding before any branch or push; 'commit' stays allowed",
-      async ({ finding, meta }) => {
-        await withAppliableProject(async (base, project, record) => {
-          if (finding === "text") {
-            redactedRun(record, project);
-          } else {
-            // An exact, text-clean saved patch whose disclosure names a binary.
-            const workProduct = join(record.runDir as string, "final", "work_product.yaml");
-            writeFileSync(workProduct, `${readFileSync(workProduct, "utf8")}${meta}\n`);
-          }
-          const branchesBefore = execFileSync("git", ["branch", "--list"], {
-            cwd: project,
-          }).toString();
-
+    it("refuses 'pr' typed when the publication scanner is unavailable, before any branch; 'commit' stays allowed (INV-146)", async () => {
+      await withAppliableProject(async (base, project) => {
+        const branchesBefore = execFileSync("git", ["branch", "--list"], {
+          cwd: project,
+        }).toString();
+        const saved = process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+        // Any file that is not the pinned build: the gate must refuse, never pass.
+        process.env.CLAUDEXOR_BETTERLEAKS_PATH = join(project, "x");
+        try {
           const pr = await apiFetch(`${base}/runs/run-d1/apply`, {
             method: "POST",
             headers: authed(),
             body: JSON.stringify({ mode: "pr", branch: "claudexor/v4c-pr" }),
           });
           expect(pr.status).toBe(409);
-          expect(JSON.stringify(await pr.json())).toContain("refusing 'pr' delivery");
-          expect(execFileSync("git", ["branch", "--list"], { cwd: project }).toString()).toBe(
-            branchesBefore,
-          );
-          expect(readFileSync(join(project, "x"), "utf8")).toBe("old\n");
+          const body = (await pr.json()) as { code?: string; message?: string };
+          expect(body.code).toBe("publication_scan_unavailable");
+          expect(body.message).toContain("refusing 'pr' delivery");
+        } finally {
+          if (saved === undefined) delete process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+          else process.env.CLAUDEXOR_BETTERLEAKS_PATH = saved;
+        }
+        expect(execFileSync("git", ["branch", "--list"], { cwd: project }).toString()).toBe(
+          branchesBefore,
+        );
+        expect(readFileSync(join(project, "x"), "utf8")).toBe("old\n");
 
-          // Local delivery of the same patch is allowed: the bytes are already here.
-          const commit = await apiFetch(`${base}/runs/run-d1/apply`, {
-            method: "POST",
-            headers: authed(),
-            body: JSON.stringify({ mode: "commit", message: "local" }),
-          });
-          expect(commit.status).toBe(200);
-          expect(((await commit.json()) as { applied: boolean }).applied).toBe(true);
+        // Local delivery of the same patch is allowed: the bytes are already here.
+        const commit = await apiFetch(`${base}/runs/run-d1/apply`, {
+          method: "POST",
+          headers: authed(),
+          body: JSON.stringify({ mode: "commit", message: "local" }),
         });
-      },
-    );
+        expect(commit.status).toBe(200);
+        expect(((await commit.json()) as { applied: boolean }).applied).toBe(true);
+      });
+    });
   });
 
   it("enforces contradictory canonical RunFacts through apply/check, decision, apply, and delivery overlay", async () => {
@@ -11835,83 +11761,16 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("redacts prompts in summaries; a raw secret-like patch artifact is neither served nor applyable", async () => {
+  it("lists exact prompts and serves exact patch, text, jsonl and SSE content (INV-146)", async () => {
     const { daemon, record } = fakeDaemon();
     const secret = "sk-" + "a".repeat(24);
     record.params = { prompt: `use ${secret}`, mode: "agent", routingGoal: "auto" };
-    writeFileSync(
-      join(record.runDir as string, "final", "patch.diff"),
-      `diff --git a/.env b/.env\n+OPENAI_API_KEY=${secret}\n`,
-    );
-    await withDaemonServer(daemon, async (base) => {
-      const list = (await (
-        await apiFetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
-      ).json()) as {
-        runs: { prompt?: string }[];
-      };
-      expect(list.runs[0]?.prompt).toContain("[redacted]");
-      expect(list.runs[0]?.prompt).not.toContain(secret);
-
-      const patch = await apiFetch(`${base}/runs/run-d1/artifacts/final/patch.diff`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(patch.status).toBe(409);
-
-      // V4C: there is no separate "secret-like token" apply refusal any more.
-      // A raw artifact that is not the recorded exact patch is refused by the
-      // apply gate's digest binding, like any other tampered patch file.
-      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: "{}",
-      });
-      expect(apply.status).toBe(409);
-      const refusal = await apply.text();
-      expect(refusal).toContain("patch artifact hash does not match the recorded work product");
-      expect(refusal).not.toContain("secret-like token");
-      expect(refusal).not.toContain(secret);
-    });
-  });
-
-  it("redacts secret-like text artifacts before serving them", async () => {
-    const { daemon, record } = fakeDaemon();
-    const secret = "sk-" + "b".repeat(24);
+    const patchText = `diff --git a/.env b/.env\n+OPENAI_API_KEY=${secret}\n`;
+    writeFileSync(join(record.runDir as string, "final", "patch.diff"), patchText);
     writeFileSync(
       join(record.runDir as string, "final", "summary.md"),
       `# Summary\n\nToken ${secret}\n`,
     );
-    await withDaemonServer(daemon, async (base) => {
-      const summary = await apiFetch(`${base}/runs/run-d1/artifacts/final/summary.md`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(summary.status).toBe(200);
-      const text = await summary.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain(secret);
-    });
-  });
-
-  it("redacts secret-like jsonl artifacts before serving them", async () => {
-    const { daemon, record } = fakeDaemon();
-    const secret = "sk-" + "d".repeat(24);
-    writeFileSync(
-      join(record.runDir as string, "events.jsonl"),
-      JSON.stringify({ type: "message", text: secret }) + "\n",
-    );
-    await withDaemonServer(daemon, async (base) => {
-      const events = await apiFetch(`${base}/runs/run-d1/artifacts/events.jsonl`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(events.status).toBe(200);
-      const text = await events.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain(secret);
-    });
-  });
-
-  it("redacts secret-like run events before daemon SSE replay", async () => {
-    const { daemon, record } = fakeDaemon();
-    const secret = "sk-" + "e".repeat(24);
     writeFileSync(
       join(record.runDir as string, "events.jsonl"),
       [
@@ -11921,14 +11780,30 @@ describe("DaemonControlApiServer", () => {
       ].join("\n"),
     );
     await withDaemonServer(daemon, async (base) => {
-      const events = await apiFetch(`${base}/runs/run-d1/events`, {
+      const get = (path: string) =>
+        apiFetch(`${base}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      const list = (await (await get("/runs")).json()) as { runs: { prompt?: string }[] };
+      expect(list.runs[0]?.prompt).toBe(`use ${secret}`);
+      const patch = await get("/runs/run-d1/artifacts/final/patch.diff");
+      expect(patch.status).toBe(200);
+      expect(await patch.text()).toBe(patchText);
+      expect(await (await get("/runs/run-d1/artifacts/final/summary.md")).text()).toContain(secret);
+      expect(await (await get("/runs/run-d1/artifacts/events.jsonl")).text()).toContain(secret);
+      const sse = await (await get("/runs/run-d1/events")).text();
+      expect(sse).toContain(secret);
+      expect(sse).toContain("event: run.completed");
+
+      // A raw artifact that is not the recorded exact patch is refused by the
+      // apply gate's digest binding, like any other tampered patch file.
+      const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
         headers: { authorization: `Bearer ${token}` },
+        body: "{}",
       });
-      expect(events.status).toBe(200);
-      const text = await events.text();
-      expect(text).toContain("[redacted]");
-      expect(text).not.toContain(secret);
-      expect(text).toContain("event: run.completed");
+      expect(apply.status).toBe(409);
+      expect(await apply.text()).toContain(
+        "patch artifact hash does not match the recorded work product",
+      );
     });
   });
 

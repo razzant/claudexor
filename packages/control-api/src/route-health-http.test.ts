@@ -129,7 +129,12 @@ async function fixture(fixtures: Fixture[]) {
   return (path: string) => fetch(`http://${host}:${port}${path}`, { headers });
 }
 
-const recent = "2026-10-28T09:00:00.000Z";
+// The route reads the real clock (`scanRouteHealth`'s default `now`), so run
+// times are relative to the request: the seven-day window holds the same rows
+// whatever day the suite runs.
+const HOUR_MS = 60 * 60 * 1_000;
+const hoursAgo = (hours: number) => new Date(Date.now() - hours * HOUR_MS).toISOString();
+const recent = hoursAgo(1);
 const refused = {
   category: "harness_error",
   message: "agy headless tool permission refused: read_file",
@@ -149,13 +154,13 @@ describe("GET /v2/daemon/route-health over the control API", () => {
       {
         id: "live",
         state: "running",
-        createdAt: "2026-10-28T08:00:00.000Z",
+        createdAt: hoursAgo(2),
         primaryHarness: "claude",
       },
       {
         id: "a2",
         state: "failed",
-        createdAt: "2026-10-27T09:00:00.000Z",
+        createdAt: hoursAgo(1 * 24 + 1),
         primaryHarness: "agy",
         settled: { harnessId: "agy", access: "readonly" },
         failure: refused,
@@ -164,7 +169,7 @@ describe("GET /v2/daemon/route-health over the control API", () => {
       {
         id: "a3",
         state: "failed",
-        createdAt: "2026-10-26T09:00:00.000Z",
+        createdAt: hoursAgo(2 * 24 + 1),
         primaryHarness: "agy",
         settled: { harnessId: "agy", access: "readonly" },
         error: "spawn ENOENT",
@@ -172,7 +177,7 @@ describe("GET /v2/daemon/route-health over the control API", () => {
       {
         id: "c1",
         state: "succeeded",
-        createdAt: "2026-10-25T09:00:00.000Z",
+        createdAt: hoursAgo(3 * 24 + 1),
         primaryHarness: "claude",
         settled: { harnessId: "claude", access: "workspace_write" },
       },
@@ -180,20 +185,20 @@ describe("GET /v2/daemon/route-health over the control API", () => {
       {
         id: "d1",
         state: "cancelled",
-        createdAt: "2026-10-24T09:00:00.000Z",
+        createdAt: hoursAgo(4 * 24 + 1),
         primaryHarness: "codex",
       },
       {
         id: "d2",
         state: "interrupted",
-        createdAt: "2026-10-23T09:00:00.000Z",
+        createdAt: hoursAgo(5 * 24 + 1),
         primaryHarness: "codex",
       },
       // Created more than seven days before the request: the walk ends here.
       {
         id: "old",
         state: "failed",
-        createdAt: "2026-10-01T09:00:00.000Z",
+        createdAt: hoursAgo(27 * 24),
         primaryHarness: "agy",
         settled: { harnessId: "agy", access: "readonly" },
         failure: refused,

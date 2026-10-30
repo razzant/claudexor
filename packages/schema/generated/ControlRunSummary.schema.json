@@ -1669,7 +1669,7 @@
                 "null"
               ],
               "default": null,
-              "description": "Redacted target (query/url) of the web activity, when any."
+              "description": "Target (query/url) of the web activity as issued, when any."
             },
             "errorSummary": {
               "type": [
@@ -1685,7 +1685,7 @@
                 "null"
               ],
               "default": null,
-              "description": "Artifact path holding the raw (redacted) evidence detail."
+              "description": "Artifact path holding the full evidence record."
             },
             "available": {
               "type": "boolean",

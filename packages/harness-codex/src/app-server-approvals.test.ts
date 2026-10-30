@@ -636,20 +636,6 @@ describe("Codex app-server approval relay", () => {
       },
     ],
     [
-      "secret path",
-      "item/fileChange/requestApproval",
-      { changes: [{ path: ".env", kind: { type: "add" }, diff: "+safe\n" }] },
-      {},
-    ],
-    [
-      "secret content",
-      "item/fileChange/requestApproval",
-      {
-        changes: [{ path: "smoke.txt", kind: { type: "add" }, diff: "+sk-proj-" + "x".repeat(40) }],
-      },
-      {},
-    ],
-    [
       "oversized change metadata",
       "item/fileChange/requestApproval",
       {
@@ -707,6 +693,28 @@ describe("Codex app-server approval relay", () => {
       expect(run.events.some((event) => event.type === "interaction_requested")).toBe(false);
     },
   );
+
+  it.each([
+    ["a credential-named path", { path: ".env", kind: { type: "add" }, diff: "+safe\n" }],
+    [
+      "credential-shaped content",
+      { path: "smoke.txt", kind: { type: "add" }, diff: "+sk-proj-" + "x".repeat(40) },
+    ],
+  ] as const)("presents %s inside the workspace for approval (INV-146)", async (_case, change) => {
+    const peer = approvalPeer("item/fileChange/requestApproval", "approval-exact", {
+      changes: [change],
+    });
+    const run = startApprovalRun(peer);
+    const request = await observedRequest(run);
+    expect(JSON.stringify(request)).toContain(change.path);
+    expect(JSON.stringify(request)).toContain(change.diff.slice(1).trimEnd().slice(0, 8));
+    run.reply(answer(request, ["Approve once"]));
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "approval-exact",
+      result: { decision: "accept" },
+    });
+    await bounded(run.done);
+  });
 
   it("does not accept a late answer after cancellation", async () => {
     const peer = approvalPeer(

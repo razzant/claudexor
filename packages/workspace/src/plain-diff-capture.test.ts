@@ -34,7 +34,6 @@ it("matches complete header normalization/exclusion across UTF-8 chunk boundarie
   const projection = new PlainDiffProjection(baseline, live, "owned");
   for (const byte of Buffer.from(raw.stdout)) projection.write(Buffer.from([byte]));
   expect(projection.end()).toBe(expected);
-  expect(projection.binarySecretPaths.size).toBe(0);
   const result = await capturePlainDiff(baseline, live, "owned");
   expect(result.captureIncomplete).toBe(false);
   // The capture's exclusion flags appear in the structural command echo.
@@ -76,7 +75,7 @@ it("bounds a large single line during capture without concatenating stdout", asy
   expect(concat.mock.calls.every(([chunks]) => chunks.length === 0)).toBe(true);
 });
 
-it("skips an oversized owned record and inspects binary stubs beyond the preview", async () => {
+it("skips an oversized owned record and keeps binary stubs beyond the preview", async () => {
   const { baseline, live } = fixture();
   writeFileSync(join(live, "owned", "log"), "x".repeat(300_000));
   writeFileSync(join(live, "text"), "y".repeat(300_000));
@@ -86,7 +85,6 @@ it("skips an oversized owned record and inspects binary stubs beyond the preview
   expect(result.captureIncomplete).toBe(true);
   expect(result.captureFailure).toMatchObject({ code: "capture_preview_truncated" });
   expect(result.diff.length).toBe(200_000 + "\n... [diff truncated]\n".length);
-  expect(result.binarySecretPaths).toEqual(["z-secret"]);
   const raw = await runCaptureRaw("diff", [
     "-ruN",
     "-x",

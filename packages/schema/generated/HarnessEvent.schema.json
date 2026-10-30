@@ -543,7 +543,7 @@
             },
             "target": {
               "type": "string",
-              "description": "Redacted, bounded human-readable target (query/url/path/command)."
+              "description": "Bounded human-readable target (query/url/path/command), as the agent issued it."
             },
             "status": {
               "type": "string",
@@ -565,11 +565,11 @@
             },
             "error_summary": {
               "type": "string",
-              "description": "Redacted, bounded error detail for status=error results."
+              "description": "Error detail for status=error results: the tool's own output, unmasked, within the adapter's bound and whitespace normalization."
             },
             "content_summary": {
               "type": "string",
-              "description": "Redacted, bounded content detail for results (success or failure)."
+              "description": "Content detail for results (success or failure), unmasked, within the adapter's bound and whitespace normalization."
             },
             "exit_code": {
               "type": "integer",

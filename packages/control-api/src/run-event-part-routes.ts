@@ -14,7 +14,7 @@ import { queryParam } from "./operation-parameters.js";
 import type { OperationDraft } from "./operation-draft.js";
 import { readRunTombstone } from "./retention.js";
 import type { DaemonRunRecord } from "./run-record.js";
-import { redactedSseLine, streamLineIdentity } from "./sse-shared.js";
+import { sseDataLine, streamLineIdentity } from "./sse-shared.js";
 
 /** Route-owned catalog descriptor for the one addressed event-part read. */
 export const RUN_EVENT_PART_OPERATION_DRAFTS: OperationDraft[] = [
@@ -26,7 +26,7 @@ export const RUN_EVENT_PART_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlRunEventPart",
     responseKind: "json",
     summary:
-      "Read one bounded part of one validated run event by seq, in the exact redacted serialization the run event stream delivers.",
+      "Read one bounded part of one validated run event by seq, in the exact stored serialization the run event stream delivers.",
     parameters: [
       queryParam({
         name: "offset",
@@ -102,7 +102,7 @@ async function eventLine(path: string, seq: number): Promise<string | null> {
 
 /**
  * `GET /v2/runs/:id/events/:seq?offset=&limit=` — one bounded part of one
- * validated event, in the exact redacted serialization the event stream
+ * validated event, in the exact stored serialization the event stream
  * delivers, so a reader whose page cannot hold that event reassembles the
  * same bytes instead of skipping it. Addressed by run and seq only: no path,
  * no other artifact, no whole-log transfer.
@@ -163,7 +163,7 @@ export async function handleRunEventPartRoute(
     ctx.json(res, 404, { error: `run has no event ${seq}`, code: "run_event_not_found" });
     return true;
   }
-  const serialized = redactedSseLine(raw);
+  const serialized = sseDataLine(raw);
   let event: RunEvent | null = null;
   try {
     const parsed = RunEvent.safeParse(JSON.parse(serialized));

@@ -1,5 +1,5 @@
 import type { ProjectThreadPort } from "@claudexor/daemon";
-import { PR_SECRET_LIKE_REFUSAL, verifyAndDeliver } from "@claudexor/delivery";
+import { verifyAndDeliver } from "@claudexor/delivery";
 import {
   advanceThreadWorktree,
   captureWorkingTreeTransient,
@@ -76,10 +76,10 @@ export async function applyThreadDiff(
   }
   const mode = (["apply", "branch", "commit", "pr"].includes(opts.mode) ? opts.mode : "apply") as
     "apply" | "branch" | "commit" | "pr";
-  // INV-062: the thread applies its LIVE worktree capture (exact bytes), so a
+  // INV-146: the thread applies its LIVE worktree capture (exact bytes), so a
   // local apply/branch/commit keeps secret-like strings where the agent wrote
-  // them. Only `pr` refuses — inside the one delivery owner, before any push —
-  // for a text match and for a blob-only binary finding alike.
+  // them. Only `pr` refuses — inside the one delivery owner, before anything
+  // is created or pushed — when the publication scanner does not pass it.
   const delivered = await verifyAndDeliver(
     projectRoot,
     patch,
@@ -87,7 +87,6 @@ export async function applyThreadDiff(
       mode,
       branch: opts.branch,
       message: opts.message,
-      secretLikeBinary: captured.binarySecretPaths.length > 0,
     },
     opts.gates ?? [],
   );
@@ -101,7 +100,7 @@ export async function applyThreadDiff(
     );
   }
   const status = !delivered.applied
-    ? delivered.detail === PR_SECRET_LIKE_REFUSAL
+    ? delivered.refused
       ? "rejected"
       : "conflict"
     : mode === "branch"

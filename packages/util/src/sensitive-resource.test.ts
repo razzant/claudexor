@@ -77,7 +77,7 @@ describe("SensitiveResourcePolicy hostile corpus", () => {
     expect(second).toMatchObject({ action: "allow", matches: 0, text: first.text });
   });
 
-  it("allows only contained, relocatable, non-sensitive symlink targets", () => {
+  it("allows only contained, relocatable symlink targets; a credential NAME is not a reason (INV-146)", () => {
     const base = {
       sourceRoot: "/workspace",
       canonicalSourceRoot: "/workspace",
@@ -102,7 +102,7 @@ describe("SensitiveResourcePolicy hostile corpus", () => {
         linkTarget: ".env",
         resolvedTargetPath: "/workspace/.env",
       }),
-    ).toMatchObject({ allowed: false, reason: "sensitive_target" });
+    ).toMatchObject({ allowed: true, reason: null });
     expect(
       sensitiveResourcePolicy.assessSymlink({
         ...base,

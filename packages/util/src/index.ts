@@ -420,94 +420,16 @@ export function isClaudexorOwnedRuntimePath(candidate: string): boolean {
 }
 
 /**
- * Best-effort redaction of obvious secret tokens from text destined for logs or
- * artifacts. This is defense-in-depth, never the primary control: secrets must
- * not reach this layer in the first place.
+ * Best-effort masking of credential-shaped tokens in ENGINE-OWNED diagnostics
+ * (errors, stderr tails, auth/probe output). Never applied to authorized
+ * working content (prompts, attachments, answers, events, patches, review
+ * evidence), which consumers receive exactly.
  */
 export function redactSecrets(text: string): string {
   return sensitiveResourcePolicy.redact(text);
 }
 
-export function containsSecretLikeToken(text: string): boolean {
-  return sensitiveResourcePolicy.containsSensitiveContent(text);
-}
-
-/** Keys whose subtree is a caller-authored JSON SCHEMA: its object keys are
- *  field NAMES (a `token` or `password` property is legitimate), so the
- *  key-based secret check must not fire there — but string VALUES inside it
- *  (const/default/enum literals) are still scanned for real secrets. */
-const SCHEMA_VALUE_SUBTREE_KEYS = new Set(["outputSchema", "output_schema"]);
-
-export function assertNoInlineSecretValues(
-  value: unknown,
-  path = "$",
-  context = "run params",
-  valuesOnly = false,
-): void {
-  if (typeof value === "string") {
-    if (containsSecretLikeToken(value)) {
-      // Prompts get a tailored remediation: they are DURABLE run artifacts
-      // (task contracts, transcripts, review packets), so a pasted live
-      // credential would outlive the run. There is deliberately NO bypass
-      // flag for this fence.
-      const inPrompt = /\.prompt(\[|\.|$)/.test(path);
-      const remediation = inPrompt
-        ? "the prompt contains a secret-like value; prompts are durable run artifacts — remove the credential (store it with `claudexor secrets set` and reference it instead) and retry"
-        : "store values via secrets and pass refs/profiles";
-      throw Object.assign(
-        new Error(`secret-like value is not accepted in ${context} (${path}); ${remediation}`),
-        {
-          status: 400,
-          code: "inline_secret_rejected",
-        },
-      );
-    }
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoInlineSecretValues(v, `${path}[${i}]`, context, valuesOnly));
-    return;
-  }
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    // A real secret embedded in a KEY (e.g. a schema property literally named
-    // with a live token) is rejected in EVERY mode — valuesOnly only relaxes
-    // the NAME heuristic (a legitimate `token`/`password` field name), never
-    // the actual-secret detector. Never echo the raw key in the message.
-    if (containsSecretLikeToken(key)) {
-      throw Object.assign(
-        new Error(
-          `secret-like value is not accepted in ${context} (${path}: object key); store values via secrets and pass refs/profiles`,
-        ),
-        { status: 400, code: "inline_secret_rejected" },
-      );
-    }
-    // Inside a JSON Schema subtree, keys are field names — skip the name-word
-    // heuristic (a `token`/`password`/`env` FIELD is legitimate), but string
-    // VALUES are still scanned below.
-    if (
-      !valuesOnly &&
-      (key === "env" ||
-        key === "secrets" ||
-        /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key))
-    ) {
-      throw Object.assign(
-        new Error(
-          `inline secrets/env are not accepted in ${context} (${path}.${key}); store values via secrets and pass refs/profiles`,
-        ),
-        { status: 400, code: "inline_secret_rejected" },
-      );
-    }
-    assertNoInlineSecretValues(
-      child,
-      `${path}.${key}`,
-      context,
-      valuesOnly || SCHEMA_VALUE_SUBTREE_KEYS.has(key),
-    );
-  }
-}
-
-/** The machine-readable `code` a typed error carries (e.g. inline_secret_rejected), if any. */
+/** The machine-readable `code` a typed error carries, if any. */
 export function errorCode(err: unknown): string | undefined {
   if (
     err &&

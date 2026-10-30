@@ -6,7 +6,6 @@ import {
   ControlJournalQuarantineRequest,
   ControlJournalValidation,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import { requiredIdempotencyKey } from "./run-start.js";
 
 export interface RecoveryRouteContext {
@@ -56,7 +55,6 @@ export async function handleRecoveryRoute(
       const service = required(ctx.services?.recoveryQuarantinePartition);
       const idempotencyKey = requiredIdempotencyKey(req);
       const raw = await ctx.readBody(req);
-      assertNoInlineSecretValues(raw);
       const body = ControlJournalQuarantineRequest.parse(raw);
       ctx.json(
         res,

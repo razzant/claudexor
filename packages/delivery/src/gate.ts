@@ -68,9 +68,10 @@ export interface ApplyGateInput {
    */
   workState?: WorkState | null;
   /**
-   * INV-062: the saved `final/patch.diff` is a display-only copy (secret-like
-   * strings hidden) and its exact bytes could not be produced. `patch` then
-   * holds that copy, which must never be applied or advertised as applyable.
+   * A historical run (retired INV-062) saved `final/patch.diff` as a
+   * display-only copy with secret-like strings hidden, and its exact bytes
+   * could not be produced. `patch` then holds that copy, which must never be
+   * applied or advertised as applyable.
    */
   exactPatchUnavailable?: boolean;
 }

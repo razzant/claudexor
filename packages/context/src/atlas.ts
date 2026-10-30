@@ -220,17 +220,6 @@ export async function buildScopeAtlas(
       continue;
     }
     const mandatory = mandatorySet.has(rel);
-    const sensitive = sensitiveResourcePolicy.classifyPath(rel);
-    if (sensitive.sensitive) {
-      atlas.push({
-        path: rel,
-        disposition: "sensitive",
-        bytes,
-        reason: sensitive.reason ?? undefined,
-      });
-      if (mandatory) missingMandatory.push(rel);
-      continue;
-    }
     if (!mandatory) {
       if (BINARY_EXT.has(extname(rel).toLowerCase())) {
         atlas.push({ path: rel, disposition: "binary", bytes });
@@ -288,17 +277,6 @@ export async function buildScopeAtlas(
       if (c.mandatory) missingMandatory.push(c.rel);
       continue;
     }
-    const contentDecision = sensitiveResourcePolicy.inspectContent(content, "reject");
-    if (contentDecision.containsSensitiveContent) {
-      atlas.push({
-        path: c.rel,
-        disposition: "sensitive",
-        bytes: c.bytes,
-        reason: `content signatures: ${contentDecision.signatures.join(", ")}`,
-      });
-      if (c.mandatory) missingMandatory.push(c.rel);
-      continue;
-    }
     const hash = sha256(content);
     used += estTokens(content.length);
     atlas.push({ path: c.rel, disposition: "full", bytes: c.bytes, hash });
@@ -350,7 +328,7 @@ export function contextSymlinkDenyReason(
     });
     return decision.allowed
       ? null
-      : (decision.detail ?? "symlink target denied by sensitive-resource policy");
+      : (decision.detail ?? "symlink target denied by the containment policy");
   } catch {
     return "symlink target cannot be resolved";
   }

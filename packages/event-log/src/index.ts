@@ -10,7 +10,7 @@ import {
   truncateSync,
   unlinkSync,
 } from "node:fs";
-import { appendLine, nowIso, readTextSafe, redactSecrets } from "@claudexor/util";
+import { appendLine, nowIso, readTextSafe } from "@claudexor/util";
 export { RETAINED_OUTPUT_PATH, retainedOutput, writeRetainedOutput } from "./retained-output.js";
 
 export type TerminalRunEventType = Extract<
@@ -183,7 +183,7 @@ export class EventLog {
         task_id: this.taskId,
         ...(this.threadId ? { thread_id: this.threadId } : {}),
         type,
-        payload: redactEventValue(payload),
+        payload: payload,
       });
     }
     // Derived output may announce its file before the terminal sequence/receipt
@@ -197,7 +197,7 @@ export class EventLog {
       task_id: this.taskId,
       ...(this.threadId ? { thread_id: this.threadId } : {}),
       type,
-      payload: redactEventValue(payload),
+      payload: payload,
     });
     // Snapshot before terminal preparation: the hook may materialize sibling
     // artifacts, but the event file rollback boundary is the pre-hook state.
@@ -207,7 +207,7 @@ export class EventLog {
       // durable sink form one terminal commit. The fence is released only by
       // a complete rollback or after the terminal fully commits.
       this.terminalCommitInProgress = true;
-      // Validate the exact redacted event before terminal preparation can
+      // Validate the exact event before terminal preparation can
       // materialize a receipt for it. Keep the hook registered until the event
       // itself is durable so an append failure can retry the entire commit.
       try {
@@ -221,7 +221,7 @@ export class EventLog {
             ? {
                 ...event,
                 type: prepared.type,
-                payload: redactEventValue(prepared.payload),
+                payload: prepared.payload,
               }
             : event,
         );
@@ -407,7 +407,7 @@ export function appendRunEvent(
     run_id: runId,
     task_id: taskId,
     type,
-    payload: redactEventValue(payload),
+    payload: payload,
   });
   appendLine(path, JSON.stringify(event));
   return event;
@@ -526,15 +526,4 @@ function terminalEventInFile(path: string): boolean {
     }
   }
   return false;
-}
-
-function redactEventValue(value: unknown): unknown {
-  if (typeof value === "string") return redactSecrets(value);
-  if (Array.isArray(value)) return value.map(redactEventValue);
-  if (!value || typeof value !== "object") return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = redactEventValue(child);
-  }
-  return out;
 }

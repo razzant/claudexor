@@ -2569,65 +2569,22 @@ describe("reviewEngine", () => {
     ).toContain("[]");
   });
 
-  it("refuses secret-like diff evidence before starting reviewers", async () => {
-    let reviewerStarted = false;
-    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
-    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
-    writeMandatoryReviewEvidence(evidenceDir);
-    const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
-    const adapter: HarnessAdapter = {
-      id: "secret-diff-reviewer",
-      async discover() {
-        return HarnessManifest.parse({
-          id: "secret-diff-reviewer",
-          display_name: "secret diff reviewer",
-          kind: "local_cli",
-          provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
-        });
-      },
-      async doctor() {
-        return ConformanceReport.parse({
-          harness_id: "secret-diff-reviewer",
-          status: "ok",
-          enabled_intents: ["review"],
-        });
-      },
-      async *run() {
-        reviewerStarted = true;
-      },
-    };
-
-    await expect(
-      reviewCandidate({
-        candidateLabel: "Candidate A",
-        diff: `diff --git a/.env b/.env\n@@ -1 +1 @@\n-OLD=1\n+OPENAI_API_KEY=${fakeKey}\n`,
-        evidenceDir,
-        artifactsDir,
-        cwd: candidateRoot,
-        reviewers: [{ adapter, providerFamily: "openai" }],
-      }),
-    ).rejects.toThrow(/refusing to persist raw DIFF\.patch/);
-    expect(reviewerStarted).toBe(false);
-    expect(existsSync(join(evidenceDir, "DIFF.patch"))).toBe(false);
-    expect(existsSync(join(artifactsDir, "evidence", "DIFF.patch"))).toBe(false);
-  });
-
-  it("redacts secret-like prose evidence before persistent artifacts and reviewer workspaces", async () => {
-    let reviewerEvidence = "";
+  it("gives the reviewer the exact credential-shaped diff and prose it reviews (INV-146)", async () => {
+    let seenDiff = "";
+    let seenIntent = "";
     const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     writeMandatoryReviewEvidence(evidenceDir);
     const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), `review prose ${fakeKey}\n`);
+    const diff = `diff --git a/.env b/.env\n@@ -1 +1 @@\n-OLD=1\n+OPENAI_API_KEY=${fakeKey}\n`;
     const adapter: HarnessAdapter = {
-      id: "prose-redaction-reviewer",
+      id: "exact-evidence-reviewer",
       async discover() {
         return HarnessManifest.parse({
-          id: "prose-redaction-reviewer",
-          display_name: "prose redaction reviewer",
+          id: "exact-evidence-reviewer",
+          display_name: "exact evidence reviewer",
           kind: "local_cli",
           provider_family: "openai",
           capabilities: { review: true, structured_output: true },
@@ -2635,16 +2592,16 @@ describe("reviewEngine", () => {
       },
       async doctor() {
         return ConformanceReport.parse({
-          harness_id: "prose-redaction-reviewer",
+          harness_id: "exact-evidence-reviewer",
           status: "ok",
           enabled_intents: ["review"],
         });
       },
       async *run(spec) {
-        reviewerEvidence = readFileSync(
-          join(spec.cwd, ".claudexor-review-evidence", "USER_INTENT.md"),
-          "utf8",
-        );
+        // The consumer reads its own workspace copy; nothing is echoed back.
+        const evidence = join(spec.cwd, ".claudexor-review-evidence");
+        seenDiff = readFileSync(join(evidence, "DIFF.patch"), "utf8");
+        seenIntent = readFileSync(join(evidence, "USER_INTENT.md"), "utf8");
         const ts = new Date().toISOString();
         yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
       },
@@ -2652,22 +2609,19 @@ describe("reviewEngine", () => {
 
     await reviewCandidate({
       candidateLabel: "Candidate A",
-      diff: "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      diff,
       evidenceDir,
       artifactsDir,
       cwd: candidateRoot,
       reviewers: [{ adapter, providerFamily: "openai" }],
     });
 
-    const persistentEvidence = readFileSync(
-      join(artifactsDir, "evidence", "USER_INTENT.md"),
-      "utf8",
+    expect(seenDiff).toBe(diff);
+    expect(seenIntent).toBe(`review prose ${fakeKey}\n`);
+    expect(readFileSync(join(artifactsDir, "evidence", "DIFF.patch"), "utf8")).toBe(diff);
+    expect(readFileSync(join(artifactsDir, "evidence", "USER_INTENT.md"), "utf8")).toContain(
+      fakeKey,
     );
-    expect(readFileSync(join(evidenceDir, "USER_INTENT.md"), "utf8")).toContain(fakeKey);
-    expect(persistentEvidence).toContain("[redacted]");
-    expect(persistentEvidence).not.toContain(fakeKey);
-    expect(reviewerEvidence).toContain("[redacted]");
-    expect(reviewerEvidence).not.toContain(fakeKey);
   });
 
   it("fails closed on incomplete mandatory evidence before starting reviewers", async () => {
@@ -3577,7 +3531,7 @@ describe("reviewEngine", () => {
     expect(trackedIgnoredFile).toBe("ignored-but-versioned.txt");
   });
 
-  it("does not copy paths from the shared sensitive-resource policy into reviewer workspaces", async () => {
+  it("copies credential-named and credential-shaped candidate files into reviewer workspaces exactly (INV-146)", async () => {
     const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
@@ -3627,22 +3581,25 @@ describe("reviewEngine", () => {
     ]);
     writeMandatoryReviewEvidence(evidenceDir);
 
-    let sawDotEnv = true;
-    let sawEnvrc = true;
-    let sawLocalEnv = true;
-    let sawEnvExample = false;
-    let sawKey = true;
-    let sawCredentials = true;
-    let sawEnvAlias = true;
-    let sawContentSecret = true;
-    let sawNpmrc = true;
-    let sawNetrc = true;
-    let sawSsh = true;
-    let sawCursor = true;
-    let sawCodex = true;
-    let sawClaude = true;
-    let sawSecretPackage = false;
-    let sawSecretContainer = true;
+    const expected = [
+      ".env",
+      ".envrc",
+      ".env.local",
+      ".env.example",
+      "signing.key",
+      "credentials.json",
+      "notes.txt",
+      "env-alias",
+      ".npmrc",
+      ".netrc",
+      ".ssh/id_ed25519",
+      ".cursor/state.json",
+      ".codex/auth.json",
+      ".claude/session.json",
+      "packages/secrets/src/index.ts",
+      "secrets/service.json",
+    ];
+    const seen = new Map<string, string | null>();
     const adapter: HarnessAdapter = {
       id: "env-secret-reviewer",
       async discover() {
@@ -3662,22 +3619,11 @@ describe("reviewEngine", () => {
         });
       },
       async *run(spec) {
-        sawDotEnv = existsSync(join(spec.cwd, ".env"));
-        sawEnvrc = existsSync(join(spec.cwd, ".envrc"));
-        sawLocalEnv = existsSync(join(spec.cwd, ".env.local"));
-        sawEnvExample = existsSync(join(spec.cwd, ".env.example"));
-        sawKey = existsSync(join(spec.cwd, "signing.key"));
-        sawCredentials = existsSync(join(spec.cwd, "credentials.json"));
-        sawEnvAlias = existsSync(join(spec.cwd, "env-alias"));
-        sawContentSecret = existsSync(join(spec.cwd, "notes.txt"));
-        sawNpmrc = existsSync(join(spec.cwd, ".npmrc"));
-        sawNetrc = existsSync(join(spec.cwd, ".netrc"));
-        sawSsh = existsSync(join(spec.cwd, ".ssh"));
-        sawCursor = existsSync(join(spec.cwd, ".cursor"));
-        sawCodex = existsSync(join(spec.cwd, ".codex"));
-        sawClaude = existsSync(join(spec.cwd, ".claude"));
-        sawSecretPackage = existsSync(join(spec.cwd, "packages", "secrets", "src", "index.ts"));
-        sawSecretContainer = existsSync(join(spec.cwd, "secrets", "service.json"));
+        for (const path of expected)
+          seen.set(
+            path,
+            existsSync(join(spec.cwd, path)) ? readFileSync(join(spec.cwd, path), "utf8") : null,
+          );
         const ts = new Date().toISOString();
         yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
       },
@@ -3693,22 +3639,9 @@ describe("reviewEngine", () => {
     });
 
     expect(res.findings).toEqual([]);
-    expect(sawDotEnv).toBe(false);
-    expect(sawEnvrc).toBe(false);
-    expect(sawLocalEnv).toBe(false);
-    expect(sawEnvExample).toBe(true);
-    expect(sawKey).toBe(false);
-    expect(sawCredentials).toBe(false);
-    expect(sawEnvAlias).toBe(false);
-    expect(sawContentSecret).toBe(false);
-    expect(sawNpmrc).toBe(false);
-    expect(sawNetrc).toBe(false);
-    expect(sawSsh).toBe(false);
-    expect(sawCursor).toBe(false);
-    expect(sawCodex).toBe(false);
-    expect(sawClaude).toBe(false);
-    expect(sawSecretPackage).toBe(true);
-    expect(sawSecretContainer).toBe(false);
+    for (const path of expected)
+      expect(seen.get(path), path).toBe(readFileSync(join(candidateRoot, path), "utf8"));
+    expect(seen.get("notes.txt")).toContain(jwt);
   });
 
   it("isolates reviewer workspace setup failures to the failing reviewer", async () => {

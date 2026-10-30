@@ -17,7 +17,6 @@ import { handleDeferredMessageRoute } from "./deferred-message-routes.js";
 import { handleAccountResourceRoute, type ResourceRead } from "./account-resource-routes.js";
 import { CONTROL_STORE_IDENTITY_HEADER, ControlAccountResetRequest } from "@claudexor/schema";
 import { recordedExecutionRoot } from "./run-delivery-state.js";
-import * as exactPatch from "./run-exact-patch.js";
 import { readRawTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { controlRunResult, readDeliveryState, markRunApplyState } from "./run-delivery-state.js";
 import { timingSafeEqual } from "node:crypto";
@@ -158,7 +157,6 @@ import { resolveControlProtocol, type ControlServingMode } from "./control-proto
 import { RefusedBodies, readControlRequestBody } from "./request-body.js";
 import { withControlHttpTimeouts } from "./http-server-options.js";
 import {
-  assertNoInlineSecretValues,
   errorCode,
   redactSecrets,
   safeProblemContext,
@@ -911,7 +909,6 @@ export class DaemonControlApiServer {
       let body: ControlInteractionAnswerRequest;
       try {
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         body = ControlInteractionAnswerRequest.parse(raw);
       } catch (err) {
         return this.requestError(res, err);
@@ -1027,7 +1024,6 @@ export class DaemonControlApiServer {
         return this.json(res, 501, { error: "threads are not supported by this engine build" });
       try {
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         const patch = ControlThreadUpdateRequest.parse(raw);
         const thread = await svc(decodeURIComponent(threadDetailMatch[1] as string), {
           title: patch.title,
@@ -1058,7 +1054,6 @@ export class DaemonControlApiServer {
       try {
         idempotencyKey = runStart.requiredIdempotencyKey(req);
         body = ControlThreadTurnRequest.parse((await this.readBody(req)) ?? {});
-        assertNoInlineSecretValues(body);
       } catch (err) {
         return this.requestError(res, err);
       }
@@ -1109,7 +1104,6 @@ export class DaemonControlApiServer {
       try {
         decisionKey = runStart.requiredIdempotencyKey(req);
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         body = ControlRunDecisionRequest.parse(raw);
       } catch (err) {
         return this.requestError(res, err);
@@ -1280,10 +1274,7 @@ export class DaemonControlApiServer {
                 const delivered = await verifyAndDeliver(
                   repoRoot,
                   patch,
-                  {
-                    mode: body.applyMode ?? "apply",
-                    secretLikeBinary: exactPatch.runPatchHasSecretLikeBinary(rec),
-                  },
+                  { mode: body.applyMode ?? "apply" },
                   gateSpecsForRun(rec),
                   (freshVerify) =>
                     applyGateError(
@@ -1297,7 +1288,7 @@ export class DaemonControlApiServer {
                 if (delivered.refused) {
                   throw Object.assign(new Error(delivered.detail ?? "delivery refused"), {
                     status: 409,
-                    code: "delivery_refused",
+                    code: delivered.publicationRefusal?.code ?? "delivery_refused",
                   });
                 }
                 if (delivered.applied) markRunApplyState(rec, "applied");
@@ -1402,7 +1393,6 @@ export class DaemonControlApiServer {
       try {
         assertOnlyQueryParams(url, []);
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         const request = ControlAuthReadinessRefreshRequest.parse(raw);
         return this.service(
           res,
@@ -1442,7 +1432,6 @@ export class DaemonControlApiServer {
       try {
         const idempotencyKey = runStart.requiredIdempotencyKey(req);
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         const body = ControlSetupJobCreateRequest.parse(raw);
         return this.service(
           res,
@@ -1571,7 +1560,6 @@ export class DaemonControlApiServer {
       let body: ControlSettingsUpdateRequest;
       try {
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         body = ControlSettingsUpdateRequest.parse(raw);
       } catch (err) {
         return this.requestError(res, err);
@@ -1610,7 +1598,6 @@ export class DaemonControlApiServer {
       let body: ControlCredentialProfileCreateRequest;
       try {
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         body = ControlCredentialProfileCreateRequest.parse(raw);
       } catch (err) {
         return this.requestError(res, err);
@@ -1627,7 +1614,6 @@ export class DaemonControlApiServer {
       let body: ControlCredentialProfileUpdateRequest;
       try {
         const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
         body = ControlCredentialProfileUpdateRequest.parse(raw);
       } catch (err) {
         return this.requestError(res, err);

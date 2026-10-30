@@ -38,11 +38,6 @@ export interface SensitiveContentDecision {
   readonly text: string;
 }
 
-export interface SensitiveContentScanner {
-  write(text: string): void;
-  finish(): boolean;
-}
-
 export type SymlinkTargetKind = "directory" | "file" | "other" | "unknown";
 
 export type SensitiveSymlinkDenyReason =
@@ -50,8 +45,6 @@ export type SensitiveSymlinkDenyReason =
   | "excluded_target"
   | "invalid_source"
   | "relocation_escape"
-  | "sensitive_source"
-  | "sensitive_target"
   | "target_kind"
   | "target_outside_root"
   | "unresolved_target";
@@ -76,7 +69,6 @@ export interface SensitiveSymlinkDecision {
   readonly allowed: boolean;
   readonly reason: SensitiveSymlinkDenyReason | null;
   readonly detail: string | null;
-  readonly pathDecision: SensitiveResourcePathDecision | null;
 }
 
 interface ContentRule {
@@ -157,11 +149,14 @@ const ALLOW_PATH: SensitiveResourcePathDecision = Object.freeze({
 });
 
 /**
- * Single owner for sensitive path, symlink-target, and content decisions.
- *
- * The API is deliberately surface-neutral: context/review consume it now;
- * upload and release scanners can consume the same typed decisions later
- * without growing another classifier or weakening this policy.
+ * Single owner for credential-shaped path, symlink-containment and content
+ * decisions. None of them filters authorized working content: prompts,
+ * attachments, project files, answers, patches and review evidence reach their
+ * consumers exactly. Content signatures only mask engine-owned diagnostics;
+ * the publication boundary is the shared Betterleaks scanner in
+ * `@claudexor/delivery` (`publication-scan.ts`), not these signatures. Path
+ * classes guard host-file import (outside any authorized project) and raise
+ * review risk; symlink containment keeps copies and context inside their roots.
  */
 export class SensitiveResourcePolicy {
   readonly redactionMarker = "[redacted]";
@@ -190,8 +185,9 @@ export class SensitiveResourcePolicy {
         );
       }
       // A monorepo package may legitimately own secret-management source code
-      // (`packages/secrets/**`). Its files still pass the shared content scan;
-      // every other `secrets` container remains path-sensitive.
+      // (`packages/secrets/**`), so it is not a secret container. Every other
+      // `secrets` directory stays path-sensitive for the host-file import guard
+      // and review risk; no content is scanned here.
       const sourcePackage = index > 0 && parts[index - 1]?.toLowerCase() === "packages";
       if (lower === "secrets" && !sourcePackage) {
         return sensitivePath("secret_container", part, `secret-container path component: ${part}`);
@@ -265,55 +261,6 @@ export class SensitiveResourcePolicy {
     return this.inspectContent(text, "redact").text;
   }
 
-  containsSensitiveContent(text: string): boolean {
-    return this.inspectContent(text, "reject").containsSensitiveContent;
-  }
-
-  /** Streaming artifact scan over the same signatures. The rolling lexical
-   * carry handles chunk-split credentials; a private-key block retains its
-   * opening delimiter independently of its arbitrarily large body. This is a
-   * scanner buffer, never an artifact size limit or a truncated scan. */
-  createContentScanner(): SensitiveContentScanner {
-    const privateRule = CONTENT_RULES.find((rule) => rule.id === "private_key_block")!;
-    const [start, end] = privateRule.pattern.source.split("[\\s\\S]*?");
-    const opening = new RegExp(start!, "g"),
-      closing = new RegExp(end!, "g");
-    let carry = "",
-      keyOpening = "",
-      found = false;
-    return {
-      write: (text) => {
-        if (found) return;
-        const combined = carry + text;
-        if (
-          CONTENT_RULES.some((rule) => {
-            rule.pattern.lastIndex = 0;
-            return rule.pattern.test(rule.id === "aws_access_key" ? combined + "A" : combined);
-          })
-        ) {
-          found = true;
-          return;
-        }
-        const previousOpening = keyOpening;
-        opening.lastIndex = 0;
-        const begin = opening.exec(combined);
-        if (!keyOpening && begin) keyOpening = begin[0];
-        closing.lastIndex = 0;
-        const finish = closing.exec(
-          previousOpening
-            ? combined
-            : combined.slice(begin ? begin.index + begin[0].length : combined.length),
-        );
-        if (keyOpening && finish && this.containsSensitiveContent(keyOpening + finish[0])) {
-          found = true;
-          return;
-        }
-        carry = combined.slice(-4096);
-      },
-      finish: () => found || this.containsSensitiveContent(carry),
-    };
-  }
-
   assessSymlink(input: SensitiveSymlinkInput): SensitiveSymlinkDecision {
     const sourceRoot = resolve(input.sourceRoot);
     const canonicalRoot = resolve(input.canonicalSourceRoot);
@@ -322,14 +269,6 @@ export class SensitiveResourcePolicy {
 
     if (!isSameOrInside(sourceRoot, sourcePath)) {
       return denySymlink("invalid_source", "symlink source is outside the allowed root");
-    }
-    const sourceDecision = this.classifyPath(relative(sourceRoot, sourcePath));
-    if (sourceDecision.sensitive) {
-      return denySymlink(
-        "sensitive_source",
-        sourceDecision.reason ?? "symlink source is sensitive",
-        sourceDecision,
-      );
     }
     if (!input.resolvedTargetPath) {
       return denySymlink("unresolved_target", "symlink target cannot be resolved");
@@ -344,15 +283,6 @@ export class SensitiveResourcePolicy {
     }
     if (excludedRoots.some((root) => isSameOrInside(root, resolvedTarget))) {
       return denySymlink("excluded_target", "symlink resolves into an excluded root");
-    }
-
-    const targetDecision = this.classifyPath(relative(canonicalRoot, resolvedTarget));
-    if (targetDecision.sensitive) {
-      return denySymlink(
-        "sensitive_target",
-        targetDecision.reason ?? "symlink target is sensitive",
-        targetDecision,
-      );
     }
 
     return assessRelocation(input, sourceRoot, sourcePath, excludedRoots);
@@ -376,16 +306,12 @@ function sensitivePath(
   return { sensitive: true, class: pathClass, matchedPart, reason };
 }
 
-function denySymlink(
-  reason: SensitiveSymlinkDenyReason,
-  detail: string,
-  pathDecision: SensitiveResourcePathDecision | null = null,
-): SensitiveSymlinkDecision {
-  return { allowed: false, reason, detail, pathDecision };
+function denySymlink(reason: SensitiveSymlinkDenyReason, detail: string): SensitiveSymlinkDecision {
+  return { allowed: false, reason, detail };
 }
 
 function allowSymlink(): SensitiveSymlinkDecision {
-  return { allowed: true, reason: null, detail: null, pathDecision: null };
+  return { allowed: true, reason: null, detail: null };
 }
 
 function assessRelocation(

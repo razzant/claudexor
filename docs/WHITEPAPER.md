@@ -340,8 +340,8 @@ a typed problem carrying stable `message`/`code`/exit fields. `--json-stream`
 keeps one compact event per line and text mode keeps one stderr line. Some
 subcommands and pre/post-run paths retain purpose-built one-object schemas; the
 exact bounded residue is tracked explicitly as D-7 in the backlog rather than
-hidden behind a generic wrapper. Secret-like tokens are redacted before any
-bounded error context is emitted.
+hidden behind a generic wrapper. Credential-shaped tokens are masked in
+engine-owned error context; working content stays exact.
 
 ## Secrets, Auth, And Isolation
 
@@ -357,8 +357,13 @@ allows one enabled binding instead of presenting several labels for one vendor
 Keychain identity. Readiness is always a live
 doctor projection in the exact environment a run will use, never a stored
 assertion. Antigravity account checks use non-interactive input so they cannot
-start a sign-in ceremony; explicit login retains its terminal. Raw secrets never
-become artifacts — prompts included.
+start a sign-in ceremony; explicit login retains its terminal. Claudexor never
+writes engine credentials into artifacts, though a harness can read the one the
+engine hands it and what the harness prints is kept as ordinary output; the
+user's own working content, including credential-shaped test fixtures, is
+carried exactly, tool output as unmasked bounded summaries, and only
+publication is checked, by the pinned Betterleaks scanner over what `pr` would
+push.
 
 Login is run through Claudexor rather than the bare vendor CLI so the session
 lands in the Claudexor-scoped store the runs actually read. Codex login
@@ -464,7 +469,7 @@ preference, and a finding without evidence blocks nothing.
 Reviewer access is also evidence-scoped. The candidate workspace is projected
 from version-control-visible files plus the reviewed diff, or from the complete
 selected postimage manifest for directory work, while the review
-packet crosses through a separate sealed or redacted channel. Ignored local
+packet crosses through a separate sealed evidence channel. Ignored local
 operator state is therefore not silently promoted into reviewer context.
 
 Rejected alternative: per-commit blocking review of the repository's own

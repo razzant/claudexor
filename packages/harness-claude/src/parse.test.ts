@@ -367,7 +367,7 @@ describe("parseClaudeEvent", () => {
     expect(exhausted[1]?.payload?.["structured_output_retries_exhausted"]).toBe(true);
   });
 
-  it("emits typed tool_result with redacted detail resolved to the originating tool", () => {
+  it("emits typed tool_result with its exact detail resolved to the originating tool", () => {
     const parse = createClaudeParser();
     parse(
       {
@@ -1289,5 +1289,28 @@ describe("claude parser: multi-turn session folding", () => {
       "s1",
     ) as HarnessEvent[];
     expect(out.map((e) => e.type)).toEqual(["tool_result"]);
+  });
+});
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped command in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const out = parseClaudeEvent(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "t1",
+              name: "Bash",
+              input: { command: `curl -H "Authorization: ${token}"` },
+            },
+          ],
+        },
+      },
+      "s1",
+    );
+    expect(out?.[0]?.tool?.target).toBe(`Bash: curl -H "Authorization: ${token}"`);
   });
 });

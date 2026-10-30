@@ -21,7 +21,7 @@ import {
   deliver,
   deriveApplyEligibility,
   EXACT_PATCH_UNAVAILABLE_MESSAGE,
-  PR_SECRET_LIKE_REFUSAL,
+  locateScanner,
   validateApplyGate,
   verifyAndDeliver,
 } from "./index.js";
@@ -260,38 +260,6 @@ describe("delivery", () => {
       process.env.PATH = oldPath;
       process.env.HOME = oldHome;
     }
-  });
-
-  it("pr delivery reports failure when the terminal push step fails", async () => {
-    const { repo, patch } = await makePatchRepo();
-    const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
-    expect(res.applied).toBe(false);
-    expect(res.commit).toBeTruthy();
-    expect(res.detail).toContain("push failed");
-  });
-
-  it("reports a pushed branch as applied when PR creation fails", async () => {
-    const { repo, patch } = await makePatchRepo();
-    const remote = reapMk(join(tmpdir(), "claudexor-delivery-remote-"));
-    execFileSync("git", ["init", "--bare", remote], { stdio: "pipe" });
-    await git(repo, ["remote", "add", "origin", remote]);
-    const res = await deliver(repo, patch, {
-      mode: "pr",
-      branch: "claudexor/pr-failure-receipt",
-      message: "open pr",
-    });
-    expect(res).toMatchObject({
-      applied: true,
-      branch: "claudexor/pr-failure-receipt",
-      prUrl: undefined,
-    });
-    expect(res.detail).toContain("branch pushed; PR was not opened");
-    const remoteTip = execFileSync(
-      "git",
-      ["--git-dir", remote, "rev-parse", "refs/heads/claudexor/pr-failure-receipt"],
-      { encoding: "utf8" },
-    ).trim();
-    expect(remoteTip).toBe(res.commit);
   });
 
   // CLI/daemon parity: the artifact-only CLI apply feeds work_product.meta.status
@@ -817,81 +785,435 @@ describe("a redacted saved copy can never be applied (INV-062, V4C T3)", () => {
   });
 });
 
-describe("'pr' never publishes a secret-like patch (INV-062, V4C T7)", () => {
-  const secret = ["sk", "p".repeat(24)].join("-");
+describe("'pr' publishes only what the pinned publication scanner passes (INV-146)", () => {
+  // Synthetic, assembled at runtime; high-entropy so the scanner's own rules fire.
+  const token = `ghp_${"q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"}`;
+  const pinned = locateScanner({ env: process.env, configDir: null });
 
+  /** Local Git, a local bare remote, and a fake `gh` transport that records
+   * what it was asked to publish. Nothing leaves this machine. */
   async function repoWithRemote(newLine: string) {
     const { repo } = await makePatchRepo();
     const remote = reapMk(join(tmpdir(), "claudexor-delivery-pr-remote-"));
     execFileSync("git", ["init", "--bare", remote], { stdio: "pipe" });
     await git(repo, ["remote", "add", "origin", remote]);
+    await git(repo, ["push", "-q", "origin", "main"]);
+    await git(repo, ["fetch", "-q", "origin"]);
     const patch = `diff --git a/NEW.txt b/NEW.txt\nnew file mode 100644\n--- /dev/null\n+++ b/NEW.txt\n@@ -0,0 +1 @@\n+${newLine}\n`;
     const refs = () =>
       execFileSync("git", ["--git-dir", remote, "for-each-ref"], { encoding: "utf8" });
     return { repo, patch, refs };
   }
 
-  it.each([
-    { finding: "text", line: () => `token ${secret}`, secretLikeBinary: false },
-    { finding: "blob-only", line: () => "no text match here", secretLikeBinary: true },
-  ])(
-    "refuses a $finding finding before the fresh verify, any commit and any push",
-    async ({ line, secretLikeBinary }) => {
-      const { repo, patch, refs } = await repoWithRemote(line());
-      const head = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
-      const branches = (await git(repo, ["branch", "--list"])).stdout;
-      const remoteBefore = refs();
-      let authorized = false;
+  /** The engine's spawn PATH prefers HOME-relative bins over system ones, so
+   * the fake transport lives in a temporary HOME's `.local/bin`: a real `gh`
+   * can never be reached from this test. */
+  async function withFakeGh<T>(run: (record: string) => Promise<T>, exitCode = 0): Promise<T> {
+    const home = reapMk(join(tmpdir(), "claudexor-fake-gh-home-"));
+    const bin = join(home, ".local", "bin");
+    mkdirSync(bin, { recursive: true });
+    const record = join(home, "gh-record.json");
+    writeFileSync(
+      join(bin, "gh"),
+      `#!${process.execPath}\nconst fs=require("fs");const a=process.argv.slice(2);const i=a.indexOf("--body-file");` +
+        `fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({args:a,body:i>=0?fs.readFileSync(a[i+1],"utf8"):null}));` +
+        (exitCode === 0
+          ? `console.log("https://example.invalid/pr/1");\n`
+          : `console.error("fake gh refused");process.exit(${exitCode});\n`),
+    );
+    chmodSync(join(bin, "gh"), 0o755);
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      return await run(record);
+    } finally {
+      process.env.HOME = previous;
+    }
+  }
 
-      const res = await verifyAndDeliver(
-        repo,
-        patch,
-        { mode: "pr", branch: "claudexor/never-published", message: "open pr", secretLikeBinary },
-        [],
-        () => {
-          authorized = true;
-          return null;
-        },
-      );
-
-      expect(res).toMatchObject({ mode: "pr", applied: false, refused: true, treeMutated: false });
-      expect(res.detail).toBe(PR_SECRET_LIKE_REFUSAL);
-      // Decided before the verifier and before the caller's authorization ran.
-      expect(res.finalVerify).toMatchObject({
-        attempted: false,
-        reason: "secret_like_patch_not_published",
-      });
-      expect(authorized).toBe(false);
+  async function unchanged(repo: string, refs: () => string) {
+    const head = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+    const branches = (await git(repo, ["branch", "--list"])).stdout;
+    const remote = refs();
+    return async () => {
       expect((await git(repo, ["rev-parse", "HEAD"])).stdout.trim()).toBe(head);
       expect((await git(repo, ["branch", "--list"])).stdout).toBe(branches);
       expect(existsSync(join(repo, "NEW.txt"))).toBe(false);
-      expect(refs()).toBe(remoteBefore);
-    },
-  );
+      expect(refs()).toBe(remote);
+    };
+  }
+
+  it("refuses typed and touches nothing when the scanner is not provisioned", async () => {
+    const { repo, patch, refs } = await repoWithRemote("ordinary line");
+    const check = await unchanged(repo, refs);
+    const saved = process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+    delete process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+    try {
+      const res = await verifyAndDeliver(repo, patch, {
+        mode: "pr",
+        branch: "claudexor/never-published",
+        message: "open pr",
+        scannerConfigDir: reapMk(join(tmpdir(), "claudexor-no-scanner-")),
+      });
+      expect(res).toMatchObject({ mode: "pr", applied: false, refused: true, treeMutated: false });
+      expect(res.publicationRefusal?.code).toBe("publication_scan_unavailable");
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+      else process.env.CLAUDEXOR_BETTERLEAKS_PATH = saved;
+    }
+    await check();
+  });
+
+  it("treats a binary that is not the pinned build as unavailable, never as clean", async () => {
+    const { repo, patch, refs } = await repoWithRemote("ordinary line");
+    const check = await unchanged(repo, refs);
+    const impostor = join(reapMk(join(tmpdir(), "claudexor-impostor-")), "betterleaks");
+    writeFileSync(impostor, `#!/bin/sh\necho "[]" > /dev/null\n`);
+    chmodSync(impostor, 0o755);
+    const saved = process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+    process.env.CLAUDEXOR_BETTERLEAKS_PATH = impostor;
+    try {
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.refused).toBe(true);
+      expect(res.publicationRefusal?.code).toBe("publication_scan_unavailable");
+      expect(res.detail).toMatch(/not the pinned Betterleaks/);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDEXOR_BETTERLEAKS_PATH;
+      else process.env.CLAUDEXOR_BETTERLEAKS_PATH = saved;
+    }
+    await check();
+  });
 
   it.each(["apply", "branch", "commit"] as const)(
-    "allows the local '%s' delivery of the same secret-like patch",
+    "allows the local '%s' delivery of a credential-shaped patch without any scan",
     async (mode) => {
-      const { repo, patch, refs } = await repoWithRemote(`token ${secret}`);
+      const { repo, patch, refs } = await repoWithRemote(`token = "${token}"`);
       const remoteBefore = refs();
       const res = await verifyAndDeliver(repo, patch, {
         mode,
         branch: "claudexor/local-only",
         message: "local",
+        scannerConfigDir: reapMk(join(tmpdir(), "claudexor-no-scanner-")),
       });
       expect(res.applied).toBe(true);
       expect(refs()).toBe(remoteBefore);
     },
   );
 
-  it("the plain deliver() entry refuses 'pr' for a secret-like patch too", async () => {
-    const { repo, patch, refs } = await repoWithRemote(`token ${secret}`);
-    const remoteBefore = refs();
-    const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
-    expect(res).toMatchObject({ mode: "pr", applied: false, treeMutated: false });
-    expect(res.detail).toBe(PR_SECRET_LIKE_REFUSAL);
-    expect(res.commit).toBeUndefined();
-    expect(refs()).toBe(remoteBefore);
+  describe.runIf(pinned.ok)("with the pinned Betterleaks binary", () => {
+    it("refuses a finding before any branch, commit or push, naming rule and path only", async () => {
+      const { repo, patch, refs } = await repoWithRemote(`token = "${token}"`);
+      const check = await unchanged(repo, refs);
+      let authorized = false;
+      const res = await verifyAndDeliver(
+        repo,
+        patch,
+        { mode: "pr", branch: "claudexor/never-published", message: "open pr" },
+        [],
+        () => {
+          authorized = true;
+          return null;
+        },
+      );
+      expect(res).toMatchObject({ mode: "pr", applied: false, refused: true, treeMutated: false });
+      expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+      expect(res.detail).toMatch(/github-pat in NEW\.txt:1/);
+      expect(JSON.stringify(res)).not.toContain(token);
+      // The scan is the last gate before the first external send.
+      expect(authorized).toBe(true);
+      await check();
+    });
+
+    it("never repeats a detected secret through the refusal's file location", async () => {
+      const { repo, refs } = await repoWithRemote("ordinary line");
+      const name = `cfg-${token}.txt`;
+      const patch = `diff --git a/${name} b/${name}\nnew file mode 100644\n--- /dev/null\n+++ b/${name}\n@@ -0,0 +1 @@\n+token = "${token}"\n`;
+      const check = await unchanged(repo, refs);
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+      expect(res.detail).toMatch(
+        /github-pat in withheld location \(sha256 [0-9a-f]{12}\):1 \(commit [0-9a-f]{12}\)/,
+      );
+      expect(JSON.stringify(res).includes(token), "the refusal repeats the value").toBe(false);
+      await check();
+    });
+
+    it("scans earlier unpushed commits: a secret added then deleted is still refused", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      writeFileSync(join(repo, "old.txt"), `token = "${token}"\n`);
+      await git(repo, ["add", "old.txt"]);
+      await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "add"]);
+      await git(repo, ["rm", "-q", "old.txt"]);
+      await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "rm"]);
+      const check = await unchanged(repo, refs);
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+      expect(res.detail).toMatch(/github-pat in old\.txt:1 \(commit [0-9a-f]{12}\)/);
+      await check();
+    });
+
+    it("bounds the outgoing range by what `origin` advertises, not by any other remote", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      // A commit carrying the fixture exists on a SECONDARY remote only; it is
+      // still new to origin, so it is outgoing and must be scanned.
+      writeFileSync(join(repo, "side.txt"), `token = "${token}"\n`);
+      await git(repo, ["add", "side.txt"]);
+      await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "side"]);
+      const mirror = reapMk(join(tmpdir(), "claudexor-delivery-mirror-"));
+      execFileSync("git", ["init", "--bare", mirror], { stdio: "pipe" });
+      await git(repo, ["remote", "add", "mirror", mirror]);
+      await git(repo, ["push", "-q", "mirror", "HEAD:refs/heads/side"]);
+      await git(repo, ["fetch", "-q", "mirror"]);
+      const check = await unchanged(repo, refs);
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+      expect(res.detail).toMatch(/github-pat in side\.txt:1/);
+      await check();
+    });
+
+    it("scans commit messages `origin` does not have, even when another remote holds the commit", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      // The fixture is only in a commit MESSAGE (history mode never reads
+      // messages), on a commit a secondary remote already holds.
+      writeFileSync(join(repo, "notes.txt"), "ordinary notes\n");
+      await git(repo, ["add", "notes.txt"]);
+      await git(repo, [
+        "-c",
+        "user.email=t@t.dev",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        `rotate ${token}`,
+      ]);
+      const mirror = reapMk(join(tmpdir(), "claudexor-delivery-mirror-"));
+      execFileSync("git", ["init", "--bare", mirror], { stdio: "pipe" });
+      await git(repo, ["remote", "add", "mirror", mirror]);
+      await git(repo, ["push", "-q", "mirror", "HEAD:refs/heads/side"]);
+      await git(repo, ["fetch", "-q", "mirror"]);
+      const check = await unchanged(repo, refs);
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+      expect(res.detail).toMatch(/github-pat in commit message [0-9a-f]{12}/);
+      expect(JSON.stringify(res)).not.toContain(token);
+      await check();
+    });
+
+    it("refuses a credential an unpublished merge introduced, even after a later commit deletes it", async () => {
+      await withFakeGh(async () => {
+        const { repo, patch, refs } = await repoWithRemote("ordinary line");
+        const id = ["-c", "user.email=t@t.dev", "-c", "user.name=t"];
+        await git(repo, ["checkout", "-qb", "side"]);
+        writeFileSync(join(repo, "side.txt"), "side\n");
+        await git(repo, ["add", "side.txt"]);
+        await git(repo, [...id, "commit", "-qm", "side"]);
+        await git(repo, ["checkout", "-q", "main"]);
+        writeFileSync(join(repo, "main.txt"), "main\n");
+        await git(repo, ["add", "main.txt"]);
+        await git(repo, [...id, "commit", "-qm", "main2"]);
+        await git(repo, [...id, "merge", "-q", "--no-ff", "--no-commit", "side"]);
+        writeFileSync(join(repo, "evil.txt"), `token = "${token}"\n`);
+        await git(repo, ["add", "evil.txt"]);
+        await git(repo, [...id, "commit", "-qm", "merge side"]);
+        await git(repo, ["rm", "-q", "evil.txt"]);
+        await git(repo, [...id, "commit", "-qm", "rm"]);
+        const check = await unchanged(repo, refs);
+        const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+        expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+        expect(res.detail).toMatch(/github-pat in evil\.txt:1/);
+        expect(JSON.stringify(res)).not.toContain(token);
+        await check();
+      });
+    });
+
+    it("refuses typed when the destination's refs cannot be read", async () => {
+      const { repo, patch } = await makePatchRepo();
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.refused).toBe(true);
+      expect(res.publicationRefusal?.code).toBe("publication_scan_failed");
+      expect(res.detail).toMatch(/what 'origin' pushes to already has could not be read/);
+      // An unreadable push URL refuses the same way and is never echoed.
+      const withRemote = await repoWithRemote("ordinary line");
+      const missing = join(reapMk(join(tmpdir(), "claudexor-delivery-gone-")), "missing.git");
+      await git(withRemote.repo, ["config", "remote.origin.pushurl", missing]);
+      const unreadable = await deliver(withRemote.repo, withRemote.patch, {
+        mode: "pr",
+        message: "open pr",
+      });
+      expect(unreadable.publicationRefusal?.code).toBe("publication_scan_failed");
+      expect(unreadable.detail).toMatch(/push URL 1 of 1/);
+      expect(unreadable.detail).not.toContain(missing);
+    });
+
+    /** A second bare repository holding only the `main` origin published (never
+     * the local branch, which may already carry newer commits), used as a push URL. */
+    async function pushOnlyRepo(repo: string) {
+      const bare = reapMk(join(tmpdir(), "claudexor-delivery-pushurl-"));
+      execFileSync("git", ["init", "--bare", bare], { stdio: "pipe" });
+      await git(repo, ["push", "-q", bare, "refs/remotes/origin/main:refs/heads/main"]);
+      const refs = () =>
+        execFileSync("git", ["--git-dir", bare, "for-each-ref"], { encoding: "utf8" });
+      return { bare, refs };
+    }
+
+    it("bounds the range by origin's push URL, not its fetch URL", async () => {
+      await withFakeGh(async () => {
+        const { repo, patch, refs } = await repoWithRemote("ordinary line");
+        // The fetch repository already holds a branch whose history added and
+        // then deleted the fixture; the push URL never saw that history.
+        writeFileSync(join(repo, "old.txt"), `token = "${token}"\n`);
+        await git(repo, ["add", "old.txt"]);
+        await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "add"]);
+        await git(repo, ["rm", "-q", "old.txt"]);
+        await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "rm"]);
+        await git(repo, ["push", "-q", "origin", "HEAD:refs/heads/side"]);
+        const push = await pushOnlyRepo(repo);
+        await git(repo, ["config", "remote.origin.pushurl", push.bare]);
+        const pushBefore = push.refs();
+        const check = await unchanged(repo, refs);
+        const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+        expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+        expect(res.detail).toMatch(/github-pat in old\.txt:1 \(commit [0-9a-f]{12}\)/);
+        expect(push.refs()).toBe(pushBefore);
+        await check();
+      });
+    });
+
+    it("scans for every push URL `origin` sends to", async () => {
+      await withFakeGh(async () => {
+        const { repo, patch, refs } = await repoWithRemote("ordinary line");
+        writeFileSync(join(repo, "side.txt"), `token = "${token}"\n`);
+        await git(repo, ["add", "side.txt"]);
+        await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "side"]);
+        await git(repo, ["push", "-q", "origin", "HEAD:refs/heads/side"]);
+        // The first push URL already holds the commit; the second never saw it.
+        const fetchUrl = (await git(repo, ["remote", "get-url", "origin"])).stdout.trim();
+        const second = await pushOnlyRepo(repo);
+        await git(repo, ["config", "remote.origin.pushurl", fetchUrl]);
+        await git(repo, ["config", "--add", "remote.origin.pushurl", second.bare]);
+        const secondBefore = second.refs();
+        const check = await unchanged(repo, refs);
+        const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+        expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+        expect(res.detail).toMatch(/github-pat in side\.txt:1/);
+        expect(second.refs()).toBe(secondBefore);
+        await check();
+      });
+    });
+
+    it("publishes exactly the scanned commit object to the push URL", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      const push = await pushOnlyRepo(repo);
+      await git(repo, ["config", "remote.origin.pushurl", push.bare]);
+      const fetchBefore = refs();
+      await withFakeGh(async () => {
+        const res = await deliver(repo, patch, {
+          mode: "pr",
+          branch: "claudexor/pushurl",
+          message: "open pr",
+        });
+        expect(res).toMatchObject({ mode: "pr", applied: true, branch: "claudexor/pushurl" });
+        expect(push.refs()).toContain(`${res.commit} commit\trefs/heads/claudexor/pushurl`);
+        expect(refs()).toBe(fetchBefore);
+        expect((await git(repo, ["config", "branch.claudexor/pushurl.merge"])).stdout.trim()).toBe(
+          "refs/heads/claudexor/pushurl",
+        );
+      });
+    });
+
+    it("does not rescan history `origin` already advertises", async () => {
+      const { repo, patch } = await repoWithRemote("ordinary line");
+      // Already published: the destination advertises this commit, so it is
+      // not part of what this delivery sends.
+      writeFileSync(join(repo, "public.txt"), `token = "${token}"\n`);
+      await git(repo, ["add", "public.txt"]);
+      await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "pub"]);
+      await git(repo, ["push", "-q", "origin", "HEAD:main"]);
+      await withFakeGh(async () => {
+        const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+        expect(res.refused ?? false).toBe(false);
+        expect(res).toMatchObject({ mode: "pr", applied: true });
+      });
+    });
+
+    it("does not let the outgoing worktree's ignore file suppress its own finding", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      writeFileSync(join(repo, "old.txt"), `token = "${token}"\n`);
+      await git(repo, ["add", "old.txt"]);
+      await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "add"]);
+      const sha = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+      // The exact Betterleaks git fingerprint of that finding, at the root.
+      for (const name of [".gitleaksignore", ".betterleaksignore"])
+        writeFileSync(join(repo, name), `${sha}:old.txt:github-pat:1\n`);
+      await git(repo, ["add", ".gitleaksignore", ".betterleaksignore"]);
+      await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-qm", "ign"]);
+      const check = await unchanged(repo, refs);
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.publicationRefusal?.code).toBe("publication_scan_findings");
+      expect(res.detail).toMatch(/github-pat in old\.txt:1/);
+      await check();
+    });
+
+    it("scans the PR body and refuses a finding there", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      const body = join(reapMk(join(tmpdir(), "claudexor-pr-body-src-")), "body.md");
+      writeFileSync(body, `Notes\n\ntoken = "${token}"\n`);
+      const check = await unchanged(repo, refs);
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr", prBodyFile: body });
+      expect(res.detail).toMatch(/github-pat in pull request body/);
+      await check();
+    });
+
+    it("reports a failed push honestly after a clean scan; the local commit is kept", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      const remote = (await git(repo, ["remote", "get-url", "origin"])).stdout.trim();
+      writeFileSync(join(remote, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n");
+      chmodSync(join(remote, "hooks", "pre-receive"), 0o755);
+      const remoteBefore = refs();
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res.applied).toBe(false);
+      expect(res.commit).toBeTruthy();
+      expect(res.detail).toContain("push failed");
+      expect(refs()).toBe(remoteBefore);
+    });
+
+    it("reports a pushed branch as applied when PR creation fails", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      await withFakeGh(async () => {
+        const res = await deliver(repo, patch, {
+          mode: "pr",
+          branch: "claudexor/pr-failure-receipt",
+          message: "open pr",
+        });
+        expect(res).toMatchObject({
+          applied: true,
+          branch: "claudexor/pr-failure-receipt",
+          prUrl: undefined,
+        });
+        expect(res.detail).toContain("branch pushed; PR was not opened");
+        expect(refs()).toContain(`${res.commit} commit\trefs/heads/claudexor/pr-failure-receipt`);
+      }, 1);
+    });
+
+    it("publishes a clean change and hands gh the exact scanned body copy", async () => {
+      const { repo, patch, refs } = await repoWithRemote("ordinary line");
+      const body = join(reapMk(join(tmpdir(), "claudexor-pr-body-src-")), "body.md");
+      writeFileSync(body, "A clean description.\n");
+      await withFakeGh(async (record) => {
+        const res = await deliver(repo, patch, {
+          mode: "pr",
+          branch: "claudexor/clean",
+          message: "open pr",
+          prBodyFile: body,
+        });
+        expect(res).toMatchObject({ mode: "pr", applied: true, branch: "claudexor/clean" });
+        expect(res.prUrl).toBe("https://example.invalid/pr/1");
+        expect(refs()).toContain("refs/heads/claudexor/clean");
+        const gh = JSON.parse(readFileSync(record, "utf8")) as { args: string[]; body: string };
+        expect(gh.body).toBe("A clean description.\n");
+        expect(gh.args[gh.args.indexOf("--body-file") + 1]).not.toBe(body);
+      });
+    });
   });
 });
 

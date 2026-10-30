@@ -17,8 +17,10 @@ import {
   type HarnessRunSpec,
   type QuotaSnapshot,
 } from "@claudexor/schema";
+import { redactSecrets } from "@claudexor/util";
 import { AcpServer } from "../../acp-server/src/index.js";
 import { readRunEventsWithIntegrity } from "../../control-api/src/run-timeline.js";
+import { codexNativeWarningEvents } from "../../harness-codex/src/app-server-warnings.js";
 import { Orchestrator } from "./orchestrator.js";
 
 /**
@@ -222,6 +224,78 @@ describe("Stop pressed by the callback of the answer being published (#337)", ()
           (n) => n.aborted && [TRIGGER, LATER].includes(n["update"]?.["content"]?.["text"]),
         ),
       ).toEqual([]);
+    },
+  );
+});
+
+// What a stopping run still reports is journaled like any other read (INV-146):
+// its working text exact, its diagnostics masked, while none of it is
+// published live or becomes the cancelled attempt's answer. Synthetic
+// token-shaped values only, assembled at runtime.
+const DRAINED_TOKEN = ["ghp", "Dr4inedWorkingText7Lm2Xv9Rk4Tz8Nw3Bp6H"].join("_");
+const DRAINED_WORKING = `Fixture for the auth test: const token = "${DRAINED_TOKEN}";`;
+const DRAINED_VENDOR = [
+  "sk-proj",
+  "Dr4inedVendorDiagnostic",
+  "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Y",
+].join("-");
+const DRAINED_WARNING = ["sk-ant-api03", "Dr4inedNativeWarning7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0"].join(
+  "-",
+);
+const inJson = (text: string) => JSON.stringify(text).slice(1, -1);
+
+describe("Events read after Stop are exact evidence with masked diagnostics (INV-146, #337)", () => {
+  it.each(["ask", "plan", "agent"] as const)(
+    "%s journals the drained working text exactly, masks its diagnostics and publishes none of it",
+    async (mode) => {
+      // The working text is one the diagnostic masking would change.
+      expect(redactSecrets(DRAINED_WORKING)).not.toBe(DRAINED_WORKING);
+      const out = await run({
+        mode,
+        stopText: TRIGGER,
+        async *stream(spec) {
+          const common = { session_id: spec.session_id, ts: new Date().toISOString() };
+          yield { ...common, type: "started" };
+          yield { ...common, type: "message", text: TRIGGER, final: true };
+          yield { ...common, type: "message", text: DRAINED_WORKING, final: true };
+          // The real Codex producer for a native runtime warning.
+          yield* codexNativeWarningEvents(
+            "warning",
+            { threadId: null, message: `sandbox setup quoted ${DRAINED_WARNING}` },
+            spec.session_id,
+          )!;
+          yield { ...common, type: "error", error: `upstream rejected ${DRAINED_VENDOR}` };
+          yield { ...common, type: "completed" };
+        },
+      });
+      expect(out.result.lifecycle).toBe("cancelled");
+      expect(out.callbacks.some((c) => !c.aborted && c.event.text === TRIGGER)).toBe(true);
+      // Nothing read after Stop reaches the live callback or an ACP client.
+      expect(out.callbacks.filter((c) => c.aborted)).toEqual([]);
+      expect(JSON.stringify(out.acp)).not.toContain(inJson(DRAINED_WORKING));
+      const files = readdirSync(out.result.runDir, { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => join(entry.parentPath, entry.name));
+      const journals = files.filter((file) => file.endsWith("events.jsonl"));
+      // The run journal always; ask and plan also keep an attempt journal.
+      expect(journals.length).toBeGreaterThanOrEqual(mode === "agent" ? 1 : 2);
+      for (const file of journals) {
+        const text = readFileSync(file, "utf8");
+        expect(text, file).toContain(inJson(DRAINED_WORKING));
+        expect(text, file).toContain("upstream rejected");
+        expect(text, file).toContain("sandbox setup quoted");
+        expect(text, file).not.toContain(DRAINED_VENDOR);
+        expect(text, file).not.toContain(DRAINED_WARNING);
+      }
+      // Evidence only: no answer, summary or plan carries it. The retained-output
+      // projection replays the journal's assistant text, so it is evidence too.
+      const others = files.filter(
+        (file) =>
+          !file.endsWith("events.jsonl") && !file.endsWith(join("final", "retained-output.md")),
+      );
+      expect(others.filter((file) => readFileSync(file, "utf8").includes(DRAINED_TOKEN))).toEqual(
+        [],
+      );
     },
   );
 });

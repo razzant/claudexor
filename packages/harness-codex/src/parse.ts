@@ -1,5 +1,5 @@
 import { InputTokenUsage, WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 import { codexFileChangeEvents } from "./file-change.js";
 import { applyCodexRateLimit, applyCodexTransient, codexReconnectStatus } from "./retry-signals.js";
 import { mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
@@ -536,7 +536,8 @@ function commandFailureSummary(item: Json): string {
 
 function boundedTarget(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
-  return redactSecrets(value).slice(0, 500);
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return value.slice(0, 500);
 }
 
 function stringOrUndef(v: unknown): string | undefined {

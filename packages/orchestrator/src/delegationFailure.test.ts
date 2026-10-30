@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import { projectRuntimeDir, sha256 } from "@claudexor/util";
-import { readRevertAnchor } from "@claudexor/workspace";
 import type { CandidateRun } from "./candidateEvidence.js";
 import { createAttemptTelemetry } from "./attemptTelemetry.js";
 import { persistFailedInPlaceWorkProduct } from "./delegationFailure.js";
@@ -63,7 +62,7 @@ describe("uncaptured in-place receipt", () => {
     expect(readFileSync(paths.eventsPath, "utf8")).toContain('"manual_cleanup_required":true');
   });
 
-  it("publishes a failed live candidate's secret-like patch as a redacted copy, never a refusal", async () => {
+  it("publishes a failed live candidate's credential-shaped patch exactly, never a refusal (INV-146)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-failed-live-secretlike-"));
     dirs.push(repo, projectRuntimeDir(repo));
     const store = new ArtifactStore(repo, { claudexorDir: join(repo, "runtime") });
@@ -101,15 +100,11 @@ describe("uncaptured in-place receipt", () => {
       kind: "patch",
     });
 
-    const saved = readFileSync(join(paths.finalDir, "patch.diff"), "utf8");
-    expect(saved).not.toContain(token);
-    expect(saved).toContain("+[redacted]");
+    expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).toBe(diff);
     const receipt = readFileSync(join(paths.finalDir, "work_product.yaml"), "utf8");
-    expect(receipt).not.toContain(token);
-    expect(receipt).toContain("persisted_patch: redacted");
+    expect(receipt).not.toContain("persisted_patch");
+    expect(receipt).not.toContain("exact_patch_object");
     expect(receipt).toContain(`patch_sha256: ${sha256(diff)}`);
-    expect(receipt).toContain(`exact_patch_object: ${sha256(diff)}`);
     expect(receipt).toContain("apply_state: applied_review_blocked");
-    expect(readRevertAnchor(repo, sha256(diff))).toBe(diff);
   });
 });

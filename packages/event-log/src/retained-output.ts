@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { renameSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { RunEvent } from "@claudexor/schema";
-import { redactSecrets, writeText } from "@claudexor/util";
+import { writeText } from "@claudexor/util";
 
 export const RETAINED_OUTPUT_PATH = "final/retained-output.md";
 
@@ -159,15 +159,15 @@ export function retainedOutput(
     );
   }
   if (!sections.length) return null;
-  return redactSecrets(
+  return (
     "# Retained output\n\n" +
-      "> Recorded assistant text, not a completion verdict. The run outcome and checks remain authoritative.\n" +
-      (malformed
-        ? `\n> Source log has ${malformed} unreadable record(s); this is incomplete evidence.\n`
-        : "") +
-      "\nSource: `events.jsonl`. Attempts and physical sessions are kept separate.\n\n" +
-      sections.join("\n\n---\n\n") +
-      "\n",
+    "> Recorded assistant text, not a completion verdict. The run outcome and checks remain authoritative.\n" +
+    (malformed
+      ? `\n> Source log has ${malformed} unreadable record(s); this is incomplete evidence.\n`
+      : "") +
+    "\nSource: `events.jsonl`. Attempts and physical sessions are kept separate.\n\n" +
+    sections.join("\n\n---\n\n") +
+    "\n"
   );
 }
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +14,7 @@ vi.mock("@claudexor/secrets", async (importOriginal) => ({
   resolveSecret: () => null,
 }));
 
+import { appendHarnessEvent } from "@claudexor/core";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { createRawApiAdapter } from "./index.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -1133,7 +1135,7 @@ describe("raw-api terminal provider completions", () => {
     expect(JSON.stringify(error)).not.toContain("unknown top-level sentinel");
   });
 
-  it("redacts a secret that straddles the diagnostic boundary before slicing", async () => {
+  it("redacts a provider diagnostic that straddles the bound before slicing; partial output stays exact", async () => {
     const secret = ["sk", "or", "v1"].join("-") + `-${"z".repeat(48)}`;
     const straddlingPartialOutput = `${"p".repeat(480)} ${secret}`;
     vi.stubGlobal(
@@ -1142,6 +1144,7 @@ describe("raw-api terminal provider completions", () => {
         responseFor({
           content: straddlingPartialOutput,
           finishReason: "error",
+          error: { code: 502, message: `${"m".repeat(480)} ${secret}` },
         }),
       ),
     );
@@ -1149,13 +1152,15 @@ describe("raw-api terminal provider completions", () => {
     const events = await collect(createRawApiAdapter().run(runSpec("review", "straddling-secret")));
     const error = events.find((event) => event.type === "error");
     const payload = error?.payload as {
+      provider_error?: { message?: string };
       partial_output?: string;
       partial_output_truncated?: boolean;
     };
-    const partialOutput = payload.partial_output;
-    expect(partialOutput).toBe(`${"p".repeat(480)} [redacted]`);
-    expect(payload.partial_output_truncated).toBe(false);
-    expect(JSON.stringify(error)).not.toContain(secret);
+    // The provider's message is a diagnostic: masked before it is bounded.
+    expect(payload.provider_error?.message).toBe(`${"m".repeat(480)} [redacted]`);
+    // The model's partial text is working content: bounded, never masked (INV-146).
+    expect(payload.partial_output).toBe(straddlingPartialOutput.slice(0, 500));
+    expect(payload.partial_output_truncated).toBe(true);
   });
 
   it.each([
@@ -1323,5 +1328,86 @@ describe("raw-api terminal provider completions", () => {
     const error = events.find((event) => event.type === "error");
     expect(error?.payload).not.toHaveProperty("partial_output");
     expect(error?.payload).not.toHaveProperty("partial_output_truncated");
+  });
+});
+
+/**
+ * INV-146: a failed completion's partial text is the model's own output, and
+ * the only copy Claudexor keeps of it. Through the real adapter over HTTP and
+ * the shared journal writer it stays exact; the provider's error report stays
+ * a masked diagnostic, and the completion stays failed (no answer message).
+ */
+describe("raw-api failed completion keeps the model's partial output exact", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  let server: Server | undefined;
+  afterEach(async () => {
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    server = undefined;
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("is exact in the live event and the journal, with the provider error masked", async () => {
+    const work = ["sk", "or", "v1"].join("-") + `-${"W0rk".repeat(12)}`;
+    const vendor = ["sk", "or", "v1"].join("-") + `-${"V3nd".repeat(12)}`;
+    const partial = `Partial answer so far: export OPENROUTER_API_KEY=${work}`;
+    server = createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          model: "provider-model",
+          choices: [
+            {
+              message: { role: "assistant", content: partial },
+              finish_reason: "error",
+              error: { code: 502, message: `upstream rejected ${vendor}` },
+            },
+          ],
+          usage: { prompt_tokens: 7, completion_tokens: 3 },
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    process.env.CLAUDEXOR_TEST_RAWAPI_KEY = "fixture-key";
+    const adapter = createRawApiAdapter({
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      keyEnv: "CLAUDEXOR_TEST_RAWAPI_KEY",
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(
+      HarnessRunSpec.parse({
+        session_id: "partial-output",
+        intent: "explain",
+        prompt: "x",
+        cwd: process.cwd(),
+        access: "readonly",
+        external_context_policy: "auto",
+        tool_permission_policy: { web: "auto", allow: [], deny: [] },
+      }),
+    ))
+      events.push(event);
+
+    // The completion stays failed and the partial text never becomes the answer.
+    expect(events.map((event) => event.type)).toEqual(["started", "error", "usage", "completed"]);
+    const live = events.find((event) => event.type === "error")!;
+    expect(live.payload?.["partial_output"]).toBe(partial);
+    expect(live.payload?.["partial_output_truncated"]).toBe(false);
+    expect(JSON.stringify(live)).not.toContain(vendor);
+
+    const journal = join(reapMk(join(tmpdir(), "raw-api-partial-")), "events.jsonl");
+    for (const event of events) appendHarnessEvent(journal, event);
+    const stored = readFileSync(journal, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as HarnessEvent);
+    const error = stored.find((event) => event.type === "error")!;
+    expect(error.payload?.["partial_output"]).toBe(partial);
+    expect(error.payload?.["provider_error"]).toEqual({
+      code: 502,
+      message: "upstream rejected [redacted]",
+    });
+    expect(stored.some((event) => event.type === "message")).toBe(false);
+    expect(readFileSync(journal, "utf8")).not.toContain(vendor);
   });
 });

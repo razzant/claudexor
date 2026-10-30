@@ -27,7 +27,7 @@ export const ControlTimelineEvent = z
       .nullable()
       .default(null)
       .describe(
-        "Human-readable event detail. For typed harness text, the complete redacted text with original whitespace; title may be abbreviated.",
+        "Human-readable event detail. For typed harness text, the complete text as journaled, with original whitespace; title may be abbreviated.",
       ),
     textKind: z
       .enum(["thinking", "message"])
@@ -63,12 +63,18 @@ export const ControlTimelineEvent = z
       .default("info")
       .describe("Display severity of the event."),
     toolName: z.string().nullable().default(null).describe("Tool name for tool events."),
-    target: z.string().nullable().default(null).describe("Redacted tool target for tool events."),
+    target: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Tool target for tool events, bounded, as the agent issued it."),
     errorSummary: z
       .string()
       .nullable()
       .default(null)
-      .describe("Redacted error detail for error events."),
+      .describe(
+        "Error detail: a failed tool's own output, unmasked; for an error event, its masked diagnostic.",
+      ),
     /** Unsupported per-harness knobs the selected route silently could not honor
      * (INV-105): the engine discloses them on `harness.started`, and this
      * projection carries them so the row can render a visible warning ("max_turns

@@ -15,15 +15,17 @@ import {
   selectedWorkspaceChanges,
   workspaceFilePath,
 } from "@claudexor/workspace";
-import { containsSecretLikeToken, newId, redactSecrets, sha256 } from "@claudexor/util";
-import type { FinalVerifyRecord } from "@claudexor/schema";
+import { claudexorOwnedRoot, newId, redactSecrets, sha256 } from "@claudexor/util";
+import type { FinalVerifyRecord, PublicationRefusal } from "@claudexor/schema";
 import type { GateSpec } from "@claudexor/review";
 import { finalVerifyBlocks, finalVerifyPatch, type VerifyEventLog } from "./final-verifier.js";
 import { finalVerifyFiles, type VerifiableWorkspaceFiles } from "./files-verifier.js";
+import { gatePublication } from "./publication-gate.js";
 
 export * from "./gate.js";
 export * from "./final-verifier.js";
 export * from "./files-verifier.js";
+export * from "./publication-gate.js";
 
 const repositoryMutationTails = new Map<string, Promise<void>>();
 
@@ -97,25 +99,9 @@ export interface DeliverOptions {
   branch?: string;
   message?: string;
   prBodyFile?: string;
-  /** The caller knows this patch carries a binary payload with secret-like
-   * bytes, or one it could not inspect (a blob-only finding is invisible to a
-   * text scan of the patch). */
-  secretLikeBinary?: boolean;
-}
-
-/**
- * INV-062: `pr` is the one delivery mode that sends bytes off this machine
- * (push to origin + PR). A patch with secret-like text or a binary payload that
- * is secret-like or could not be inspected is never published; local `apply` /
- * `branch` / `commit` stay allowed because those bytes are already on this machine.
- */
-export const PR_SECRET_LIKE_REFUSAL =
-  "refusing 'pr' delivery: the patch contains secret-like strings or binary content that could not be inspected, and would be pushed to a remote. Apply, branch or commit it locally, or remove that content and re-run.";
-
-function refusesPublishing(patch: string, options: DeliverOptions): boolean {
-  return (
-    options.mode === "pr" && (options.secretLikeBinary === true || containsSecretLikeToken(patch))
-  );
+  /** Config root holding the provisioned publication scanner; defaults to
+   * Claudexor's own runtime root. */
+  scannerConfigDir?: string;
 }
 
 export interface DeliverResult {
@@ -131,12 +117,14 @@ export interface DeliverResult {
   /** #26: TRUE when delivery was an idempotent already-applied no-op (the tree
    * was already this patch's exact postimage). `applied:true` with no mutation. */
   alreadyApplied?: boolean;
+  /** The publication scanner stopped `pr` before anything was created or sent. */
+  refused?: boolean;
+  publicationRefusal?: PublicationRefusal;
 }
 
 export interface VerifiedDeliverResult extends DeliverResult {
   finalVerify: FinalVerifyRecord;
   targetPreimageSha: string;
-  refused?: boolean;
 }
 
 /** Directory delivery shares the existing target lease and receipt semantics. */
@@ -218,27 +206,6 @@ async function verifyAndDeliverUnlocked(
   log: VerifyEventLog,
 ): Promise<VerifiedDeliverResult> {
   const targetPreimageSha = await snapshotTree(repoRoot);
-  // Decided before the fresh verify, any authorization and any mutation: no
-  // branch, commit or push is ever attempted for an unpublishable patch.
-  if (refusesPublishing(patch, options)) {
-    return {
-      mode: "pr",
-      applied: false,
-      treeMutated: false,
-      refused: true,
-      detail: PR_SECRET_LIKE_REFUSAL,
-      finalVerify: {
-        attempted: false,
-        base_sha: null,
-        applied_cleanly: null,
-        gates_passed: null,
-        gates: [],
-        duration_ms: null,
-        reason: "secret_like_patch_not_published",
-      },
-      targetPreimageSha,
-    };
-  }
   const targetPreimageTree = await revParse(repoRoot, `${targetPreimageSha}^{tree}`);
   const finalVerify = await finalVerifyPatch(
     repoRoot,
@@ -355,8 +322,6 @@ async function deliverUnlocked(
   if (!DELIVER_MODES.has(opts.mode)) {
     throw new Error(`unsupported delivery mode: ${opts.mode}`);
   }
-  if (refusesPublishing(patch, opts))
-    return { mode: "pr", applied: false, treeMutated: false, detail: PR_SECRET_LIKE_REFUSAL };
   // Runtime is external in v2. Every path reported by the repository,
   // including `.claudexor*`, is user state and blocks a clean-tree mutation.
   const dirty = await statusPorcelainMeaningful(repoRoot).catch((err: unknown) => {
@@ -391,182 +356,244 @@ async function deliverUnlocked(
 
   let branch = opts.branch;
   let onNewBranch = false;
-  if (opts.mode === "branch" || opts.mode === "pr") {
-    branch = branch ?? `claudexor/${newId("wp")}`;
-    const cb = await git(repoRoot, ["-c", "core.hooksPath=/dev/null", "checkout", "-b", branch]);
-    if (cb.code !== 0)
-      return { mode: opts.mode, applied: false, detail: `branch failed: ${cb.stderr.trim()}` };
-    onNewBranch = true;
-  }
-
-  /** Leave the fresh branch and delete it; report honestly if that fails. */
-  const cleanupBranch = async (): Promise<string | null> => {
-    if (!onNewBranch || !branch) return null;
-    const back = restoreDetached
-      ? await git(repoRoot, ["-c", "core.hooksPath=/dev/null", "checkout", "--detach", restoreRef])
-      : await git(repoRoot, ["-c", "core.hooksPath=/dev/null", "checkout", restoreRef]);
-    if (back.code !== 0) return `failed to leave branch ${branch}: ${back.stderr.trim()}`;
-    const del = await git(repoRoot, ["branch", "-D", branch]);
-    if (del.code !== 0) return `failed to delete branch ${branch}: ${del.stderr.trim()}`;
-    onNewBranch = false;
-    return null;
-  };
-
-  const ap =
-    opts.mode === "apply"
-      ? await applyPatchProtected(repoRoot, patch)
-      : await applyPatchAndIndexProtected(repoRoot, patch);
-  if (!ap.ok) {
-    const cleanupIssue = await cleanupBranch();
-    return {
-      mode: opts.mode,
-      applied: false,
-      branch,
-      treeMutated: ap.treeMutated || cleanupIssue !== null,
-      detail: [ap.detail ?? "apply failed", cleanupIssue].filter(Boolean).join("; "),
-    };
-  }
-  if (opts.mode === "apply") return { mode: "apply", applied: true };
-
-  if (!patch.trim()) {
-    const cleanupIssue = await cleanupBranch();
-    return {
-      mode: opts.mode,
-      applied: false,
-      branch,
-      treeMutated: cleanupIssue !== null,
-      detail: ["empty patch; no commit created", cleanupIssue].filter(Boolean).join("; "),
-    };
-  }
-
-  /**
-   * Post-apply failure: compensate only by reverse-applying the exact patch to
-   * worktree+index. A concurrent overlapping edit blocks compensation and is
-   * left intact with `treeMutated:true`; broad reset/checkout rollback is
-   * forbidden because it can erase user state.
-   */
-  const restoreAppliedTree = async (why: string): Promise<DeliverResult> => {
-    const reverse = await reversePatchAndIndexProtected(repoRoot, patch);
-    const cleanupIssue = reverse.ok ? await cleanupBranch() : null;
-    const treeMutated = !reverse.ok || cleanupIssue !== null;
-    return {
-      mode: opts.mode,
-      applied: false,
-      branch,
-      treeMutated,
-      detail: [
-        why,
-        reverse.ok ? "exact patch postimage removed" : reverse.detail,
-        cleanupIssue,
-        treeMutated ? "RECOVERY REQUIRED — user state was not overwritten" : null,
-      ]
-        .filter(Boolean)
-        .join("; "),
-    };
-  };
-
-  const stagedTree = (await git(repoRoot, ["write-tree"])).stdout.trim();
-  const observedHeadBeforeCommit = (await git(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
-  if (stagedTree !== expectedTree || observedHeadBeforeCommit !== headSha) {
-    return restoreAppliedTree(
-      stagedTree !== expectedTree
-        ? "live index contains state outside the exact candidate tree"
-        : "target HEAD changed before commit",
-    );
-  }
-
+  if (opts.mode === "branch" || opts.mode === "pr") branch = branch ?? `claudexor/${newId("wp")}`;
   const message = opts.message ?? "claudexor: apply work product";
-  const commitRes = await git(
-    repoRoot,
-    [
-      "-c",
-      "user.email=claudexor@local",
-      "-c",
-      "user.name=claudexor",
-      "commit-tree",
-      expectedTree,
-      "-p",
-      headSha,
-      "-F",
-      "-",
-    ],
-    `${message}\n`,
-  );
-  if (commitRes.code !== 0) {
-    return restoreAppliedTree(`commit object creation failed: ${commitRes.stderr.trim()}`);
-  }
-  const commit = commitRes.stdout.trim();
-  if (!/^[0-9a-f]{40,64}$/.test(commit)) {
-    return restoreAppliedTree("commit object creation returned an invalid object id");
-  }
-
-  const symbolicRef = await git(repoRoot, ["symbolic-ref", "-q", "HEAD"]);
-  const targetRef = symbolicRef.code === 0 ? symbolicRef.stdout.trim() : "HEAD";
-  const updateArgs =
-    targetRef === "HEAD"
-      ? ["update-ref", "--no-deref", "HEAD", commit, headSha]
-      : ["update-ref", targetRef, commit, headSha];
-  const update = await git(repoRoot, updateArgs);
-  if (update.code !== 0) {
-    return restoreAppliedTree(`target ref changed before commit: ${update.stderr.trim()}`);
-  }
-
-  const committedHead = (await git(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
-  const committedTree = (await git(repoRoot, ["rev-parse", `${commit}^{tree}`])).stdout.trim();
-  if (committedHead !== commit || committedTree !== expectedTree) {
-    // The CAS update itself succeeded, so reversing the index/worktree would
-    // create a false clean state over an authoritative commit. Surface the
-    // divergence for recovery and leave every byte intact.
-    return {
-      mode: opts.mode,
-      applied: false,
-      branch,
-      commit,
-      treeMutated: true,
-      detail:
-        "commit ref advanced but current HEAD no longer identifies the exact candidate; recovery required",
-    };
-  }
-
-  if (opts.mode === "commit" || opts.mode === "branch") {
-    return { mode: opts.mode, applied: true, branch, commit };
-  }
-
-  // pr
-  const push = await git(repoRoot, [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "push",
-    "-u",
-    "origin",
-    branch as string,
-  ]);
-  if (push.code !== 0) {
+  // `pr` is the one mode that sends bytes off this machine. Its exact commit is
+  // built from the materialized tree and the publication scanner checks the
+  // whole outgoing range and metadata BEFORE any branch, index or ref changes:
+  // a refusal leaves the repository untouched (only an unreferenced object).
+  const publication =
+    opts.mode === "pr"
+      ? await gatePublication({
+          repoRoot,
+          tree: expectedTree,
+          parent: headSha,
+          message,
+          branch: branch as string,
+          prBodyFile: opts.prBodyFile,
+          configDir: opts.scannerConfigDir ?? claudexorOwnedRoot(),
+        })
+      : null;
+  if (publication && !publication.ok)
     return {
       mode: "pr",
       applied: false,
+      treeMutated: false,
+      refused: true,
+      detail: publication.refusal.detail,
+      publicationRefusal: publication.refusal,
+    };
+  try {
+    return await deliverMutation();
+  } finally {
+    if (publication?.ok) publication.cleanup();
+  }
+
+  async function deliverMutation(): Promise<DeliverResult> {
+    if (opts.mode === "branch" || opts.mode === "pr") {
+      const cb = await git(repoRoot, [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "checkout",
+        "-b",
+        branch as string,
+      ]);
+      if (cb.code !== 0)
+        return { mode: opts.mode, applied: false, detail: `branch failed: ${cb.stderr.trim()}` };
+      onNewBranch = true;
+    }
+
+    /** Leave the fresh branch and delete it; report honestly if that fails. */
+    const cleanupBranch = async (): Promise<string | null> => {
+      if (!onNewBranch || !branch) return null;
+      const back = restoreDetached
+        ? await git(repoRoot, [
+            "-c",
+            "core.hooksPath=/dev/null",
+            "checkout",
+            "--detach",
+            restoreRef,
+          ])
+        : await git(repoRoot, ["-c", "core.hooksPath=/dev/null", "checkout", restoreRef]);
+      if (back.code !== 0) return `failed to leave branch ${branch}: ${back.stderr.trim()}`;
+      const del = await git(repoRoot, ["branch", "-D", branch]);
+      if (del.code !== 0) return `failed to delete branch ${branch}: ${del.stderr.trim()}`;
+      onNewBranch = false;
+      return null;
+    };
+
+    const ap =
+      opts.mode === "apply"
+        ? await applyPatchProtected(repoRoot, patch)
+        : await applyPatchAndIndexProtected(repoRoot, patch);
+    if (!ap.ok) {
+      const cleanupIssue = await cleanupBranch();
+      return {
+        mode: opts.mode,
+        applied: false,
+        branch,
+        treeMutated: ap.treeMutated || cleanupIssue !== null,
+        detail: [ap.detail ?? "apply failed", cleanupIssue].filter(Boolean).join("; "),
+      };
+    }
+    if (opts.mode === "apply") return { mode: "apply", applied: true };
+
+    if (!patch.trim()) {
+      const cleanupIssue = await cleanupBranch();
+      return {
+        mode: opts.mode,
+        applied: false,
+        branch,
+        treeMutated: cleanupIssue !== null,
+        detail: ["empty patch; no commit created", cleanupIssue].filter(Boolean).join("; "),
+      };
+    }
+
+    /**
+     * Post-apply failure: compensate only by reverse-applying the exact patch to
+     * worktree+index. A concurrent overlapping edit blocks compensation and is
+     * left intact with `treeMutated:true`; broad reset/checkout rollback is
+     * forbidden because it can erase user state.
+     */
+    const restoreAppliedTree = async (why: string): Promise<DeliverResult> => {
+      const reverse = await reversePatchAndIndexProtected(repoRoot, patch);
+      const cleanupIssue = reverse.ok ? await cleanupBranch() : null;
+      const treeMutated = !reverse.ok || cleanupIssue !== null;
+      return {
+        mode: opts.mode,
+        applied: false,
+        branch,
+        treeMutated,
+        detail: [
+          why,
+          reverse.ok ? "exact patch postimage removed" : reverse.detail,
+          cleanupIssue,
+          treeMutated ? "RECOVERY REQUIRED — user state was not overwritten" : null,
+        ]
+          .filter(Boolean)
+          .join("; "),
+      };
+    };
+
+    const stagedTree = (await git(repoRoot, ["write-tree"])).stdout.trim();
+    const observedHeadBeforeCommit = (await git(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    if (stagedTree !== expectedTree || observedHeadBeforeCommit !== headSha) {
+      return restoreAppliedTree(
+        stagedTree !== expectedTree
+          ? "live index contains state outside the exact candidate tree"
+          : "target HEAD changed before commit",
+      );
+    }
+
+    const commitRes = publication?.ok
+      ? { code: 0, stdout: `${publication.commit}\n`, stderr: "" }
+      : await git(
+          repoRoot,
+          [
+            "-c",
+            "user.email=claudexor@local",
+            "-c",
+            "user.name=claudexor",
+            "commit-tree",
+            expectedTree,
+            "-p",
+            headSha,
+            "-F",
+            "-",
+          ],
+          `${message}\n`,
+        );
+    if (commitRes.code !== 0) {
+      return restoreAppliedTree(`commit object creation failed: ${commitRes.stderr.trim()}`);
+    }
+    const commit = commitRes.stdout.trim();
+    if (!/^[0-9a-f]{40,64}$/.test(commit)) {
+      return restoreAppliedTree("commit object creation returned an invalid object id");
+    }
+
+    const symbolicRef = await git(repoRoot, ["symbolic-ref", "-q", "HEAD"]);
+    const targetRef = symbolicRef.code === 0 ? symbolicRef.stdout.trim() : "HEAD";
+    const updateArgs =
+      targetRef === "HEAD"
+        ? ["update-ref", "--no-deref", "HEAD", commit, headSha]
+        : ["update-ref", targetRef, commit, headSha];
+    const update = await git(repoRoot, updateArgs);
+    if (update.code !== 0) {
+      return restoreAppliedTree(`target ref changed before commit: ${update.stderr.trim()}`);
+    }
+
+    const committedHead = (await git(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    const committedTree = (await git(repoRoot, ["rev-parse", `${commit}^{tree}`])).stdout.trim();
+    if (committedHead !== commit || committedTree !== expectedTree) {
+      // The CAS update itself succeeded, so reversing the index/worktree would
+      // create a false clean state over an authoritative commit. Surface the
+      // divergence for recovery and leave every byte intact.
+      return {
+        mode: opts.mode,
+        applied: false,
+        branch,
+        commit,
+        treeMutated: true,
+        detail:
+          "commit ref advanced but current HEAD no longer identifies the exact candidate; recovery required",
+      };
+    }
+
+    if (opts.mode === "commit" || opts.mode === "branch") {
+      return { mode: opts.mode, applied: true, branch, commit };
+    }
+
+    // pr: push the scanned commit OBJECT, never whatever the branch name
+    // resolves to by then, and nothing beside it (no followed tags, no
+    // submodule pushes): exactly the bytes the publication scan passed.
+    const push = await git(repoRoot, [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "push",
+      "--no-follow-tags",
+      "--recurse-submodules=no",
+      "origin",
+      `${commit}:refs/heads/${branch as string}`,
+    ]);
+    if (push.code !== 0) {
+      return {
+        mode: "pr",
+        applied: false,
+        branch,
+        commit,
+        treeMutated: true,
+        detail: `push failed: ${push.stderr.trim()}; the local branch keeps the committed work`,
+      };
+    }
+    // What `push -u` recorded before the push named the commit: the local
+    // branch tracks the published one (best effort; the push already landed).
+    await git(repoRoot, ["config", `branch.${branch as string}.remote`, "origin"]);
+    await git(repoRoot, [
+      "config",
+      `branch.${branch as string}.merge`,
+      `refs/heads/${branch as string}`,
+    ]);
+    const ghArgs = ["pr", "create", "--head", branch as string, "--title", message];
+    // The body file gh reads is the scanner-owned copy of the exact scanned bytes.
+    const bodyFile = publication?.ok ? publication.bodyFile : undefined;
+    if (bodyFile) ghArgs.push("--body-file", bodyFile);
+    else ghArgs.push("--body", "Created by Claudexor.");
+    const pr = await runCapture("gh", ghArgs, { cwd: repoRoot, timeoutMs: 60_000 }).catch(
+      () => null,
+    );
+    const prUrl = pr && pr.code === 0 ? pr.stdout.trim() : undefined;
+    return {
+      mode: "pr",
+      // The commit and remote branch are already durable at this point. A PR
+      // creation failure is a partial delivery, not a clean refusal that callers
+      // may safely retry as if nothing happened.
+      applied: true,
       branch,
       commit,
-      treeMutated: true,
-      detail: `push failed: ${push.stderr.trim()}; the local branch keeps the committed work`,
+      prUrl,
+      detail: prUrl
+        ? undefined
+        : `branch pushed; PR was not opened${pr ? `: ${redactSecrets(pr.stderr.trim()) || `gh exited ${pr.code}`}` : ": gh unavailable"}`,
     };
   }
-  const ghArgs = ["pr", "create", "--head", branch as string, "--title", message];
-  if (opts.prBodyFile) ghArgs.push("--body-file", opts.prBodyFile);
-  else ghArgs.push("--body", "Created by Claudexor.");
-  const pr = await runCapture("gh", ghArgs, { cwd: repoRoot, timeoutMs: 60_000 }).catch(() => null);
-  const prUrl = pr && pr.code === 0 ? pr.stdout.trim() : undefined;
-  return {
-    mode: "pr",
-    // The commit and remote branch are already durable at this point. A PR
-    // creation failure is a partial delivery, not a clean refusal that callers
-    // may safely retry as if nothing happened.
-    applied: true,
-    branch,
-    commit,
-    prUrl,
-    detail: prUrl
-      ? undefined
-      : `branch pushed; PR was not opened${pr ? `: ${redactSecrets(pr.stderr.trim()) || `gh exited ${pr.code}`}` : ": gh unavailable"}`,
-  };
 }

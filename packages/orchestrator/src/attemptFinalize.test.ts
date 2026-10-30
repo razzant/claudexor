@@ -264,9 +264,9 @@ describe("unwrapWorkReportEnvelope", () => {
     expect(r.workReport).toBeNull();
   });
 
-  it("redacts secret-like tokens in required_inputs locator+description (one owner)", () => {
-    // Assemble the fake token at runtime so this test file never carries a
-    // contiguous secret-like token at rest (runSupport.test.ts pattern).
+  it("keeps required_inputs locator+description exactly as the model wrote them (INV-146)", () => {
+    // Assembled at runtime so this test file never carries a contiguous
+    // token-shaped literal at rest.
     const fakeToken = ["sk-ant", "1234567890abcdefghij"].join("-");
     const text = JSON.stringify({
       work_report: {
@@ -283,15 +283,13 @@ describe("unwrapWorkReportEnvelope", () => {
     });
     const r = unwrapWorkReportEnvelope(text, ACTIVE);
     expect(r.contractViolation).toBeNull();
-    const ri = r.workReport?.required_inputs[0];
-    // The raw token never survives into the validated work_report (which flows
-    // to telemetry yaml, decision facts, and the CLI needsInputLabel).
-    expect(ri?.locator).not.toContain(fakeToken);
-    expect(ri?.description).not.toContain(fakeToken);
-    expect(ri?.locator).toContain("[redacted]");
-    expect(ri?.description).toContain("[redacted]");
-    // Non-secret text is preserved.
-    expect(ri?.description).toContain("to proceed");
+    // The validated work_report feeds telemetry, decision facts, the CLI
+    // needs-input label and the next turn: the model's own words, unchanged.
+    expect(r.workReport?.required_inputs[0]).toEqual({
+      kind: "credential",
+      locator: `env:API_KEY=${fakeToken}`,
+      description: `paste ${fakeToken} to proceed`,
+    });
   });
 
   it("flags a missing/malformed work_report as a contract violation", () => {
@@ -336,7 +334,7 @@ describe("unwrapWorkReportEnvelope", () => {
     }
   });
 
-  it("redacts the retained contradictory claim before handing it to evidence writers", () => {
+  it("retains the contradictory claim exactly for the evidence writers (INV-146)", () => {
     const secret = "sk-" + "aB3dEf9h".repeat(6);
     const result = unwrapWorkReportEnvelope(
       JSON.stringify({
@@ -350,7 +348,11 @@ describe("unwrapWorkReportEnvelope", () => {
     );
     expect(result.workReport).toBeNull();
     expect(result.reportProblem?.kind).toBe("completed_with_required_inputs");
-    expect(JSON.stringify(result.reportProblem)).not.toContain(secret);
+    expect(result.reportProblem?.reported.required_inputs[0]).toEqual({
+      kind: "context",
+      locator: secret,
+      description: `See ${secret}`,
+    });
   });
 
   it("does not let a prototype-pollution output key escape the envelope", () => {

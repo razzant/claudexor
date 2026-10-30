@@ -6,7 +6,7 @@ import type {
   RawGitPatchEnvelope,
   RawPatchRefusalCode,
 } from "@claudexor/schema";
-import { sensitiveResourcePolicy, sha256 } from "@claudexor/util";
+import { sha256 } from "@claudexor/util";
 import { applyPatchProtected, git, materializePatchTree, revParse } from "./git.js";
 
 export class RawPatchRefusalError extends Error {
@@ -48,10 +48,10 @@ export function captureRawPatchEnvelope(
   if (event.type !== "patch_produced") return previous;
   if (!enabled || !event.patch_envelope || previous)
     refuse("raw_patch_missing_evidence", "expected exactly one enabled patch envelope");
-  // INV-062: secret-like CONTENT is no refusal. The envelope is memory-only; it
-  // materializes in the isolated candidate tree and reaches saved artifacts only
-  // through the shared keep-and-mask capture. Scope, preimage and digest
-  // evidence are still enforced by consumeRawPatchEnvelope.
+  // Credential-shaped CONTENT is no refusal. The envelope is memory-only; it
+  // materializes in the isolated candidate tree and reaches saved artifacts
+  // through the shared exact capture. Scope, preimage and digest evidence are
+  // still enforced by consumeRawPatchEnvelope.
   return event.patch_envelope;
 }
 
@@ -143,9 +143,6 @@ export async function consumeRawPatchEnvelope(input: {
     declared.set(item.path, item.expected_blob_oid);
   }
   for (const path of actualPaths) {
-    if (sensitiveResourcePolicy.classifyPath(path).sensitive) {
-      refuse("raw_patch_outside_scope", `${path} is outside the packet's exact editable scope`);
-    }
     const presence = expectedPresence.get(path);
     const file = editable.get(path);
     const expected = declared.get(path);

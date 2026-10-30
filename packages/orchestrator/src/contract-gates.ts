@@ -8,7 +8,7 @@ import type {
   TestCommandInvocation,
 } from "@claudexor/schema";
 import { finalVerifyFiles, finalVerifyPatch, type VerifyEventLog } from "@claudexor/delivery";
-import { canonicalProjectRoot, containsSecretLikeToken, hashJson, sha256 } from "@claudexor/util";
+import { canonicalProjectRoot, hashJson, sha256 } from "@claudexor/util";
 import type { CandidateRun } from "./candidateEvidence.js";
 import { gateProtectedPaths } from "./runSupport.js";
 import { runScopeGateEnv } from "./runScope.js";
@@ -42,11 +42,6 @@ export function resolveContractGates(input: {
       return true;
     })
     .map(({ command, source }, index) => {
-      if (containsSecretLikeToken(JSON.stringify(command))) {
-        throw new Error(
-          `gate command ${index + 1} contains secret-like token; refusing to persist artifact`,
-        );
-      }
       const commandDigest = hashJson(command);
       const trustGrant =
         source === "project"

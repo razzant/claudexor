@@ -144,7 +144,7 @@ pnpm test
   any other failure keeps the listing with one diagnostic, and `next_up` stays
   labelled as the configured default model's verdict.
 - Tool success, web evidence, and tmp/workspace claims must be evidence-based:
-  preserve redacted tool error detail; `tool_result.is_error === true` blocks
+  preserve the tool's exact error detail; `tool_result.is_error === true` blocks
   claimed success unless verified recovery exists; a write outside the
   execution root, such as absolute `/tmp/...`, is not project diff evidence.
 - No regex governance for risk, permissions, tool success, web-required
@@ -259,9 +259,13 @@ pnpm test
 
 ## Security And Secrets
 
-- Raw secrets must not appear in jobs, task contracts, events, summaries,
-  served artifacts, persisted patch copies, PR text, docs, or logs; exact output
-  follows [INV-062 keep-and-mask](../CLAUDEXOR_BIBLE.md#6-secrets-never-become-artifacts).
+- Engine-owned credentials (daemon tokens, provider keys, OAuth stores,
+  account homes) must not enter working content, logs, docs or PR text; their
+  diagnostics may be masked. Authorized working content (prompts,
+  attachments, answers, events, patches, review evidence, served artifacts)
+  stays exact and is never refused or masked for looking like a credential
+  ([INV-146](../CLAUDEXOR_BIBLE.md#6-engine-credentials-stay-private-work-stays-exact)).
+  Publication (`pr`) is the one content check.
 - Native/subscription routes should not inherit provider API-key env vars unless
   an API-key source is explicit.
 - A native login may pass only after fresh `native_session = available + passed`;
@@ -469,12 +473,13 @@ pnpm test
 - Diff demand loading: controls derive patch availability from metadata, a tab
   opened before metadata retriggers, and 413/network/non-text failures show
   reason + path + Retry rather than spinning forever.
-- Bounded primary output: test exactly 256 KiB, +1 byte, the redaction overlap
-  boundary, and split UTF-8; every omitted byte sets `truncated=true`.
-- Persist local/redacted per-reviewer telemetry: requested model/effort, observed
+- Bounded primary output: test exactly 256 KiB, +1 byte and split UTF-8; every
+  omitted byte sets `truncated=true`.
+- Persist local per-reviewer telemetry: requested model/effort, observed
   model/source, route proof, start/first-event/completion-or-timeout timestamps,
   duration, raw normalized stream or transcript, parsed JSON blocks, and parse
-  errors.
+  errors. Reviewer text, transcripts and parsed JSON stay exact; only diagnostic
+  copies (errors, progress and metadata telemetry) are masked.
 - Bind each reviewer to the exact candidate and complete evidence (diff,
   accepted intent, decisions and tests). Keep private dialogue in a separate
   private packet. Use new output locations for independent executions; never

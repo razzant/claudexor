@@ -481,7 +481,7 @@ export type SetupLoginDisclosureFlow = z.infer<typeof SetupLoginDisclosureFlow>;
  * SSE frame from the runner's transient device-code sidecar and is NEVER a
  * field of the journaled {@link ControlSetupJob}. The one-time `userCode` is
  * never journaled, logged, or persisted to the durable result receipt
- * (INV-062 / D-17); the journal records only THAT a code was disclosed via the
+ * (INV-146 / D-17); the journal records only THAT a code was disclosed via the
  * awaiting_user phase transition. `userCode` is empty for the browser-callback
  * (`chatgpt`) flow, which surfaces only an authUrl.
  */

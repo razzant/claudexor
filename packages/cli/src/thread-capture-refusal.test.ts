@@ -39,7 +39,6 @@ it("refuses an incomplete thread capture before empty/apply or watermark advance
   const failure = new CaptureOutputExceeded("stdout");
   vi.mocked(captureWorkingTreeTransient).mockResolvedValue({
     patch: "",
-    binarySecretPaths: [],
     captureIncomplete: true,
     captureFailure: failure,
   });
@@ -62,7 +61,6 @@ it("answers the sanitized capture facts on the first refusal and on every durabl
   });
   vi.mocked(captureWorkingTreeTransient).mockResolvedValue({
     patch: "",
-    binarySecretPaths: [],
     captureIncomplete: true,
     captureFailure: failure,
   });

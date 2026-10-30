@@ -83,7 +83,7 @@ export const ControlRunStartRequest = z
     /** Caller-supplied system-level instructions layered onto every
      * task-producing lane (primary, candidate, planner, explorer) — never
      * reviewers, synthesis, or the auth smoke.
-     * Scanned by the inline-secret fence like the prompt (INV-062). */
+     * Delivered exactly, like the prompt (INV-146). */
     instructions: z
       .string()
       .optional()
@@ -431,7 +431,7 @@ export const ControlWebEvidence = z
       .string()
       .nullable()
       .default(null)
-      .describe("Redacted target (query/url) of the web activity, when any."),
+      .describe("Target (query/url) of the web activity as issued, when any."),
     errorSummary: z
       .string()
       .nullable()
@@ -441,7 +441,7 @@ export const ControlWebEvidence = z
       .string()
       .nullable()
       .default(null)
-      .describe("Artifact path holding the raw (redacted) evidence detail."),
+      .describe("Artifact path holding the full evidence record."),
     /** False when the run predates telemetry.yaml; surfaces must render "telemetry unavailable". */
     available: z
       .boolean()

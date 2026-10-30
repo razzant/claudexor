@@ -161,7 +161,8 @@ for (const mode of ["shipped", "fallback"]) {
     assert.equal(artifact.kind, "body");
     const body = Buffer.from(artifact.body).toString("utf8");
     assert.ok(body.includes("Packaged output"));
-    assert.ok(!body.includes(secret));
+    // The shipped worker serves the exact answer (INV-146).
+    assert.ok(body.includes(secret));
     let cursor;
     const frames = [];
     for (;;) {
@@ -173,7 +174,7 @@ for (const mode of ["shipped", "fallback"]) {
       if (!batch.progressed) break;
     }
     assert.deepEqual(frames.map((frame) => frame.seq), [1]);
-    assert.ok(!frames[0].data.includes(secret));
+    assert.ok(frames[0].data.includes(secret));
     facts.push({ mode, summary: true, detail: true, artifact: true, replay: true });
   } finally {
     const exited = worker ? once(worker, "exit") : null;

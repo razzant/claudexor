@@ -8,7 +8,7 @@ import {
   type HarnessRunSpec,
   type InteractionRequest,
 } from "@claudexor/schema";
-import { nowIso, sensitiveResourcePolicy } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 import {
   asObject,
   codexApprovalDenial,
@@ -255,9 +255,7 @@ export class CodexApprovals {
 
 function safeReview(value: JsonObject): string | null {
   const text = JSON.stringify(value, null, 2);
-  return text.length <= MAX_REVIEW_CHARS && !sensitiveResourcePolicy.containsSensitiveContent(text)
-    ? text
-    : null;
+  return text.length <= MAX_REVIEW_CHARS ? text : null;
 }
 
 /** The run's reviewable surface: its cwd plus the auxiliary roots it was granted. */
@@ -339,13 +337,7 @@ export function reviewPath(
 ): boolean {
   const root = canonicalTarget(resolve(cwd));
   const target = canonicalTarget(resolve(cwd, path));
-  if (
-    !root ||
-    !target ||
-    sensitiveResourcePolicy.classifyPath(path).sensitive ||
-    sensitiveResourcePolicy.classifyPath(target).sensitive
-  )
-    return false;
+  if (!root || !target) return false;
   return [root, ...grantedRoots.map((granted) => canonicalTarget(resolve(granted)))].some(
     (scope) => {
       const rel = scope === null ? ".." : relative(scope, target);

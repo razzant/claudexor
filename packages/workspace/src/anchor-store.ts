@@ -68,8 +68,8 @@ export function readRevertAnchor(repo: string, id: string, maxBytes?: number): s
   return patch;
 }
 
-/** The typed refusal every consumer of a saved patch shares when the saved
- * copy is display-only and its exact bytes cannot be produced (INV-062). */
+/** The typed refusal every consumer of a saved patch shares when a historical
+ * saved copy is display-only and its exact bytes cannot be produced. */
 export const PATCH_EXACT_BYTES_UNAVAILABLE = "patch_exact_bytes_unavailable";
 
 export type ExactPatchResolution =
@@ -78,9 +78,9 @@ export type ExactPatchResolution =
 /**
  * Resolve the EXACT patch bytes behind a run's saved `final/patch.diff`.
  *
- * A saved copy is byte-exact unless the work product says
- * `persisted_patch: redacted` — then secret-like strings were hidden in it and
- * it is display-only. Apply, apply/check, the operator-decision binding and
+ * A saved copy is byte-exact. Only historical runs whose work product says
+ * `persisted_patch: redacted` saved a copy with secret-like strings hidden; it
+ * is display-only. Apply, apply/check, the operator-decision binding and
  * eligibility must read the private exact patch object instead (same private
  * store and digest identity as a revert anchor: id === `patch_sha256`). A
  * missing, unrecorded or corrupt object is a typed refusal; the redacted copy

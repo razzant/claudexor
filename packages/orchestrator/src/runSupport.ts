@@ -1,8 +1,9 @@
 /**
  * Run-support helpers: transient retry pacing, gate-derived protected paths,
- * prompt constraints, harness-event redaction/payload projection, and the
+ * prompt constraints, harness-event payload projection, and the
  * run summary/findings renderers. Pure functions — no orchestrator state.
  */
+import { maskHarnessEventDiagnostics } from "@claudexor/core";
 import type {
   HarnessEvent,
   ModeKind,
@@ -203,9 +204,10 @@ export function promptWithEngineConstraints(
  * guessing `npm test` / bare `node`, which on an at-risk machine dies `Killed: 9`.
  *
  * Rendered as a read-only JSON argv list (same `[program, ...args]` shape the
- * gate runner and review packet use), redacted with the same fence as the rest
- * of the contract so a secret-like token can never surface in the prompt. Never
- * a shell string — the model must reuse the exact argv, not re-parse it.
+ * gate runner and review packet use), byte for byte what the runner executes
+ * (INV-146): a credential-shaped argument is shown as is, since a masked argv
+ * reused verbatim would run a different command. Never a shell string — the
+ * model must reuse the exact argv, not re-parse it.
  */
 export function promptWithGateArgvDisclosure(
   prompt: string,
@@ -216,7 +218,7 @@ export function promptWithGateArgvDisclosure(
   const lines = [
     "",
     "Engine-configured deterministic gates (the engine will run these EXACT typed argv again to verify the run). Use them verbatim for local verification; do not substitute a bare `node`/`npm`, a package script, or a shell string:",
-    ...shown.map((g) => `- ${redactSecrets(JSON.stringify([g.program, ...g.args]))}`),
+    ...shown.map((g) => `- ${JSON.stringify([g.program, ...g.args])}`),
   ];
   // Never let the slice silently imply the disclosed set is exhaustive: mark how
   // many gates were omitted so the model knows more will run than it can see.
@@ -252,59 +254,50 @@ export function safeErrorMessage(err: unknown): string {
   return message.trim().length > 0 ? message : "thrown error carried no message";
 }
 
-export function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
-  try {
-    return JSON.parse(redactSecrets(JSON.stringify(ev))) as HarnessEvent;
-  } catch {
-    return {
-      ...ev,
-      text: ev.text ? redactSecrets(ev.text) : undefined,
-      error: ev.error ? redactSecrets(ev.error) : undefined,
-      payload: ev.payload ? { redacted: true } : undefined,
-    };
-  }
-}
-
 export function harnessEventPayload(
   harnessId: string,
   attemptId: string,
   ev: HarnessEvent,
 ): Record<string, unknown> {
-  const safe = redactHarnessEvent(ev);
+  // Working content (text, tool and interaction payloads) is journaled exactly;
+  // engine diagnostics are masked through the one shared journal seam (INV-146).
+  const safe = maskHarnessEventDiagnostics(ev);
+  const error = safe.error;
+  const payload = safe.payload;
   const title =
-    safe.error ??
+    error ??
     safe.text ??
-    (safe.usage
-      ? `usage: ${safe.usage.input_tokens ?? 0} in / ${safe.usage.output_tokens ?? 0} out`
-      : safe.type);
+    (ev.usage
+      ? `usage: ${ev.usage.input_tokens ?? 0} in / ${ev.usage.output_tokens ?? 0} out`
+      : ev.type);
   // Hoist adapter ignored_settings onto the existing timeline disclosure (INV-105).
-  const ignored = (safe.payload as Record<string, unknown> | undefined)?.["ignored_settings"];
+  const ignored = (ev.payload as Record<string, unknown> | undefined)?.["ignored_settings"];
   return {
     ...(Array.isArray(ignored) ? { ignored_settings: ignored } : {}),
     harness_id: harnessId,
     attempt_id: attemptId,
-    session_id: safe.session_id,
-    ts: safe.ts,
-    type: safe.type,
+    session_id: ev.session_id,
+    ts: ev.ts,
+    type: ev.type,
     title: String(title).slice(0, 500),
     text: safe.text,
-    error: safe.error,
-    usage: safe.usage,
-    observed_model: safe.observed_model,
-    credential_route: safe.credential_route,
-    quota: safe.quota,
-    rate_limit: safe.rate_limit,
-    request_refusal: safe.request_refusal,
-    permission_denial: safe.permission_denial,
-    tool: safe.tool,
-    interaction: safe.interaction,
+    error,
+    usage: ev.usage,
+    observed_model: ev.observed_model,
+    credential_route: ev.credential_route,
+    quota: ev.quota,
+    rate_limit: ev.rate_limit,
+    request_refusal: ev.request_refusal,
+    permission_denial: ev.permission_denial,
+    tool: ev.tool,
+    interaction: ev.interaction,
     // Preserve finality/status for answer dedup and activity (W-C1/W-C2);
     // losing them here broke both on the live path (F2.5 E2E). The adapter-
     // issued speech key/op rides beside them so readers key text by identity.
-    final: safe.final,
-    speech: safe.speech,
-    status: safe.status,
-    payload: safe.payload,
+    final: ev.final,
+    speech: ev.speech,
+    status: ev.status,
+    payload,
   };
 }
 

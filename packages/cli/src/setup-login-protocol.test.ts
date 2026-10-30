@@ -845,7 +845,7 @@ describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
 
   it("the persisted tail carries no ESC bytes and redacts secret-like tokens", async () => {
     // Assembled at runtime so no token-like literal lands in the source tree
-    // (secret-scan CI, INV-062). This matches the redactor's `sk-…` rule.
+    // (secret-scan CI, INV-146). This matches the redactor's `sk-…` rule.
     const token = ["sk", "or", "FAKE".repeat(4) + "1234"].join("-");
     // The script emits, to stderr: an OSC-8 hyperlink (ESC ] 8 ; ; URI ESC \),
     // readable words, a bare ESC, and the secret — then fails (exit 3).

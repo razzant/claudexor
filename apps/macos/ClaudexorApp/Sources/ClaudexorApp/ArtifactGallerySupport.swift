@@ -32,13 +32,14 @@ enum ArtifactCategory {
     }
 
     /// QA-067 (issue-067) PARITY: the App's text set MUST match the server's
-    /// `SEMANTIC_TEXT_EXTENSIONS` (`packages/control-api/src/artifact-serve-routes.ts`),
-    /// which grew in Ф2 to cover source code + config/markup. The server now
-    /// routes these through the redacting, 4-MiB-capped TEXT path; the App must
-    /// agree so an eager preview treats them as (redaction-aware) text in the
-    /// in-app viewer instead of sending them down the raw-binary "open
-    /// externally" path. Truly-binary types (images, PDFs, archives) stay
-    /// `.other`. Keep this in lockstep with the server set.
+    /// `SEMANTIC_TEXT_EXTENSIONS` (`packages/control-api/src/artifact-read.ts`,
+    /// checked by `scripts/artifact-text-parity-check.mjs`), which grew in Ф2 to
+    /// cover source code + config/markup. The server serves these exactly
+    /// through the 4-MiB-capped TEXT path (INV-146); the App must agree so an
+    /// eager preview treats them as text in the in-app viewer instead of sending
+    /// them down the raw-binary "open externally" path. Truly-binary types
+    /// (images, PDFs, archives) stay `.other`. Keep this in lockstep with the
+    /// server set.
     static let semanticTextExtensions: Set<String> = [
         // markup / structured data (server text/* MIME or semantic-text)
         "md", "markdown", "txt", "text", "yaml", "yml", "json", "log",

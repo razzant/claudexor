@@ -1,4 +1,5 @@
 import {
+  appendHarnessEvent,
   observeCredentialExecution,
   bindCredentialExecutionObserverFactory,
   type CredentialExecutionObserverFactory,
@@ -15,7 +16,6 @@ import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "
 import { join, relative, resolve } from "node:path";
 import {
   appendLine,
-  containsSecretLikeToken,
   engineBuildIdentity,
   ensureDir,
   newId,
@@ -69,7 +69,6 @@ import {
   createReviewerArtifactContext,
   emitReviewerProgress,
   insufficientEvidenceFinding,
-  redactValue,
   safeFilePart,
   sleep,
   transientRetryDelayMs,
@@ -262,11 +261,6 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         };
       })()
     : {};
-  if (containsSecretLikeToken(input.diff || "(empty diff)\n")) {
-    throw new Error(
-      "diff evidence contains a secret-like token; refusing to persist raw DIFF.patch",
-    );
-  }
   if (input.evidenceReadOnly) {
     const packetDiff = readTextSafe(join(input.evidenceDir, "DIFF.patch"));
     const normalizedDiff = input.diff.endsWith("\n") ? input.diff : `${input.diff}\n`;
@@ -563,7 +557,8 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       ? parseSealedReviewEnvelopeDetailed(text, info)
       : null;
     const jsonBlocks = sealedParse?.blocks ?? extractJsonBlocks(text);
-    writeJson(artifact.parsedPath, redactValue(jsonBlocks));
+    // The reviewer's parsed findings are its work product, kept exact (INV-146).
+    writeJson(artifact.parsedPath, jsonBlocks);
     if (sealedParse && (sealedProjectionError || sealedParse.error)) {
       const detail = sealedProjectionError ?? sealedParse.error ?? "invalid sealed review output";
       writeParseError(artifact, {
@@ -778,8 +773,8 @@ async function collectReviewerOutput(
     const sealedMessageEvents: unknown[] = [];
     for await (const ev of iter) {
       const eventTime = nowIso();
-      const persistedEvent = redactValue(ev);
-      appendLine(artifact.eventsPath, JSON.stringify(persistedEvent));
+      // Reviewer text is kept exact; diagnostics are masked by the shared seam.
+      const persistedEvent = appendHarnessEvent(artifact.eventsPath, ev);
       const ignored = ev.payload?.["ignored_settings"];
       if (Array.isArray(ignored)) {
         for (const item of ignored) if (typeof item === "string") ignoredSettings.add(item);

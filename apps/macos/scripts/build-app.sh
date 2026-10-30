@@ -426,6 +426,12 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   if [ -x "$APP/Contents/Resources/native/claudexor-process-identity" ]; then
     codesign --verify --strict --verbose=2 "$APP/Contents/Resources/native/claudexor-process-identity"
   fi
+  # The bundled publication scanners were signed once by the engine-resource
+  # stage (their provenance records those exact bytes); verify, never re-sign.
+  for SCANNER in "$APP/Contents/Resources/native/betterleaks"/darwin-*/betterleaks; do
+    [ -f "$SCANNER" ] || continue
+    codesign --verify --strict --verbose=2 "$SCANNER"
+  done
   codesign --force --options runtime --timestamp \
     --entitlements "$PACKAGING/Claudexor.entitlements" \
     --sign "$SIGN_IDENTITY" "$APP"

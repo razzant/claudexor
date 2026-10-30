@@ -3,7 +3,7 @@ import { isAbsolute, resolve, sep } from "node:path";
 import type { ContextPack, TaskContract } from "@claudexor/schema";
 import { ContextPack as ContextPackSchema } from "@claudexor/schema";
 import { ContextOverflowError } from "@claudexor/core";
-import { hashJson, readTextSafe, sensitiveResourcePolicy } from "@claudexor/util";
+import { hashJson, readTextSafe } from "@claudexor/util";
 import { loadAgentsInstructions } from "./agents.js";
 import { type AtlasOptions, buildScopeAtlas, contextSymlinkDenyReason } from "./atlas.js";
 
@@ -48,24 +48,15 @@ export function assertMandatoryContext(repoRoot: string, mandatoryFiles: readonl
       missing.push(rel);
       continue;
     }
-    const pathDecision = sensitiveResourcePolicy.classifyPath(rel);
-    const symlinkReason = contextSymlinkDenyReason(base, canonicalBase, rel);
-    if (pathDecision.sensitive || symlinkReason) {
+    if (contextSymlinkDenyReason(base, canonicalBase, rel)) {
       refused.push(rel);
       continue;
     }
-    const text = readTextSafe(abs);
-    const contentDecision =
-      text === null ? null : sensitiveResourcePolicy.inspectContent(text, "reject");
-    if (contentDecision?.containsSensitiveContent) {
-      refused.push(rel);
-      continue;
-    }
-    if (text === null) missing.push(rel);
+    if (readTextSafe(abs) === null) missing.push(rel);
   }
   if (refused.length > 0) {
     throw new ContextOverflowError(
-      `mandatory context is sensitive or escapes its trust boundary: ${refused.join(", ")}`,
+      `mandatory context escapes its trust boundary: ${refused.join(", ")}`,
     );
   }
   if (missing.length > 0) {

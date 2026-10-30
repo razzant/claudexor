@@ -60,7 +60,7 @@ import {
   TestCommandInvocation,
   WorkProduct,
 } from "@claudexor/schema";
-import { redactSecrets, noProjectRepoRoot } from "@claudexor/util";
+import { noProjectRepoRoot } from "@claudexor/util";
 import { parse as parseYaml } from "yaml";
 
 /* ---- Thread projections (engine snake_case -> control camelCase) ---- */
@@ -212,7 +212,7 @@ export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): Contr
     strategy: strategyFromParams(p),
     prompt:
       rec.promptPreview ??
-      (typeof p["prompt"] === "string" ? redactPrompt(p["prompt"]) : undefined),
+      (typeof p["prompt"] === "string" ? promptPreview(p["prompt"]) : undefined),
     harnesses: Array.isArray(p["harnesses"])
       ? p["harnesses"].filter((x): x is string => typeof x === "string")
       : undefined,
@@ -414,7 +414,6 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
   return out;
 }
 
-function redactPrompt(prompt: string): string {
-  const redacted = redactSecrets(prompt);
-  return redacted.length > 240 ? `${redacted.slice(0, 240)}...` : redacted;
+function promptPreview(prompt: string): string {
+  return prompt.length > 240 ? `${prompt.slice(0, 240)}...` : prompt;
 }

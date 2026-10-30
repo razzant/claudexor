@@ -46,13 +46,10 @@ import {
   worktreeRemove,
 } from "./git.js";
 
-/** One candidate capture. `diff` is always the EXACT patch (apply, synthesis,
- * digests); what a saved copy must hide is derived from it downstream. */
+/** One candidate capture. `diff` is the exact patch every consumer (apply,
+ * synthesis, review, digests, saved copies) reads (INV-146). */
 export interface CapturedWorkspaceDiff {
   diff: string;
-  /** Changed binaries whose bytes hold (or cannot be proven free of)
-   * secret-like content; a persisted copy withholds their payload. */
-  binarySecretPaths: string[];
   /** The capture could not observe the candidate's changes at all (no legacy
    * baseline, a failed `diff`): an honest capture refusal, never "no changes". */
   captureIncomplete: boolean;
@@ -342,7 +339,6 @@ export class WorkspaceManager {
       );
     const incomplete: CapturedWorkspaceDiff = {
       diff: "",
-      binarySecretPaths: [],
       captureIncomplete: true,
     };
     if (env.policy_profile === "readonly") {
@@ -363,7 +359,6 @@ export class WorkspaceManager {
         );
         return {
           diff: captured.patch,
-          binarySecretPaths: captured.binarySecretPaths,
           captureIncomplete: captured.captureIncomplete,
           captureFailure: captured.captureFailure,
           ...(captured.excludedNestedRepositories
@@ -402,7 +397,6 @@ export class WorkspaceManager {
     ]);
     return {
       diff: captured.patch,
-      binarySecretPaths: captured.binarySecretPaths,
       captureIncomplete: captured.captureIncomplete,
       captureFailure: captured.captureFailure,
       ...(captured.excludedNestedRepositories

@@ -1032,9 +1032,7 @@ it("refuses a clipped legacy plain preview at exact consumers and leaves the liv
     wsm,
     envelope,
     inPlace: true,
-    projectRoot: root,
     holder: { runId: "r-legacy", runDir: join(root, "run") },
-    answerMatches: 0,
   });
   expect(capture.diff).toBe("");
   expect(capture.captureRefusal).toMatchObject({

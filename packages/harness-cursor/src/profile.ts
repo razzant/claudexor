@@ -162,7 +162,7 @@ export type CursorDefaultRouteInput = {
   env: EnvMap;
   authPreference: AuthPreference;
   abortSignal: AbortSignal | undefined;
-  /** Set only for API-key profiles: overrides the default key lookup (INV-062 transient). */
+  /** Set only for API-key profiles: overrides the default key lookup (INV-146 transient). */
   cursorApiKey?: (env?: EnvMap) => string | null;
 };
 

@@ -2,23 +2,17 @@ import { projectionRead } from "./projection-context.js";
 import { lstatSync, readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { redactSecrets, readFileUtf8BoundedSync } from "@claudexor/util";
+import { readFileUtf8BoundedSync } from "@claudexor/util";
 import { safeArtifactPath } from "./artifact-paths.js";
 import type { DaemonRunRecord } from "./run-record.js";
 
 export function readTextArtifact(
   rec: DaemonRunRecord,
   relPath: string,
-  redact = true,
   maxBytes?: number,
 ): string | null {
-  return projectionRead(
-    rec.runDir ?? rec.id,
-    `text:${maxBytes ?? "all"}:${redact}:${relPath}`,
-    () => {
-      const text = readRawTextArtifact(rec, relPath, maxBytes);
-      return text === null ? null : redact ? redactSecrets(text) : text;
-    },
+  return projectionRead(rec.runDir ?? rec.id, `text:${maxBytes ?? "all"}:${relPath}`, () =>
+    readRawTextArtifact(rec, relPath, maxBytes),
   );
 }
 
@@ -66,11 +60,7 @@ export function safeReadStructuredArtifact<T>(
 ): T | null {
   return projectionRead(schema, `${rec.runDir ?? rec.id}:${maxBytes ?? "all"}:${relPath}`, () => {
     try {
-      return readStructured(
-        readTextArtifact(rec, relPath, true, maxBytes),
-        extname(relPath),
-        schema,
-      );
+      return readStructured(readTextArtifact(rec, relPath, maxBytes), extname(relPath), schema);
     } catch (error) {
       if (maxBytes !== undefined && (error as { status?: number }).status === 503) throw error;
       return null;

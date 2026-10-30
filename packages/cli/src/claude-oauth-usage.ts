@@ -45,7 +45,7 @@ const SOURCE = "claude_oauth_usage" as const;
  * serial refresh cycle. Claude Code owns renewal and persistence; diagnostics contain only
  * expiry/presence and physical operation receipts, never credentials. */
 
-/** A vendor rejection remembered per PRESENTED token (INV-062: the token's
+/** A vendor rejection remembered per PRESENTED token (INV-146: the token's
  * hash, never the token; process memory only; never persisted or logged).
  * Re-presenting a proven rejection needlessly uses endpoint capacity. Usage
  * reads have returned one-hour Retry-After pauses, whose vendor-lane floor
@@ -97,7 +97,7 @@ const VENDOR_REFRESH_FAILED_DETAIL =
   "Claude Code's automatic OAuth refresh did not publish a fresh access token before quota reading";
 
 /** Expiry and refresh-token PRESENCE are the only refresh metadata retained.
- * The refresh token itself never leaves the vendor credential body (INV-062). */
+ * The refresh token itself never leaves the vendor credential body (INV-146). */
 function needsVendorRefresh(credential: ClaudeOauthCredential, observedAt: Date): boolean {
   return (
     credential.hasRefreshToken &&

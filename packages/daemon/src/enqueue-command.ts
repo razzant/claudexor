@@ -1,5 +1,4 @@
 import { delegatedParentOf } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import type { CommandBackend } from "./command-authority.js";
 import {
   admitCommandRequest,
@@ -41,7 +40,6 @@ export function enqueueCommand(
       code: "daemon_stopping",
       status: 503,
     });
-  assertNoInlineSecretValues(raw, "$", "daemon job params");
   const operation = typeof params?.operation === "string" ? params.operation : undefined;
   const request = admitCommandRequest(
     deps.commands,

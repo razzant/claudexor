@@ -159,7 +159,7 @@
                 "null"
               ],
               "default": null,
-              "description": "Redacted target (query/url) of the web activity, when any."
+              "description": "Target (query/url) of the web activity as issued, when any."
             },
             "error_summary": {
               "type": [
@@ -1039,7 +1039,7 @@
                         "null"
                       ],
                       "default": null,
-                      "description": "Redacted target of the tool use, when known."
+                      "description": "Target of the tool use as issued, when known."
                     },
                     "summary": {
                       "type": "string",

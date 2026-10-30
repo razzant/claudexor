@@ -16,7 +16,7 @@ import {
   type RunOutcomeFacts,
   type RunParticipant,
 } from "@claudexor/schema";
-import { nowIso, readTextSafe, redactSecrets, sha256 } from "@claudexor/util";
+import { nowIso, readTextSafe, sha256 } from "@claudexor/util";
 import { resolveExactPatch } from "@claudexor/workspace";
 import type { AnnouncedRunContext } from "./runTerminals.js";
 import type { OrchestratorResult } from "./orchestrator.js";
@@ -450,8 +450,8 @@ export function buildRunFacts(
   const operatorDecision = ctx.store.readYaml<Record<string, unknown>>(
     join(ctx.paths.arbitrationDir, "operator_decision.yaml"),
   );
-  // INV-062: digests and eligibility bind to the EXACT patch. A saved copy with
-  // hidden secret-like strings resolves through the private exact patch object.
+  // Digests and eligibility bind to the EXACT patch. A historical saved copy
+  // with hidden secret-like strings resolves through its private exact object.
   const savedPatch = readTextSafe(join(ctx.paths.finalDir, "patch.diff")) ?? "";
   const exactPatch = resolveExactPatch({
     savedCopy: savedPatch,
@@ -560,6 +560,9 @@ export function buildRunFacts(
     required_actions: requiredActionsFor(outcome, operatorDecisionPresent),
     generated_at: nowIso(),
   };
-  // Redact once so every surface can preserve exact object identity.
-  return validateRunFactsInvariants(JSON.parse(redactSecrets(JSON.stringify(rawFacts))) as unknown);
+  // One normalized object every surface preserves, kept exact (INV-146). Its
+  // strings are ids (external identifiers as given), run-relative paths and
+  // typed reasons, plus the model's work_state required inputs (working
+  // content); it carries no engine diagnostics, so nothing in it is masked.
+  return validateRunFactsInvariants(JSON.parse(JSON.stringify(rawFacts)) as unknown);
 }

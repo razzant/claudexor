@@ -62,11 +62,11 @@ export const ToolRef = z
     name: z.string().describe("Native tool name as the harness reports it."),
     kind: ToolKind.default("other"),
     use_id: z.string().optional().describe("Correlates a tool_result with its tool_call."),
-    /** Redacted, bounded human-readable target (query/url/path/command). */
+    /** Bounded human-readable target (query/url/path/command), as issued. */
     target: z
       .string()
       .optional()
-      .describe("Redacted, bounded human-readable target (query/url/path/command)."),
+      .describe("Bounded human-readable target (query/url/path/command), as the agent issued it."),
     status: z
       .enum(["ok", "error", "cancelled", "denied"])
       .optional()
@@ -85,16 +85,20 @@ export const ToolRef = z
       .describe(
         "Native lifecycle frame of a file_change (started or completed); absent when the adapter does not type it. Completion is not success: the outcome stays in status.",
       ),
-    /** Redacted, bounded error detail for status=error results. */
+    /** Error detail for status=error results: the tool's own output, unmasked. */
     error_summary: z
       .string()
       .optional()
-      .describe("Redacted, bounded error detail for status=error results."),
-    /** Redacted, bounded content detail for results (success or failure). */
+      .describe(
+        "Error detail for status=error results: the tool's own output, unmasked, within the adapter's bound and whitespace normalization.",
+      ),
+    /** Content detail for results (success or failure), unmasked. */
     content_summary: z
       .string()
       .optional()
-      .describe("Redacted, bounded content detail for results (success or failure)."),
+      .describe(
+        "Content detail for results (success or failure), unmasked, within the adapter's bound and whitespace normalization.",
+      ),
     exit_code: z
       .number()
       .int()

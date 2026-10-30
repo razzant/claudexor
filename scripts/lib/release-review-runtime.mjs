@@ -21,7 +21,6 @@ import {
 } from "./release-review-contract.mjs";
 
 const REQUIRED_VERIFIER_EXPORTS = Object.freeze([
-  "containsSecretLikeToken",
   "parseSealedReviewEnvelopeDetailed",
   "redactSecrets",
   "sealedReviewTranscriptFromEvents",

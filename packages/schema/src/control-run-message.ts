@@ -17,7 +17,7 @@ export const ControlRunMessageRequest = z
       .min(1)
       .max(LIVE_MESSAGE_MAX_UTF16_UNITS)
       .describe(
-        "The message to place into the run's active attempt. 1..65536 UTF-16 code units (the JS string length, not bytes or visible characters); an over-long body is a 400, never truncated. Secret-like values are refused (inline_secret_rejected) like every prompt ingress.",
+        "The message to place into the run's active attempt. 1..65536 UTF-16 code units (the JS string length, not bytes or visible characters); an over-long body is a 400, never truncated. The text is delivered exactly, like every prompt ingress.",
       ),
     expectedAttemptId: z
       .string()

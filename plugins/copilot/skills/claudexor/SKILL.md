@@ -89,7 +89,11 @@ For an explicitly selected document on an already-running daemon, first call
 import key with the exact arguments, then call `claudexor_upload_import` with
 `{expectedStoreId,path,idempotencyKey}` (optional `kind`, `mime`, `name`). Select
 one absolute regular file on the MCP-server host, not a remote client's path, URL,
-glob or directory; sensitive source/content checks still apply. After any
+glob or directory. The file must not be a symlink, and neither its path nor its
+resolved target may be a credential store, secret directory, `.env` file,
+credential file or private key (`sensitive_resource_rejected`); its size and
+file identity must not change while it is read, and the daemon checks the bytes
+against the digest the import key owns. File content is not scanned. After any
 uncertainty or failure repeat the identical call with the saved store id and key,
 never a later store answer. A completed import returns its original `resource`
 without reading the file again, even after the file changed or was deleted. Other
@@ -291,9 +295,12 @@ confirmation required by its schema.
 
 ## Safety
 
-- NEVER paste live credentials into prompts. Ask the user to use
-  `claudexor auth login <harness>` or `claudexor secrets set` outside the
-  conversation; do not collect or transform credentials.
+- Credentials Claudexor itself uses belong in `claudexor auth login <harness>`
+  or `claudexor secrets set`, outside the conversation; do not collect or
+  transform them. Working content (prompts, attachments, files, test fixtures)
+  reaches the selected harness exactly and stays in local run records; only
+  `pr` delivery checks content, scanning what would be pushed with the pinned
+  Betterleaks scanner before anything is published.
 - NEVER auto-answer `claudexor decision` for a blocked run. Risk acceptance and
   overrides are human decisions, even when the calling host otherwise permits
   mutation.

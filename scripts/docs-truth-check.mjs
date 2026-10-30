@@ -827,7 +827,6 @@ function collectSourceHaystack() {
       "capabilities --json",
       "docs/reference/endpoints.json",
       "claudexor decision",
-      "inline_secret_rejected",
     ]) {
       if (!onboarding.includes(anchor))
         failures.push(`docs/AGENT_ONBOARDING.md no longer mentions '${anchor}'`);

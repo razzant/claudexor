@@ -105,6 +105,83 @@ describe("Claude native API failure evidence", () => {
     );
   });
 
+  it("masks the parser's status copy of API-failure prose and keeps event order (INV-146)", () => {
+    const secret = ["sk-ant-api03", "Cl4udeStatusCopy7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2"].join("-");
+    const frame = { ...recording("2.1.165").at(-1), result: `API Error: 401 key ${secret}` };
+    const plain = createClaudeParser()(frame, "fixture")!;
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(frame, "fixture")!;
+    expect(events.map((event) => event.type)).toEqual([
+      ...plain.filter((event) => event.type !== "error").map((event) => event.type),
+      "error",
+    ]);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(events.find((event) => event.payload?.["non_success_result"])?.text).toBe(
+      "API Error: 401 key [redacted]",
+    );
+    // A structured-output status is the model's own JSON, not the failure prose.
+    const so = { answer: `exact ${secret}` };
+    const structured = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      { ...frame, structured_output: so },
+      "fixture",
+    )!;
+    expect(structured.find((event) => event.payload?.["structured_output"])?.text).toBe(
+      JSON.stringify(so),
+    );
+  });
+
+  it.each(["2.1.288", "2.1.165"])(
+    "masks the CLI's synthetic API-error turn (%s) but never a model's message",
+    (version) => {
+      const secret = ["sk-ant-api03", "Cl4udeSyntheticTurn7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0"].join("-");
+      const synthetic = structuredClone(recording(version)[1]!);
+      expect(synthetic.message.model).toBe("<synthetic>");
+      synthetic.message.content[0].text = `API Error: 401 key ${secret}`;
+      const parse = withClaudeApiFailureParser(createClaudeParser(), binaryPath);
+      expect(parse(synthetic, "fixture")!.find((event) => event.type === "message")?.text).toBe(
+        "API Error: 401 key [redacted]",
+      );
+      const model = {
+        type: "assistant",
+        message: {
+          model: "claude-fable-5-1",
+          content: [{ type: "text", text: `const key = "${secret}";` }],
+        },
+      };
+      expect(parse(model, "fixture")!.find((event) => event.type === "message")?.text).toBe(
+        `const key = "${secret}";`,
+      );
+    },
+  );
+
+  it("a context-terminal API failure keeps its context owner and masks both prose copies", () => {
+    const secret = ["sk-ant-api03", "Cl4udeContextTerminal7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5"].join("-");
+    const frames = readFileSync(
+      new URL("../fixtures/signals/terminal-prompt-too-long.jsonl", import.meta.url),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, any>);
+    const prose = `Prompt is too long; request authorized by ${secret}`;
+    frames[1]!.message.content[0].text = prose;
+    frames[2]!.result = prose;
+    expect(frames[2]).toMatchObject({ is_error: true, api_error_status: 400 });
+    const plain = frames.flatMap((frame) => createClaudeParser()(frame, "fixture") ?? []);
+    const parse = withClaudeApiFailureParser(createClaudeParser(), binaryPath);
+    const events = frames.flatMap((frame) => parse(frame, "fixture") ?? []);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    // Same events as the context owner emits: no added error, context kept.
+    expect(events.map((event) => event.type)).toEqual(plain.map((event) => event.type));
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.find((event) => event.type === "context")?.context).toMatchObject({
+      kind: "capacity_exhausted",
+      cause: "prompt_too_long",
+    });
+    const masked = "Prompt is too long; request authorized by [redacted]";
+    expect(events.find((event) => event.payload?.["non_success_result"])?.text).toBe(masked);
+    expect(events.find((event) => event.type === "message")?.text).toBe(masked);
+  });
+
   it("an API failure with an error subtype keeps the native cause, not the subtype label", () => {
     const frame = { ...recording("2.1.288").at(-1), subtype: "error_during_execution" };
     const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(frame, "fixture")!;

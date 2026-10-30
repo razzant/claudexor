@@ -115,7 +115,7 @@ export function projectRunFactsForDetail(
   };
 }
 
-/** RunFacts is already redacted; avoid a second presentation-redaction pass. */
+/** RunFacts is served exactly as validated (INV-146); no presentation pass. */
 function readRunFacts(
   runDir: string | undefined,
   expected: ExpectedRunFacts,

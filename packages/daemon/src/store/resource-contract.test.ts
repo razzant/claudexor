@@ -256,11 +256,8 @@ describe("SQL ResourceStore contract", () => {
     expect(fs.existsSync(second.blobs.filePath(imageRef.sha256.slice(7)))).toBe(false);
   });
 
-  it("keeps sensitive names/content checks for attachments and rejects short or oversized streams", async () => {
+  it("admits credential-named and credential-shaped attachments exactly; size checks remain (INV-146)", async () => {
     const f = await fixture();
-    expect(() => f.resources.create({ ...uploadRequest, name: ".env" }, "sensitive-name")).toThrow(
-      /sensitive/,
-    );
     const bad = f.resources.create(uploadRequest, "short");
     await expect(f.resources.write(bad.uploadId, chunks("x"))).rejects.toMatchObject({
       code: "upload_size_mismatch",
@@ -271,17 +268,15 @@ describe("SQL ResourceStore contract", () => {
       code: "upload_size_exceeded",
     });
     const text = "OPENAI_API_KEY=sk-proj-" + "a".repeat(70);
-    const secret = f.resources.create(
-      { kind: "file", mime: "text/plain", name: "x.txt", sizeBytes: text.length },
+    const upload = f.resources.create(
+      { kind: "file", mime: "text/plain", name: ".env", sizeBytes: text.length },
       "content",
     );
-    await f.resources.write(secret.uploadId, chunks(text));
-    expect(() => f.resources.finalize(secret.uploadId, undefined, "secret-finalize")).toThrow(
-      /sensitive/,
-    );
-    await f.resources.drainCleanup();
-    expect(f.resources.status(secret.uploadId).state).toBe("cancelled");
-    expect(fs.existsSync(join(f.store.paths.uploads, `${secret.uploadId}.part`))).toBe(false);
+    await f.resources.write(upload.uploadId, chunks(text));
+    const resource = f.resources.finalize(upload.uploadId, undefined, "fixture-finalize");
+    const [attachment] = f.resources.resolve([{ resourceId: resource.resourceId }]);
+    expect(attachment?.name).toBe(".env");
+    expect(fs.readFileSync(attachment!.path, "utf8")).toBe(text);
   });
 
   it("commits chunk progress, observes cancellation during the stream and closes before protected unlink", async () => {

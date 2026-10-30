@@ -582,8 +582,7 @@ authoritative for each exact disposition.
   adopted everywhere.
 - Refine Delegate-family cancellation receipts so successfully delivered but
   still-draining cancellation is not presented as a rejected operation.
-- Require `DIFF_SHA256.txt` explicitly in frozen-packet validation and seal the
-  targeted secret-scan receipt used before review transport.
+- Require `DIFF_SHA256.txt` explicitly in frozen-packet validation.
 - Keep failed in-place `new_repo` WorkProduct kind and `meta.result_kind`
   identical, and document the exported delegation root field in the util
   package changelog.
@@ -631,11 +630,6 @@ authoritative for each exact disposition.
   legal control-character repository paths.
 - Remove the network map's composite image role so assistive technology can
   reach every substantive harness/capability description.
-- Move durable secret-refusal WorkProduct, attempt, and event fields under one
-  schema-owned receipt contract.
-- Put the in-place secret-diff quarantine rollback under the repository
-  mutation lease while preserving its exact-postimage refusal; the path is now
-  inventoried and fenced, but lease serialization remains separate hardening.
 - Consolidate the duplicated environment-scoped Git invocation helper shared
   by workspace capture and revert logic.
 - Distinguish a belt runner throw before daemon child creation from a response

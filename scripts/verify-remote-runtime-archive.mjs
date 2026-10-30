@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   validateArchiveListings,
   validateNodeBinaryTarget,
 } from "./lib/remote-runtime-archive.mjs";
+import { pinnedRelease, sha256File } from "./lib/betterleaks-stage.mjs";
 
 // Node's execFileSync default is only 1 MiB. A valid four-target runtime carries
 // the full Browser MCP dependency tree, whose tar listing exceeds that even
@@ -53,6 +54,26 @@ function main() {
       throw new Error("runtime.json does not match the archive identity");
     }
     validateNodeBinaryTarget(join(work, "node", "bin", "node"), target);
+    // The publication scanner: exactly this target's pinned build, its license
+    // and provenance, never another platform's copy (INV-146).
+    const scanners = readdirSync(join(work, "lib", "native", "betterleaks"));
+    if (scanners.length !== 1 || scanners[0] !== target) {
+      throw new Error(`runtime must carry only the ${target} publication scanner`);
+    }
+    const scannerDir = join(work, "lib", "native", "betterleaks", target);
+    const release = pinnedRelease(target);
+    const scanner = join(scannerDir, release.binary);
+    if ((statSync(scanner).mode & 0o111) === 0) throw new Error("scanner is not executable");
+    if (sha256File(scanner) !== release.binarySha256) {
+      throw new Error("bundled scanner is not the pinned Betterleaks build");
+    }
+    const provenance = JSON.parse(readFileSync(join(scannerDir, "provenance.json"), "utf8"));
+    if (provenance.bundledSha256 !== release.binarySha256 || provenance.license !== "MIT") {
+      throw new Error("scanner provenance does not match the pinned build");
+    }
+    if (!readFileSync(join(scannerDir, "LICENSE"), "utf8").includes("MIT License")) {
+      throw new Error("scanner LICENSE is missing");
+    }
     for (const wrapper of ["claudexor", "claudexord"]) {
       const path = join(work, "bin", wrapper);
       if ((statSync(path).mode & 0o111) === 0) {

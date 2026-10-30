@@ -7,7 +7,7 @@ import type {
   ToolRef,
 } from "@claudexor/schema";
 import { commandOutcomeLabel, InputTokenUsage } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 import { applyCursorVendorLimit } from "./retry-signals.js";
 import { classifyCursorToolResult } from "./tool-result.js";
 
@@ -49,12 +49,14 @@ function argsTarget(args: Json): string | undefined {
   const found = candidates.find(
     (v: unknown) => typeof v === "string" && (v as string).trim().length > 0,
   );
-  return found ? redactSecrets(String(found)).slice(0, 500) : undefined;
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return found ? String(found).slice(0, 500) : undefined;
 }
 
+/** Bounded tool result text: the tool output the model saw and the only copy
+ * Claudexor keeps, so it is never masked (INV-146). */
 function resultSummary(result: Json): string {
-  if (typeof result === "string")
-    return redactSecrets(result).trim().replace(/\s+/g, " ").slice(0, 1000);
+  if (typeof result === "string") return result.trim().replace(/\s+/g, " ").slice(0, 1000);
   if (result && typeof result === "object") {
     const rec = result as Record<string, unknown>;
     const text =
@@ -65,8 +67,8 @@ function resultSummary(result: Json): string {
           : typeof rec["text"] === "string"
             ? rec["text"]
             : "";
-    if (text) return redactSecrets(text).trim().replace(/\s+/g, " ").slice(0, 1000);
-    return redactSecrets(JSON.stringify(result)).slice(0, 300);
+    if (text) return text.trim().replace(/\s+/g, " ").slice(0, 1000);
+    return JSON.stringify(result).slice(0, 300);
   }
   return "";
 }

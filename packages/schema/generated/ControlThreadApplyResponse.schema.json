@@ -75,6 +75,72 @@
                 "refused": {
                   "type": "boolean"
                 },
+                "publicationRefusal": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "publication_scan_findings",
+                        "publication_scan_unavailable",
+                        "publication_scan_failed"
+                      ],
+                      "description": "findings = the scanner reported secret-like content; unavailable = no pinned scanner; failed = the scan could not prove its result."
+                    },
+                    "detail": {
+                      "type": "string",
+                      "description": "Human-readable refusal, without any matched value."
+                    },
+                    "findings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ruleId": {
+                            "type": "string",
+                            "description": "Scanner rule that matched."
+                          },
+                          "location": {
+                            "type": "string",
+                            "description": "Outgoing file path or metadata label."
+                          },
+                          "line": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "1-based line, when known."
+                          },
+                          "commit": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Outgoing commit holding the finding."
+                          }
+                        },
+                        "required": [
+                          "ruleId",
+                          "location",
+                          "line",
+                          "commit"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "description": "Present for publication_scan_findings."
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "detail"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Set when the publication scanner refused a `pr` delivery before any branch, commit or push."
+                },
                 "alreadyApplied": {
                   "type": "boolean",
                   "default": false,

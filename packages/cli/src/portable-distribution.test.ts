@@ -129,7 +129,7 @@ describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
         expect(portable).toContain(reference);
       }
       for (const safety of [
-        "NEVER paste live credentials into prompts",
+        "Credentials Claudexor itself uses belong in",
         "NEVER auto-answer `claudexor decision`",
       ]) {
         expect(generated).toContain(safety);

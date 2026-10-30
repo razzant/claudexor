@@ -1,13 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -81,46 +73,33 @@ describe("ScopeAtlas", () => {
 
     const res = await buildScopeAtlas(repo, { tokenLimit: 5 });
     const byPath = Object.fromEntries(res.atlas.map((e) => [e.path, e.disposition]));
-    expect(byPath[".env"]).toBe("sensitive");
+    expect(byPath[".env"]).not.toBe("sensitive");
     expect(byPath["logo.png"]).toBe("binary");
     expect(byPath["pnpm-lock.yaml"]).toBe("manifest_only");
     expect(res.atlas.length).toBe(5); // every file accounted for
     expect(res.omitted.length).toBeGreaterThanOrEqual(1); // budget forced omission
   });
 
-  it("uses the shared sensitive-resource corpus even for mandatory context", async () => {
+  it("maps credential-named and credential-shaped project files like any other (INV-146)", async () => {
     const repo = tmp();
     mkdirSync(join(repo, ".ssh"), { recursive: true });
+    mkdirSync(join(repo, ".grok", "sessions"), { recursive: true });
     writeFileSync(join(repo, ".env"), "SECRET=1\n");
     writeFileSync(join(repo, ".env.example"), "SECRET=\n");
-    writeFileSync(join(repo, "signing.key"), "not-real-key\n");
     writeFileSync(join(repo, ".ssh", "id_ed25519"), "not-real-private-key\n");
+    writeFileSync(join(repo, ".grok", "auth.json"), '{"session":"opaque-placeholder"}\n');
     const jwt = `eyJ${"a".repeat(20)}.${"b".repeat(20)}.${"c".repeat(20)}`;
     writeFileSync(join(repo, "notes.txt"), `embedded ${jwt}\n`);
 
-    const res = await buildScopeAtlas(repo, { mandatory: [".env"], tokenLimit: 100_000 });
+    const res = await buildScopeAtlas(repo, {
+      mandatory: [".env", "notes.txt"],
+      tokenLimit: 100_000,
+    });
     const byPath = Object.fromEntries(res.atlas.map((entry) => [entry.path, entry.disposition]));
-    expect(byPath[".env"]).toBe("sensitive");
-    expect(byPath[".env.example"]).toBe("full");
-    expect(byPath["signing.key"]).toBe("sensitive");
-    expect(byPath[".ssh/id_ed25519"]).toBe("sensitive");
-    expect(byPath["notes.txt"]).toBe("sensitive");
-    expect(res.missingMandatory).toContain(".env");
-  });
-
-  it("excludes Grok native state by path even when its content matches no signature", async () => {
-    const repo = tmp();
-    mkdirSync(join(repo, ".grok", "sessions"), { recursive: true });
-    // Opaque placeholder: no token-shaped content for the signature scan to find.
-    writeFileSync(join(repo, ".grok", "auth.json"), '{"session":"opaque-placeholder"}\n');
-    writeFileSync(join(repo, ".grok", "sessions", "s.jsonl"), '{"role":"user"}\n');
-    writeFileSync(join(repo, "notes.txt"), "ordinary prose\n");
-
-    const res = await buildScopeAtlas(repo, { tokenLimit: 100_000 });
-    const byPath = Object.fromEntries(res.atlas.map((entry) => [entry.path, entry.disposition]));
-    expect(byPath[".grok/auth.json"]).toBe("sensitive");
-    expect(byPath[".grok/sessions/s.jsonl"]).toBe("sensitive");
-    expect(byPath["notes.txt"]).toBe("full");
+    for (const path of [".env", ".env.example", ".ssh/id_ed25519", ".grok/auth.json", "notes.txt"])
+      expect(byPath[path], path).toBe("full");
+    expect(res.missingMandatory).toEqual([]);
+    expect(Object.values(byPath)).not.toContain("sensitive");
   });
 });
 
@@ -200,7 +179,7 @@ describe("assertMandatoryContext (uniform preflight)", () => {
     expect(() => assertMandatoryContext(repo, ["/etc/hosts"])).toThrow(/escapes the repo/);
   });
 
-  it("refuses path, content, and symlink sensitive mandatory context", () => {
+  it("admits credential-shaped mandatory context and still refuses an escaping symlink", () => {
     const repo = tmp();
     const outside = tmp();
     writeFileSync(join(repo, ".env"), "SECRET=1\n");
@@ -209,13 +188,34 @@ describe("assertMandatoryContext (uniform preflight)", () => {
     writeFileSync(join(outside, "outside.txt"), "outside\n");
     symlinkSync(join(outside, "outside.txt"), join(repo, "link.txt"));
 
-    expect(() => assertMandatoryContext(repo, [".env"])).toThrow(/sensitive/);
-    expect(() => assertMandatoryContext(repo, ["notes.txt"])).toThrow(/sensitive/);
+    expect(() => assertMandatoryContext(repo, [".env"])).not.toThrow();
+    expect(() => assertMandatoryContext(repo, ["notes.txt"])).not.toThrow();
     expect(() => assertMandatoryContext(repo, ["link.txt"])).toThrow(/trust boundary/);
   });
 });
 
 describe("evidence packet", () => {
+  it("verifies a sealed packet by manifest and digest, not by what its diff looks like (INV-146)", () => {
+    const dir = join(tmp(), "packet");
+    const fixture = `+expect(auth).toBe("Bearer ${"f".repeat(32)}");\n`;
+    const ids = {
+      baseSha: "a".repeat(40),
+      candidateSha: "b".repeat(40),
+      candidateTree: "c".repeat(40),
+    };
+    const manifestSha256 = writeSealedPacket(dir, {
+      ...ids,
+      diff: `diff --git a/t.ts b/t.ts\n${fixture}`,
+    });
+    expect(
+      verifySealedEvidencePacket({
+        evidenceDir: dir,
+        ...ids,
+        expectedManifestSha256: manifestSha256,
+      }),
+    ).toMatchObject({ manifestSha256 });
+  });
+
   it("verifies one sealed manifest/FREEZE contract and rejects a tampered packet", () => {
     const dir = join(tmp(), "packet");
     const baseSha = "a".repeat(40);
@@ -338,32 +338,23 @@ describe("evidence packet", () => {
     expect(pf.missing).toContain("DIFF_SUMMARY.md");
   });
 
-  it("refuses to persist raw patch evidence when the diff contains secret-like tokens", () => {
+  it("persists credential-shaped diff, prose and path evidence exactly (INV-146)", () => {
     const dir = join(tmp(), ".adversarial-review");
     const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
-    expect(() =>
-      writeEvidencePacket(dir, {
-        userIntent: "do X",
-        diff: `diff --git a/.env b/.env\n@@ -1 +1 @@\n-OLD=1\n+OPENAI_API_KEY=${fakeKey}\n`,
-      }),
-    ).toThrow(/refusing to persist raw DIFF\.patch/);
-    expect(existsSync(join(dir, "DIFF.patch"))).toBe(false);
-    expect(existsSync(join(dir, "DIFF_SUMMARY.md"))).toBe(false);
-  });
-
-  it("redacts secret-like tokens from prose evidence packet files", () => {
-    const dir = join(tmp(), ".adversarial-review");
-    const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
+    const diff = `diff --git a/.env b/.env\n@@ -1 +1 @@\n-OLD=1\n+OPENAI_API_KEY=${fakeKey}\n`;
+    const paths = [" leading.md", "line\nbreak.md", "#literal.md", "café.md", `docs/${fakeKey}.md`];
     writeEvidencePacket(dir, {
       userIntent: `Use ${fakeKey} in the repro`,
       forbiddenFindings: `Do not ignore ${fakeKey}`,
       planAccepted: `## Plan\nCheck ${fakeKey}`,
-      diff: "diff --git a/x b/x\n",
+      diff,
       tests: `TOKEN=${fakeKey} pnpm test`,
       decidedTradeoffs: `Accepted ${fakeKey}`,
       runtime: `stdout ${fakeKey}`,
+      filesToReadWhole: paths,
     });
-
+    expect(readFileSync(join(dir, "DIFF.patch"), "utf8")).toBe(diff);
+    expect(readFileSync(join(dir, "DIFF_SHA256.txt"), "utf8")).toBe(`sha256:${digest(diff)}\n`);
     for (const file of [
       "USER_INTENT.md",
       "FORBIDDEN_FINDINGS.md",
@@ -373,32 +364,10 @@ describe("evidence packet", () => {
       "RUNTIME.md",
     ]) {
       const text = readFileSync(join(dir, file), "utf8");
-      expect(text).not.toContain(fakeKey);
-      expect(text).toContain("[redacted]");
+      expect(text, file).toContain(fakeKey);
+      expect(text, file).not.toContain("[redacted]");
     }
-    expect(readFileSync(join(dir, "FILES_TO_READ_WHOLE.txt"), "utf8")).toBe("[]\n");
-  });
-
-  it("writes the whole-file authority as exact JSON and rejects secret-like paths", () => {
-    const dir = join(tmp(), ".adversarial-review");
-    const paths = [" leading.md", "line\nbreak.md", "#literal.md", "café.md"];
-    writeEvidencePacket(dir, {
-      userIntent: "do X",
-      diff: "diff --git a/x b/x\n",
-      filesToReadWhole: paths,
-    });
     expect(JSON.parse(readFileSync(join(dir, "FILES_TO_READ_WHOLE.txt"), "utf8"))).toEqual(paths);
-
-    const rejected = join(tmp(), ".adversarial-review");
-    const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
-    expect(() =>
-      writeEvidencePacket(rejected, {
-        userIntent: "do X",
-        diff: "diff --git a/x b/x\n",
-        filesToReadWhole: [`docs/${fakeKey}.md`],
-      }),
-    ).toThrow(/secret-like path/);
-    expect(existsSync(join(rejected, "USER_INTENT.md"))).toBe(false);
   });
 
   it("reports raw patch stats in the redacted diff summary", () => {
@@ -477,11 +446,9 @@ describe("atlas symlink containment (R33 gate finding)", () => {
     // The in-tree symlink still maps normally.
     const alias = res.atlas.find((e) => e.path === "alias.txt");
     expect(alias?.disposition === "excluded" ? (alias?.reason ?? "") : "").not.toContain("outside");
-    expect(res.atlas.find((e) => e.path === ".env")?.disposition).toBe("sensitive");
-    expect(res.atlas.find((e) => e.path === "env-alias")).toMatchObject({
-      disposition: "excluded",
-      reason: expect.stringContaining("environment secret file"),
-    });
+    // In-tree credential-named files and links to them are ordinary project files.
+    expect(res.atlas.find((e) => e.path === ".env")?.disposition).toBe("full");
+    expect(res.atlas.find((e) => e.path === "env-alias")?.disposition).not.toBe("excluded");
   });
 });
 

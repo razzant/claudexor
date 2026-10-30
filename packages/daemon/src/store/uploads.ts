@@ -2,7 +2,7 @@ import { createHash, type Hash } from "node:crypto";
 import { closeSync, constants, ftruncateSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { ControlUploadCreateRequest, ControlUploadStatus } from "@claudexor/schema";
-import { hashJson, newId, sensitiveResourcePolicy } from "@claudexor/util";
+import { hashJson, newId } from "@claudexor/util";
 import { ensureDirectory, externalWriteFlags, unlinkExternalFile } from "./external-files.js";
 import { mapStoreError } from "./errors.js";
 import { deleteUnownedInlineInTx } from "./blob-files.js";
@@ -12,7 +12,6 @@ import {
   putUploadInTx,
   readUploadRow,
   resourceError,
-  sensitiveResourceError,
   type UploadImportBinding,
   type UploadRow,
 } from "./resource-rows.js";
@@ -94,8 +93,6 @@ export class SqlUploads {
   /** Omitting a caller key mints a new internal upload, with no historical replay to resolve. */
   create(raw: unknown, callerKey?: string): ControlUploadStatus {
     const request = ControlUploadCreateRequest.parse(raw);
-    if (sensitiveResourcePolicy.classifyPath(request.name).sensitive)
-      throw sensitiveResourceError();
     const requestDigest = hashJson(request);
     const key = callerKey ?? newId("model-create");
     const prior =

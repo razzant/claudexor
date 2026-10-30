@@ -126,7 +126,7 @@ describe("device-login app-server termination", () => {
 /**
  * A tty-backed login ECHOES what the runner writes, so the pasted sign-in code
  * comes straight back out on the tee'd output and would otherwise ride a
- * failure receipt to disk (INV-062). The tail is told to forget the delivered
+ * failure receipt to disk (INV-146). The tail is told to forget the delivered
  * value — and must forget it in the shapes a terminal actually produces.
  */
 describe("createTailBuffer().forget (tty echo of a delivered sign-in code)", () => {

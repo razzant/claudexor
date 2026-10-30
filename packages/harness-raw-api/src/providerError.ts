@@ -39,7 +39,9 @@ export function providerCompletionErrorEvent(
     payload["provider_error"] = providerError;
   }
   if (result.diagnostic_text) {
-    const partialOutput = redactAndBound(result.diagnostic_text);
+    // The model's own partial text: working content, bounded but exact
+    // (INV-146). It is evidence only and never becomes the answer.
+    const partialOutput = bound(result.diagnostic_text);
     payload["partial_output"] = partialOutput.value;
     payload["partial_output_truncated"] = partialOutput.truncated;
   }
@@ -64,9 +66,12 @@ export function providerCompletionErrorEvent(
 }
 
 function redactAndBound(value: string): { value: string; truncated: boolean } {
-  const redacted = redactSecrets(value);
+  return bound(redactSecrets(value));
+}
+
+function bound(value: string): { value: string; truncated: boolean } {
   return {
-    value: redacted.slice(0, PROVIDER_DIAGNOSTIC_MAX_CHARS),
-    truncated: redacted.length > PROVIDER_DIAGNOSTIC_MAX_CHARS,
+    value: value.slice(0, PROVIDER_DIAGNOSTIC_MAX_CHARS),
+    truncated: value.length > PROVIDER_DIAGNOSTIC_MAX_CHARS,
   };
 }

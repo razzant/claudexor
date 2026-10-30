@@ -65,17 +65,9 @@ describe("partitionCandidates (D-16 veto owner)", () => {
     expect(working).toEqual([clean]);
   });
 
-  it("a candidate whose patch holds secret-like strings is an ordinary working candidate (INV-062)", () => {
+  it("a candidate whose patch holds credential-shaped strings is an ordinary working candidate", () => {
     const flagged = candidate({
       diff: "diff --git a/LEAK.txt b/LEAK.txt\n+exact bytes\n",
-      persistedDiff: "# Claudexor: saved copy\ndiff --git a/LEAK.txt b/LEAK.txt\n+[redacted]\n",
-      secretLike: {
-        files: [{ path: "LEAK.txt", matches: 1, kinds: ["openai_compatible_api_key"] }],
-        binary_paths: [],
-        media_withheld: [],
-        answer_matches: 0,
-        total_matches: 1,
-      },
     });
     expect(isWorkingCandidate(flagged)).toBe(true);
     expect(partitionCandidates([flagged]).working).toEqual([flagged]);

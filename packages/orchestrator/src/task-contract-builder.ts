@@ -19,7 +19,7 @@ import {
   TRUST_FULL_ACCESS_CODE,
 } from "@claudexor/schema";
 import { loadConfig, trustConfigPath } from "@claudexor/config";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 import { resolveContractGates } from "./contract-gates.js";
 
 interface TaskContractBuildInput {
@@ -159,12 +159,10 @@ export function buildTaskContract(
       parent_run_id: input.parentRunId ?? null,
       delegated_from_run_id: input.delegatedFromRunId ?? null,
     },
-    user_intent: { raw: redactSecrets(input.prompt) },
-    // Redacted for symmetry with user_intent.raw — a no-op on fenced input
-    // (the inline-secret fence already blocked any secret-like value at every
-    // ingress incl. this engine boundary), so task-producing lanes read back
-    // the real instructions via harnessSpecKnobs().
-    instructions: input.instructions === undefined ? undefined : redactSecrets(input.instructions),
+    // The contract is the executable task: exact prompt and instructions, the
+    // same bytes the harness receives (credential-shaped text is not masked).
+    user_intent: { raw: input.prompt },
+    instructions: input.instructions,
     // Already normalized/strictified at the engine boundary (run() refuses
     // unsupported shapes before any run dir exists).
     output_schema: input.outputSchema ?? null,

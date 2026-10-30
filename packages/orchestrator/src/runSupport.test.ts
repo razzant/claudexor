@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { runGates } from "@claudexor/review";
 import { ReviewFinding, type BudgetObservation, type HarnessEvent } from "@claudexor/schema";
 import { codexRateLimitEvents } from "../../harness-codex/src/quota.js";
 import {
@@ -6,7 +10,6 @@ import {
   observeBudgetSignals,
   promptWithEngineConstraints,
   promptWithGateArgvDisclosure,
-  redactHarnessEvent,
   safeErrorMessage,
   winnerNeedsHuman,
 } from "./runSupport.js";
@@ -92,48 +95,61 @@ describe("promptWithGateArgvDisclosure (QA-022 FIX B: candidate sees the exact g
     expect(out).toContain('- ["make"]');
   });
 
-  it("redacts a secret-like argv token with the same fence as the contract", () => {
-    // Assembled at runtime so the source (and any sealed review diff of it)
-    // never contains a contiguous secret-like token at rest.
+  it("discloses a credential-shaped argv token exactly, as the gate runner executes it (INV-146)", async () => {
+    // Assembled at runtime so the source never holds a contiguous token at rest.
     const fakeToken = ["sk-ant", "1234567890abcdefghij"].join("-");
-    const out = promptWithGateArgvDisclosure("x", [
-      { program: "deploy", args: ["--token", fakeToken] },
-    ]);
-    expect(out).not.toContain(fakeToken);
+    // A fixture assertion: exit 0 only when it receives the exact argument.
+    const gate = {
+      id: "fixture",
+      program: process.execPath,
+      args: [
+        "-e",
+        "process.exit(process.argv[1] === process.argv[2] ? 0 : 1)",
+        fakeToken,
+        fakeToken,
+      ],
+    };
+    const out = promptWithGateArgvDisclosure("x", [gate]);
+    const line = out.split("\n").find((entry) => entry.startsWith("- ["));
+    const disclosed = JSON.parse(line!.slice(2)) as string[];
+    expect(disclosed).toEqual([gate.program, ...gate.args]);
+    // Reusing the disclosed argv verbatim runs exactly what the gate runner runs.
+    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-argv-"));
+    try {
+      const [actual, reused] = await runGates(
+        [gate, { id: "reused", program: disclosed[0]!, args: disclosed.slice(1) }],
+        { cwd },
+      );
+      expect(actual?.status).toBe("passed");
+      expect(reused?.status).toBe("passed");
+      expect(reused?.command).toBe(actual?.command);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });
 
-describe("redactHarnessEvent (INV-062 deep payload redaction)", () => {
-  it("deep-redacts secret-like tokens in nested payload string VALUES, not just text/error", () => {
-    // Assembled at runtime so the source (and any sealed review diff of it)
-    // never contains a contiguous secret-like token at rest.
+describe("harnessEventPayload keeps working content exact (#555)", () => {
+  it("journals credential-shaped answer text and nested payload values unchanged", () => {
+    // Assembled at runtime so the source never holds a contiguous token at rest.
     const token = ["sk-or-v1", "c".repeat(40)].join("-");
+    const envelope = JSON.stringify({ output: token, work_report: { summary: token } });
     const ev: HarnessEvent = {
       type: "message",
       session_id: "ses-1",
       ts: "2026-07-17T00:00:00Z",
-      text: `leaking ${token}`,
+      text: `fixture ${token}`,
       final: true,
-      // A codex constrained route carries the RAW {work_report, output} envelope
-      // on this payload key; AnswerAssembly.machineText() reads it verbatim, so a
-      // token in it must be redacted BEFORE it can become a candidate deliverable.
-      payload: {
-        work_report_envelope: JSON.stringify({
-          output: token,
-          work_report: { summary: token },
-        }),
-      },
+      // AnswerAssembly.machineText() reads this envelope verbatim: the answer
+      // and the journal must carry the same bytes the harness produced.
+      payload: { work_report_envelope: envelope },
     };
-    const safe = redactHarnessEvent(ev);
-    // Whole-event proof: no secret survives ANYWHERE in the redacted event.
-    const serialized = JSON.stringify(safe);
-    expect(serialized).not.toContain(token);
-    expect(serialized).toContain("[redacted]");
-    // The nested payload STRING VALUE is redacted in place (deep), not merely the
-    // top-level text/error fields and not dropped wholesale.
-    const envelope = String((safe.payload as Record<string, unknown>)["work_report_envelope"]);
-    expect(envelope).not.toContain(token);
-    expect(envelope).toContain("[redacted]");
+    const journaled = harnessEventPayload("codex", "a01", ev);
+    expect(journaled["text"]).toBe(`fixture ${token}`);
+    expect((journaled["payload"] as Record<string, unknown>)["work_report_envelope"]).toBe(
+      envelope,
+    );
+    expect(JSON.stringify(journaled)).not.toContain("[redacted]");
   });
 });
 

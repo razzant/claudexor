@@ -12,7 +12,6 @@ import {
   type ResourceAttachmentRef,
 } from "@claudexor/schema";
 import {
-  assertNoInlineSecretValues,
   hashJson,
   newId,
   safeProblemContext,
@@ -127,7 +126,6 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     const input = DeferredMessageMutation.parse(raw);
     const replay = this.replay(input, key);
     if (replay) return replay;
-    assertNoInlineSecretValues(input, "$", "deferred message");
     const previous = input.action === "create" ? null : this.requireRow(input.draftId);
     const predecessor =
       input.action === "create"
@@ -146,7 +144,6 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     if (input.action === "create" && !capturedStart)
       throw new Error("creation requires canonical captured controls");
     if (input.action === "create") {
-      assertNoInlineSecretValues(captured, "$", "captured deferred controls");
       for (const field of [
         "threadId",
         "turnId",

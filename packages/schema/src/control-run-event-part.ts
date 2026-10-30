@@ -21,7 +21,7 @@ export const ControlRunEventPart = z
       .int()
       .positive()
       .describe(
-        "UTF-8 byte length of the event's complete stream serialization: the redacted JSON line the run event stream delivers.",
+        "UTF-8 byte length of the event's complete stream serialization: the stored JSON line the run event stream delivers.",
       ),
     sha256: z
       .string()

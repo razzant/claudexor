@@ -12,7 +12,6 @@ import {
   type WorkReportSource,
   type WorkReportUnverifiedReason,
 } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 
 /**
  * How the WorkReport rides the wire for an active envelope (D-16c):
@@ -411,21 +410,10 @@ function checkWorkReport(rawReport: unknown): WorkReportCheck {
       detail: `work_report missing or malformed: ${wr.error.issues[0]?.message ?? "invalid"}`,
     };
   }
-  // ONE redaction owner for every WorkReport transport: the model-authored
-  // locator/description strings flow VERBATIM into telemetry yaml, decision
-  // facts, and the CLI needsInputLabel — the last reads the local artifact and
-  // bypasses serve-time redaction — so a token pasted into a required_input
-  // would otherwise persist unredacted at rest. Redact here, before the report
-  // is handed to any of them. (The cross-field checks below read only state and
-  // list length, so redaction order does not affect them.)
-  const report: WorkReport = {
-    ...wr.data,
-    required_inputs: wr.data.required_inputs.map((ri) => ({
-      ...ri,
-      locator: ri.locator === null ? null : redactSecrets(ri.locator),
-      description: redactSecrets(ri.description),
-    })),
-  };
+  // The model-authored locator/description strings flow verbatim into
+  // telemetry yaml, decision facts, the CLI needsInputLabel and the next turn:
+  // they are working content and stay exact (INV-146).
+  const report: WorkReport = wr.data;
   if (report.state === "completed" && report.required_inputs.length > 0) {
     return {
       ok: false,

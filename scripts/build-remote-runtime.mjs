@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 /**
- * Build one complete SSH runtime archive from already-gated app resources and
- * an official Node distribution archive. The Node digest is an explicit input
- * supplied from the reviewed release lock; it is verified before extraction.
+ * Build one complete SSH runtime archive from already-gated app resources, an
+ * official Node distribution archive and the official publication-scanner
+ * (Betterleaks) archive for the same target. The Node digest is an explicit
+ * input supplied from the reviewed release lock; the scanner archive and binary
+ * are checked against the pin in packages/delivery/src/publication-scanner-pin.ts.
+ * Both are verified before extraction, and only the target's scanner ships.
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -28,6 +31,7 @@ import {
   copyTreeMaterialized,
   remoteRuntimeShellWrapper,
 } from "./lib/remote-runtime-archive.mjs";
+import { stagePlatform } from "./lib/betterleaks-stage.mjs";
 
 const REQUIRED_RESOURCES = [
   "claudexor.bundle.cjs",
@@ -81,6 +85,7 @@ function main() {
     "node-archive",
     "node-sha256",
     "node-version",
+    "betterleaks-archive",
     "out",
   ]) {
     if (!options[key]) throw new Error(`missing --${key}`);
@@ -140,6 +145,14 @@ function main() {
     if (targetPlatform === "darwin") {
       copyTreeMaterialized(nativePath, join(root, "lib", "native"));
     }
+    // One platform's scanner per runtime: drop any copy the shared resources
+    // carry for the app, then stage exactly this target's verified build.
+    rmSync(join(root, "lib", "native", "betterleaks"), { recursive: true, force: true });
+    stagePlatform(
+      options.target,
+      resolve(options["betterleaks-archive"]),
+      join(root, "lib", "native"),
+    );
 
     writeFileSync(
       join(root, "bin", "claudexor"),

@@ -17,7 +17,6 @@ import {
   type RunTelemetry,
   type TaskContract,
 } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { projectionRead } from "./projection-context.js";
 
@@ -221,7 +220,7 @@ export function eventPayload(ev: Record<string, unknown>): Record<string, unknow
 }
 
 export function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? redactSecrets(value) : null;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 /** Project the orchestrator-owned telemetry artifact without reconstructing evidence. */
@@ -318,7 +317,7 @@ export function emptyTimelineWindow(): TimelineWindow {
   return { rows: [], sizes: [], next: 0, eligible: 0, bytes: 0 };
 }
 
-/** Select rows before any redaction, projection or schema work. Raw slice(-500)
+/** Select rows before any projection or schema work. Raw slice(-500)
  * is not equivalent: buffered harness rows never occupy a slot. Every type is
  * converted, preserving corrupted-log rejection even outside the window. */
 export function addTimelineEvent(
@@ -411,7 +410,7 @@ export function timelineEvents(
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
     // INV-105 disclosure (QA-070): unsupported per-harness knobs the route could
-    // not honor ride harness.started as `ignored_settings`. Project them (redacted,
+    // not honor ride harness.started as `ignored_settings`. Project them (exact,
     // bounded) so the row renders a visible warning instead of a benign start; a
     // non-empty list also lifts severity to `warning` (the raw event is info-shaped).
     const ignoredSettings = Array.isArray(payload["ignored_settings"])

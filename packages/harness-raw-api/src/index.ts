@@ -454,8 +454,8 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
               };
             }
             if (patchEnvelope) {
-              // INV-062: secret-like content in the proposal is not a refusal;
-              // the engine keeps the bytes and masks only its saved copies.
+              // INV-146: secret-like content in the proposal is not a refusal;
+              // the engine keeps and saves the exact bytes.
               yield {
                 type: "patch_produced",
                 session_id: spec.session_id,

@@ -480,7 +480,6 @@ describe("Claudexor MCP server (SDK v2)", () => {
 
     const w = wire(tools);
     await w.initialize();
-    const secretLike = "sk-" + "abcdefghijklmnopqrstuvwxyz123456";
     const invalidCalls = [
       { id: 1, name: "claudexor_run", arguments: {} },
       { id: 2, name: "claudexor_run", arguments: { prompt: "" } },
@@ -528,25 +527,6 @@ describe("Claudexor MCP server (SDK v2)", () => {
       { id: 17, name: "claudexor_run", arguments: { prompt: "go", harness: "" } },
       { id: 18, name: "claudexor_run", arguments: { prompt: "go", primaryHarness: " " } },
       { id: 19, name: "claudexor_run", arguments: { prompt: "go", model: "" } },
-      {
-        id: 20,
-        name: "claudexor_run",
-        arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] },
-      },
-      {
-        id: 21,
-        name: "claudexor_run",
-        arguments: { prompt: "go", tests: [{ program: "echo", args: [secretLike] }] },
-      },
-      {
-        id: 22,
-        name: "claudexor_run",
-        arguments: { prompt: "go", protectedPathApprovals: [{ path: secretLike }] },
-      },
-      // The prompt hard block: a secret-like value INSIDE the prompt is
-      // refused on the MCP surface too (prompts are durable artifacts).
-      { id: 23, name: "claudexor_run", arguments: { prompt: `deploy with ${secretLike}` } },
-      { id: 24, name: "claudexor_ask", arguments: { prompt: `explain ${secretLike}` } },
       { id: 25, name: "claudexor_run", arguments: { prompt: "go", deepScan: true } },
       { id: 26, name: "claudexor_ask", arguments: { prompt: "go", council: true } },
     ];
@@ -572,15 +552,34 @@ describe("Claudexor MCP server (SDK v2)", () => {
       const r = w.responses.find((x) => x.id === id);
       return String(r?.result?.content?.[0]?.text ?? r?.error?.message ?? "");
     };
-    expect(textOf(20)).toContain("secret-like value is not accepted");
-    expect(textOf(21)).toContain("secret-like value is not accepted");
-    expect(textOf(22)).toContain("secret-like value is not accepted");
-    // Prompt block carries the tailored durable-artifact remediation AND the
-    // machine-readable class prefix (text contract until structured outputs).
-    expect(textOf(23)).toContain("durable run artifacts");
-    expect(textOf(23)).toContain("inline_secret_rejected");
-    expect(textOf(24)).toContain("durable run artifacts");
-    expect(textOf(24)).toContain("inline_secret_rejected");
+    expect(textOf(25)).not.toBe("");
+  });
+
+  it("passes credential-shaped prompt and test fixtures to the runner exactly (INV-146)", async () => {
+    const received: Record<string, unknown>[] = [];
+    const tools = defaultClaudexorTools(async (params) => {
+      received.push(params as Record<string, unknown>);
+      return "queued";
+    });
+    const fixture = "sk-" + "abcdefghijklmnopqrstuvwxyz123456";
+    const w = wire(tools);
+    await w.initialize();
+    const prompt = `review: expect(auth).toBe("Bearer ${fixture}")`;
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "claudexor_run",
+        arguments: { prompt, tests: [{ program: "echo", args: [fixture] }] },
+      },
+    });
+    await sleep(250);
+    await w.close();
+    expect(w.responses.find((r) => r.id === 1)?.result?.isError).not.toBe(true);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.["prompt"]).toBe(prompt);
+    expect(JSON.stringify(received[0]?.["tests"])).toContain(fixture);
   });
 
   it("exposes persistent thread tools with strict route controls and durable handles", async () => {

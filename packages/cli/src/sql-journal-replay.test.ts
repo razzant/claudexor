@@ -195,12 +195,10 @@ it("replays a large mixed history completely and in order, resuming at every pag
   expect(whole.events.map(({ id, type }) => [id, type])).toEqual(
     expected.map((event) => [event.cursor, event.type]),
   );
-  expect(whole.state.raw).not.toContain(token);
+  // The journal stream carries every event exactly (INV-146).
+  expect(whole.state.raw).toContain(token);
   for (const [index, frame] of whole.events.entries()) {
-    const received = ControlJournalEvent.parse(JSON.parse(frame.data));
-    if (received.type === "fixture.secret")
-      expect((received.payload as { note: string }).note).toBe("copied [redacted] into a prompt");
-    else expect(received).toEqual(expected[index]);
+    expect(ControlJournalEvent.parse(JSON.parse(frame.data))).toEqual(expected[index]);
   }
 
   // Each page boundary resumes with exactly the following page.

@@ -104,7 +104,8 @@ describe("tail-first eligible timeline projection", () => {
       textDelta: false,
     });
     expect(rows[1]?.type).toBe("timeline.truncated");
-    expect(rows.slice(2).every((row) => !row.detail?.includes(`sk-ant-${"x".repeat(40)}`))).toBe(
+    // Selected rows are projected exactly (INV-146).
+    expect(rows.slice(2).some((row) => row.detail?.includes(`sk-ant-${"x".repeat(40)}`))).toBe(
       true,
     );
   });

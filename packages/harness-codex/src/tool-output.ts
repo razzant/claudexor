@@ -1,12 +1,13 @@
 import type { ToolRef } from "@claudexor/schema";
-import { redactSecrets } from "@claudexor/util";
 
 type Json = any;
 
-/** Redacted, whitespace-collapsed native tool text, bounded like other adapters' summaries. */
+/** Whitespace-collapsed native tool text, bounded like other adapters'
+ * summaries. It is the tool output the model saw and the only copy Claudexor
+ * keeps, so it is never masked (INV-146). */
 export function summarizeCodexOutput(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "";
-  return redactSecrets(value).trim().replace(/\s+/g, " ").slice(0, 1000);
+  return value.trim().replace(/\s+/g, " ").slice(0, 1000);
 }
 
 /**
@@ -15,7 +16,7 @@ export function summarizeCodexOutput(value: unknown): string {
  * whitespace collapses as in other summaries; blank lines are dropped.
  */
 function summarizeMcpText(text: string): string {
-  return redactSecrets(text)
+  return text
     .split(/\r\n?|\n/)
     .map((line) => line.replace(/\s+/g, " ").trimEnd())
     .filter(Boolean)
@@ -31,7 +32,7 @@ function summarizeMcpText(text: string): string {
  * (`error.message`, no `result`). Any other status is unknown and stays
  * statusless: neither success nor failure. The result text is the server's own
  * output (for the Browser MCP: page URL, title and snapshot), kept as bounded,
- * redacted evidence with its line breaks instead of being dropped; the error
+ * exact evidence with its line breaks instead of being dropped; the error
  * summary stays on one line.
  */
 export function mcpToolOutcome(

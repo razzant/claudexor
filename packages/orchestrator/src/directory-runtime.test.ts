@@ -451,7 +451,7 @@ describe("ordinary directory Agent execution", () => {
   );
 
   it.each([true, false])(
-    "refuses secret output without retained blobs or fake rollback (direct=%s)",
+    "retains credential-shaped directory output exactly (direct=%s, INV-146)",
     async (inPlace) => {
       const root = fixture();
       const secret = `ghp_${"Q".repeat(25)}`;
@@ -466,10 +466,12 @@ describe("ordinary directory Agent execution", () => {
         harnesses: [author.adapter.id],
         inPlace,
       });
-      expect(result.facts.lifecycle).toBe("failed");
+      expect(result.facts.lifecycle).toBe("succeeded");
       expect(author.calls).toHaveLength(1);
-      expect(existsSync(join(result.runDir, "attempts/a01/final/files"))).toBe(false);
-      expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+      expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(true);
+      const manifest = readFileSync(join(result.runDir, "final/files/manifest.json"), "utf8");
+      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      expect(manifest).toContain(digest);
       expect(existsSync(join(root, "output.bin"))).toBe(inPlace);
     },
   );

@@ -8,7 +8,7 @@ import type {
   InteractionQuestion,
   InteractionRequest,
 } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 
 type Json = any;
 
@@ -138,12 +138,11 @@ export function interactionRequestFromNative(requestId: string, input: Json): In
   const rawQuestions: Json[] = Array.isArray(input?.questions) ? input.questions : [];
   const questions: InteractionQuestion[] = rawQuestions.map((q, idx) => ({
     id: `q${idx + 1}`,
-    question: redactSecrets(String(q?.question ?? "")).slice(0, 2000),
-    header: typeof q?.header === "string" ? redactSecrets(q.header).slice(0, 100) : null,
+    question: String(q?.question ?? "").slice(0, 2000),
+    header: typeof q?.header === "string" ? q.header.slice(0, 100) : null,
     options: (Array.isArray(q?.options) ? q.options : []).map((o: Json) => ({
-      label: redactSecrets(String(o?.label ?? "")).slice(0, 500),
-      description:
-        typeof o?.description === "string" ? redactSecrets(o.description).slice(0, 1000) : null,
+      label: String(o?.label ?? "").slice(0, 500),
+      description: typeof o?.description === "string" ? o.description.slice(0, 1000) : null,
     })),
     multi_select: q?.multiSelect === true,
   }));
@@ -154,7 +153,8 @@ export function interactionRequestFromNative(requestId: string, input: Json): In
  * Build the allow control_response carrying the user's answers.
  * Per the documented contract, `answers` maps the QUESTION TEXT to the
  * selected label, multi-select labels joined with ", ", free text passed
- * through verbatim.
+ * through verbatim. The key is the native question text, never the bounded
+ * display copy, so a long question still matches its answer.
  */
 export function allowResponseFrame(
   requestId: string,
@@ -164,13 +164,17 @@ export function allowResponseFrame(
 ): string {
   const byId = new Map(answers.answers.map((a) => [a.question_id, a]));
   const answerMap: Record<string, string> = {};
-  for (const q of request.questions) {
+  const nativeQuestions: Json[] = Array.isArray(nativeInput?.questions)
+    ? nativeInput.questions
+    : [];
+  for (const [index, q] of request.questions.entries()) {
     const a = byId.get(q.id);
     if (!a) continue;
     const labels = a.selected_labels.filter((l) => l.trim().length > 0);
     const value =
       a.free_text && a.free_text.trim().length > 0 ? a.free_text.trim() : labels.join(", ");
-    if (value) answerMap[q.question] = value;
+    const native = nativeQuestions[index]?.question;
+    if (value) answerMap[typeof native === "string" ? native : q.question] = value;
   }
   return (
     JSON.stringify({

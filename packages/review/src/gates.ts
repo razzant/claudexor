@@ -2,7 +2,7 @@ import type { AccessProfile, GateResult, TestCommandGrant } from "@claudexor/sch
 import { GateResult as GateResultSchema } from "@claudexor/schema";
 import { loadConfig } from "@claudexor/config";
 import { runCapture } from "@claudexor/core";
-import { canonicalProjectRoot, hashJson, redactSecrets, sha256 } from "@claudexor/util";
+import { canonicalProjectRoot, hashJson, sha256 } from "@claudexor/util";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, relative, resolve } from "node:path";
@@ -227,11 +227,14 @@ export function buildTestCommandGrant(
 
 const EMPTY_OUTPUT_TAIL = { tail: null, truncated: false } as const;
 
+/** The project command's own output, exact: it is repair input for the next
+ * attempt (INV-146). Gates run under an env allowlist, so engine credentials
+ * are not in their environment to begin with. */
 function outputTail(text: string): { tail: string | null; truncated: boolean } {
-  const redacted = redactSecrets(text).trimEnd();
-  if (!redacted) return EMPTY_OUTPUT_TAIL;
+  const trimmed = text.trimEnd();
+  if (!trimmed) return EMPTY_OUTPUT_TAIL;
   return {
-    tail: redacted.slice(-GATE_OUTPUT_TAIL_CHARS),
-    truncated: redacted.length > GATE_OUTPUT_TAIL_CHARS,
+    tail: trimmed.slice(-GATE_OUTPUT_TAIL_CHARS),
+    truncated: trimmed.length > GATE_OUTPUT_TAIL_CHARS,
   };
 }

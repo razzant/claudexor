@@ -214,6 +214,55 @@ describe("ACP adapter over stdio", () => {
     }
   });
 
+  // INV-146: the answer is working content and arrives exact even when it holds
+  // a credential-shaped fixture; only the managed token the engine injected is
+  // removed, and the agent's JSON-RPC error diagnostics are masked.
+  it("keeps a credential-shaped answer exact and masks only the token and diagnostics", async () => {
+    const work = ["ghp", "AcpW0rk7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2"].join("_");
+    const vendor = ["sk-proj", "AcpVendor", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("-");
+    const [initialize, session] = readFileSync(basic, "utf8").split("\n");
+    const chunk = (text: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "native",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+        },
+      });
+    const answered = join(root, "credential-shaped-answer.jsonl");
+    writeFileSync(
+      answered,
+      [
+        initialize,
+        session,
+        chunk(`Fixture: const token = "${work}"; managed fixture-managed-token.`),
+        JSON.stringify({ jsonrpc: "2.0", id: 2, result: { stopReason: "end_turn" } }),
+      ].join("\n"),
+    );
+    const events = await collect(adapter("replay", answered).adapter.run(spec()));
+    const final = events.find((e) => e.final);
+    expect(final?.text).toBe(`Fixture: const token = "${work}"; managed [REDACTED].`);
+    expect(JSON.stringify(events)).not.toContain("fixture-managed-token");
+
+    const failed = join(root, "credential-shaped-error.jsonl");
+    writeFileSync(
+      failed,
+      [
+        initialize,
+        session,
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          error: { code: -32603, message: `upstream rejected ${vendor}` },
+        }),
+      ].join("\n"),
+    );
+    const failure = await collect(adapter("replay", failed).adapter.run(spec()));
+    expect(failure.find((e) => e.type === "error")?.text).toContain("upstream rejected");
+    expect(JSON.stringify(failure)).not.toContain(vendor);
+  });
+
   it("honors an already-aborted signal without starting a process", async () => {
     const abort = new AbortController();
     abort.abort();

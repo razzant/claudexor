@@ -1097,7 +1097,7 @@
                         "type": "null"
                       }
                     ],
-                    "description": "Complete redacted UTF-8 length, only when known; never an estimated remainder."
+                    "description": "Complete UTF-8 length, only when known; never an estimated remainder."
                   },
                   "truncated": {
                     "type": "boolean"

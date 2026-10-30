@@ -2028,7 +2028,7 @@ describe("DaemonServer", () => {
     }
   });
 
-  it("records pre-run turn failures, preserves typed codes, and rejects inline secrets", async () => {
+  it("records pre-run turn failures, preserves typed codes, and journals credential-shaped prompts exactly", async () => {
     const dir = tempDir("refusal");
     const authority = commandAuthority(dir);
     const socketPath = join(dir, "daemon.sock");
@@ -2065,13 +2065,15 @@ describe("DaemonServer", () => {
           },
         ],
       ]);
-      const inlineSecretError = await client
-        .enqueue({ prompt: `use sk-${"a".repeat(32)}` })
-        .catch((error: unknown) => error);
-      expect(inlineSecretError).toMatchObject({ code: "inline_secret_rejected" });
-      expect(inlineSecretError).toBeInstanceOf(Error);
-      expect((inlineSecretError as Error).message).toMatch(/secret-like/i);
-      expect(authority.store.records()).toHaveLength(1);
+      // A credential-shaped prompt is ordinary work: it is journaled exactly (INV-146).
+      const fixturePrompt = `use sk-${"a".repeat(32)}`;
+      await client.enqueue({ prompt: fixturePrompt });
+      expect(authority.store.records()).toHaveLength(2);
+      expect(
+        authority.store
+          .records()
+          .some((record) => (record.params as { prompt?: string })?.prompt === fixturePrompt),
+      ).toBe(true);
     } finally {
       await server.stop();
       authority.journal.close();

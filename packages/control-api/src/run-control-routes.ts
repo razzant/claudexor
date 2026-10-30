@@ -4,7 +4,7 @@ import {
   ControlRunControlResponse,
   DeferredMessageStopReport,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
+import { errorCode } from "@claudexor/util";
 import { cancelDelegationFamily } from "./delegation-control.js";
 import { appendRunAuditEvent } from "./run-audit.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
@@ -36,7 +36,6 @@ export async function handleRunControlRoute(
   let body: ControlRunControlRequest;
   try {
     const raw = await ctx.readBody(req);
-    assertNoInlineSecretValues(raw);
     body = ControlRunControlRequest.parse(raw);
   } catch (err) {
     ctx.requestError(res, err);

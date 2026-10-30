@@ -81,7 +81,7 @@ export function writeFailure(
     ...(failure.rawContextShortfall ? { rawContextShortfall: failure.rawContextShortfall } : {}),
     ...(failure.captureFailure ? { captureFailure: failure.captureFailure } : {}),
     ...(failure.quotaRefusal ? { quotaRefusal: failure.quotaRefusal } : {}),
-    // Vendor text was redacted at event ingress; redact again like safeMessage (INV-062).
+    // Vendor failure text is a diagnostic derivative: masked like safeMessage (INV-146).
     vendorFailure: vendor && redactVendorFailure(vendor),
     poolAttempts: (failure.poolAttempts ?? []).map((row) => ({
       ...row,

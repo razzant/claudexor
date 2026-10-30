@@ -51,7 +51,7 @@ export async function readClaudeOauthCredential(
 /** The non-macOS vendor store (`.credentials.json`, documented mode 0600).
  * A missing file is the honest logged-out null; a present-but-unreadable or
  * unparseable file throws a reason-tagged error carrying only the error
- * class — never file bytes or a token (INV-062). */
+ * class — never file bytes or a token (INV-146). */
 async function readClaudeOauthCredentialFile(
   configDir: string,
 ): Promise<ClaudeOauthCredential | null> {

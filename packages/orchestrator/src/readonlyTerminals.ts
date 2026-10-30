@@ -27,7 +27,6 @@ export interface ReadonlyAttempt extends ContinuityTerminalFacts {
   harnessId: string;
   status: "success" | "failed" | "blocked";
   report: string;
-  answerMatches?: number;
   error: string | null;
   telemetry: AttemptTelemetry;
   /** QA-019: this scout was refused BEFORE spawn by the budget gate — it

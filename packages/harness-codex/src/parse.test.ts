@@ -463,14 +463,14 @@ describe("parseCodexEvent", () => {
       }
     });
 
-    it("redacts and bounds result text like other tool summaries", () => {
+    it("keeps result text exact and bounds it like other tool summaries (INV-146)", () => {
       const secret = "sk-" + "a".repeat(30);
       const out = completed({
         tool: "browser_snapshot",
         status: "completed",
         result: { content: [{ type: "text", text: `token ${secret} ${"x".repeat(2000)}` }] },
       });
-      expect(out?.tool?.content_summary).not.toContain(secret);
+      expect(out?.tool?.content_summary).toBe(`token ${secret} ${"x".repeat(2000)}`.slice(0, 1000));
       expect(out?.tool?.content_summary?.length).toBe(1000);
     });
   });
@@ -965,4 +965,36 @@ describe("codex normalized input measurement", () => {
       });
     },
   );
+});
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped command and file path in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const command = parseCodexEvent(
+      {
+        type: "item.started",
+        item: {
+          id: "i1",
+          type: "command_execution",
+          command: `export KEY=${token}`,
+          status: "in_progress",
+        },
+      },
+      "s1",
+    );
+    expect(command?.[0]?.tool?.target).toBe(`export KEY=${token}`);
+    const change = parseCodexEvent(
+      {
+        type: "item.started",
+        item: {
+          id: "i2",
+          type: "file_change",
+          changes: [{ path: `keys/${token}.txt`, kind: "add" }],
+          status: "in_progress",
+        },
+      },
+      "s1",
+    );
+    expect(change?.[0]?.tool?.target).toBe(`keys/${token}.txt`);
+  });
 });

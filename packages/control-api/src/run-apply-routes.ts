@@ -9,11 +9,10 @@ import {
   type RunApplyState,
   type WorkspaceFilesManifest,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, sha256 } from "@claudexor/util";
+import { sha256 } from "@claudexor/util";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { requiredIdempotencyKey, validateAbsoluteRepoRoot } from "./run-start.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
-import { runPatchHasSecretLikeBinary } from "./run-exact-patch.js";
 import { applyFilesResult, checkFilesResult } from "./files-apply-route.js";
 
 export interface DeliveryCommandServices {
@@ -156,7 +155,6 @@ export async function handleRunApplyRoutes(
     }
     try {
       const raw = await ctx.readBody(req);
-      assertNoInlineSecretValues(raw);
       const body = ControlApplyCheckRequest.parse(raw);
       if (readFilesWorkProduct(record)) {
         const root = ctx.targetRoot(body.target, record);
@@ -217,7 +215,6 @@ export async function handleRunApplyRoutes(
   try {
     const key = requiredIdempotencyKey(req);
     const raw = await ctx.readBody(req);
-    assertNoInlineSecretValues(raw);
     const body = ControlApplyRequest.parse(raw);
     if (readFilesWorkProduct(record)) {
       const root = ctx.targetRoot(body.target, record);
@@ -249,17 +246,18 @@ export async function handleRunApplyRoutes(
           verifyAndDeliver(
             root,
             patch,
-            {
-              ...{ mode: body.mode, branch: body.branch, message: body.message },
-              secretLikeBinary: runPatchHasSecretLikeBinary(record),
-            },
+            { mode: body.mode, branch: body.branch, message: body.message },
             ctx.gateSpecs(record),
             (freshVerify) => ctx.gateError(record, patch, root, freshVerify),
           ),
       }),
     );
     if (delivered.refused)
-      throw Object.assign(new Error(delivered.detail ?? "delivery refused"), { status: 409 });
+      throw Object.assign(new Error(delivered.detail ?? "delivery refused"), {
+        status: 409,
+        // The publication scanner's typed reason (findings/unavailable/failed).
+        ...(delivered.publicationRefusal ? { code: delivered.publicationRefusal.code } : {}),
+      });
     if (!delivered.applied && delivered.detail?.includes("refusing")) {
       ctx.appendAudit(record, "control.rejected", { control: "apply", reason: delivered.detail });
     }

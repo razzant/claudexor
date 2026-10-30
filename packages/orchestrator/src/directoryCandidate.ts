@@ -66,9 +66,9 @@ export async function captureDirectoryCandidate(input: {
             ? "manual_cleanup"
             : "discarded",
         detail:
-          "Directory output capture or its sensitive-resource check failed; no file payload was published. Direct effects require inspection, not a fabricated rollback.",
-        // Directory results still fail closed on their content scan (the
-        // per-file manifest has no `withheld` form yet); keep its honest phase.
+          "Directory output capture failed (containment, read or size); no file payload was published. Direct effects require inspection, not a fabricated rollback.",
+        // A capture that could not prove containment or read its files fails
+        // closed; content is never a cause (INV-146). The typed phase is kept.
         phase: "artifact_security",
       },
     };

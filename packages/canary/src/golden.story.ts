@@ -7,6 +7,7 @@
  * that invariant.
  */
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -148,22 +149,38 @@ describe("canary golden stories", () => {
     }
   });
 
-  it("[INV-062:prompt-secret-block] a secret-like value in the prompt is hard-blocked before any run starts (no bypass)", () => {
-    const secret = "sk-" + "z".repeat(24);
+  it("[INV-146:exact-working-content] a review brief with credential-shaped fixtures reaches the harness and the run records exactly", () => {
+    // Synthetic fixtures assembled at runtime; none is a real credential.
+    const bearer = ["Bear", "er ", "fixture-token-not-a-credential"].join("");
+    const key = ["sk", "z".repeat(24)].join("-");
+    const prompt = [
+      "Review this diff for defects.",
+      '+  expect(headers.authorization).toBe("' + bearer + '");',
+      '+const FIXTURE_KEY = "' + key + '";',
+    ].join("\n");
     const r = cli(sb, [
-      "agent",
-      `deploy the service using ${secret}`,
+      "ask",
+      prompt,
       "--harness",
-      "fake-success",
+      "fake-session",
+      "--model",
+      "fake-model",
       "--json",
     ]);
-    expect(r.code).not.toBe(0);
-    expect(r.stdout + r.stderr).toMatch(/durable run artifacts/);
-    expect(r.stdout + r.stderr).toContain("claudexor secrets set");
-    // Nothing ran: no run directory was created for the blocked prompt.
-    const runsRoot = join(sb.repo, ".claudexor", "runs");
-    const runDirs = existsSync(runsRoot) ? readdirSync(runsRoot) : [];
-    expect(runDirs.length).toBe(0);
+    expect(r.code, r.stdout + r.stderr).toBe(0);
+    const { runDir } = r.json() as { runDir: string };
+    const events = readEvents(runDir);
+    // The harness consumed the exact lines (digests, so the canary never echoes).
+    const probe = events
+      .map((event) => (event["payload"] as { payload?: Record<string, unknown> }).payload)
+      .find((payload) => payload?.["code"] === "fake_session_probe");
+    const digest = (line: string) => createHash("sha256").update(line).digest("hex");
+    for (const line of prompt.split("\n"))
+      expect(probe?.["prompt_line_sha256"] as string[]).toContain(digest(line));
+    // The durable task contract and the run event carry the same exact bytes.
+    expect(readRunFile(runDir, "context/task.yaml")).toContain(key);
+    const created = events.find((event) => event["type"] === "run.created");
+    expect((created?.["payload"] as Record<string, unknown>)["prompt"]).toBe(prompt);
   });
 
   it("[INV-021:output-schema-dialect] an unknown dialect is a typed JSON refusal", () => {

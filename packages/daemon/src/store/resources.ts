@@ -4,14 +4,12 @@ import {
   ModelPayloadRef,
   type ResourceAttachmentRef,
 } from "@claudexor/schema";
-import { sensitiveResourcePolicy } from "@claudexor/util";
 import type { ResourceStorePort } from "../store-contracts.js";
 import { BlobFiles, deleteUnownedInlineInTx, sha256Hex } from "./blob-files.js";
 import { runMutation } from "./mutation.js";
 import { Obligations, type ObligationRow } from "./obligations.js";
 import { PublishBlob } from "./publish-blob.js";
 import {
-  assertContentAllowed,
   assertModelRef,
   assertResourceId,
   payloadRef,
@@ -21,7 +19,6 @@ import {
   resourceError,
   resourceSha,
   purposeMismatch,
-  sensitiveResourceError,
   verifiedResourceBytes,
 } from "./resource-rows.js";
 import type { EngineStore } from "./store.js";
@@ -71,10 +68,7 @@ export class SqlResourceStore implements ResourceStorePort {
       const resource = this.metadata(resourceId);
       if (resource.purpose === "model") throw purposeMismatch();
       const path = this.blobs.filePath(resourceSha(resource));
-      const bytes = verifiedResourceBytes(resource, path);
-      if (sensitiveResourcePolicy.classifyPath(resource.name).sensitive)
-        throw sensitiveResourceError();
-      assertContentAllowed(resource, bytes);
+      verifiedResourceBytes(resource, path);
       return Attachment.parse({
         resource_id: resource.resourceId,
         kind: resource.kind,

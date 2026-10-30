@@ -255,30 +255,23 @@ describe("parseAgyEvent", () => {
     }
   });
 
-  it("bounds and redacts the file_change payload path (#8)", () => {
-    const out = parseAgyEvent(
-      {
-        event: "step_update",
-        step_update: {
-          state: "DONE",
-          step_type: "tool",
-          tool_info: {
-            name: "write_to_file",
-            // Runtime-assembled: never a token-shaped literal at rest (the
-            // repo-wide secret scan runs on CI's GNU grep, where \b matches).
-            parameters: {
-              TargetFile: `/w/${["sk", "ant", "api03", "AAAABBBBCCCCDDDDEEEEFFFF"].join("-")}.txt`,
-            },
-            output: "ok",
+  it("keeps the file_change payload path exact and bounded (INV-146, #8)", () => {
+    const change = (file: string) =>
+      parseAgyEvent(
+        {
+          event: "step_update",
+          step_update: {
+            state: "DONE",
+            step_type: "tool",
+            tool_info: { name: "write_to_file", parameters: { TargetFile: file }, output: "ok" },
           },
         },
-      },
-      SID,
-    )!;
-    const change = out.find((e) => e.type === "file_change") as { payload?: { path?: string } };
-    expect(change.payload?.path).not.toContain(
-      ["sk", "ant", "api03", "AAAABBBBCCCCDDDDEEEEFFFF"].join("-"),
-    );
+        SID,
+      )!.find((e) => e.type === "file_change") as { payload?: { path?: string } };
+    // Runtime-assembled: never a token-shaped literal at rest.
+    const named = `/w/${["sk", "ant", "api03", "AAAABBBBCCCCDDDDEEEEFFFF"].join("-")}.txt`;
+    expect(change(named).payload?.path).toBe(named);
+    expect(change(`/w/${"a".repeat(600)}`).payload?.path).toHaveLength(500);
   });
 
   it("returns null for unknown top-level events so the run loop counts drops", () => {
@@ -305,5 +298,24 @@ describe("hostile top-level shapes never abort the run", () => {
     ).toEqual([]);
     const result = parseAgyEvent({ event: "result", result: { status: poison } }, SID)!;
     expect(result[0]).toMatchObject({ type: "error" });
+  });
+});
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped file path in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const out = parseAgyEvent(
+      {
+        event: "step_update",
+        step_update: {
+          step_index: 3,
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_info: { name: "write_to_file", parameters: { TargetFile: `/w/${token}.txt` } },
+        },
+      },
+      "s1",
+    );
+    expect(out?.[0]?.tool?.target).toBe(`/w/${token}.txt`);
   });
 });

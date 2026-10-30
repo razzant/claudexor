@@ -11,7 +11,7 @@ import {
   type DaemonRunRecord,
 } from "./daemon-server.js";
 import { handleRunEventPartRoute } from "./run-event-part-routes.js";
-import { redactedSseLine } from "./sse-shared.js";
+import { sseDataLine } from "./sse-shared.js";
 
 const token = "daemon-token-event-part";
 const dirs: string[] = [];
@@ -94,7 +94,7 @@ async function firstStreamData(base: string, runId: string): Promise<string> {
 }
 
 describe("GET /v2/runs/:id/events/:seq parts", () => {
-  it("reassembles the exact redacted stream serialization from bounded character-safe parts", async () => {
+  it("reassembles the exact stream serialization from bounded character-safe parts", async () => {
     const rec = record();
     await withServer([rec], async (base) => {
       const parts: ControlRunEventPart[] = [];
@@ -118,7 +118,7 @@ describe("GET /v2/runs/:id/events/:seq parts", () => {
       expect(bytes.length).toBe(parts[0]!.totalBytes);
       expect(createHash("sha256").update(bytes).digest("hex")).toBe(parts[0]!.sha256);
       expect(text).toBe(await firstStreamData(base, "run-e1"));
-      expect(text).not.toContain(SECRET);
+      expect(text).toContain(SECRET);
       expect(RunEvent.parse(JSON.parse(text))).toMatchObject({ seq: 1, type: "run.created" });
     });
   });
@@ -360,7 +360,7 @@ describe("GET /v2/runs/:id/events/:seq behind a long history", () => {
       parts.push(part);
       offset = part.nextOffset;
     } while (offset < parts[0]!.totalBytes);
-    const expected = redactedSseLine(raw);
+    const expected = sseDataLine(raw);
     expect(parts.length).toBeGreaterThan(1);
     expect(parts.map((part) => part.text).join("")).toBe(expected);
     expect(parts[0]!.sha256).toBe(createHash("sha256").update(expected).digest("hex"));

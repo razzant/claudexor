@@ -9,7 +9,6 @@ import {
   ControlProjectRemoveTrashedThreads,
   ControlDirectoryListing,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues } from "@claudexor/util";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { singleQuery } from "./query.js";
 import { requiredIdempotencyKey } from "./run-start.js";
@@ -104,7 +103,6 @@ export async function handleProjectRoute(
     const input = await routeValue(ctx, res, 400, async () => {
       const idempotencyKey = requiredIdempotencyKey(req);
       const raw = await ctx.readBody(req);
-      assertNoInlineSecretValues(raw);
       const body = ControlProjectRegisterRequest.parse(raw);
       return { root: body.root, idempotencyKey, clientId: "control-api" };
     });
@@ -130,7 +128,6 @@ export async function handleProjectRoute(
     const input = await routeValue(ctx, res, 400, async () => {
       const projectId = decodeURIComponent(projectRelinkMatch[1] as string);
       const raw = await ctx.readBody(req);
-      assertNoInlineSecretValues(raw);
       return { projectId, root: ControlProjectRelinkRequest.parse(raw).root };
     });
     if (!input.ok) return true;

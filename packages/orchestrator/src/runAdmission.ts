@@ -13,7 +13,7 @@ import {
   runExecutionWorkspaceViolation,
 } from "@claudexor/schema";
 import { assertMandatoryContext } from "@claudexor/context";
-import { assertNoInlineSecretValues, newId, noProjectRepoRoot } from "@claudexor/util";
+import { newId, noProjectRepoRoot } from "@claudexor/util";
 import { admitAuxiliaryWritableRoots } from "@claudexor/workspace";
 import { assertOutputSchemaCompiles } from "./structuredOutput.js";
 import { assertWriteIsolation } from "./write-isolation.js";
@@ -163,23 +163,6 @@ export function prepareRunAdmission(
     registryIds: deps.registry.keys(),
     routingGoal: deps.routingGoal,
   });
-  // INV-062 at the ENGINE boundary: every surface fences prompts already,
-  // but a direct embedder (or the daemon-less local REPL fallback) reaches
-  // this entry without one. Prompts, per-run instructions, AND outputSchema
-  // are durable artifacts (all land in the TaskContract) — the hard block
-  // applies here too, so no in-process path can ever bypass it. outputSchema
-  // rides the schema-aware branch: its property NAMES are field names (a
-  // `token` field is legitimate), but string VALUES (const/default/enum) are
-  // scanned for real secrets, matching the HTTP boundary exactly.
-  assertNoInlineSecretValues(
-    {
-      prompt: resolved.prompt,
-      instructions: resolved.instructions,
-      outputSchema: resolved.outputSchema ?? undefined,
-    },
-    "$",
-    "run input",
-  );
   const parsedMode = ModeKindSchema.safeParse(resolved.mode ?? "agent");
   if (!parsedMode.success) {
     throw new Error(`unknown mode: ${String(resolved.mode)}`);

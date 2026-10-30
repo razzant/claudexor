@@ -801,7 +801,7 @@ client's protocol revision (2025-11-25 down to 2024-10-07; Cursor's
 2025-06-18 handshake included), dispatches requests CONCURRENTLY (ping and
 tools/list answer while a long race runs), and validates arguments against
 the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
-the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
+run-control rules, reviewer-panel shapes) run inside the tool handlers
 and surface as `isError` tool results.
 
 MCP Tasks remain experimental and are not advertised. Run tools enqueue work
@@ -878,7 +878,7 @@ An empty page before the oldest turn still has `hasNewer`; an empty page after
 the newest still has `hasOlder`. The reverse cursor includes that boundary turn.
 
 Prompt previews are at most 32 KiB, answers 64 KiB, and the complete page 2 MiB of
-minified JSON. Byte truncation is explicit; full redacted text lengths are only
+minified JSON. Byte truncation is explicit; full text lengths are only
 reported when known. `claudexor thread prompt <id> <turn-id> [--offset N]
 [--max-bytes N] [--expected-store-id ID] --json` and MCP
 `claudexor_thread_prompt` (`threadId`, `turnId`, `offset`, `maxBytes`,
@@ -907,8 +907,8 @@ Delegate belt's run tools, and `claudexor_thread_turn` accept optional
 <resourceId[,resourceId...]>` on ask/agent/best-of/plan. Only immutable resource
 IDs returned by a keyed import or by finalize are accepted; local paths, base64
 and internal resolved Attachment objects are invalid run references. Omission
-keeps the existing run behavior. The ordinary daemon admission, sensitive-content
-policy, model-purpose resource rejection, and selected lanes' finite
+keeps the existing run behavior. The ordinary daemon admission, model-purpose
+resource rejection, and selected lanes' finite
 MIME/size/count limits still apply. A ready resource is reusable by any later
 run, turn or task of the same store.
 
@@ -956,9 +956,10 @@ always means `state: ready` with `resource`. Typed failures carry `uploadId`,
 - `upload_import_source_changed` / `upload_import_source_unavailable`: the import
   is unfinished and its source no longer matches or no longer exists. Restoring
   the same bytes and repeating completes it.
-- `sensitive_resource_rejected`: the sensitive-resource policy refused the path,
-  the display name or the content. A sensitive path or name is refused before
-  the file is read; content refused at publication cancels the import.
+- `sensitive_resource_rejected`: the host source path is a credential-store
+  path class (for example `~/.ssh`, `~/.aws`, a `.env` file), refused before
+  the file is read. Display names and file contents are never a reason to
+  refuse (INV-146).
 - `digest_mismatch` / `upload_not_open` (HTTP 409, passed through with the import
   context): the byte send raced with a change to the file, or with another
   transfer or a cancel of the same upload. Repeat the identical call; it answers
@@ -1200,9 +1201,7 @@ question has an unseen token. Echo a row's token as that target's `seen` to
 suppress unchanged attention, allowing another job's question or terminal to
 wake the next call. Replacing a question changes its token even at the same
 pending count. Tokens acknowledge only current observation: they are neither
-event cursors, answers, authorization nor output-readiness claims. A token never
-matches the secret scan that guards MCP input; if a token saved from an older
-engine is refused there, omit that `seen` once to receive the current token. Read question
+event cursors, answers, authorization nor output-readiness claims. Read question
 bodies with `claudexor_run_interactions` and output with `claudexor_run_result`.
 
 `waitMs: 0` reads once. `waitMs` bounds the wait between reads, not a read: a
@@ -1268,7 +1267,7 @@ disconnect or cancelled call closes only that read; the worker continues.
 prompt exceeds the page or a long message, is named in `oversizedEvent`, and the
 cursor stays before it. `claudexor_run_event_read {runId, seq, offset?,
 maxBytes?}` reads bounded parts (32 KiB by default, at most 64 KiB) of the exact
-redacted line the event stream delivers, with `totalBytes`, `nextOffset` and the
+line the event stream delivers, with `totalBytes`, `nextOffset` and the
 whole event's `sha256`; parts never split a character, and the text content
 repeats the part after one header line. A partial read does not consume the
 event: after the last part (`nextOffset` equals `totalBytes`) and verification,
@@ -1477,7 +1476,7 @@ other and is not a promise of success or of a separate charge. It is not native
 acknowledges submission, not execution; inspect the follow-up result.
 
 Claudexor never offers a denial it cannot present exactly: missing/unknown
-action fields, sensitive/oversized details, unsupported actions (automatic-review
+action fields, oversized details, unsupported actions (automatic-review
 patch notifications carry only file names, not a diff, so patch, network and
 permission grants are never offered), review timeouts, aborted reviews, a run
 without a workspace-write interaction channel, and a repeated denial of an
@@ -1541,7 +1540,7 @@ Raw native command approvals are offered only for an already explicitly authoriz
 preserving its write boundary. File-change approvals still require reviewable
 paths/diffs in the workspace or a granted auxiliary root and can be approved
 under `workspace_write`.
-Missing, oversized or secret-bearing review details fail closed, as do unknown
+Missing or oversized review details fail closed, as do unknown
 native request methods and runs without an interaction channel. Native
 resolution, turn end, cancellation and transport closure revoke pending requests;
 late answers cannot approve an obsolete action. A request withdrawn while the
@@ -1576,11 +1575,12 @@ exactly `run_facts_invalid` and `invalid_service_response` to a schema-valid
 minimal handle that keeps the caller's runId, nulls the receipt and sibling
 authority fields, and carries a typed secret-redacted `detailProblem`, while
 404, auth, daemon-loss, untyped 500, and transport failures remain ordinary
-tool errors. The same read tools also return `secretLike`: the INV-062
-disclosure of a run whose output held secret-like strings (hidden-match counts,
-changed-file paths, withheld binaries and images, whether the saved patch is a
-redacted copy and whether its exact object was recorded), or `null` when
-nothing was hidden. `run_result` answers with the primary output first, so this
+tool errors. The same read tools also return `secretLike`: the historical
+disclosure of a run written under the retired INV-062 whose saved copies hid
+secret-like strings (hidden-match counts, changed-file paths, withheld binaries
+and images, whether the saved patch is a redacted copy and whether its exact
+object was recorded), or `null` for current runs, which save exact bytes
+(INV-146). `run_result` answers with the primary output first, so this
 field is the only place that fact reaches an MCP host.
 
 Current operational behavior:
@@ -1958,8 +1958,9 @@ evidence rather than relying on final-answer claims.
 Raw API, including the built-in OpenRouter instance, uses non-streaming Chat
 Completions HTTP JSON rather than a native CLI stream. Its terminal semantics
 are pinned by adapter unit tests, not a recorded stream fixture: an explicit
-terminal provider error yields a bounded, redacted typed `error`, followed by
-`usage` and `completed` events, and never yields a message or patch. Ordinary
+terminal provider error yields a bounded typed `error` whose provider report is
+masked while the model's partial text (`partial_output`) stays exact, followed
+by `usage` and `completed` events, and never yields a message or patch. Ordinary
 `finish_reason: "stop"` and `finish_reason: "length"` remain successful
 completions.
 
@@ -2056,7 +2057,10 @@ shared process-tree death proof; unconfirmed termination is an error.
 
 Frames are limited to 8 MiB, process and event queues to 16 entries each,
 and independently drained stderr to its last 64 KiB. Unknown updates retain
-their original wire line in the redacted transcript. ACP `usage_update`
+their original wire line in the transcript. The transcript and the answer keep
+the agent's text exact (INV-146); the adapter removes only the managed token it
+injected, and masks credential-shaped text in stderr, error events and the
+agent's JSON-RPC error frames. ACP `usage_update`
 reports context occupancy, not billable token counts; cumulative USD cost
 is converted to deltas for run spend. Missing/non-USD cost stays unknown.
 Model choices come from `session/new.configOptions` with category `model`,
@@ -2135,7 +2139,7 @@ keeps the complete `path`, its own `change` and the item without its
 `thread/tokenUsage/updated` maps usage.
 A finished `mcpToolCall` with status `completed` is `ok` and keeps the text
 blocks of its result (structured content when no text came back) with their
-line breaks as bounded, redacted `content_summary`; status `failed` covers an
+line breaks as bounded, unmasked `content_summary`; status `failed` covers an
 `isError` result and a call that returned nothing, and keeps `error.message`,
 else the result text on one line, as `error_summary`. Any other status stays
 statusless. The tool identity stays the native tool name with `server:tool` as
@@ -2279,7 +2283,7 @@ background shell handle (`shellId`, `backgroundReason` or result-level
 `isBackground`), whose protobuf-default `exitCode: 0` is not an exit; and
 `unknown` for an ok result in an unrecognized shape. Such an unconfirmed result
 keeps tool status `ok`, names its state in the event text, and keeps its
-complete redacted native result as `payload.native_result` of the durable
+complete native result, exactly, as `payload.native_result` of the durable
 `harness.event`. These shapes follow the `agent.v1` shell protocol of
 cursor-agent 2026.08.11; no timeout or background frame has been recorded live.
 On successful terminal `result`, the
@@ -2476,7 +2480,12 @@ for retained-stream changes.
 
 - Schema and generated JSON Schema are the data-shape source of truth.
 - Unknown modes and unavailable harnesses fail loudly.
-- Raw secrets never become run artifacts or docs.
+- Claudexor never writes the credentials it manages into run artifacts, and
+  docs and fixtures never contain real credentials. Working content (prompts,
+  answers, patches) is kept exactly and tool output as unmasked bounded
+  summaries, credential-shaped or not; see
+  [Exact working content](ARCHITECTURE.md#exact-working-content) for that rule
+  and the `pr` publication scan.
 - No regex governance for risk, permissions, tool success, web-required
   detection, winners, or tests-passed. Use typed contracts, settings, events,
   gates, artifacts, and reviewer evidence.
@@ -2540,6 +2549,7 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_DAEMON_OWNER` | CLI | Explicit `standalone` (default) or `external` lifecycle; external requires an absolute root. See [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_HOST_BINDING_VERSION` | plugins / mcp-server | Declared dynamic binding format, independently of the manifest's generator version; see [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_BUILD_SHA` | util | Build-time stamp of the engine's git commit SHA (packaging sets it); without it a dev checkout reads `git rev-parse HEAD` and packaged builds report `unknown`. Reported in the handshake build identity. |
+| `CLAUDEXOR_BETTERLEAKS_PATH` | delivery | Explicit path to the publication scanner used by `pr` delivery and the repository CI scan; when set it is the only candidate and must match the pinned Betterleaks 1.9.0 binary digest. Without it, the copy bundled with the macOS app, update closure or SSH runtime is used, then the provisioned copy; npm installs bundle none (see [ARCHITECTURE.md](ARCHITECTURE.md#publication-scanner)). |
 | `CLAUDEXOR_DISABLE_STORED_SECRETS` | secrets | Ignore v2 file-stored secret refs entirely (hermetic runs; native sessions still work). |
 | `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` / `CLAUDEXOR_AGY_BIN` / `CLAUDEXOR_COPILOT_BIN` / `CLAUDEXOR_GROK_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
 | `CLAUDEXOR_CODEX_API_KEY` / `CLAUDEXOR_ANTHROPIC_API_KEY` / `CLAUDEXOR_CURSOR_API_KEY` | adapters | Claudexor-scoped API-key overrides (take precedence over provider env names). |

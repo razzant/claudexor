@@ -10,7 +10,7 @@ import type {
   HarnessRunSpec,
   HarnessRequestRefusal,
 } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { codexEffortFor } from "./effort-probe.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
@@ -496,7 +496,10 @@ export function codexAppServerEvents(
   if (isCodexNativeWarningMethod(method))
     return codexNativeWarningEvents(method, params, sessionId);
   if (method === "error" && params["willRetry"] === true) {
-    const message = asObject(params["error"])?.["message"];
+    // A vendor transport error is an engine diagnostic, masked where it is
+    // created (INV-146); it is not the user's working content.
+    const safe = JSON.parse(redactSecrets(JSON.stringify(params))) as JsonObject;
+    const message = asObject(safe["error"])?.["message"];
     return [
       {
         type: "status",
@@ -504,7 +507,7 @@ export function codexAppServerEvents(
         ts: nowIso(),
         ...(typeof message === "string" ? { text: message } : {}),
         status: { kind: "api_retry" },
-        payload: params,
+        payload: safe,
       },
     ];
   }

@@ -8,7 +8,7 @@ import {
   type LiveMessageInput,
   type RunEventType,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, safeProblemMessage, sha256 } from "@claudexor/util";
+import { safeProblemMessage, sha256 } from "@claudexor/util";
 import type { DaemonRunRecord } from "./run-record.js";
 import { requiredIdempotencyKey } from "./run-start.js";
 import { runIdempotentDelivery, type DeliveryCommandServices } from "./run-apply-routes.js";
@@ -28,7 +28,7 @@ export interface RunMessageRouteContext {
  * `POST /v2/runs/:id/messages` — a live message into a run's active attempt.
  *
  * HTTP carries only transport facts: 404 unknown run, 501 no service, 400
- * malformed/secret/too-long body or missing Idempotency-Key, 409 idempotency
+ * malformed/too-long body or missing Idempotency-Key, 409 idempotency
  * (conflict / in progress / interrupted after restart), 500 receipt-save
  * failure. EVERY typed outcome (delivered, accepted, rejected, not_active,
  * unsupported, delivery_unknown) is HTTP 200 — deliberately unlike the
@@ -57,7 +57,6 @@ export async function handleRunMessageRoute(
   try {
     const key = requiredIdempotencyKey(req);
     const raw = await ctx.readBody(req);
-    assertNoInlineSecretValues(raw);
     const body = ControlRunMessageRequest.parse(raw);
     const runId = record.runId ?? record.id;
     const deliver = (target: string) =>

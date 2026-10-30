@@ -107,7 +107,7 @@ describe("Cursor shell command outcomes (#450, synthetic fixture)", () => {
     expect(handoff.text).toBe(
       "tool_result: Moved to background after 30s · still running · shell 3 · pid 4242",
     );
-    // The complete sanitized native result rides the durable tool payload.
+    // The complete native result rides the durable tool payload exactly.
     expect(handoff.payload?.["native_result"]).toEqual(nativeResult(frames, "c-bg-timeout"));
   });
 
@@ -180,7 +180,7 @@ describe("Cursor shell command outcome edge shapes (#450)", () => {
     expect(native.success.stdout).toBe(stdout);
   });
 
-  it("sanitizes secret-like values inside the preserved native result", () => {
+  it("keeps credential-shaped values in the preserved native result exactly (INV-146)", () => {
     const token = "ghp_" + "A".repeat(36);
     const event = shellCall({
       success: {
@@ -192,8 +192,8 @@ describe("Cursor shell command outcome edge shapes (#450)", () => {
       },
     });
     const evidence = JSON.stringify(event.payload?.["native_result"]);
-    expect(evidence).not.toContain(token);
-    expect(evidence).toContain("[redacted]");
+    expect(evidence).toContain(`GITHUB_TOKEN=${token}`);
+    expect(evidence).not.toContain("[redacted]");
   });
 
   it("reports an unrecognized or missing shell result as unknown, never as a finished command", () => {

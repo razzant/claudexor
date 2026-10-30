@@ -12,9 +12,8 @@ import type { ProcessTreeTerminationOutcome, ReapProcessTreeOptions } from "./pr
  *
  * - stderr is captured (bounded ring buffer, adapter-redacted) and attached to
  *   the terminal `completed` payload as `stderr_tail` whenever it is non-empty
- *   — raw diagnostics only, never a verdict axis (INV-116 untouched), and
- *   double-redacted downstream (the orchestrator's redactHarnessEvent runs
- *   before events.jsonl persistence). The tail rides that terminal event, so
+ *   — raw diagnostics only, never a verdict axis (INV-116 untouched). The
+ *   tail rides that terminal event, so
  *   persistence into attempt events is guaranteed for consumers that drain
  *   this stream to completion (zero and nonzero exits alike); an
  *   orchestrator-side abort that stops consuming before the terminal event
