@@ -1,0 +1,99 @@
+name: Linux Codex app-server probe
+
+# Credential-free diagnostic: runs the real pinned Codex 0.162.1 app-server the way
+# Claudexor's managed Codex route launches it, as the runner's normal user inside a transient
+# systemd unit with the reported hardening and loopback-only networking. Per phase, two cells
+# drive one app-server directly (command/exec under readonly, workspace-write and full access,
+# then one scripted model turn) and one cell runs the REAL built daemon, orchestrator and Codex
+# adapter on a readonly ask (api_key route with a labelled dummy key; Codex's system config
+# layer names the loopback scripted provider, which also answers the doctor's smoke). No
+# credential, no model, no login. The phases are baseline, Ubuntu noble's packaged
+# bwrap-userns-restrict profile installed the documented way, and a restored baseline; only if
+# that profile fails for the system helper, one labelled comparison with the prior minimal
+# per-binary profile and its restore. The probe script applies, reverts and verifies every
+# host change (both profiles and /etc/codex/config.toml); the always() step below re-checks
+# them. No sysctl changes, no secrets. Sandbox verdicts are data: the job fails only on a
+# harness defect. See docs/evidence/linux-codex-appserver-probe.md.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - diag/linux-codex-appserver-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Codex app-server and managed daemon sandbox under systemd hardening, with the distro bwrap profile (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm/action-setup reads the pinned version from package.json `packageManager`.
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      # No `cache:` input: this diagnostic neither restores nor saves the shared Actions cache.
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # The probe imports the built core, schema, util and harness-codex modules, and the daemon
+      # cells run the built CLI and daemon; Turbo writes only to a private cache directory.
+      - name: Install dependencies and build the product modules the probe runs
+        shell: bash
+        env:
+          TURBO_TELEMETRY_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm exec turbo run build --filter=@claudexor/cli... --cache-dir="$RUNNER_TEMP/turbo-cache"
+
+      - name: Offline checks
+        run: >-
+          pnpm exec vitest run
+          scripts/lib/codex-appserver-client.test.mjs
+          scripts/lib/scripted-responses-provider.test.mjs
+          scripts/lib/apparmor-profile-control.test.mjs
+          scripts/lib/codex-system-config-control.test.mjs
+          scripts/lib/linux-codex-appserver-cell.test.mjs
+          scripts/lib/linux-codex-appserver-phases.test.mjs
+          scripts/lib/linux-codex-appserver-unit.test.mjs
+
+      # The reported host had Ubuntu's bubblewrap 0.9.0 on PATH. This step changes no
+      # kernel, AppArmor or capability setting; the probe's control phases do, and revert them.
+      - name: Install the reported system bubblewrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+
+      # A short work directory: each daemon cell's socket lives under it (107-byte limit).
+      - name: Probe the real Codex app-server and managed daemon across the phases
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/linux-codex-appserver-probe.mjs run \
+            --out "$RUNNER_TEMP/linux-codex-appserver-probe" \
+            --work "$RUNNER_TEMP/cx337w"
+
+      # Idempotent: a no-op once the probe restored everything; undoes a recorded change if the
+      # probe died. Fails when a read-back still differs from its recorded start.
+      - name: Re-check every host change restore
+        if: always()
+        run: node scripts/linux-codex-appserver-probe.mjs restore --out "$RUNNER_TEMP/linux-codex-appserver-probe"
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-codex-appserver-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-codex-appserver-probe
+          if-no-files-found: error
+          retention-days: 14
