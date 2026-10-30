@@ -12,6 +12,8 @@ import {
   serviceRunArgv,
   USERNS_RESTRICTION,
 } from "./linux-codex-appserver-phases.mjs";
+import { accessVerdicts, classifyTurn } from "./linux-codex-appserver-cell.mjs";
+import { EXEC_CALL_ID } from "./scripted-responses-provider.mjs";
 import { exitCodeFor, renderSummary, summarize } from "./linux-codex-appserver-summary.mjs";
 
 const SHA = "11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9";
@@ -207,6 +209,154 @@ describe("phase sequence", () => {
     const summary = summarize(phases, cells);
     expect(summary.outcome).toBe("incomplete");
     expect(exitCodeFor(summary.outcome)).toBe(1);
+  });
+
+  it("compares the minimal profile only on a known read failure, not on unknown evidence", () => {
+    const cell = (values) => ({
+      phase: "distro-profile",
+      id: "system",
+      kind: "appserver",
+      helper: "system",
+      verdict: "ran",
+      ...values,
+    });
+    const known = [
+      { access: { readonly: "capability_failed" }, turn: { exec: "read" } },
+      { access: { readonly: "usable" }, turn: { exec: "not_read" } },
+    ];
+    for (const values of known) expect(distroProfileFailed([cell(values)])).toEqual(["system"]);
+    const notKnown = [
+      { access: { readonly: "inconclusive" }, turn: { exec: "read" } },
+      { access: { readonly: "not_isolated" }, turn: { exec: "read" } },
+      { access: { readonly: "unknown" }, turn: { exec: "read" } },
+      { access: { readonly: "usable" }, turn: { exec: "capture_unknown" } },
+      { access: { readonly: "usable" }, turn: { exec: "not_called" } },
+      { access: { readonly: "usable" }, turn: { exec: "no_model_request" } },
+    ];
+    for (const values of notKnown) expect(distroProfileFailed([cell(values)])).toEqual([]);
+    const daemon = (read) => cell({ id: "daemon", kind: "daemon", daemon: { read } });
+    expect(distroProfileFailed([daemon("not_read")])).toEqual(["daemon"]);
+    for (const read of ["capture_unknown", "no_model_request", "not_called", "not_admitted"])
+      expect(distroProfileFailed([daemon(read)])).toEqual([]);
+  });
+
+  // The producers' own output feeds the controller: readonly read ok and write refused, with the
+  // sandbox identity not captured (accessVerdicts -> `inconclusive`), and a completed turn that
+  // lacks the command item (classifyTurn -> `capture_unknown`) while the stream itself parsed.
+  const producedAccess = (verdicts, identity) =>
+    accessVerdicts(
+      {
+        readonly_read: "read",
+        readonly_write: "refused",
+        workspace_write_project: "written",
+        workspace_write_outside: "refused",
+        full_read: "read",
+        full_write: "written",
+        ...verdicts,
+      },
+      identity,
+      { user: "user:[1]", mnt: "mnt:[1]", net: "net:[1]" },
+    );
+  const NONCE = "d4".repeat(32);
+  const producedTurn = (withCommand) =>
+    classifyTurn({
+      turn: { started: true },
+      notifications: [
+        ...(withCommand
+          ? [
+              {
+                method: "item/completed",
+                params: {
+                  item: {
+                    type: "commandExecution",
+                    exitCode: 0,
+                    aggregatedOutput: `${NONCE}\nwrite_rc=1\n`,
+                  },
+                },
+              },
+            ]
+          : []),
+        { method: "turn/completed", params: { turn: { status: "completed" } } },
+      ],
+      providerLog: [
+        { reply: "call:exec_command", tools: ["exec_command", "view_image"] },
+        {
+          reply: "final_message",
+          tools: ["exec_command", "view_image"],
+          functionCallOutputs: {
+            [EXEC_CALL_ID]: `Process exited with code 0\nOutput:\n${NONCE}\n`,
+          },
+        },
+      ],
+      nonce: NONCE,
+      hostWrite: { exists: false },
+    });
+  const appliedOf = (log) => log.filter((line) => line.startsWith("apply"));
+
+  it("does not compare the minimal profile on inconclusive isolation evidence", () => {
+    const access = producedAccess({}, "NoNewPrivs=1\n");
+    expect(access).toMatchObject({
+      readonly: "inconclusive",
+      namespaces: "unknown",
+      anyUnknown: false,
+    });
+    const { effects, log, host } = fakeEffects({
+      cell: (phase, plan) =>
+        phase === "distro-profile" && plan.id === "system"
+          ? { access, turn: producedTurn(true) }
+          : {},
+    });
+    const { phases, cells } = runPhases(effects);
+    expect(appliedOf(log)).toEqual(["apply distro-profile"]);
+    expect(phases[3].skipped).toBe("the distro profile did not fail for the system helper");
+    expect(ids(cells, "minimal-profile")).toEqual([
+      "system/skipped",
+      "bundled/skipped",
+      "daemon/skipped",
+    ]);
+    expect(host.profiles).toEqual(BASE_PROFILES);
+    // Inconclusive isolation stays data for the summary too.
+    expect(summarize(phases, cells)).toEqual({ outcome: "complete", defects: [] });
+  });
+
+  it("compares the minimal profile after a known read failure from the producers", () => {
+    const access = producedAccess({ readonly_read: "not_read" }, "");
+    expect(access.readonly).toBe("capability_failed");
+    const { effects, log } = fakeEffects({
+      cell: (phase, plan) => (phase === "distro-profile" && plan.id === "system" ? { access } : {}),
+    });
+    const { phases, cells } = runPhases(effects);
+    expect(appliedOf(log)).toEqual(["apply distro-profile", "apply minimal-profile"]);
+    expect(phases[3]).toMatchObject({ ran: true, condition: "distro-profile failed for system" });
+    expect(summarize(phases, cells).outcome).toBe("complete");
+  });
+
+  it("stops later cells and phases on a classified capture loss even when the stream parsed", () => {
+    const turn = producedTurn(false);
+    expect(turn.exec).toBe("capture_unknown");
+    const { effects, log, host } = fakeEffects({
+      cell: (phase, plan) => (phase === "distro-profile" && plan.id === "system" ? { turn } : {}),
+    });
+    const { phases, cells } = runPhases(effects);
+    expect(appliedOf(log)).toEqual(["apply distro-profile"]);
+    expect(log).toContain("restore distro-profile record false");
+    expect(host.profiles).toEqual(BASE_PROFILES);
+    expect(phases[1].endState.restored).toBe(true);
+    expect(cells.filter((c) => c.verdict === "not_run").map((c) => `${c.phase}/${c.id}`)).toEqual([
+      "distro-profile/bundled",
+      "distro-profile/daemon",
+      ...["restored-baseline", "minimal-profile", "minimal-restored"].flatMap((phase) =>
+        CELLS.map((cell) => `${phase}/${cell.id}`),
+      ),
+    ]);
+    expect(cells.find((c) => c.phase === "distro-profile" && c.id === "bundled").reason).toMatch(
+      /stopped after distro-profile\/system: evidence not captured \(scripted turn exec_command verdict unknown\)/,
+    );
+    const summary = summarize(phases, cells);
+    expect(summary.outcome).toBe("incomplete");
+    expect(summary.defects).toContain(
+      "distro-profile/system: scripted turn exec_command verdict unknown",
+    );
   });
 
   it("still restores the profile when a cell's cleanup is unknown, and runs nothing after", () => {

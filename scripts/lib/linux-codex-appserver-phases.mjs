@@ -341,17 +341,47 @@ export function changeVerified(before, applied, { names, sha256 }) {
   return { verified, differences };
 }
 
+const UNKNOWN_VERDICTS = ["capture_unknown", "rpc_error", "unknown"];
+const ACCESS_MODES = ["readonly", "workspace_write", "full"];
+const MODEL_PATH_MISSING = ["no_model_request", "not_called"];
+
+/** What the classified verdicts of a cell leave unknown or unexercised, without the cell's
+ * name. One meaning for the phase controller (stop) and the summary (defect): a `not_read`,
+ * `capability_failed` or refused write is data, a verdict that never saw the command or its
+ * result is not. `namespaces` unknown only leaves readonly `inconclusive`. */
+export function verdictGaps(cell) {
+  const gaps = [];
+  let unknownMode = false;
+  for (const mode of ACCESS_MODES)
+    if (UNKNOWN_VERDICTS.includes(cell.access?.[mode])) {
+      unknownMode = true;
+      gaps.push(`${mode} verdict unknown`);
+    }
+  if (cell.access?.anyUnknown && !unknownMode) gaps.push("a probe verdict unknown");
+  for (const [label, verdict] of [
+    ["scripted turn exec_command", cell.turn?.exec],
+    ["daemon read", cell.daemon?.read],
+  ]) {
+    if (UNKNOWN_VERDICTS.includes(verdict)) gaps.push(`${label} verdict unknown`);
+    else if (MODEL_PATH_MISSING.includes(verdict)) gaps.push(`${label} not exercised (${verdict})`);
+  }
+  return gaps;
+}
+
 /** Why a cell leaves later cells unsafe or its result unknown, or null. */
 export function cellStop(cell) {
   if (cell.capture?.known === false) return `capture unknown (${cell.capture.problems.join("; ")})`;
   if (cell.cleanup?.known === false) return `cleanup unknown (${cell.cleanup.problems.join("; ")})`;
+  const gaps = verdictGaps(cell);
+  if (gaps.length) return `evidence not captured (${gaps.join("; ")})`;
   return null;
 }
 
-/** Whether the distro profile left the system helper unable to read: the direct `system` cell
- * not `usable` for readonly or its turn not `read`, or the `daemon` cell's sandboxed read
- * failing (`not_read`; a route that never reached the model is a harness defect, not this).
- * Null when no system-helper cell ran there, so nothing is established. */
+/** Whether the distro profile left the system helper with a known failure to read: the direct
+ * `system` cell's readonly `capability_failed` or its turn `not_read`, or the `daemon` cell's
+ * sandboxed read `not_read`. Inconclusive isolation evidence, a read that never ran and a route
+ * that never reached the model are not a known failure. Null when no system-helper cell ran
+ * there, so nothing is established. */
 export function distroProfileFailed(cells) {
   const ran = cells.filter(
     (cell) => cell.phase === "distro-profile" && cell.helper === "system" && cell.verdict === "ran",
@@ -360,7 +390,7 @@ export function distroProfileFailed(cells) {
   const failing = ran.filter((cell) =>
     cell.kind === "daemon"
       ? cell.daemon?.read === "not_read"
-      : cell.access?.readonly !== "usable" || cell.turn?.exec !== "read",
+      : cell.access?.readonly === "capability_failed" || cell.turn?.exec === "not_read",
   );
   return failing.length ? failing.map((cell) => cell.id) : [];
 }
@@ -379,7 +409,8 @@ function conditionHolds(when, cells) {
  * `preconditions(id, before)`, `apply(id)`, `restore(id, applied, before)` and `expected`
  * ({names, sha256}). A control phase changes the host only when its preconditions hold, runs
  * cells only when the applied state is exactly the intended change, and always restores a
- * change it attempted. A cell with unknown capture or cleanup, or a phase that does not end in
+ * change it attempted. A cell with unknown capture or cleanup or an unknown or unexercised
+ * verdict (`verdictGaps`), or a phase that does not end in
  * its starting state, stops every later cell and phase. A conditional phase whose condition
  * does not hold is `skipped`, which is not a defect. */
 export function runPhases({ snapshot, controls, runCell }) {

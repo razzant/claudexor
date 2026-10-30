@@ -85,7 +85,7 @@ stay inside the adapter (counted in the run telemetry's `dropped_events`).
 | `baseline` | none |
 | `distro-profile` | `bwrap-userns-restrict` from `apparmor-profiles` 4.0.1really4.0.1-0ubuntu0.24.04.9 (.deb and file `sha256` pinned) copied to `/etc/apparmor.d` as root 0644 and loaded with `apparmor_parser -K -r` |
 | `restored-baseline` | none, after the profile was unloaded and the file restored |
-| `minimal-profile` | only if the distro profile failed for the system helper with every earlier phase verified: the prior minimal `flags=(unconfined) { userns, }` profile for `/usr/bin/bwrap` (byte for byte as `bdd217377a9f` loaded it) loaded from a file with `apparmor_parser -K -r`, nothing installed |
+| `minimal-profile` | only if the distro profile showed a known read failure for the system helper (not inconclusive or unknown evidence) with every earlier phase verified: the prior minimal `flags=(unconfined) { userns, }` profile for `/usr/bin/bwrap` (byte for byte as `bdd217377a9f` loaded it) loaded from a file with `apparmor_parser -K -r`, nothing installed |
 | `minimal-restored` | none, after the minimal profile was unloaded |
 
 The distro file is extracted from the pinned `.deb`; the package is not installed, so none of its
@@ -131,7 +131,7 @@ startup `configWarning`, and AppArmor `execpath` kernel lines.
 - `daemon` is the real built daemon, orchestrator and Codex adapter on the api_key route with a labelled dummy key; Codex's system config layer names the loopback provider, which also answers the doctor's `Reply exactly OK` smoke. That is admission through a fixture route, never auth readiness. Its `read` needs the tool output and the daemon's recorded answer to carry the nonce.
 - `bundled` is a negative control (no bwrap on its PATH, a disclosed deviation from the managed PATH, checked against the PATH the app-server actually ran with): the profile names /usr/bin/bwrap, so `bundled` usable under distro-profile breaks the control.
 - `full` runs without bubblewrap and should stay `usable` in every phase; a failure there is not about the userns restriction.
-- minimal-profile runs only when the distro profile failed for the system helper with every earlier phase verified. A system cell that passes there but failed under distro-profile points at the distro profile itself (its stacked `unpriv_bwrap` child, NoNewPrivileges), not at the userns restriction.
+- minimal-profile runs only after a known read failure of the system helper under the distro profile (readonly `capability_failed`, the turn's exec_command or the daemon read `not_read`) with every earlier phase verified; inconclusive or unknown evidence is data and never admits it. A system cell that passes there but failed under distro-profile points at the distro profile itself (its stacked `unpriv_bwrap` child, NoNewPrivileges), not at the userns restriction.
 - Helper identity comes from evidence, not PATH: executables the cgroup sampler saw (a short-lived failing helper can be missed), the in-sandbox label (`bwrap//&unpriv_bwrap` expected under the distro profile), `command -v bwrap`, Codex's startup configWarning, and kernel `execpath` lines. A missing kernel line is not evidence that nothing happened.
 - A configWarning list counts as complete only when `settled` (Codex's remote-control status frame, sent right after its startup warnings, arrived).
 - A sandbox that refuses (`not_read`, `capability_failed`, a refused write) is data; a missing model request, tool call or captured tool result (`no_model_request`, `not_called`, `capture_unknown`, `rpc_error`) for the scripted turn's exec_command or the daemon read is a harness defect, and unknown namespace identity alone only leaves readonly `inconclusive`.
@@ -145,7 +145,7 @@ found the app-server gone, the wrong Codex version, an outside-write target unde
 writable root, egress not shown closed, a daemon that did not start fresh or a run that did not
 end) or whose cleanup is unknown (no observed app-server or daemon exit, a process tree
 `spawnProcess` could not confirm ended, any process left in the unit cgroup, a unit not shown
-stopped) stops every later cell and phase; a change already applied is still restored. A phase
+stopped), or whose classified verdict is unknown or unexercised (`capture_unknown`, `rpc_error`, `no_model_request`, `not_called`, an unknown access mode; the same set the summary reports as defects), stops every later cell and phase; a change already applied is still restored. A phase
 whose end state does not equal its start (sysctls, loaded profiles, the profile file) stops the
 rest. The workflow re-runs the idempotent restore of every recorded change (both profiles and
 `/etc/codex/config.toml`) in an `always()` step.
