@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/util",
-  "version": "4.8.2",
+  "version": "5.0.0",
   "license": "MIT",
   "description": "Low-level utilities (ids, hashing, fs, redaction) with no Claudexor deps.",
   "type": "module",
