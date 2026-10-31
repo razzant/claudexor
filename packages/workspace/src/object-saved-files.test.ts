@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureWorkingTreeTransient } from "./git-transient-capture.js";
 import { objectStorePath, pruneObjectStore } from "./object-store.js";
 import { materializeSavedFiles } from "./object-saved-files.js";
@@ -23,7 +23,17 @@ import { materializeSavedFiles } from "./object-saved-files.js";
 // tree, the bytes apply consumes, however the workspace moved on since the capture.
 const dirs: string[] = [];
 const configDir = process.env["CLAUDEXOR_CONFIG_DIR"];
+// The capture reads the test's own environment, as in a run, so the host's Git
+// configuration would decide what these fixtures store: git-lfs installed on a CI
+// runner defines `filter.lfs.process`, which wins over a repository's own `clean`,
+// and `core.safecrlf=true` refuses an `eol=crlf` file. Here it reads no global or
+// system configuration, as `git` does.
+beforeEach(() => {
+  vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null");
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+});
 afterEach(() => {
+  vi.unstubAllEnvs();
   process.env["CLAUDEXOR_CONFIG_DIR"] = configDir;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -292,10 +302,15 @@ describe("materializeSavedFiles", () => {
         into,
       });
 
+      // The stored blob is what the workspace held: the repository's `clean` is `cat`.
+      const blob = `${captured.result!.candidate_tree}:big.bin`;
+      const stored = execFileSync("git", ["-C", objectStorePath(repo), "cat-file", "blob", blob], {
+        env: ENV,
+        encoding: "utf8",
+      });
+      expect(stored).toBe("version https://git-lfs.github.com/spec/v1\n");
       expect(saved.unavailable).toEqual([]);
-      expect(readFileSync(join(into, "big.bin"), "utf8")).toBe(
-        "version https://git-lfs.github.com/spec/v1\n",
-      );
+      expect(readFileSync(join(into, "big.bin"), "utf8")).toBe(stored);
     });
   });
 
