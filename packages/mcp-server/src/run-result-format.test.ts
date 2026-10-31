@@ -50,4 +50,25 @@ describe("launch handle mirrors", () => {
       status: null,
     });
   });
+
+  it("mirrors a result's typed patch-view absence in both channels", () => {
+    const objectResult = {
+      digest: `sha256:${"a".repeat(64)}`,
+      patchView: "unavailable",
+      reason: "exceeds_view_limit",
+      estimatedBytes: 300_000_000,
+      changedFiles: 3,
+    };
+    const run = { summary: "run succeeded", runId: "run-1", status: "succeeded", objectResult };
+    expect(formatRunResult(run)).toContain("no patch view (exceeds_view_limit, 3 changed files)");
+    const structured = structuredRunResult(run);
+    expect(structured["objectResult"]).toEqual(objectResult);
+    expect(McpRunToolResult.parse(structured).objectResult).toEqual(objectResult);
+  });
+
+  it("states a run without an object result as null, never as an absent fact", () => {
+    const structured = structuredRunResult({ summary: "answered", runId: "run-1" });
+    expect(structured["objectResult"]).toBeNull();
+    expect(McpRunToolResult.parse(structured).objectResult).toBeNull();
+  });
 });

@@ -7,6 +7,7 @@ import {
   applyGateError,
   applyGateInputFor,
   gateSpecsForRun,
+  runRepoRoot,
 } from "./run-apply-projection.js";
 import { BulkExecutor } from "./bulk-executor.js";
 import { requestGone } from "./request-liveness.js";
@@ -17,8 +18,13 @@ import { handleDeferredMessageRoute } from "./deferred-message-routes.js";
 import { handleAccountResourceRoute, type ResourceRead } from "./account-resource-routes.js";
 import { CONTROL_STORE_IDENTITY_HEADER, ControlAccountResetRequest } from "@claudexor/schema";
 import { recordedExecutionRoot } from "./run-delivery-state.js";
+import * as objectDelivery from "./run-object-delivery.js";
 import { readRawTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
-import { controlRunResult, readDeliveryState, markRunApplyState } from "./run-delivery-state.js";
+import {
+  controlRunResult,
+  markFilesAppliedState,
+  markRunApplyState,
+} from "./run-delivery-state.js";
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
@@ -30,7 +36,6 @@ import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
 import { discardRunResult } from "./run-discard.js";
 import { applyFilesResult } from "./files-apply-route.js";
-import { deliverableWorkspaceChanges } from "@claudexor/workspace";
 import { streamRunEvents } from "./run-events-stream.js";
 import {
   projectTurnRunCards,
@@ -161,7 +166,6 @@ import {
   redactSecrets,
   safeProblemContext,
   safeProblemRequiredActions,
-  sha256,
 } from "@claudexor/util";
 import { stringify as stringifyYaml } from "yaml";
 import { readFailure } from "./run-card-facts.js";
@@ -1167,7 +1171,11 @@ export class DaemonControlApiServer {
                 if (absoluteRepoError) {
                   throw Object.assign(new Error(absoluteRepoError), { status: 400 });
                 }
-                const revert = await revertInPlaceFromAnchor(repoRoot, result.revertAnchorId);
+                const revert = await revertInPlaceFromAnchor(
+                  repoRoot,
+                  result.revertAnchorId,
+                  runRepoRoot(rec) ?? repoRoot,
+                );
                 if (!revert.reverted) {
                   // QA-051: emit a FULL ControlProblem. The raw workspace reason
                   // concatenates a stable English explanation with locale-
@@ -1175,11 +1183,18 @@ export class DaemonControlApiServer {
                   // semantic message. Present a stable English message + typed
                   // reason code, and keep the redacted, bounded stderr as
                   // context evidence the client can inspect deliberately.
-                  const problem = revertRefusedProblem(revert.reason, revert.reasonCode);
+                  const problem = revertRefusedProblem(
+                    revert.reason,
+                    revert.reasonCode,
+                    "refusal" in revert ? revert.refusal?.code : undefined,
+                  );
                   appendRunAuditEvent(rec, "control.rejected", {
                     decision: "revert_run",
                     reason: problem.context.reason,
                     detail: problem.context.detail,
+                    ...(problem.context.refusalCode
+                      ? { refusalCode: problem.context.refusalCode }
+                      : {}),
                   });
                   throw Object.assign(new Error(problem.message), {
                     status: 409,
@@ -1251,8 +1266,8 @@ export class DaemonControlApiServer {
           }
         }
         try {
-          const patch = readPatch(rec); // typed 409 when the exact bytes are unavailable
-          if (patch === null)
+          const delivery = objectDelivery.runDeliverableOf(rec); // typed 409 without exact bytes
+          if (delivery === null)
             return this.json(res, 404, { error: "no patch artifact for this run" });
           const repoRoot = applyTargetRoot(body.target ?? { kind: "original_project" }, rec);
           if (!repoRoot)
@@ -1267,31 +1282,37 @@ export class DaemonControlApiServer {
               request: {
                 runId: rec.runId ?? rec.id,
                 body,
-                patchSha256: sha256(patch),
+                patchSha256: delivery.digest,
                 repoRoot,
               },
               work: async () => {
                 const delivered = await verifyAndDeliver(
                   repoRoot,
-                  patch,
-                  { mode: body.applyMode ?? "apply" },
+                  delivery.deliverable,
+                  {
+                    mode: body.applyMode ?? "apply",
+                    ...objectDelivery.deliveryCustody(rec, repoRoot),
+                  },
                   gateSpecsForRun(rec),
                   (freshVerify) =>
                     applyGateError(
                       rec,
-                      patch,
+                      delivery.patch,
                       repoRoot,
                       this.operatorDecisionFor(rec),
                       freshVerify,
                     ),
                 );
-                if (delivered.refused) {
-                  throw Object.assign(new Error(delivered.detail ?? "delivery refused"), {
-                    status: 409,
-                    code: delivered.publicationRefusal?.code ?? "delivery_refused",
-                  });
-                }
-                if (delivered.applied) markRunApplyState(rec, "applied");
+                const left = await objectDelivery.markRunWriteLeft(
+                  rec,
+                  delivered,
+                  repoRoot,
+                  delivery.patch,
+                );
+                if (delivered.refused)
+                  throw objectDelivery.deliveryRefusedError(delivered, "delivery_refused", left);
+                if (delivered.applied)
+                  await objectDelivery.markRunAppliedWithPair(rec, delivered, repoRoot);
                 appendRunAuditEvent(rec, "control.applied", {
                   decision: body.action,
                   mode: body.applyMode ?? "apply",
@@ -2094,16 +2115,8 @@ export class DaemonControlApiServer {
       gateSpecs: gateSpecsForRun,
       chainMutation: (record, work) => this.chainRunMutation(record, work),
       appendAudit: appendRunAuditEvent,
-      markApplied: (record) => markRunApplyState(record, "applied"),
-      markFilesApplied: (record, paths, manifest) => {
-        const applied = [
-          ...new Set([...(readDeliveryState(record)?.appliedPaths ?? []), ...paths]),
-        ];
-        const complete =
-          deliverableWorkspaceChanges(manifest).every((entry) => applied.includes(entry.path)) &&
-          !manifest.entries.some((entry) => entry.before === "unknown" && entry.after !== null);
-        markRunApplyState(record, complete ? "applied" : "not_applied", applied, true);
-      },
+      ...objectDelivery.objectApplyRouteCtx,
+      markFilesApplied: markFilesAppliedState,
       deliveredApplyState: (record) => controlRunResult(record).applyState,
     };
   }

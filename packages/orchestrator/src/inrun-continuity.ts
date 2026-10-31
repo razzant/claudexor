@@ -318,11 +318,11 @@ export class InRunContinuity {
     return this.resumable(cause);
   }
 
-  /** Keep a snapshot for gates/review/arbitration that can fail after this try completed. */
-  terminalFacts(resumable: RunResumable | null): ContinuityTerminalFacts {
+  /** Snapshot for gates/review/arbitration failing later; a capture refusal skips those. */
+  terminalFacts(resumable: RunResumable | null, captureRefused = false): ContinuityTerminalFacts {
     const facts = { poolAttempts: this.poolEvidence.snapshot(), started: this.startedAccepted };
     if (resumable) return { ...facts, resumable };
-    return this.acted || this.capsule
+    return (this.acted || this.capsule) && !captureRefused
       ? { ...facts, resumableOnFailure: this.resumable("other") }
       : facts;
   }

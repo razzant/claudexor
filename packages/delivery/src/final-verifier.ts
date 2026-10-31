@@ -7,6 +7,9 @@ import { type GateSpec, gatesPassed, runGates } from "@claudexor/review";
 import {
   applyPatchProtected,
   branchDelete,
+  isolatedCloneAdd,
+  materializeTree,
+  objectStorePath,
   worktreeAdd,
   worktreeRemove,
 } from "@claudexor/workspace";
@@ -60,9 +63,20 @@ export function blockedDecisionOverride(
   };
 }
 
+/** An object result at its base (or composed onto a target): the base commit,
+ * its tree and the tree to verify. It is checked out in a PRIVATE clone whose
+ * second alternate is the project store, so verification writes no candidate
+ * object into the user's repository before any delivery. */
+export interface VerifiableTree {
+  baseSha: string;
+  baseTree: string;
+  tree: string;
+  projectRoot?: string;
+}
+
 export async function finalVerifyPatch(
   execRoot: string,
-  candidate: VerifiablePatch,
+  candidate: VerifiablePatch | VerifiableTree,
   specs: GateSpec[],
   log: VerifyEventLog,
 ): Promise<FinalVerifyRecord> {
@@ -85,9 +99,26 @@ export async function finalVerifyPatch(
   const verifyBase = mkdtempSync(join(tmpdir(), "claudexor-verify-"));
   const verifyTree = join(verifyBase, "tree");
   const branch = `claudexor/verify-${newId("fv").slice(3)}`;
+  const privateClone = "tree" in candidate;
   try {
-    await worktreeAdd(execRoot, verifyTree, branch, candidate.baseSha);
-    const applied = await applyPatchProtected(verifyTree, candidate.diff);
+    if (privateClone) {
+      const store = join(objectStorePath(candidate.projectRoot ?? execRoot), "objects");
+      await isolatedCloneAdd(execRoot, verifyTree, branch, candidate.baseSha, store);
+    } else await worktreeAdd(execRoot, verifyTree, branch, candidate.baseSha);
+    // An object result writes its composed tree; a legacy patch applies.
+    const applied =
+      "tree" in candidate
+        ? await materializeTree({
+            worktree: verifyTree,
+            from: candidate.baseTree,
+            to: candidate.tree,
+            index: "real",
+          }).then((written) =>
+            written.ok
+              ? { ok: true, detail: undefined }
+              : { ok: false, detail: written.refusal.message },
+          )
+        : await applyPatchProtected(verifyTree, candidate.diff);
     if (!applied.ok) {
       return done({
         applied_cleanly: false,
@@ -123,15 +154,17 @@ export async function finalVerifyPatch(
       reason: redactSecrets(error instanceof Error ? error.message : String(error)),
     });
   } finally {
-    try {
-      await worktreeRemove(execRoot, verifyTree);
-    } catch {
-      // Best-effort cleanup; startup GC owns crash debris.
-    }
-    try {
-      await branchDelete(execRoot, branch);
-    } catch {
-      // Best-effort cleanup; startup GC owns crash debris.
+    if (!privateClone) {
+      try {
+        await worktreeRemove(execRoot, verifyTree);
+      } catch {
+        // Best-effort cleanup; startup GC owns crash debris.
+      }
+      try {
+        await branchDelete(execRoot, branch);
+      } catch {
+        // Best-effort cleanup; startup GC owns crash debris.
+      }
     }
     rmSync(verifyBase, { recursive: true, force: true });
   }

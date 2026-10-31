@@ -4,8 +4,6 @@ import {
   applyPatchAndIndexProtected,
   applyPatchProtected,
   materializePatchTree,
-  readRevertAnchor,
-  revertWorkingTreePatch,
   reversePatchAndIndexProtected,
   revParse,
   snapshotTree,
@@ -21,11 +19,24 @@ import type { GateSpec } from "@claudexor/review";
 import { finalVerifyBlocks, finalVerifyPatch, type VerifyEventLog } from "./final-verifier.js";
 import { finalVerifyFiles, type VerifiableWorkspaceFiles } from "./files-verifier.js";
 import { gatePublication } from "./publication-gate.js";
+import {
+  afterFailedPush,
+  detailWithCleanup,
+  failedToLeaveBranch,
+  RECOVERY_REQUIRED,
+  restoreCheckoutArgs,
+  revertAnchorUnlocked,
+} from "./object-custody.js";
+import { verifyAndDeliverResultUnlocked } from "./object-delivery.js";
+import type { ObjectDelivery, ObjectDeliverResult } from "./object-delivery.js";
 
 export * from "./gate.js";
 export * from "./final-verifier.js";
 export * from "./files-verifier.js";
 export * from "./publication-gate.js";
+export { checkResultOnTarget } from "./object-check.js";
+export type { ObjectDelivery, ObjectDeliverResult } from "./object-delivery.js";
+export { deliveryRefusalCode } from "./publication.js";
 
 const repositoryMutationTails = new Map<string, Promise<void>>();
 
@@ -51,10 +62,8 @@ async function withRepositoryMutationLease<T>(
 }
 
 /** Run-owned in-place revert from the external immutable anchor. */
-export async function revertInPlaceFromAnchor(repo: string, anchorId: string) {
-  return withRepositoryMutationLease(repo, () =>
-    revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId)),
-  );
+export async function revertInPlaceFromAnchor(repo: string, anchorId: string, project = repo) {
+  return withRepositoryMutationLease(repo, () => revertAnchorUnlocked(repo, anchorId, project));
 }
 
 async function git(repo: string, args: string[], input?: string) {
@@ -186,14 +195,16 @@ export async function verifyAndDeliverFiles(
  * performs exactly one protected mutation. */
 export async function verifyAndDeliver(
   repoRoot: string,
-  patch: string,
-  options: DeliverOptions & { protectedApply?: boolean },
+  patch: string | ObjectDelivery,
+  options: DeliverOptions & { protectedApply?: boolean; projectRoot?: string; owner?: string },
   gates: GateSpec[] = [],
   authorize?: (finalVerify: FinalVerifyRecord) => string | null,
   log: VerifyEventLog = { emit: () => undefined },
-): Promise<VerifiedDeliverResult> {
+): Promise<VerifiedDeliverResult & Partial<ObjectDeliverResult>> {
   return withRepositoryMutationLease(repoRoot, () =>
-    verifyAndDeliverUnlocked(repoRoot, patch, options, gates, authorize, log),
+    typeof patch === "string"
+      ? verifyAndDeliverUnlocked(repoRoot, patch, options, gates, authorize, log)
+      : verifyAndDeliverResultUnlocked(repoRoot, patch, options, gates, authorize, log),
   );
 }
 
@@ -340,8 +351,11 @@ async function deliverUnlocked(
   // yields the literal "HEAD" (useless for checkout-restore); capture the sha.
   const branchName = (await git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
   const headSha = (await git(repoRoot, ["rev-parse", "HEAD"])).stdout.trim();
-  const restoreRef = branchName && branchName !== "HEAD" ? branchName : headSha;
-  const restoreDetached = !branchName || branchName === "HEAD";
+  const restorePoint = {
+    ref: branchName && branchName !== "HEAD" ? branchName : headSha,
+    detached: !branchName || branchName === "HEAD",
+    headSha,
+  };
   let expectedTree: string;
   try {
     expectedTree = await materializePatchTree(repoRoot, headSha, patch);
@@ -406,16 +420,8 @@ async function deliverUnlocked(
     /** Leave the fresh branch and delete it; report honestly if that fails. */
     const cleanupBranch = async (): Promise<string | null> => {
       if (!onNewBranch || !branch) return null;
-      const back = restoreDetached
-        ? await git(repoRoot, [
-            "-c",
-            "core.hooksPath=/dev/null",
-            "checkout",
-            "--detach",
-            restoreRef,
-          ])
-        : await git(repoRoot, ["-c", "core.hooksPath=/dev/null", "checkout", restoreRef]);
-      if (back.code !== 0) return `failed to leave branch ${branch}: ${back.stderr.trim()}`;
+      const back = await git(repoRoot, restoreCheckoutArgs(restorePoint));
+      if (back.code !== 0) return failedToLeaveBranch(branch, back.stderr, restorePoint);
       const del = await git(repoRoot, ["branch", "-D", branch]);
       if (del.code !== 0) return `failed to delete branch ${branch}: ${del.stderr.trim()}`;
       onNewBranch = false;
@@ -433,7 +439,7 @@ async function deliverUnlocked(
         applied: false,
         branch,
         treeMutated: ap.treeMutated || cleanupIssue !== null,
-        detail: [ap.detail ?? "apply failed", cleanupIssue].filter(Boolean).join("; "),
+        detail: detailWithCleanup(ap.detail ?? "apply failed", cleanupIssue),
       };
     }
     if (opts.mode === "apply") return { mode: "apply", applied: true };
@@ -445,7 +451,7 @@ async function deliverUnlocked(
         applied: false,
         branch,
         treeMutated: cleanupIssue !== null,
-        detail: ["empty patch; no commit created", cleanupIssue].filter(Boolean).join("; "),
+        detail: detailWithCleanup("empty patch; no commit created", cleanupIssue),
       };
     }
 
@@ -468,7 +474,7 @@ async function deliverUnlocked(
           why,
           reverse.ok ? "exact patch postimage removed" : reverse.detail,
           cleanupIssue,
-          treeMutated ? "RECOVERY REQUIRED — user state was not overwritten" : null,
+          treeMutated ? RECOVERY_REQUIRED : null,
         ]
           .filter(Boolean)
           .join("; "),
@@ -555,16 +561,9 @@ async function deliverUnlocked(
       "origin",
       `${commit}:refs/heads/${branch as string}`,
     ]);
-    if (push.code !== 0) {
-      return {
-        mode: "pr",
-        applied: false,
-        branch,
-        commit,
-        treeMutated: true,
-        detail: `push failed: ${push.stderr.trim()}; the local branch keeps the committed work`,
-      };
-    }
+    // The commit stays on its local branch; the working tree goes back (INV-114).
+    if (push.code !== 0)
+      return afterFailedPush(repoRoot, push, branch as string, commit, restorePoint);
     // What `push -u` recorded before the push named the commit: the local
     // branch tracks the published one (best effort; the push already landed).
     await git(repoRoot, ["config", `branch.${branch as string}.remote`, "origin"]);

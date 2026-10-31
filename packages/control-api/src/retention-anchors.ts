@@ -89,8 +89,10 @@ export async function pruneRunAnchors(input: {
   }));
   let bytes = 0;
   for (const entry of await readdir(objects, { withFileTypes: true })) {
-    if (!entry.isFile() || !/^[0-9a-f]{64}\.patch$/.test(entry.name)) continue;
-    if (input.named.has(`sha256:${entry.name.slice(0, -6)}`)) continue;
+    // Patch anchors and object-pair anchors (#535) share one id space and age window.
+    const anchor = /^([0-9a-f]{64})\.(?:patch|pair)$/.exec(entry.name);
+    if (!entry.isFile() || !anchor) continue;
+    if (input.named.has(`sha256:${anchor[1]}`)) continue;
     await yieldToAdmission();
     if (input.signal?.aborted || !input.current()) break;
     for (const parent of parents) {

@@ -62,6 +62,10 @@ export const RunReason = z
     "owner_task_gone",
     "crash_interrupted",
     "workspace_unavailable",
+    // The executor ran, but its changes could not be captured as an exact
+    // patch or file result (output limit, Git timeout, I/O or scratch fault).
+    // Distinct from workspace_unavailable: the workspace was used, not missing.
+    "capture_refused",
     // D-16 work_state / context reasons.
     "input_required",
     "work_incomplete",

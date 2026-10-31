@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   existsSync,
   lstatSync,
   mkdtempSync,
@@ -16,12 +17,9 @@ import {
   type EnsureGitRepositoryDependencies,
   type EnsureGitRepositoryResult,
 } from "./git-initialization.js";
-import {
-  nestedRepositoryExcludes,
-  untrackedNestedRepositories,
-} from "./git-nested-repositories.js";
-import { assertNoBinaryStubs, git, gitEnv } from "./git-run.js";
-export { git } from "./git-run.js";
+import { assertNoBinaryStubs, git, gitEnv, SCRATCH_INDEX_CONFIG } from "./git-run.js";
+import { diskProgress, gitObserved } from "./git-observed.js";
+export { git, revParse } from "./git-run.js";
 export { captureWorkingTreeTransient, diffWorkingTreeTransient } from "./git-transient-capture.js";
 export {
   GitBoundaryRootRefusedError,
@@ -33,12 +31,6 @@ export {
 export async function isGitRepo(repo: string): Promise<boolean> {
   const r = await git(repo, ["rev-parse", "--is-inside-work-tree"]);
   return r.code === 0 && r.stdout.trim() === "true";
-}
-
-export async function revParse(repo: string, ref: string): Promise<string> {
-  const r = await git(repo, ["rev-parse", ref]);
-  if (r.code !== 0) throw new WorkspaceError(`git rev-parse ${ref} failed: ${r.stderr.trim()}`);
-  return r.stdout.trim();
 }
 
 /**
@@ -70,95 +62,7 @@ export async function statusPorcelain(repo: string): Promise<string> {
   return (await git(repo, ["status", "--porcelain"])).stdout;
 }
 
-/**
- * Capture the full dirty working tree (tracked AND untracked) as a dangling
- * commit; null if clean. Plain `git stash create` captures only TRACKED
- * changes, silently dropping the user's new-but-unstaged files from the run's
- * base. We instead seed a scratch index from HEAD, `add -A` into it (which
- * respects .gitignore, so run artifacts stay out), and commit-tree the result.
- */
-export async function stashCreate(repo: string): Promise<string | null> {
-  // NUL form is filename-faithful (newlines, quotes and whitespace are legal
-  // path bytes). Runtime is external, so every reported path is user state.
-  const status = await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-  if (status.code !== 0)
-    throw new WorkspaceError(`snapshot status failed: ${status.stderr.trim()}`);
-  if (status.stdout.length === 0) return null;
-  const head = await git(repo, ["rev-parse", "HEAD"]);
-  if (head.code !== 0)
-    throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
-  const headSha = head.stdout.trim();
-  // Unique per call: concurrent envelope creates (a best_of_n wave) must never
-  // collide on the scratch index (same pid + same millisecond is real). It lives
-  // in the OS temp dir, NOT under `<repo>/.git` — in a linked worktree `.git` is
-  // a FILE (gitdir pointer), so a scratch path there fails (review #8).
-  const scratchDir = mkdtempSync(join(tmpdir(), "claudexor-snapshot-index-"));
-  const tmpIndex = join(scratchDir, "index");
-  const env: Record<string, string> = {
-    GIT_INDEX_FILE: tmpIndex,
-    GIT_AUTHOR_NAME: "Claudexor",
-    GIT_AUTHOR_EMAIL: "noreply@claudexor.local",
-    GIT_COMMITTER_NAME: "Claudexor",
-    GIT_COMMITTER_EMAIL: "noreply@claudexor.local",
-  };
-  try {
-    const read = await gitEnv(repo, ["read-tree", "HEAD"], env);
-    if (read.code !== 0)
-      throw new WorkspaceError(`snapshot read-tree failed: ${read.stderr.trim()}`);
-    // Bare add runs only against the scratch index. It respects the project's
-    // own ignore policy without changing the live index. `.claudexor/` is not a
-    // runtime exception in v2: tracked or untracked project config is user state.
-    // An undeclared nested repository stays out, as in the candidate capture:
-    // `add` refuses one without a commit and would freeze one with a commit as
-    // a commit link (`:/` keeps the whole-tree scope of the bare add).
-    const nested = await untrackedNestedRepositories(repo, env, [":/"], "snapshot");
-    const add = await gitEnv(
-      repo,
-      ["add", "-A", ...(nested.length ? ["--", ":/", ...nestedRepositoryExcludes(nested)] : [])],
-      env,
-    );
-    if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
-    const writeTree = await gitEnv(repo, ["write-tree"], env);
-    if (writeTree.code !== 0)
-      throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
-    const tree = writeTree.stdout.trim();
-    const commit = await gitEnv(
-      repo,
-      [
-        "commit-tree",
-        tree,
-        "-p",
-        headSha,
-        "-m",
-        "claudexor: dirty worktree snapshot (incl. untracked)",
-      ],
-      env,
-    );
-    if (commit.code !== 0)
-      throw new WorkspaceError(`snapshot commit-tree failed: ${commit.stderr.trim()}`);
-    const sha = commit.stdout.trim();
-    return sha.length > 0 ? sha : null;
-  } finally {
-    try {
-      rmSync(scratchDir, { recursive: true, force: true });
-    } catch {
-      /* scratch index cleanup is best-effort */
-    }
-  }
-}
-
-/**
- * Capture the CURRENT working-tree state (tracked + untracked, minus `.claudexor`)
- * as a commit sha — always returns one. Dirty trees become a dangling snapshot
- * commit (via `stashCreate`); a clean tree resolves to HEAD. This is the per-turn
- * diff base for in-place threads: snapshot at turn start, snapshot at turn end,
- * `diffTrees(base, end)` yields exactly that turn's net change (pre-existing dirty
- * state is folded into `base`, so the reviewer never sees prior turns' edits).
- */
-export async function snapshotTree(repo: string): Promise<string> {
-  const snap = await stashCreate(repo);
-  return snap ?? (await revParse(repo, "HEAD"));
-}
+export { snapshotTree, stashCreate } from "./git-snapshot.js";
 
 /** Net diff between two tree-ish shas (used for in-place per-turn diffs).
  * `--binary`: binary changes carry an APPLYABLE payload instead of
@@ -187,7 +91,7 @@ export async function materializePatchTree(
   const indexPath = join(scratchDir, "index");
   const env = { GIT_INDEX_FILE: indexPath, GIT_OPTIONAL_LOCKS: "0" };
   try {
-    const read = await gitEnv(repo, ["read-tree", baseSha], env);
+    const read = await gitEnv(repo, [...SCRATCH_INDEX_CONFIG, "read-tree", baseSha], env);
     if (read.code !== 0) {
       throw new WorkspaceError(
         `git read-tree ${baseSha} failed during patch materialization: ${read.stderr.trim()}`,
@@ -196,7 +100,7 @@ export async function materializePatchTree(
     if (diff.trim()) {
       const applied = await gitEnv(
         repo,
-        ["apply", "--cached", "--whitespace=nowarn", "-"],
+        [...SCRATCH_INDEX_CONFIG, "apply", "--cached", "--whitespace=nowarn", "-"],
         env,
         diff,
       );
@@ -206,7 +110,7 @@ export async function materializePatchTree(
         );
       }
     }
-    const written = await gitEnv(repo, ["write-tree"], env);
+    const written = await gitEnv(repo, [...SCRATCH_INDEX_CONFIG, "write-tree"], env);
     if (written.code !== 0) {
       throw new WorkspaceError(`scratch git write-tree failed: ${written.stderr.trim()}`);
     }
@@ -226,18 +130,25 @@ export async function worktreeAdd(
   branch: string,
   baseSha: string,
 ): Promise<void> {
-  const r = await git(repo, ["worktree", "add", "-b", branch, path, baseSha]);
+  const r = await gitObserved(repo, ["worktree", "add", "-b", branch, path, baseSha], {
+    label: "worktree add",
+    progress: diskProgress(repo),
+    allowFailure: true,
+  });
   if (r.code !== 0) throw new WorkspaceError(`git worktree add failed: ${r.stderr.trim()}`);
 }
 
 /** Disposable candidate checkout with private refs/index/objects. The source
  * repository is only an object alternate, so harness `git add`/`commit` cannot
- * write candidate blobs or refs into the user's repository. */
+ * write candidate blobs or refs into the user's repository. Claudexor's own
+ * clone lists the project object store as a SECOND alternate (#535 D2): a
+ * dirty base resolves after the user's prune; the user repo never gets it. */
 export async function isolatedCloneAdd(
   repo: string,
   path: string,
   branch: string,
   baseSha: string,
+  storeObjects?: string,
 ): Promise<void> {
   const cloned = await runCaptureRaw(
     "git",
@@ -248,7 +159,16 @@ export async function isolatedCloneAdd(
   if (cloned.code !== 0) {
     throw new WorkspaceError(`isolated clone failed: ${cloned.stderr.trim()}`);
   }
-  const checkout = await git(path, ["checkout", "-b", branch, baseSha]);
+  if (storeObjects && existsSync(storeObjects)) {
+    const alternates = join(path, ".git", "objects", "info", "alternates");
+    appendFileSync(alternates, `${storeObjects}\n`);
+  }
+  // A large checkout may take long: only a stall (no disk progress) stops it.
+  const checkout = await gitObserved(path, ["checkout", "-q", "-b", branch, baseSha], {
+    label: "checkout (isolated clone)",
+    progress: diskProgress(path),
+    allowFailure: true,
+  });
   if (checkout.code !== 0) {
     throw new WorkspaceError(`isolated clone checkout failed: ${checkout.stderr.trim()}`);
   }

@@ -2,6 +2,7 @@ import {
   reviewerProcessingAdmission,
   ProcessingBudgetAdmissionError,
 } from "./processing-dispatch.js";
+import { unrenderedResultNotice } from "./resultNotice.js";
 import type { BudgetDenial } from "./budgetFailure.js";
 import { join } from "node:path";
 import { reviewerProcessingCost } from "./processing-routing.js";
@@ -24,12 +25,17 @@ import {
 } from "@claudexor/schema";
 import { writeText } from "@claudexor/util";
 import { scopeMarkerEnv } from "@claudexor/core";
-import { type CandidateRun, toCandidateEvidence } from "./candidateEvidence.js";
+import {
+  hasCandidateChanges,
+  type CandidateRun,
+  toCandidateEvidence,
+} from "./candidateEvidence.js";
 import { policyFindings } from "./policyFindings.js";
 import { renderTestsEvidence } from "./contract-gates.js";
 import { reviewerTimeoutMs, envInheritance, type ResolvedConfigLike } from "./runSupport.js";
 import type { OrchestratorDeps, RunInput } from "./orchestrator.js";
 import { prepareDirectoryReview } from "./directoryCandidate.js";
+import { materializeUnrenderedCandidate, type UnrenderedCandidateFiles } from "./savedCandidate.js";
 
 /** Direct embedders may explicitly inject a panel. Accepted wire requests have
  * their boolean already frozen, so later global panel defaults cannot enable it. */
@@ -179,6 +185,7 @@ export async function reviewCandidateRuns(
     let candidateCwd = run.reviewCwd ?? cwd;
     const candidateEvidenceDir = deps.prepareReviewEvidenceDir(reviewDir, candidateCwd);
     let directoryReview: Awaited<ReturnType<typeof prepareDirectoryReview>> | undefined;
+    let savedFiles: UnrenderedCandidateFiles | null = null;
     try {
       if (run.files) {
         directoryReview = await prepareDirectoryReview(run.files, candidateEvidenceDir);
@@ -192,9 +199,7 @@ export async function reviewCandidateRuns(
       // spend a reviewer panel on "(empty diff)" (a trivial greeting in agent mode used to
       // cost two reviewers). It still flows through policy gates and arbitration
       // (so a failing test gate or no_op outcome is unchanged), just unreviewed.
-      const hasDiff =
-        input.reviewUnchanged ||
-        (run.files ? run.files.noChanges !== true : run.diff.trim().length > 0);
+      const hasDiff = input.reviewUnchanged || hasCandidateChanges(run);
       // Reviewer panels spend real money: reserve before, settle the observed cost.
       const reviewLease =
         hasDiff && reviewers.length > 0
@@ -213,58 +218,87 @@ export async function reviewCandidateRuns(
             })
           : undefined;
       let processingDenial: BudgetDenial | null = null;
-      const result =
-        hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true)
-          ? await deps.reviewScoped({
-              candidateLabel: run.label,
-              // Reviewers judge the same exact patch that apply consumes.
-              diff: run.diff,
-              ...(directoryReview ? { candidatePaths: directoryReview.paths } : {}),
-              evidenceDir: candidateEvidenceDir,
-              artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
-              cwd: candidateCwd,
-              reviewers,
-              reviewerTimeoutMs: reviewerTimeoutMs(deps.config(contract.repo.root)),
-              envInheritance: envInheritance(deps.config(cwd)),
-              // The reviewer's scratch HOME is decided by the review engine; the
-              // run marker is added here so the reviewer and its shells are the
-              // run's members (the #449 orphans were reviewer-slot shells).
-              ...(runScopeMarker ? { env: scopeMarkerEnv(runScopeMarker) } : {}),
-              signal,
-              onReviewerEvent: (event) => log.emit(event.type, { ...event }),
-              onBeforeDispatch:
-                ledger && reviewLease?.granted
-                  ? reviewerProcessingAdmission(
-                      ledger,
-                      reviewLease.lease!.lease_id,
-                      reviewers,
-                      run.attemptId,
-                      (denial) => {
-                        processingDenial ??= denial;
-                      },
-                    )
-                  : undefined,
-              onUsageCost: (usd) => {
-                if (reviewLease?.granted) ledger?.updateHold(reviewLease.lease!.lease_id, usd);
-                return ledger?.tier() === "hard";
-              },
-            })
-          : {
-              findings: [],
-              routeProofs: [],
-              reviewerRequests: [],
-              crossFamilyHealthy: false,
-              healthyProviders: [],
-              crossFamilyVerified: false,
-              distinctProviders: [],
-              reviewSpendUsd: 0,
-              reviewSpendEstimated: false,
-              reviewCashUsd: 0,
-              reviewCashKnowledge: "unknown" as const,
-              reviewValuationUsd: 0,
-              reviewValuationKnowledge: "unknown" as const,
-              reviewUnknownUsd: 0,
-            };
+      const reviewing = hasDiff && reviewers.length > 0 && (reviewLease?.granted ?? true);
+      // Reviewers judge the same exact result that apply consumes. An unrendered
+      // object result (#535) gets an explicit bounded notice, its changed paths form
+      // the candidate inventory, and they read those files from its saved tree: a
+      // configured gate has run in the workspace since the capture. A copy that
+      // failed gives them its typed causes instead, and nothing to read.
+      if (reviewing && run.patchViewUnavailable) {
+        savedFiles = await materializeUnrenderedCandidate(
+          run,
+          join(paths.reviewsDir, `${run.attemptId}-saved-files`),
+          contract.repo.root,
+          candidateCwd,
+        );
+        if (savedFiles) candidateCwd = savedFiles.dir;
+      }
+      const result = reviewing
+        ? await deps.reviewScoped({
+            candidateLabel: run.label,
+            diff: run.patchViewUnavailable ? unrenderedResultNotice(run) : run.diff,
+            ...(directoryReview
+              ? { candidatePaths: directoryReview.paths, candidatePathsHaveManifest: true }
+              : run.patchViewUnavailable
+                ? {
+                    candidatePaths: run.changedPaths ?? [],
+                    savedCopy: {
+                      unavailable:
+                        savedFiles?.unavailable ??
+                        (run.changedPaths ?? []).map((path) => ({
+                          path,
+                          reason: "saved_file_unavailable",
+                        })),
+                      // No copy, or a failed one: nothing is read from `cwd`.
+                      failed: savedFiles?.failed ?? true,
+                    },
+                  }
+                : {}),
+            evidenceDir: candidateEvidenceDir,
+            artifactsDir: join(paths.reviewsDir, `${run.attemptId}-reviewers`),
+            cwd: candidateCwd,
+            reviewers,
+            reviewerTimeoutMs: reviewerTimeoutMs(deps.config(contract.repo.root)),
+            envInheritance: envInheritance(deps.config(cwd)),
+            // The reviewer's scratch HOME is decided by the review engine; the
+            // run marker is added here so the reviewer and its shells are the
+            // run's members (the #449 orphans were reviewer-slot shells).
+            ...(runScopeMarker ? { env: scopeMarkerEnv(runScopeMarker) } : {}),
+            signal,
+            onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+            onBeforeDispatch:
+              ledger && reviewLease?.granted
+                ? reviewerProcessingAdmission(
+                    ledger,
+                    reviewLease.lease!.lease_id,
+                    reviewers,
+                    run.attemptId,
+                    (denial) => {
+                      processingDenial ??= denial;
+                    },
+                  )
+                : undefined,
+            onUsageCost: (usd) => {
+              if (reviewLease?.granted) ledger?.updateHold(reviewLease.lease!.lease_id, usd);
+              return ledger?.tier() === "hard";
+            },
+          })
+        : {
+            findings: [],
+            routeProofs: [],
+            reviewerRequests: [],
+            crossFamilyHealthy: false,
+            healthyProviders: [],
+            crossFamilyVerified: false,
+            distinctProviders: [],
+            reviewSpendUsd: 0,
+            reviewSpendEstimated: false,
+            reviewCashUsd: 0,
+            reviewCashKnowledge: "unknown" as const,
+            reviewValuationUsd: 0,
+            reviewValuationKnowledge: "unknown" as const,
+            reviewUnknownUsd: 0,
+          };
       if (reviewLease?.granted) {
         ledger?.settle(
           reviewLease.lease?.lease_id ?? "",
@@ -340,6 +374,15 @@ export async function reviewCandidateRuns(
         risk: policy.risk,
         findings: allFindings,
         route_proofs: result.routeProofs,
+        // Candidate files no reviewer could inspect (#535): named, never dropped.
+        ...(result.uninspectableFiles?.length
+          ? {
+              uninspectable_files: result.uninspectableFiles.map((file) => ({
+                path: file.path,
+                reason: file.reason,
+              })),
+            }
+          : {}),
       });
       for (const f of allFindings)
         log.emit("finding.revalidated", {
@@ -352,6 +395,7 @@ export async function reviewCandidateRuns(
       );
     } finally {
       await directoryReview?.dispose();
+      await savedFiles?.dispose();
       deps.recordReviewEvidenceCleanup(
         store,
         join(paths.reviewsDir, `${run.attemptId}-evidence-cleanup.yaml`),

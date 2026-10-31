@@ -34,7 +34,11 @@ import {
   sealedReviewTranscriptChunk,
   type ReviewerInfo,
 } from "./findings.js";
-import { buildReviewPrompt, SEALED_REVIEW_OUTPUT_SCHEMA } from "./reviewPrompt.js";
+import {
+  buildReviewPrompt,
+  CHANGED_PATHS_FILE,
+  SEALED_REVIEW_OUTPUT_SCHEMA,
+} from "./reviewPrompt.js";
 import { sealedReviewTranscriptFromEvents } from "./sealedReviewEnvelope.js";
 import {
   buildReviewerCandidateInventory,
@@ -44,6 +48,7 @@ import {
   isSameOrInside,
   prepareReviewerWorkspace,
   selectReviewerWorkspaceBaseDir,
+  uninspectableFacts,
 } from "./reviewerWorkspace.js";
 export { extractDiffPostimagePaths as __testExtractDiffPostimagePaths } from "./reviewerWorkspace.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
@@ -72,6 +77,7 @@ import {
   safeFilePart,
   sleep,
   transientRetryDelayMs,
+  uninspectedManifestFindings,
   updateReviewerMetadata,
   writeParseError,
 } from "./reviewerArtifacts.js";
@@ -79,8 +85,14 @@ import {
 export interface ReviewCandidateInput {
   candidateLabel: string;
   diff: string;
-  /** Explicit selected postimage manifest for ordinary-folder review. */
+  /** Exactly the changed paths a reviewer copy holds, where no patch shows the change. */
   candidatePaths?: string[];
+  /** Those paths come with a FILES.json the caller wrote to the evidence packet (a
+   * directory result). Without it, the review writes the list as CHANGED_PATHS.json. */
+  candidatePathsHaveManifest?: boolean;
+  /** `cwd` is a copy of a result's saved files; one that failed is never read (see
+   * prepareReviewerWorkspace). What it names is a review fact whatever each reviewer does. */
+  savedCopy?: { unavailable: readonly { path: string; reason: string }[]; failed?: boolean };
   evidenceDir: string;
   artifactsDir?: string;
   evidenceReadOnly?: boolean;
@@ -227,6 +239,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     }),
   );
   const healthyReviewerIndexes = new Set<number>();
+  const uninspectable = [...(input.savedCopy?.unavailable ?? [])];
   const reviewerSpend = new ReviewerSpendAccumulator(input.reviewers.length);
   const streamedPaid = Array<number>(input.reviewers.length).fill(0);
   const budgetAbort = new AbortController();
@@ -286,6 +299,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     postimagePaths,
     input.evidenceReadOnly === true,
     input.candidatePaths,
+    input.candidatePathsHaveManifest,
   );
   const artifactsBaseDir = input.artifactsDir ?? join(input.evidenceDir, "reviewer-artifacts");
   if (
@@ -306,6 +320,8 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const persistentPatch = input.evidenceReadOnly
     ? readExistingDiffEvidence(persistentEvidenceDir, input.diff)
     : writeDiffEvidence(persistentEvidenceDir, input.diff);
+  if (candidateInventory.mode === "explicit_paths")
+    writeJson(join(persistentEvidenceDir, CHANGED_PATHS_FILE), input.candidatePaths);
   writeJson(
     input.evidenceReadOnly
       ? join(artifactsBaseDir, "evidence-metadata.json")
@@ -353,6 +369,8 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         excludeRoots: [artifactsBaseDir, ...candidateEvidenceExcludeRoots],
         postimagePaths,
         candidateCopyPaths: candidateInventory.copyPaths,
+        candidatePaths: input.candidatePaths,
+        savedCopy: input.savedCopy,
         preserveEvidenceBytes: input.evidenceReadOnly === true,
       });
       const reviewerPatch = input.evidenceReadOnly
@@ -370,6 +388,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         diff_sha256: persistentPatch.diffSha256,
         candidate_inventory_mode: candidateInventory.mode,
         candidate_inventory_reason: candidateInventory.reason,
+        uninspectable_files: reviewerWorkspace.uninspectable,
         ...frozenMetadata,
       });
       const runtimePrompt = buildReviewPrompt(
@@ -380,6 +399,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         {
           sealed: input.evidenceReadOnly === true,
           candidateInventoryMode: candidateInventory.mode,
+          uninspectableFiles: reviewerWorkspace.uninspectable,
         },
       );
       spec = HarnessRunSpec.parse({
@@ -553,6 +573,11 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       streamObservedModel ?? null,
       streamObservedCredentialProfileId,
     );
+    const missed = reviewerWorkspace.uninspectable;
+    uninspectable.push(...missed);
+    findingsByReviewer[index]?.push(
+      ...uninspectedManifestFindings(info, candidateInventory.mode, missed),
+    );
     const sealedParse = input.evidenceReadOnly
       ? parseSealedReviewEnvelopeDetailed(text, info)
       : null;
@@ -686,6 +711,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       crossFamilyVerified: observedFamilies.length >= 2,
       distinctProviders: observedFamilies,
       ...reviewerSpend.summary(),
+      ...uninspectableFacts(uninspectable),
     };
   } finally {
     await cleanupTemporaryReviewerWorkspaceBaseDir(reviewerWorkspaceBaseDir, artifactsBaseDir);

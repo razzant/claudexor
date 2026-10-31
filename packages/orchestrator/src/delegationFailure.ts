@@ -6,10 +6,11 @@ import { newId } from "@claudexor/util";
 import { snapshotTree } from "@claudexor/workspace";
 import { publishUnverifiedGitCandidate } from "./candidateWorkProduct.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
-import type { CandidateRun } from "./candidateEvidence.js";
+import { hasCandidateChanges, type CandidateRun } from "./candidateEvidence.js";
 import { publishDirectoryCandidate } from "./directoryCandidate.js";
 import { delegationBeltToolFailure, delegationBeltUnavailable } from "./delegationToolEvidence.js";
 import { captureRefusalNextActions } from "./secretDiff.js";
+import { CAPTURE_REFUSED_REASON, captureRefusedFacts } from "./captureRefusal.js";
 
 export type DelegationFailureKind = "startup" | "runtime";
 
@@ -103,8 +104,9 @@ export function candidateFailureTerminal(run: CandidateRun, lane: "race" | "conv
     metadata: {
       ...terminal.metadata,
       captureFailure: refusal.failure,
-      // failTerminally derives the reason from the leading cause's phase.
+      // The leading cause owns the reason: a Delegate failure's phase, else the refusal.
       priorFacts: makeOutcomeFacts("failed", { noChanges: null }),
+      ...(delegationFailureKind(run.telemetry) ? {} : { reason: CAPTURE_REFUSED_REASON }),
       nextActions: [...captureRefusalNextActions(refusal), ...terminal.metadata.nextActions],
     },
   };
@@ -117,6 +119,7 @@ type FailedCandidateOutput = {
   log: EventLog;
   paths: RunPaths;
   execRoot: string;
+  projectRoot: string;
   preTurnSha: string | null;
   postTurnSha?: string | null;
   taskId: string;
@@ -143,15 +146,13 @@ export async function persistFailedCandidateOutput(input: FailedCandidateOutput)
  * required Delegate failure becomes terminal. Persist those unavoidable bytes
  * as blocked and revertable; envelope runs stay diagnostic-only. */
 export async function persistFailedInPlaceWorkProduct(input: FailedCandidateOutput): Promise<void> {
-  if (!input.live || (!input.run.diff.trim() && !input.run.captureRefusal)) return;
+  if (!input.live || (!hasCandidateChanges(input.run) && !input.run.captureRefusal)) return;
   const refusal = input.run.captureRefusal;
   if (refusal) {
     // Uncaptured live effects: nothing was rolled back and no patch or revert
     // anchor can be produced, so the record says exactly that.
     const manualCleanup = refusal.disposition === "manual_cleanup";
-    const facts =
-      input.facts ??
-      makeOutcomeFacts("failed", { reason: "workspace_unavailable", noChanges: null });
+    const facts = input.facts ?? captureRefusedFacts();
     input.store.writeYaml(join(input.paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: input.kind,

@@ -1,3 +1,4 @@
+import { runDeliverableOf } from "./run-object-delivery.js";
 import { readCommandIds } from "./command-reads.js";
 import type { CommandListQuery } from "@claudexor/schema";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -185,14 +186,20 @@ export async function handleThreadLifecycleRoutes(
             code: "thread_run_unverifiable",
           });
         }
-        const patch = ctx.readPatch(record);
-        if (patch === null) {
+        // An object result (#535) is evidence by its trees; its view may be absent.
+        const delivery = runDeliverableOf(record);
+        if (delivery === null) {
           throw Object.assign(new Error(`thread run ${runId} is missing required patch evidence`), {
             status: 409,
             code: "thread_run_unverifiable",
           });
         }
-        if (!patch.trim()) {
+        const { patch, deliverable } = delivery;
+        const changed =
+          typeof deliverable === "string"
+            ? patch.trim().length > 0
+            : deliverable.result.base_tree !== deliverable.result.candidate_tree;
+        if (!changed) {
           if (record.state === "succeeded") continue;
           throw Object.assign(new Error(`thread run ${runId} is ${record.state}`), {
             status: 409,

@@ -528,8 +528,10 @@ export const RunDeliveryState = z
     revertAnchorId: z
       .string()
       .nullable()
-      .default(null)
-      .describe("Run-owned revert anchor recorded at apply time; null when none."),
+      .optional()
+      .describe(
+        "Run-owned revert anchor recorded at apply time; null: this state has none, whatever an earlier delivery or the work product named; absent: the work product's stands.",
+      ),
     postTurnSha: z
       .string()
       .nullable()

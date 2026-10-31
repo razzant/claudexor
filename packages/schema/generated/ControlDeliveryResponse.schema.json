@@ -209,6 +209,94 @@
         "targetPreimageSha": {
           "type": "string",
           "description": "Target snapshot verified immediately before delivery."
+        },
+        "refusal": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "result_objects_missing",
+                "delivery_conflict",
+                "delivery_pairing_mismatch",
+                "delivery_target_changed",
+                "delivery_path_occupied",
+                "delivery_outside_sparse_checkout",
+                "delivery_content_mismatch",
+                "revert_conflict",
+                "revert_target_changed",
+                "pr_unrendered_result",
+                "result_path_encoding",
+                "space_insufficient",
+                "git_stalled",
+                "git_signal",
+                "git_failed"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "default": []
+            },
+            "pathCount": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false,
+          "description": "Typed refusal of an object-result delivery (code, message, bounded paths); absent on success or a legacy patch refusal."
+        },
+        "deliveryPair": {
+          "type": "object",
+          "properties": {
+            "schema": {
+              "type": "string",
+              "const": "git_objects/v1"
+            },
+            "object_format": {
+              "type": "string",
+              "enum": [
+                "sha1",
+                "sha256"
+              ],
+              "description": "Object format of the repository whose objects the result names."
+            },
+            "pre_commit": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+              "description": "Target snapshot commit (T) the delivery started from."
+            },
+            "pre_tree": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+              "description": "Tree of T."
+            },
+            "post_tree": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+              "description": "Tree the delivery wrote (M)."
+            }
+          },
+          "required": [
+            "schema",
+            "object_format",
+            "pre_commit",
+            "pre_tree",
+            "post_tree"
+          ],
+          "additionalProperties": false,
+          "description": "Pre/post trees of an object-result delivery whose write is on the target (revert runs on this pair); absent when nothing of it stayed, and for a legacy patch delivery."
         }
       },
       "required": [

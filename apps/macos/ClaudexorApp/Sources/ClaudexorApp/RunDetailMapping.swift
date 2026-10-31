@@ -130,7 +130,8 @@ enum RunDetailMapping {
                 ].compactMap { $0 }.joined(separator: " · "),
                 filesChanged: c.diffstat?.files ?? 0,
                 added: c.diffstat?.additions ?? 0,
-                removed: c.diffstat?.deletions ?? 0
+                removed: c.diffstat?.deletions ?? 0,
+                hasLineCounts: c.diffstat != nil
             )
         }
     }

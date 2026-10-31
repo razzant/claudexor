@@ -18,7 +18,7 @@ import {
 import { type ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { type EventLog } from "@claudexor/event-log";
 import { newId, sha256 } from "@claudexor/util";
-import type { CaptureRefusal } from "./secretDiff.js";
+import { directoryCaptureRefusal, type CaptureRefusal } from "./captureRefusal.js";
 
 export interface DirectoryCandidate extends CapturedWorkspaceFiles {
   artifactRoot: string;
@@ -57,21 +57,17 @@ export async function captureDirectoryCandidate(input: {
       observedPaths: input.observedPaths,
     });
     return { files: { ...files, artifactRoot: input.artifactRoot } };
-  } catch {
-    await rm(join(input.artifactRoot, "final/files"), { recursive: true, force: true });
-    return {
-      refusal: {
-        disposition:
-          input.envelope.worktree_path === input.envelope.repo_root
-            ? "manual_cleanup"
-            : "discarded",
-        detail:
-          "Directory output capture failed (containment, read or size); no file payload was published. Direct effects require inspection, not a fabricated rollback.",
-        // A capture that could not prove containment or read its files fails
-        // closed; content is never a cause (INV-146). The typed phase is kept.
-        phase: "artifact_security",
-      },
-    };
+  } catch (error) {
+    // The partial payload is no result and goes. One that cannot be removed stays,
+    // never in place of the capture's own cause: the refusal names it beside that.
+    try {
+      await rm(join(input.artifactRoot, "final/files"), { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (error instanceof Error && Object.isExtensible(error) && !("cleanupError" in error))
+        Object.defineProperty(error, "cleanupError", { value: cleanupError, enumerable: false });
+    }
+    const inPlace = input.envelope.worktree_path === input.envelope.repo_root;
+    return { refusal: directoryCaptureRefusal(error, inPlace) };
   }
 }
 

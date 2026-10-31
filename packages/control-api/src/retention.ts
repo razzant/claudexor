@@ -20,6 +20,7 @@ import {
   type GcRunDeletion,
 } from "@claudexor/schema";
 import { prunePatchObjects, redactSecrets } from "@claudexor/util";
+import { pruneProjectObjectStore } from "@claudexor/workspace";
 export { readRunTombstone } from "./run-tombstone.js";
 import { treeReclaimableBytes } from "./retention-bytes.js";
 import { ageStampOf, runKeepReason } from "./retention-candidates.js";
@@ -422,6 +423,16 @@ export async function runRetentionPass(
         plannedUnlinks,
         deps.signal,
       );
+      // #535: objects live while a run, thread, envelope or anchor owning them
+      // exists; a run retired here (in a dry run too) owns nothing any more.
+      const retiredOwners = new Set(
+        deletedRuns
+          .filter((run) => run.project_root === project.root)
+          .map((run) => join(project.runsDir, run.run_id)),
+      );
+      freedBytes += (
+        await pruneProjectObjectStore(dirname(project.runsDir), { dryRun, retiredOwners })
+      ).freedBytes;
       if (!dryRun && proofCurrent())
         pruneEmptyRuntimeDirectories(
           dirname(project.runsDir),

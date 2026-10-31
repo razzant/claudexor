@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import type {
   ApplyEligibility,
   DecisionRecord,
+  GitObjectResult,
   FinalVerifyRecord,
   RunApplyState,
   WorkProduct,
@@ -25,7 +26,11 @@ export interface ApplyGateInput {
   state?: string | null;
   decision: DecisionRecord | null;
   workProduct: WorkProduct | null;
+  /** The rendered patch view ("" when an object result has none). */
   patch: string;
+  /** The verified object result (#535): when present it is the identity that
+   * work-product integrity and decision binding check, never the patch text. */
+  gitResult?: GitObjectResult | null;
   filesManifest?: WorkspaceFilesManifest;
   manifestSha256?: string;
   /** Repo root recorded by the run (contract/params); null when unknown. */
@@ -155,7 +160,7 @@ function hasValidRiskOverride(input: ApplyGateInput): boolean {
     (d.action === "accept_risk" || d.action === "override_needs_human") &&
     (input.workProduct?.kind === "files"
       ? typeof d.manifest_sha256 === "string" && d.manifest_sha256 === input.manifestSha256
-      : typeof d.patch_sha256 === "string" && d.patch_sha256 === sha256(input.patch))
+      : typeof d.patch_sha256 === "string" && d.patch_sha256 === resultIdentity(input))
   );
 }
 
@@ -257,15 +262,27 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   if (!files && input.workProduct.kind !== "patch")
     return `work product kind ${input.workProduct.kind} is not applyable as a patch`;
   if (!files && input.exactPatchUnavailable) return EXACT_PATCH_UNAVAILABLE_MESSAGE;
-  const recorded = input.workProduct.meta?.[files ? "manifest_sha256" : "patch_sha256"];
+  const objectResult = !files && input.gitResult ? input.gitResult : null;
+  const recorded = objectResult
+    ? (input.workProduct.meta?.["git_result"] as { digest?: unknown } | undefined)?.digest
+    : input.workProduct.meta?.[files ? "manifest_sha256" : "patch_sha256"];
   if (typeof recorded !== "string" || recorded.length === 0)
     return files
       ? "work product manifest hash is required before apply"
       : "work product patch hash is required before apply";
-  if (recorded !== (files ? input.manifestSha256 : sha256(input.patch)))
+  if (recorded !== (files ? input.manifestSha256 : resultIdentity(input)))
     return files
       ? "manifest hash does not match the recorded work product"
       : "patch artifact hash does not match the recorded work product";
+  // A rendered view of an object result must be the view of THAT result.
+  const viewDigest = input.workProduct.meta?.["patch_sha256"];
+  if (
+    objectResult &&
+    typeof viewDigest === "string" &&
+    input.patch &&
+    viewDigest !== sha256(input.patch)
+  )
+    return "patch artifact hash does not match the recorded work product";
   if (!input.originalRepoRoot) return "run original project is unknown; refusing apply";
   try {
     if (realpathSync(input.originalRepoRoot) !== realpathSync(input.targetRepoRoot)) {
@@ -278,7 +295,9 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   // ancestor resolution. Unchanged baseline links are not mutations to fence.
   if (files) return null;
   // Workspace confinement (defense-in-depth on top of `git apply`): every
-  // patched path must resolve INSIDE the target repo root.
+  // patched path must resolve INSIDE the target repo root. An object result is
+  // written by Git's checkout, which refuses paths outside the worktree and
+  // beyond symbolic links; its rendered view, when present, is fenced too.
   for (const path of patchPaths(input.patch)) {
     const guard = pathGuard(input.targetRepoRoot, path);
     if (!guard.allowed) return `patch path escapes the target repo: ${guard.reason}`;
@@ -360,6 +379,12 @@ export function deriveApplyEligibility(input: ApplyGateInput): ApplyEligibility 
     reason,
     requiredAction: applyHint(input.decision, input.state ?? null),
   };
+}
+
+/** The identity decisions and work-product integrity bind: digest v1 for an
+ * object result, else the exact patch digest (legacy). */
+function resultIdentity(input: Pick<ApplyGateInput, "gitResult" | "patch">): string {
+  return input.gitResult?.digest ?? sha256(input.patch);
 }
 
 /** Paths touched by a unified git diff (both old and new sides, excluding /dev/null). */

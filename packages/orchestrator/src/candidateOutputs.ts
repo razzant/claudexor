@@ -14,6 +14,12 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { unrenderedResultNotice } from "./resultNotice.js";
+import type {
+  CaptureChangeInventory,
+  GitObjectResult,
+  PatchViewUnavailable,
+} from "@claudexor/schema";
 import type { Stats } from "node:fs";
 import { dirname, extname, join, relative as pathRelative, resolve, sep } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
@@ -227,6 +233,39 @@ export function stageFileBackedContext(worktreePath: string, content?: string): 
   };
 }
 
+/** A candidate's saved-file copy as synthesis is given it (see `savedCandidate.ts`). */
+type SynthesisSavedFiles = {
+  dir: string;
+  unavailable: readonly { path: string; reason: string }[];
+  failed?: boolean;
+};
+
+/** Where synthesis reads an object result without a patch view (#535): a copy of
+ * the files its saved tree holds, kept until synthesis ends, and the exact changed
+ * paths. The candidate's workspace is no source: a gate may have rewritten it. A
+ * copy that failed is no source either: synthesis gets each file's cause and no
+ * directory, whatever the failed copy left in its own. */
+function unrenderedCandidateLocator(candidate: {
+  savedFiles?: SynthesisSavedFiles | null;
+  changedPaths?: string[];
+}): string {
+  const saved = candidate.savedFiles;
+  if (!saved)
+    return "\nThis candidate's saved files are not available to synthesis: its changed files cannot be read.";
+  if (saved.failed)
+    return (
+      `\nThe copy of the files this result saved failed, so synthesis cannot read them: their content is unknown and they are not deleted (each with why the copy failed): ${JSON.stringify(saved.unavailable)}.` +
+      ` Changed paths, as JSON (a listed path not named there was deleted): ${JSON.stringify(candidate.changedPaths ?? [])}`
+    );
+  return (
+    `\nThe files this result saved are copied to ${saved.dir} (kept until synthesis ends): read the changed files there and never edit them.` +
+    ` Changed paths, as JSON (a listed path absent there was deleted): ${JSON.stringify(candidate.changedPaths ?? [])}` +
+    (saved.unavailable.length
+      ? ` These could not be copied and are not deleted, so their content is unknown (each with why it could not): ${JSON.stringify(saved.unavailable)}`
+      : "")
+  );
+}
+
 export function buildFileBackedSynthesisInput(input: {
   instructions: string;
   findings: readonly string[];
@@ -234,6 +273,13 @@ export function buildFileBackedSynthesisInput(input: {
     label: string;
     attemptId: string;
     diff: string;
+    /** An object result without a patch view (#535) is given as a bounded
+     * notice plus a copy of its saved files and its exact changed paths. */
+    patchViewUnavailable?: PatchViewUnavailable;
+    result?: GitObjectResult;
+    inventory?: CaptureChangeInventory;
+    changedPaths?: string[];
+    savedFiles?: SynthesisSavedFiles | null;
     files?: {
       manifestPath: string;
       manifestSha256: string;
@@ -247,7 +293,10 @@ export function buildFileBackedSynthesisInput(input: {
       const files = candidate.files
         ? `\n\nComplete directory candidate files are retained at ${candidate.files.artifactRoot}; read the manifest at ${candidate.files.manifestPath} (sha256 ${candidate.files.manifestSha256}) and inspect every referenced postimage before editing.\n${JSON.stringify(candidate.files.manifest)}`
         : "";
-      return `### ${candidate.label} (${candidate.attemptId})\n${candidate.diff}${files}`;
+      const body = candidate.patchViewUnavailable
+        ? unrenderedResultNotice(candidate) + unrenderedCandidateLocator(candidate)
+        : candidate.diff;
+      return `### ${candidate.label} (${candidate.attemptId})\n${body}${files}`;
     })
     .join("\n\n");
   return {
@@ -378,11 +427,14 @@ export function writeCandidateAttemptArtifacts(input: {
   artifactRelativeDir: string | null;
   /** The EXACT candidate diff: diffstat and changed paths are computed on it. */
   diff: string;
+  /** Set for an object result without a rendered view (#535). */
+  patchViewUnavailable?: unknown;
+  changedPaths?: string[];
   /** False when no candidate patch may be retained (readonly or uncaptured):
    * even an empty patch.diff would falsely imply an inspectable patch exists. */
   persistPatch?: boolean;
-  /** False for an uncaptured candidate: no answer-adjacent or artifact-dir
-   * media is retained. */
+  /** False only where the run keeps no produced-media plane (directory results
+   * retain their own files). An uncaptured candidate still keeps its media. */
   persistProducedMedia?: boolean;
   answerText?: string;
   record: Record<string, unknown>;
@@ -392,11 +444,15 @@ export function writeCandidateAttemptArtifacts(input: {
   if (input.answerText) {
     input.store.writeText(join(input.attemptDir, "answer.md"), input.answerText);
   }
-  const persistPatch = input.persistPatch !== false;
+  // An unrendered object result has no patch view: no patch.diff, never an empty one (F).
+  const unrendered = input.patchViewUnavailable !== undefined;
+  const persistPatch = input.persistPatch !== false && !unrendered;
   if (persistPatch) {
     input.store.writePatch(join(input.attemptDir, "patch.diff"), input.diff);
   }
-  const stats = summarizeDiffPaths(input.diff);
+  const stats = unrendered
+    ? { paths: input.changedPaths ?? [], additions: null, deletions: null }
+    : summarizeDiffPaths(input.diff);
   // Build one candidate path set before the first filesystem write. A raster
   // may be both linked from markdown and discovered under the owned artifact
   // directory; copying each source in a separate pass would race itself on the
@@ -415,7 +471,7 @@ export function writeCandidateAttemptArtifacts(input: {
         });
   input.store.writeYaml(join(input.attemptDir, "attempt.yaml"), {
     ...input.record,
-    ...(persistPatch
+    ...(persistPatch || unrendered
       ? {
           diffstat: {
             files: stats.paths.length,
@@ -428,14 +484,6 @@ export function writeCandidateAttemptArtifacts(input: {
     ...(omitted.length ? { produced_omitted: omitted } : {}),
   });
   return { produced, omitted };
-}
-
-/** `\n`-prefixed omission line for a summary template; "" when nothing was left out. */
-export function producedOmissionDisclosure(
-  omitted: readonly ProducedOmission[] | undefined,
-): string {
-  const line = producedOmissionSummaryLine(omitted);
-  return line ? `\n${line}` : "";
 }
 
 /** One `summary.md` line naming every produced image that was not saved, with

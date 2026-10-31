@@ -1,6 +1,21 @@
 import type { DiffEvidence } from "@claudexor/context";
+import { redactSecrets } from "@claudexor/util";
+import type { ReviewerInventoryMode, UninspectableReviewerFile } from "./reviewRuntimeTypes.js";
 import { RELEASE_NATIVE_CHECKLIST_ITEMS } from "./sealedReviewEnvelope.js";
 export { RELEASE_NATIVE_CHECKLIST_ITEMS } from "./sealedReviewEnvelope.js";
+
+/** In a Git result with no rendered patch's evidence packet: a JSON array of its exact changed paths. */
+export const CHANGED_PATHS_FILE = "CHANGED_PATHS.json";
+
+/** Candidate files a reviewer copy could not inspect, counted and named (#535):
+ * bounded to the first 20, paths redacted like every disclosed path. */
+export function describeUninspectableFiles(files: readonly UninspectableReviewerFile[]): string {
+  const named = files
+    .slice(0, 20)
+    .map((f) => `${JSON.stringify(redactSecrets(f.path))} (${f.reason})`);
+  const more = files.length > 20 ? `, and ${files.length - 20} more` : "";
+  return `${files.length} candidate file(s) could not be inspected: ${named.join(", ")}${more}`;
+}
 
 /** Provider-strict structural boundary for a frozen release review. Every
  * object is closed and fully required for native structured-output support.
@@ -96,7 +111,8 @@ export function buildReviewPrompt(
     | boolean
     | {
         sealed?: boolean;
-        candidateInventoryMode?: "git_visible" | "diff_only" | "explicit_manifest";
+        candidateInventoryMode?: ReviewerInventoryMode;
+        uninspectableFiles?: readonly UninspectableReviewerFile[];
       } = false,
 ): string {
   const options =
@@ -122,12 +138,23 @@ export function buildReviewPrompt(
       ? [
           `Read FILES.json in ${evidenceDir} completely. It records the full selected input footprint, before/after states and hashes. Inspect the candidate files listed there, including binary outputs through appropriate tools. DIFF.patch is only a diagnostic preview and may be empty for this file work product. Do not infer no changes from an empty patch.`,
         ]
-      : []),
+      : options.candidateInventoryMode === "explicit_paths"
+        ? [
+            `This result has no rendered patch. Read ${CHANGED_PATHS_FILE} in ${evidenceDir} completely: a JSON array of every path the result changed, relative to Candidate root. Inspect those files there, including binary outputs through appropriate tools. A listed path that is absent from Candidate root and not named as uninspected below was deleted by this result. DIFF.patch holds only the notice that no patch was rendered. Do not infer no changes from it.`,
+          ]
+        : []),
     `Candidate root: ${candidateRoot}.`,
+    ...(options.uninspectableFiles?.length
+      ? [
+          `${describeUninspectableFiles(options.uninspectableFiles)}. They were not copied into Candidate root: never treat them as unchanged or safe; a claim that depends on one is INSUFFICIENT_EVIDENCE.`,
+        ]
+      : []),
     sealed
       ? `First read MANIFEST.sha256 and every file it seals in ${evidenceDir}, including FREEZE.json and DECIDED_TRADEOFFS.md, and confirm every sealed file is present. The packet's manifest digest was already cryptographically verified by the review runtime before this session launched (verifySealedEvidencePacket, digest-bound to the frozen identity below); re-hashing the entries yourself is OPTIONAL — do it when your environment permits, but the inability to run a checksum tool is NOT grounds for INSUFFICIENT_EVIDENCE. If the manifest or a sealed file is missing or unreadable, return INSUFFICIENT_EVIDENCE.`
       : `First read the evidence packet in ${evidenceDir} (USER_INTENT.md, FORBIDDEN_FINDINGS.md, PLAN_ACCEPTED.md, DECIDED_TRADEOFFS.md, TESTS.txt, DIFF.patch, DIFF_SUMMARY.md). If a mandatory file is missing, return INSUFFICIENT_EVIDENCE.`,
-    `Review ${label}'s change from the file-backed patch artifact, not from this prompt. Full patch: ${patch.diffPath}. Summary: ${patch.summaryPath}. Patch digest: ${patch.diffSha256}.`,
+    options.candidateInventoryMode === "explicit_paths"
+      ? `Review ${label}'s change from its changed files in Candidate root, not from this prompt. Notice: ${patch.diffPath}. Summary: ${patch.summaryPath}. Notice digest: ${patch.diffSha256}.`
+      : `Review ${label}'s change from the file-backed patch artifact, not from this prompt. Full patch: ${patch.diffPath}. Summary: ${patch.summaryPath}. Patch digest: ${patch.diffSha256}.`,
     ...(options.candidateInventoryMode === "diff_only"
       ? [
           "Candidate root is a disclosed diff-only projection because no Git inventory was available. It contains changed postimages, not unchanged sibling context. If a concrete claim requires an unavailable sibling, return INSUFFICIENT_EVIDENCE instead of guessing.",

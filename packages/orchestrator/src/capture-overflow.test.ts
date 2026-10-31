@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import {
   makeOutcomeFacts,
 } from "@claudexor/schema";
 import {
+  GitOperationError,
   WorkspaceManager,
   envelopeBaseOf,
   readEnvelopeCustody,
@@ -58,8 +59,43 @@ function repo() {
 const answer = "The requested work is complete.";
 const yaml = (path: string) =>
   new ArtifactStore(dirname(path)).readYaml<Record<string, any>>(path)!;
+/** What the workspace's own bounded inventory pass attaches to a refused capture. */
+const INVENTORY = {
+  exact: false,
+  changedFiles: 2,
+  largest: [
+    { path: "unique.txt", change: "added", sizeBytes: 8 },
+    { path: "file.txt", change: "modified", sizeBytes: 7 },
+  ],
+};
+/** #535 phase 2: the typed Git failure classes that remain after object capture. */
+const GIT_FAILURES: Record<string, () => Error> = {
+  space: () =>
+    new GitOperationError("capture_space_insufficient", "capture needs more space", {
+      requiredBytes: 2_000_000_000,
+      availableBytes: 1_000_000,
+    }),
+  stall: () =>
+    new GitOperationError("capture_git_stalled", "git add -A made no progress", {
+      stallMs: 120000,
+    }),
+  signal: () =>
+    new GitOperationError("capture_git_signal", "git add was terminated", { signal: "SIGKILL" }),
+  read: () => new GitOperationError("capture_read_failed", "error: unable to index file 'x'"),
+  missing: () => new GitOperationError("capture_object_missing", "fatal: bad object 1234"),
+  multiline: () =>
+    new GitOperationError(
+      "capture_read_failed",
+      "error: open(\"x\"): Permission denied\nerror: unable to index file 'x'\nfatal: adding files failed\n",
+    ),
+};
 const cause = (kind: string): Error => {
+  if (GIT_FAILURES[kind]) return GIT_FAILURES[kind]!();
   if (kind === "overflow") return new CaptureOutputExceeded("stdout");
+  if (kind === "inventory")
+    return Object.defineProperty(new CaptureOutputExceeded("stdout"), "captureInventory", {
+      value: INVENTORY,
+    });
   if (kind === "drain")
     return Object.assign(new Error("incomplete pipe"), {
       code: "capture_output_incomplete",
@@ -260,6 +296,83 @@ async function delegateParentAtDrain(
 }
 
 it.each([
+  {
+    kind: "space",
+    code: "capture_space_insufficient",
+    text: "not enough free disk space to keep the exact result (2000000000 bytes needed, 1000000 free)",
+  },
+  {
+    kind: "stall",
+    code: "capture_git_stalled",
+    text: "Git stopped making progress while recording the result (no progress for 120000 ms)",
+  },
+  {
+    kind: "signal",
+    code: "capture_git_signal",
+    text: "Git was terminated by SIGKILL while recording the result",
+  },
+  {
+    kind: "read",
+    code: "capture_read_failed",
+    text: "a changed file could not be read while recording the result",
+  },
+  {
+    kind: "missing",
+    code: "capture_object_missing",
+    text: "a Git object the result needs was missing",
+  },
+])(
+  "#535: a remaining $kind failure is an honest 'failed' with its exact cause, the answer kept, no retry",
+  async ({ kind, code, text }) => {
+    for (const options of [{ inPlace: true }, {}] as Partial<RunInput>[]) {
+      const f = await attempt(options, kind);
+      expect(f.result.lifecycle).toBe("failed");
+      expect(f.result.facts).toMatchObject({ reason: "capture_refused", noChanges: null });
+      const failure = RunFailure.parse(yaml(join(f.result.runDir, "final/failure.yaml")));
+      expect(failure.captureFailure?.code).toBe(code);
+      expect(failure.safeMessage).toContain(text);
+      expect(failure.safeMessage).not.toContain("workspace_unavailable");
+      expect(failure.nextActions.join("\n")).not.toMatch(/retry/i);
+      expect(readFileSync(join(f.result.runDir, "attempts/a01/answer.md"), "utf8").trim()).toBe(
+        answer,
+      );
+      expect(failure.safeMessage).toContain("Kept: the final answer, any media the run produced");
+      expect(existsSync(join(f.result.runDir, "final", "patch.diff"))).toBe(false);
+      vi.restoreAllMocks();
+    }
+  },
+);
+
+it.each([
+  { kind: "read", detail: "error: unable to index file 'x'" },
+  { kind: "missing", detail: "fatal: bad object 1234" },
+  {
+    kind: "multiline",
+    detail:
+      "error: open(\"x\"): Permission denied error: unable to index file 'x' fatal: adding files failed",
+  },
+  // A generic fault: its secret-like text is redacted before any surface sees it.
+  { kind: "error", detail: "capture failed [redacted]" },
+])(
+  "#535 F11: the human receipt of a $kind refusal carries the typed failure's redacted diagnostic",
+  async ({ kind, detail }) => {
+    for (const options of [{ inPlace: true }, {}] as Partial<RunInput>[]) {
+      const f = await attempt(options, kind);
+      const failure = RunFailure.parse(yaml(join(f.result.runDir, "final/failure.yaml")));
+      // The human prose shows the same bounded, redacted diagnostic the
+      // machine record keeps, on one line (CLI and app print safeMessage).
+      expect(failure.captureFailure?.message.replace(/\s+/g, " ").trim()).toBe(detail);
+      const summary = readFileSync(join(f.result.runDir, "final/summary.md"), "utf8");
+      for (const text of [failure.safeMessage, summary])
+        expect(text).toContain(`Detail: ${detail}.`);
+      expect(failure.safeMessage).toContain("Kept: the final answer, any media the run produced");
+      expect(JSON.stringify(failure) + summary).not.toContain(["sk", "x".repeat(24)].join("-"));
+      vi.restoreAllMocks();
+    }
+  },
+);
+
+it.each([
   { label: "live", options: { inPlace: true }, kind: "overflow" },
   { label: "standalone", options: {}, kind: "error" },
   { label: "daemon singleton", options: { continuation: { retain: true } }, kind: "cleanup" },
@@ -273,7 +386,8 @@ it.each([
     const expected = options.n === 2 ? 2 : 1;
     expect(f.executions).toHaveLength(expected);
     expect(f.result.lifecycle).toBe("failed");
-    expect(f.result.facts).toMatchObject({ reason: "workspace_unavailable", noChanges: null });
+    // Headline A: the run failed for its own capture reason, not a missing workspace.
+    expect(f.result.facts).toMatchObject({ reason: "capture_refused", noChanges: null });
     expect(f.result.spendUsd).toBe(0.125 * expected);
     expect(f.envelopes).toHaveLength(expected); // Failed post-try capture is reused.
     expect(f.afterTry).toHaveBeenCalledTimes(expected);
@@ -307,6 +421,25 @@ it.each([
       );
     }
     if (kind === "drain") expect(failure.captureFailure?.drain).toBe("truncated");
+    // Capture runs after the work: no action replays the authoring.
+    expect(failure.nextActions.join("\n")).not.toMatch(/retry/i);
+    expect(failure.nextActions).toContain(
+      "Decide on those changes yourself: Claudexor kept no exact result to apply or revert",
+    );
+    // The receipt names what was not recorded and what is kept.
+    expect(failure.safeMessage).toContain("Not recorded: the exact result");
+    expect(failure.safeMessage).toContain("Kept: the final answer, any media the run produced");
+    // Since #535 phase 2 there is no per-result size ceiling to announce.
+    expect(failure.safeMessage).not.toContain("over the limit");
+    // Completed work whose only defect is packaging is not resumable work.
+    expect(existsSync(join(f.result.runDir, "final/resumable.yaml"))).toBe(false);
+    const terminal = readFileSync(join(f.result.runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; payload: Record<string, unknown> })
+      .findLast((event) => event.type === "run.failed");
+    expect(terminal?.payload).toMatchObject({ reason: "capture_refused" });
+    expect(terminal?.payload).not.toHaveProperty("resumable");
     expect(JSON.stringify(failure)).not.toContain(["sk", "x".repeat(24)].join("-"));
     expect(existsSync(join(f.result.runDir, "final/patch.diff"))).toBe(false);
     for (const env of f.envelopes) {
@@ -527,7 +660,7 @@ it.each(LANES)(
       "Fit the input to the reported transport limit or supply source references",
       "Choose another compatible harness if the complete input must remain inline",
       `Inspect the changed files at ${env.worktree_path}`,
-      "Retry the run",
+      "Decide on those changes yourself: Claudexor kept no exact result to apply or revert",
     ]);
     expect(existsSync(join(f.result.runDir, "final/patch.diff"))).toBe(false);
     const product = join(f.result.runDir, "final/work_product.yaml");
@@ -925,11 +1058,14 @@ it.each([...LANES, ...withBeltFailure] as {
       code: "delegation_child_drain_timeout",
       captureFailure: { code: "capture_failed", cleanup: { code: "EACCES" } },
     });
+    // The drain failure leads with its own generic remedy; the capture's
+    // inspection and decision actions follow, with no retry of their own.
     expect(f.publicFailure?.nextActions).toEqual([
       "Open diagnostics",
       "Retry the run",
       `Inspect the changed files at ${env.worktree_path}`,
       "Inspect Claudexor temporary state: private scratch cleanup failed",
+      "Decide on those changes yourself: Claudexor kept no exact result to apply or revert",
       ...(end
         ? [
             "Inspect attempts/a01/attempt.yaml",
@@ -1033,6 +1169,7 @@ it("refuses a clipped legacy plain preview at exact consumers and leaves the liv
     envelope,
     inPlace: true,
     holder: { runId: "r-legacy", runDir: join(root, "run") },
+    contract: { tests: { commands: [] }, review_requested: false },
   });
   expect(capture.diff).toBe("");
   expect(capture.captureRefusal).toMatchObject({
@@ -1043,4 +1180,104 @@ it("refuses a clipped legacy plain preview at exact consumers and leaves the liv
   await expect(wsm.diff(envelope)).rejects.toMatchObject({ code: "capture_preview_truncated" });
   await new WorkspaceManager(root).dispose(envelope);
   expect(readFileSync(join(root, "large.txt"), "utf8")).toHaveLength(250_000);
+});
+
+it("names the refused capture's non-exact inventory, never a patch", async () => {
+  const f = await attempt({ inPlace: true, attempts: null }, "inventory");
+  expect(f.result.facts).toMatchObject({ lifecycle: "failed", reason: "capture_refused" });
+  const failure = RunFailure.parse(yaml(join(f.result.runDir, "final/failure.yaml")));
+  expect(failure.captureFailure).toMatchObject({
+    code: "capture_output_exceeded",
+    inventory: INVENTORY,
+  });
+  expect(yaml(join(f.result.runDir, "attempts/a01/attempt.yaml")).capture_refusal).toMatchObject({
+    failure: { inventory: INVENTORY },
+  });
+  const summary = readFileSync(join(f.result.runDir, "final/summary.md"), "utf8");
+  expect(summary).toContain("- Lifecycle: failed (capture_refused)");
+  expect(summary).toContain(
+    "Largest changed files (inventory, not exact, not a patch): 2 changed\n- added unique.txt · 8 bytes",
+  );
+  // Exact-or-nothing: no patch file of any kind is published for the refusal.
+  expect(existsSync(join(f.result.runDir, "final/patch.diff"))).toBe(false);
+  expect(existsSync(join(f.result.runDir, "attempts/a01/patch.diff"))).toBe(false);
+});
+
+it.each([
+  { end: "refusal" as const, lifecycle: "failed", cause: "other" },
+  { end: "stop" as const, lifecycle: "cancelled", cause: "cancelled" },
+])(
+  "keeps continuation facts the work itself earned ($end) beside a refused capture",
+  async ({ end, lifecycle, cause: resumableCause }) => {
+    const f = await attempt({ inPlace: true, attempts: null }, "overflow", end);
+    expect(f.result.lifecycle).toBe(lifecycle);
+    const terminal = readFileSync(join(f.result.runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; payload: Record<string, unknown> })
+      .findLast((event) => event.type === "run.failed");
+    // An execution error or a cancel leaves unfinished work: it stays continuable.
+    expect(terminal?.payload["resumable"]).toMatchObject({
+      cause: resumableCause,
+      workspace: { kind: "in_place" },
+    });
+  },
+);
+
+it("keeps run-produced media when the capture is refused: a run copy and the live directory", async () => {
+  const root = repo();
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+    "base64",
+  );
+  let shot = "";
+  const base = createFakeHarness("fake-success");
+  const adapter: HarnessAdapter = {
+    ...base,
+    async discover() {
+      const manifest = await base.discover();
+      return { ...manifest, capabilities: { ...manifest.capabilities, browser_tool: true } };
+    },
+    async *run(spec) {
+      const common = { session_id: spec.session_id, ts: new Date().toISOString() };
+      yield { ...common, type: "started", observed_model: "media-fixture" };
+      // The browser descriptor names the run-owned (marker-bound) artifact child.
+      mkdirSync(spec.browser!.output_dir!, { recursive: true });
+      shot = join(spec.browser!.output_dir!, "screenshot.png");
+      writeFileSync(shot, png);
+      writeFileSync(join(spec.cwd, "file.txt"), "after\r\n");
+      yield { ...common, type: "message", text: answer, final: true };
+      yield { ...common, type: "completed", exit_code: 0 };
+    },
+  };
+  vi.spyOn(WorkspaceManager.prototype, "captureDiff").mockRejectedValue(
+    new CaptureOutputExceeded("stdout"),
+  );
+  const result = await new Orchestrator({
+    registry: new Map([[adapter.id, adapter]]),
+    reviewers: [],
+  }).run({
+    repoRoot: root,
+    mode: "agent",
+    prompt: "take a screenshot",
+    harnesses: [adapter.id],
+    n: 1,
+    attempts: null,
+    inPlace: true,
+    browser: true,
+    web: "auto",
+  });
+  expect(result.facts).toMatchObject({ lifecycle: "failed", reason: "capture_refused" });
+  expect(shot).toContain(".claudexor-artifacts/");
+  const produced = yaml(join(result.runDir, "attempts/a01/attempt.yaml"))
+    .produced_files as string[];
+  expect(produced).toHaveLength(1);
+  expect(shot.endsWith(produced[0]!)).toBe(true);
+  // The run keeps its own copy, and in-place disposal kept the live directory.
+  expect(readFileSync(join(result.runDir, "attempts/a01/produced", produced[0]!))).toEqual(png);
+  expect(readFileSync(shot)).toEqual(png);
+  // The retained answer stays the diagnostic primary output and links the copy.
+  const retained = readFileSync(join(result.runDir, "final/retained-output.md"), "utf8");
+  expect(retained).toContain(answer);
+  expect(retained).toContain(`attempts/a01/produced/${produced[0]}`);
 });

@@ -1,18 +1,25 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { checkPatch, checkPatchReverse, verifyAndDeliver } from "@claudexor/delivery";
+import {
+  checkPatch,
+  checkPatchReverse,
+  checkResultOnTarget,
+  verifyAndDeliver,
+} from "@claudexor/delivery";
 import {
   ControlApplyCheckRequest,
   ControlApplyCheckResponse,
   ControlApplyRequest,
   ControlDeliveryResponse,
   type FinalVerifyRecord,
+  type GitDeliveryPair,
   type RunApplyState,
   type WorkspaceFilesManifest,
 } from "@claudexor/schema";
-import { sha256 } from "@claudexor/util";
 import type { DaemonRunRecord } from "./daemon-server.js";
 import { requiredIdempotencyKey, validateAbsoluteRepoRoot } from "./run-start.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
+import { deliveryRefusedError, markRunWriteLeft } from "./run-object-delivery.js";
+import { runDeliverable } from "./run-exact-patch.js";
 import { applyFilesResult, checkFilesResult } from "./files-apply-route.js";
 
 export interface DeliveryCommandServices {
@@ -25,6 +32,7 @@ export interface DeliveryCommandServices {
     result?: unknown;
     error?: string;
     errorCode?: string;
+    errorRequiredActions?: string[];
     errorContext?: Record<string, unknown>;
     reused: boolean;
   }>;
@@ -64,6 +72,9 @@ export async function runIdempotentDelivery<T>(
       throw Object.assign(new Error(command.error ?? "delivery failed"), {
         status: typeof receipt["status"] === "number" ? receipt["status"] : 409,
         code: command.errorCode ?? receipt["code"] ?? "delivery_failed",
+        ...(command.errorRequiredActions?.length
+          ? { requiredActions: command.errorRequiredActions }
+          : {}),
         ...(command.errorContext ? { context: command.errorContext } : {}),
       });
     }
@@ -110,6 +121,10 @@ export interface RunApplyRouteContext {
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown): void;
   readPatch(record: DaemonRunRecord): string | null;
+  /** The run's deliverable (#535): an object result with its exact view, or a legacy patch. */
+  readDeliverable(record: DaemonRunRecord): ReturnType<typeof runDeliverable>;
+  /** Project root owning the run's object store (the run's original project). */
+  projectRoot(record: DaemonRunRecord): string | null;
   targetRoot(
     target: ControlApplyCheckRequest["target"] | ControlApplyRequest["target"],
     record: DaemonRunRecord,
@@ -124,8 +139,13 @@ export interface RunApplyRouteContext {
   chainMutation<T>(record: DaemonRunRecord, work: () => Promise<T>): Promise<T>;
   appendAudit(record: DaemonRunRecord, type: string, payload: Record<string, unknown>): void;
   /** Persist applyState=applied on the run's delivery-state artifact after a
-   * delivery reports applied=true (round-15 #2) — idempotent, best-effort. */
-  markApplied(record: DaemonRunRecord): void;
+   * delivery reports applied=true (round-15 #2) — idempotent, best-effort. An
+   * object delivery also anchors its actual pair, so it becomes revertable. */
+  markApplied(
+    record: DaemonRunRecord,
+    delivered?: { deliveryPair?: GitDeliveryPair },
+    root?: string,
+  ): void | Promise<void>;
   markFilesApplied?(
     record: DaemonRunRecord,
     paths: string[],
@@ -165,14 +185,37 @@ export async function handleRunApplyRoutes(
         ctx.json(res, 200, await checkFilesResult(ctx, record, root, body.paths));
         return true;
       }
-      const patch = ctx.readPatch(record);
-      if (patch === null)
+      const delivery = ctx.readDeliverable(record);
+      if (delivery === null)
         throw Object.assign(new Error("no patch artifact for this run"), { status: 404 });
+      const { patch } = delivery;
       const root = ctx.targetRoot(body.target, record);
       if (!root)
         throw Object.assign(new Error("project root is required for apply check"), { status: 400 });
       const rootError = validateAbsoluteRepoRoot(root);
       if (rootError) throw Object.assign(new Error(rootError), { status: 400 });
+      if (typeof delivery.deliverable !== "string") {
+        // An object result checks by composing onto the current target (#535).
+        const checked = await checkResultOnTarget(
+          root,
+          delivery.deliverable.result,
+          ctx.projectRoot(record) ?? root,
+        );
+        const gateError = checked.alreadyApplied ? null : ctx.gateError(record, patch, root);
+        if (gateError) throw Object.assign(new Error(gateError), { status: 409 });
+        ctx.json(
+          res,
+          200,
+          ControlApplyCheckResponse.parse({
+            ok: checked.ok,
+            code: checked.code,
+            stderr: checked.stderr,
+            ...(checked.alreadyApplied ? { alreadyApplied: true } : {}),
+            ...(checked.refusal ? { refusal: checked.refusal } : {}),
+          }),
+        );
+        return true;
+      }
       // Idempotent replay (#26 dry-run): an already-delivered run cannot pass a
       // forward `git apply --check` (the tree is the postimage), which would
       // read as "patch does not apply". When the recorded delivery state says
@@ -223,49 +266,59 @@ export async function handleRunApplyRoutes(
       ctx.json(res, 200, await applyFilesResult(ctx, record, body, key, root));
       return true;
     }
-    const patch = ctx.readPatch(record);
-    if (patch === null)
+    const delivery = ctx.readDeliverable(record);
+    if (delivery === null)
       throw Object.assign(new Error("no patch artifact for this run"), { status: 404 });
+    const { patch } = delivery;
     const root = ctx.targetRoot(body.target, record);
     if (!root)
       throw Object.assign(new Error("project root is required for apply"), { status: 400 });
     const rootError = validateAbsoluteRepoRoot(root);
     if (rootError) throw Object.assign(new Error(rootError), { status: 400 });
-    const delivered = await ctx.chainMutation(record, () =>
-      runIdempotentDelivery(ctx.services, {
+    const delivered = await ctx.chainMutation(record, async () => {
+      let fresh = false;
+      const answer = await runIdempotentDelivery(ctx.services, {
         params: record.params,
         key,
         operation: "run.apply",
         request: {
           runId: record.runId ?? record.id,
           body,
-          patchSha256: sha256(patch),
+          patchSha256: delivery.digest,
           repoRoot: root,
         },
-        work: () =>
-          verifyAndDeliver(
+        work: async () => {
+          const delivered = await verifyAndDeliver(
             root,
-            patch,
-            { mode: body.mode, branch: body.branch, message: body.message },
+            delivery.deliverable,
+            {
+              ...{ mode: body.mode, branch: body.branch, message: body.message },
+              projectRoot: ctx.projectRoot(record) ?? root,
+              owner: record.runDir,
+            },
             ctx.gateSpecs(record),
             (freshVerify) => ctx.gateError(record, patch, root, freshVerify),
-          ),
-      }),
-    );
-    if (delivered.refused)
-      throw Object.assign(new Error(delivered.detail ?? "delivery refused"), {
-        status: 409,
-        // The publication scanner's typed reason (findings/unavailable/failed).
-        ...(delivered.publicationRefusal ? { code: delivered.publicationRefusal.code } : {}),
+          );
+          // Inside the durable command, as accept_clean_patch does: a refusal is
+          // journaled failed, and a replay answers the journal without recording
+          // the run's state again.
+          const left = await markRunWriteLeft(record, delivered, root, patch);
+          if (delivered.refused) throw deliveryRefusedError(delivered, "delivery_refused", left);
+          fresh = true;
+          return delivered;
+        },
       });
+      // A delivery records its state; a replay only converges a run whose first
+      // mark was lost (round-15 #2: without it, retention keeps classifying the
+      // delivered patch as actionable and preserves the run indefinitely). It
+      // never records over a later decision, or over the anchor already recorded.
+      if (answer.applied && (fresh || ctx.deliveredApplyState(record) === "not_applied"))
+        await ctx.markApplied(record, answer, root);
+      return answer;
+    });
     if (!delivered.applied && delivered.detail?.includes("refusing")) {
       ctx.appendAudit(record, "control.rejected", { control: "apply", reason: delivered.detail });
     }
-    // Runs OUTSIDE work() so an idempotent replay of an already-delivered
-    // command still converges the durable apply_state (round-15 #2): without
-    // this flip, retention keeps classifying the delivered patch as
-    // actionable and preserves the run indefinitely.
-    if (delivered.applied) ctx.markApplied(record);
     // #26: type the coarse delivery disposition on the wire so a consumer reads
     // the outcome without parsing `detail` prose. `alreadyApplied` rides on the
     // receipt already; deliveryStatus is its enum projection.

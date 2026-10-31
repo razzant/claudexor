@@ -6,6 +6,7 @@ import type { BudgetLedger } from "@claudexor/budget";
 import { makeOutcomeFacts, type ModeKind } from "@claudexor/schema";
 import type { OrchestratorResult } from "./orchestrator.js";
 import {
+  hasCandidateChanges,
   partitionCandidates,
   unanimousDeclaredFailure,
   type CandidateRun,
@@ -33,6 +34,7 @@ import {
   type ContinuityTerminalFacts,
 } from "./continuity-terminal.js";
 import { poolFailure } from "./pool-attempt-evidence.js";
+import { captureInventorySummary } from "./captureRefusal.js";
 
 interface CandidateTerminalContext {
   ledger: BudgetLedger;
@@ -54,6 +56,7 @@ export async function cancelledCandidatesResult(
     git?: {
       live: boolean;
       execRoot: string;
+      projectRoot: string;
       preTurnSha: string | null;
       postTurnSha: string | null;
     };
@@ -91,18 +94,19 @@ export async function cancelledCandidatesResult(
     } else {
       await publishUnverifiedGitCandidate({
         ...output,
-        facts: makeOutcomeFacts("cancelled", { noChanges: !run.diff.trim() }),
+        facts: makeOutcomeFacts("cancelled", { noChanges: !hasCandidateChanges(run) }),
       });
     }
-  } else if (runs.some((run) => run.diff.trim() && !run.captureRefusal)) {
-    const patches = runs.filter((run) => run.diff.trim() && !run.captureRefusal);
+  } else if (runs.some((run) => hasCandidateChanges(run) && !run.captureRefusal)) {
+    const patches = runs.filter((run) => hasCandidateChanges(run) && !run.captureRefusal);
     store.writeText(
       join(paths.finalDir, "retained-changes.md"),
       "# Unverified candidate changes\n\nNo candidate was selected or applied.\n\n" +
         patches
-          .map(
-            (run) =>
-              `- [${run.attemptId} · ${run.harnessId}](../attempts/${run.attemptId}/patch.diff)`,
+          .map((run) =>
+            run.patchViewUnavailable
+              ? `- ${run.attemptId} · ${run.harnessId}: ${run.patchViewUnavailable.reason === "render_failed" ? "its patch view could not be rendered" : "too large to render as one patch"}; its exact result is recorded in ../attempts/${run.attemptId}/attempt.yaml`
+              : `- [${run.attemptId} · ${run.harnessId}](../attempts/${run.attemptId}/patch.diff)`,
           )
           .join("\n"),
     );
@@ -280,7 +284,7 @@ export async function failedCandidatesResult(
   writeTelemetry();
   store.writeText(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}\n- Phase: ${phase}\n\n${rootCause}\n`,
+    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${phase}\n\n${rootCause}\n${captureInventorySummary(first.captureRefusal?.failure)}`,
   );
   const existingEventRefs = runs
     .map((r) => `attempts/${r.attemptId}/events.jsonl`)

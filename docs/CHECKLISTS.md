@@ -428,7 +428,8 @@ pnpm test
   The native harness reads files directly and may use the internet where source
   verification is useful.
 - Reviewer workspaces must project one frozen source inventory: Git-visible
-  files plus exact diff-touched paths, or the explicit complete selected postimage
+  files plus exact diff-touched paths, only the exact changed paths of a Git
+  result with no rendered patch, or the explicit complete selected postimage
   manifest for directory work. The legacy no-inventory path remains diff-only.
   Prove unrelated local files stay absent while every selected file, including
   unchanged inputs and generated binary paths, remains available with an empty

@@ -165,6 +165,17 @@ const REVERT_DETAIL_MAX_BYTES = 2000;
  *  depend on @claudexor/workspace) — the round-trip is asserted by test. */
 export type RevertRefusalReason = "postimage_diverged" | "reverse_apply_failed";
 
+/** Stable wording, by the producer's typed refusal code (#535), for a revert that
+ * stays available once its cause is gone; the refusal's own text, which can carry
+ * Git's stderr, stays the detail. */
+const REVERT_CAUSES: Record<string, string> = {
+  delivery_outside_sparse_checkout:
+    "files it must change are outside this checkout's sparse-checkout patterns; widen them (git sparse-checkout add) and try again",
+  space_insufficient: "the disk is full; free space and try again",
+  result_objects_missing:
+    "Git objects it needs are in neither the repository nor the project store",
+};
+
 /**
  * QA-051 / W3: map a workspace revert refusal to a stable, locale-independent
  * English message + typed reason code, keeping the original (redacted, bounded)
@@ -173,14 +184,17 @@ export type RevertRefusalReason = "postimage_diverged" | "reverse_apply_failed";
  * The class is decided by the PRODUCER: `reasonCode` comes straight from
  * `RevertResult.reasonCode` (which branch failed), NOT from regexing the human
  * `reason`. The English-prefix regex survives only as a conservative fallback
- * for a legacy-shaped result that carries no typed code.
+ * for a legacy-shaped result that carries no typed code. An object revert's typed
+ * refusal code rides along as `refusalCode`, naming the cause in the message where
+ * a fixed remedy exists.
  */
 export function revertRefusedProblem(
   rawReason: string | undefined,
   reasonCode?: RevertRefusalReason,
+  refusalCode?: string,
 ): {
   message: string;
-  context: { reason: string; detail: string };
+  context: { reason: string; detail: string; refusalCode?: string };
 } {
   const raw = rawReason ?? "revert refused";
   // Prefer the producer's typed class; fall back to the English-prefix match
@@ -188,10 +202,13 @@ export function revertRefusedProblem(
   const reason: RevertRefusalReason =
     reasonCode ??
     (/postimage no longer matches/.test(raw) ? "postimage_diverged" : "reverse_apply_failed");
+  const cause = refusalCode ? REVERT_CAUSES[refusalCode] : undefined;
   const message =
     reason === "postimage_diverged"
       ? "Revert is no longer available because the affected files changed after this turn."
-      : "Revert could not be applied to the current project tree.";
+      : cause
+        ? `Revert could not be applied to the current project tree: ${cause}.`
+        : "Revert could not be applied to the current project tree.";
   let detail = redactSecrets(raw);
   if (Buffer.byteLength(detail, "utf8") > REVERT_DETAIL_MAX_BYTES) {
     // Prefix-slice FIRST (code units >= bytes wanted), then trim at most a few
@@ -202,7 +219,7 @@ export function revertRefusedProblem(
       detail = detail.slice(0, -1);
     }
   }
-  return { message, context: { reason, detail } };
+  return { message, context: { reason, detail, ...(refusalCode ? { refusalCode } : {}) } };
 }
 
 const RESERVED_FIELDS = new Set([

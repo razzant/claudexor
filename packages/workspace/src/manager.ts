@@ -3,10 +3,17 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type {
   AccessProfile,
+  CaptureChangeInventory,
   DirtyPolicy,
+  GitObjectResult,
+  PatchViewUnavailable,
   WorkspaceEnvelope,
   WorkspaceKind,
 } from "@claudexor/schema";
+import { captureObjectFacts as objectFacts } from "./git-transient-capture.js";
+import { isolatedBaseCustody } from "./capture-objects.js";
+import { repositoryObjectFormat } from "./git-result.js";
+import { assertProjectObjectFormat } from "./object-store.js";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { WorkspaceError } from "@claudexor/core";
 import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
@@ -57,6 +64,13 @@ export interface CapturedWorkspaceDiff {
   /** Untracked nested repositories left out of `diff` (a patch cannot carry
    * another repository); disclosed with the attempt. */
   excludedNestedRepositories?: string[];
+  /** The exact candidate as Git objects (#535): canonical whenever present;
+   * `diff` is then only its rendered view, "" when `patchViewUnavailable`. */
+  result?: GitObjectResult;
+  patchViewUnavailable?: PatchViewUnavailable;
+  inventory?: CaptureChangeInventory;
+  changedPaths?: string[];
+  existingPaths?: string[];
 }
 
 export interface CreateEnvelopeOptions {
@@ -89,18 +103,23 @@ export { processStartTime } from "./envelope-recovery.js";
 
 export class WorkspaceManager {
   private readonly runtimeRoot: string;
+  /** The project whose object store keeps this manager's Git objects, when it is
+   * not the root Git runs in (a delegated run, an isolated thread). */
+  private readonly projectRoot: string | undefined;
   private readonly artifactOwnership: ArtifactOwnership;
 
   /** Current-prep bridge ownership, also persisted beside owner.json for recovery.
    * Only a bridge created here and still byte-identical is excluded from capture. */
   private readonly bridgeCreatedEnvelopes = new Set<string>();
   private readonly retainedEnvelopes = new Set<string>();
+  private readonly keptArtifactDirectories = new Set<string>();
 
   constructor(
     private readonly repoRoot: string,
-    options: { runtimeRoot?: string } = {},
+    options: { runtimeRoot?: string; projectRoot?: string } = {},
   ) {
     this.runtimeRoot = options.runtimeRoot ?? projectRuntimeDir(repoRoot);
+    this.projectRoot = options.projectRoot;
     this.artifactOwnership = new ArtifactOwnership((env) =>
       join(this.envelopeBase(env.task_id, env.attempt_id), "artifact-created.json"),
     );
@@ -194,6 +213,12 @@ export class WorkspaceManager {
       // no dangling Git snapshot, copied baseline, diff/capture, or later
       // delivery. The native adapter policy owns the promised read-only mode.
       const readOnly = opts.accessProfile === "readonly";
+      // One project keeps one object format: refused before the turn, not at its capture.
+      if (!readOnly && gitRepo && this.projectRoot && this.projectRoot !== this.repoRoot)
+        await assertProjectObjectFormat(
+          this.projectRoot,
+          await repositoryObjectFormat(this.repoRoot),
+        );
       const baseSha = !readOnly && gitRepo ? await snapshotTree(this.repoRoot) : null;
       if (!readOnly && !gitRepo) snapshotLegacyDirectoryBaseline(this.repoRoot, base);
       return WorkspaceEnvelopeSchema.parse({
@@ -239,7 +264,15 @@ export class WorkspaceManager {
 
     const path = join(base, "tree");
     const branch = `claudexor/${opts.taskId}/${opts.attemptId}`;
-    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha);
+    // D2: a dirty base's own closure enters the project store BEFORE the clone,
+    // whose second alternate is that store (never the user repo's).
+    const storeObjects = await isolatedBaseCustody(
+      this.repoRoot,
+      this.projectRoot ?? this.repoRoot,
+      baseSha,
+      [base, ...(opts.custody ? [opts.custody.runDir] : [])],
+    );
+    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects);
     writeFileSync(join(base, "private-clone-v1"), "private Git authority\n");
 
     // AGENTS.md bridge (INV-113): the checkout omits the untracked project-root bridge,
@@ -332,7 +365,8 @@ export class WorkspaceManager {
     return ensureLaneHomeEnv(this.runtimeRoot, threadId, harnessId, profileId);
   }
 
-  async captureDiff(env: WorkspaceEnvelope): Promise<CapturedWorkspaceDiff> {
+  /** `owner`: the path (run directory) whose existence keeps the result's objects. */
+  async captureDiff(env: WorkspaceEnvelope, owner?: string): Promise<CapturedWorkspaceDiff> {
     if (env.workspace_kind === "directory")
       throw new WorkspaceError(
         "Directory results use captureFiles; a text diff is not their work product",
@@ -356,14 +390,13 @@ export class WorkspaceManager {
           env.repo_root,
           env.base_sha,
           artifactExcludes,
+          { projectRoot: this.projectRoot ?? env.repo_root, owner },
         );
         return {
           diff: captured.patch,
           captureIncomplete: captured.captureIncomplete,
           captureFailure: captured.captureFailure,
-          ...(captured.excludedNestedRepositories
-            ? { excludedNestedRepositories: captured.excludedNestedRepositories }
-            : {}),
+          ...objectFacts(captured),
         };
       }
       // Non-git fallback: diff the best-effort cpSync baseline against the live
@@ -391,17 +424,17 @@ export class WorkspaceManager {
       this.bridgeCreatedFact(env) && isGeneratedClaudeBridge(env.worktree_path)
         ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
         : [];
-    const captured = await captureWorkingTreeTransient(env.worktree_path, env.base_sha ?? "HEAD", [
-      ...artifactExcludes,
-      ...bridgeExcludes,
-    ]);
+    const captured = await captureWorkingTreeTransient(
+      env.worktree_path,
+      env.base_sha ?? "HEAD",
+      [...artifactExcludes, ...bridgeExcludes],
+      { projectRoot: this.projectRoot ?? env.repo_root, owner },
+    );
     return {
       diff: captured.patch,
       captureIncomplete: captured.captureIncomplete,
       captureFailure: captured.captureFailure,
-      ...(captured.excludedNestedRepositories
-        ? { excludedNestedRepositories: captured.excludedNestedRepositories }
-        : {}),
+      ...objectFacts(captured),
     };
   }
 
@@ -443,15 +476,23 @@ export class WorkspaceManager {
     this.retainedEnvelopes.add(env.id);
   }
 
+  /** Keep an in-place envelope's run-owned artifact directory in the live tree
+   * past `dispose()`: when the run's changes were not captured, its media may
+   * be the only copy (the run's own copies are bounded). */
+  keepArtifactDirectory(env: WorkspaceEnvelope): void {
+    this.keptArtifactDirectories.add(env.id);
+  }
+
   async dispose(env: WorkspaceEnvelope): Promise<void> {
     if (this.retainedEnvelopes.has(env.id) || isRetainedEnvelope(env)) return;
     // Drop the created-this-run bridge fact so a long-lived manager doesn't
     // accumulate envelope ids (a disposed envelope is never diffed again).
     this.bridgeCreatedEnvelopes.delete(env.id);
+    const keepArtifacts = this.keptArtifactDirectories.delete(env.id);
     // In-place envelopes point worktree_path at the live repo root; NEVER remove a
     // worktree or the tree itself in that case.
     const inPlace = env.worktree_path === env.repo_root;
-    if (inPlace) this.artifactOwnership.removeDirectory(env);
+    if (inPlace && !keepArtifacts) this.artifactOwnership.removeDirectory(env);
     if (!inPlace && env.workspace_kind !== "directory") {
       const privateClone = existsSync(
         join(this.envelopeBase(env.task_id, env.attempt_id), "private-clone-v1"),

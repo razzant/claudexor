@@ -16,6 +16,7 @@ import {
   worktreeRepository,
 } from "./git.js";
 import type { EnsureGitRepositoryResult } from "./git.js";
+import { diskProgress, gitObserved } from "./git-observed.js";
 
 export interface ThreadWorktreeResult {
   /** Absolute path to the thread's persistent worktree (the execution root). */
@@ -119,7 +120,11 @@ export async function advanceThreadWorktree(
   // Materialize the target in the daemon-owned index/worktree without moving
   // HEAD. Publishing the persistent branch first would make a failed reset or
   // clean look authoritative even though the worktree still held older work.
-  const realign = await git(worktreePath, ["read-tree", "--reset", "-u", targetSha]);
+  const realign = await gitObserved(worktreePath, ["read-tree", "--reset", "-u", targetSha], {
+    label: "read-tree --reset -u (thread)",
+    progress: diskProgress(worktreePath),
+    allowFailure: true,
+  });
   if (realign.code !== 0) {
     throw new WorkspaceError(`thread worktree realignment failed: ${realign.stderr.trim()}`);
   }

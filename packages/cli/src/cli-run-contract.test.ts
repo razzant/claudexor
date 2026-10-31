@@ -219,7 +219,7 @@ describe("run-command pre-daemon machine contract", () => {
       { cwd: project, encoding: "utf8", env },
     );
     expect(human.status, human.stderr).toBe(0);
-    expect(human.stdout).toContain("lifecycle: failed");
+    expect(human.stdout).toContain("lifecycle: failed (harness_failed)");
     expect(human.stdout).toContain("failure: harness_unavailable phase=harness");
     expect(human.stdout).toContain("next action: Choose another harness and retry.");
     // No vendor-typed evidence on the record: the failure line says nothing extra.
@@ -253,6 +253,41 @@ describe("run-command pre-daemon machine contract", () => {
     );
     expect(jsonVendor.status, jsonVendor.stderr).toBe(0);
     expect(JSON.parse(jsonVendor.stdout).failure.vendorFailure).toEqual(vendorFailure);
+
+    // A refused capture's bounded inventory is printed as such: not exact, not a patch.
+    store.writeYaml(
+      join(paths.finalDir, "failure.yaml"),
+      RunFailure.parse({
+        ...failure,
+        captureFailure: {
+          code: "capture_output_exceeded",
+          message: "stdout exceeded the 268435456-byte combined capture buffer budget",
+          bufferBudgetBytes: 268435456,
+          stream: "stdout",
+          inventory: {
+            exact: false,
+            changedFiles: 3,
+            largest: [
+              { path: "media/capture.mov", change: "added", sizeBytes: 283115520 },
+              { path: "notes.md", change: "modified", sizeBytes: 812 },
+            ],
+          },
+        },
+      }),
+    );
+    const humanInventory = spawnSync(
+      process.execPath,
+      [tsxCli, cliSource, "inspect", "run-failed-inspect"],
+      { cwd: project, encoding: "utf8", env },
+    );
+    expect(humanInventory.status, humanInventory.stderr).toBe(0);
+    expect(humanInventory.stdout).toContain(
+      [
+        "Largest changed files (inventory, not exact, not a patch): 3 changed, 1 not listed",
+        "- added media/capture.mov · 270.0 MiB (283115520 bytes)",
+        "- modified notes.md · 812 bytes",
+      ].join("\n"),
+    );
   });
 
   it("inspect classifies unrecovered tools by attempt outcome instead of web kind", () => {

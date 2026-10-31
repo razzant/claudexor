@@ -1,10 +1,15 @@
 import { parseUnifiedDiff, runCapture, runCaptureRaw } from "@claudexor/core";
-import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { constants, existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { cp, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { newId, redactSecrets, sensitiveResourcePolicy, writeJson } from "@claudexor/util";
-import type { ReviewerWorkspace } from "./reviewRuntimeTypes.js";
+import type {
+  ReviewerInventoryMode,
+  ReviewerWorkspace,
+  UninspectableReviewerFile,
+} from "./reviewRuntimeTypes.js";
+import { isSpaceError, notWhollyCopied, regularBytes, roomFor } from "./reviewerSavedCopy.js";
 
 const BLOCKED_REVIEWER_RUNTIME_ROOTS = new Set(
   "auth cache daemon home homes logs runs secrets state tmp workspaces".split(" "),
@@ -39,12 +44,20 @@ export async function prepareReviewerWorkspace(input: {
   excludeRoots: string[];
   postimagePaths?: Set<string>;
   candidateCopyPaths: Set<string>;
+  /** An explicit inventory: each of these the copy leaves out by rule is named too. */
+  candidatePaths?: readonly string[];
+  /** The source is a copy of a result's saved files (#535): a symlink in it is exact
+   * content, whatever its target; listed paths it could not hold are named, never
+   * read as deleted. One that `failed` holds none of the result's files and is not
+   * read at all, whatever its directory still holds and whether it is there. */
+  savedCopy?: { unavailable: readonly UninspectableReviewerFile[]; failed?: boolean };
   preserveEvidenceBytes?: boolean;
 }): Promise<ReviewerWorkspace> {
   const sourceRoot = resolve(input.sourceRoot);
   const workspaceBaseDir = resolve(input.workspaceBaseDir);
   const root = join(workspaceBaseDir, input.reviewerDirName);
-  if (!existsSync(sourceRoot)) {
+  const noSource = input.savedCopy?.failed === true;
+  if (!noSource && !existsSync(sourceRoot)) {
     throw new Error(`candidate root does not exist: ${sourceRoot}`);
   }
   if (isSameOrInside(sourceRoot, root)) {
@@ -55,20 +68,11 @@ export async function prepareReviewerWorkspace(input: {
     await rm(root, { recursive: true, force: true });
     await mkdir(root, { recursive: true, mode: 0o700 });
     const excludeRoots = input.excludeRoots.map((p) => resolve(p));
-    const resolvedSourceRoot = realpathSync(sourceRoot);
-    await cp(sourceRoot, root, {
-      recursive: true,
-      dereference: false,
-      filter: (sourcePath) =>
-        shouldCopyReviewerPath(
-          sourceRoot,
-          resolvedSourceRoot,
-          sourcePath,
-          excludeRoots,
-          input.postimagePaths,
-          input.candidateCopyPaths,
-        ),
-    });
+    const uninspectable = noSource
+      ? []
+      : await copyCandidate(input, sourceRoot, root, excludeRoots);
+    // Each with the copy's own cause (a full disk, a Git fault), never a generic one.
+    uninspectable.push(...(input.savedCopy?.unavailable ?? []));
 
     const sourceEvidenceDir = resolve(input.sourceEvidenceDir);
     const evidenceDir = join(root, ".claudexor-review-evidence");
@@ -99,11 +103,64 @@ export async function prepareReviewerWorkspace(input: {
     await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
 
     await initializeReviewerWorkspaceGit(root);
-    return { root, evidenceDir };
+    return { root, evidenceDir, uninspectable };
   } catch (err) {
     await rm(root, { recursive: true, force: true });
     throw err;
   }
+}
+
+/** Copy the candidate plane of `sourceRoot` into `root`, naming what it cannot inspect. */
+async function copyCandidate(
+  input: Parameters<typeof prepareReviewerWorkspace>[0],
+  sourceRoot: string,
+  root: string,
+  excludeRoots: string[],
+): Promise<UninspectableReviewerFile[]> {
+  const resolvedSourceRoot = realpathSync(sourceRoot);
+  const uninspectable: UninspectableReviewerFile[] = [];
+  const exactLinks = input.savedCopy !== undefined;
+  const copied = (sourcePath: string) =>
+    shouldCopyReviewerPath(
+      sourceRoot,
+      resolvedSourceRoot,
+      sourcePath,
+      excludeRoots,
+      input.postimagePaths,
+      input.candidateCopyPaths,
+      exactLinks,
+    );
+  // A saved copy (#535) holds a result's changed files, of any size: it is checked
+  // for room first, cloned where the filesystem can (no second copy of the bytes),
+  // and a disk that fills names what the copy cannot hold instead of ending the run.
+  const fits = !exactLinks || roomFor(root, await regularBytes(sourceRoot));
+  try {
+    if (fits)
+      await cp(sourceRoot, root, {
+        recursive: true,
+        dereference: false,
+        verbatimSymlinks: exactLinks,
+        ...(exactLinks ? { mode: constants.COPYFILE_FICLONE } : {}),
+        filter: async (sourcePath) =>
+          copied(sourcePath) &&
+          ((exactLinks && lstatSync(sourcePath).isSymbolicLink()) ||
+            (await readable(sourcePath, (reason) => {
+              const rel = relative(sourceRoot, resolve(sourcePath));
+              uninspectable.push({ path: normalizeReviewerRelativePath(rel) ?? rel, reason });
+            }))),
+      });
+  } catch (error) {
+    if (!exactLinks || !isSpaceError(error)) throw error;
+  }
+  if (exactLinks)
+    uninspectable.push(
+      ...(await notWhollyCopied(
+        { sourceRoot, root, copied, named: uninspectable },
+        (rel) => normalizeReviewerRelativePath(rel) ?? rel,
+      )),
+    );
+  uninspectable.push(...excludedFromCopy(sourceRoot, root, input.candidatePaths, uninspectable));
+  return uninspectable;
 }
 
 export async function copyReviewEvidencePacket(
@@ -190,6 +247,69 @@ function shouldCopyEvidencePacketPath(
   ]);
 }
 
+/** The review's fact (#535): one entry per path across reviewer copies (first
+ * reason wins), path-sorted; nothing when every candidate file was inspected. */
+export function uninspectableFacts(files: readonly UninspectableReviewerFile[]): {
+  uninspectableFiles?: UninspectableReviewerFile[];
+} {
+  const byPath = new Map<string, string>();
+  for (const file of files) if (!byPath.has(file.path)) byPath.set(file.path, file.reason);
+  if (byPath.size === 0) return {};
+  const paths = [...byPath.keys()].sort();
+  return { uninspectableFiles: paths.map((path) => ({ path, reason: byPath.get(path)! })) };
+}
+
+/**
+ * A candidate file a reviewer cannot read is reported (#535 F10) and never
+ * copied, so the review cannot pass clean over a file nobody inspected. Only
+ * readability is checked: content is never examined (INV-146).
+ */
+async function readable(path: string, uninspectable: (reason: string) => void): Promise<boolean> {
+  try {
+    if (!(await stat(path)).isFile()) return true;
+    await (await open(path, "r")).close();
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    uninspectable(
+      typeof code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(code) ? code : "read_failed",
+    );
+    return false;
+  }
+}
+
+/** Whether anything is at `path`. A parent that is a file (a directory the result
+ * turned into one, with its deleted descendants listed) means nothing is: ENOTDIR,
+ * like ENOENT, is absence. */
+function lexists(path: string): boolean {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+/**
+ * A listed path the source holds and the copy does not, for a reason other than
+ * its reading (the copy's structural exclusions). A path absent from the source
+ * was deleted by the result: it has no content to inspect.
+ */
+function excludedFromCopy(
+  sourceRoot: string,
+  root: string,
+  candidatePaths: readonly string[] | undefined,
+  named: readonly UninspectableReviewerFile[],
+): UninspectableReviewerFile[] {
+  const known = new Set(named.map((file) => file.path));
+  return (candidatePaths ?? [])
+    .map((path) => normalizeReviewerRelativePath(path) ?? path)
+    .filter(
+      (path) => !known.has(path) && lexists(join(sourceRoot, path)) && !lexists(join(root, path)),
+    )
+    .map((path) => ({ path, reason: "excluded_from_review_copy" }));
+}
+
 export async function cleanupTemporaryReviewerWorkspaceBaseDir(
   workspaceBaseDir: string,
   artifactsBaseDir: string,
@@ -217,6 +337,7 @@ function shouldCopyReviewerPath(
   excludeRoots: string[],
   postimagePaths = new Set<string>(),
   candidateCopyPaths?: Set<string>,
+  exactLinks = false,
 ): boolean {
   const resolvedSourcePath = resolve(sourcePath);
   const rel = relative(sourceRoot, resolvedSourcePath);
@@ -225,7 +346,13 @@ function shouldCopyReviewerPath(
     if (!normalized || !candidateCopyPaths.has(normalized)) return false;
   }
   if (
-    !isCopyableReviewerSymlink(sourceRoot, resolvedSourceRoot, resolvedSourcePath, excludeRoots)
+    !isCopyableReviewerSymlink(
+      sourceRoot,
+      resolvedSourceRoot,
+      resolvedSourcePath,
+      excludeRoots,
+      exactLinks,
+    )
   ) {
     return false;
   }
@@ -306,7 +433,7 @@ function normalizeReviewerRelativePath(value: string): string | null {
 }
 
 interface ReviewerCandidateInventory {
-  mode: "git_visible" | "diff_only" | "explicit_manifest";
+  mode: ReviewerInventoryMode;
   reason: string | null;
   copyPaths: Set<string>;
 }
@@ -316,10 +443,11 @@ export async function buildReviewerCandidateInventory(
   postimagePaths: Set<string>,
   requireGit: boolean,
   candidatePaths?: string[],
+  candidatePathsHaveManifest = false,
 ): Promise<ReviewerCandidateInventory> {
   if (candidatePaths)
     return {
-      mode: "explicit_manifest",
+      mode: candidatePathsHaveManifest ? "explicit_manifest" : "explicit_paths",
       reason: null,
       copyPaths: reviewerCopyPathClosure(candidatePaths),
     };
@@ -368,6 +496,9 @@ function isCopyableReviewerSymlink(
   resolvedSourceRoot: string,
   sourcePath: string,
   excludeRoots: string[],
+  /** Its text is the content: it need not resolve (its target may be an unchanged
+   * file the copy does not hold), only stay inside by its letter. */
+  exactLinks = false,
 ): boolean {
   let stat: ReturnType<typeof lstatSync>;
   try {
@@ -381,9 +512,18 @@ function isCopyableReviewerSymlink(
   let targetKind: "directory" | "file" | "other" = "other";
   try {
     linkTarget = readlinkSync(sourcePath);
-    resolvedTarget = realpathSync(sourcePath);
-    const targetStat = statSync(sourcePath);
-    targetKind = targetStat.isDirectory() ? "directory" : targetStat.isFile() ? "file" : "other";
+    if (exactLinks) {
+      resolvedTarget = resolve(
+        resolvedSourceRoot,
+        relative(sourceRoot, dirname(sourcePath)),
+        linkTarget,
+      );
+      targetKind = "file";
+    } else {
+      resolvedTarget = realpathSync(sourcePath);
+      const targetStat = statSync(sourcePath);
+      targetKind = targetStat.isDirectory() ? "directory" : targetStat.isFile() ? "file" : "other";
+    }
   } catch {
     return false;
   }

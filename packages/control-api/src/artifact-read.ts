@@ -1,5 +1,6 @@
 /** Finite, read-only artifact operations shared by the bulk executor and run
  * projection. No daemon, response, registry, or open stream crosses this API. */
+import { unrenderedPatchView } from "./patch-view.js";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative, sep } from "node:path";
 import { isMarkedAsUntransferable } from "node:worker_threads";
@@ -58,6 +59,8 @@ export function readArtifact(request: ArtifactReadRequest): ArtifactReadResult {
   if (request.runArtifact) {
     const transfer = locateFilesArtifact(request.root, request.relative);
     if (transfer) return { kind: "files", transfer };
+    const unrendered = unrenderedPatchView(request.root, request.relative);
+    if (unrendered) return { kind: "error", status: 413, body: unrendered };
   }
   return readArtifactFile(
     safeArtifactPath(request.root, request.relative),

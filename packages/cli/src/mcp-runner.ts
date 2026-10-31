@@ -403,8 +403,17 @@ async function recoveryQuery(
       typeof body["stderr"] === "string" && body["stderr"].trim()
         ? `: ${body["stderr"].trim()}`
         : "";
+    // A Git result's typed refusal (#535) names its reason; it is not a patch conflict.
+    const refusal = (body["refusal"] ?? {}) as { code?: unknown; pathCount?: unknown };
+    const paths =
+      typeof refusal.pathCount === "number" && refusal.pathCount > 0
+        ? ` (${refusal.pathCount} path(s))`
+        : "";
     return {
-      summary: `apply check failed: the patch does NOT apply cleanly${stderr}`,
+      summary:
+        typeof refusal.code === "string"
+          ? `apply check refused: ${refusal.code}${paths}${stderr}`
+          : `apply check failed: the patch does NOT apply cleanly${stderr}`,
       runId,
       eligible: false,
       check: body,

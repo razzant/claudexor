@@ -32,6 +32,11 @@ export function formatRunResult(result: unknown): string {
       trailer.push(`jobId: ${r["jobId"]}`);
     if (typeof r["runDir"] === "string" && r["runDir"]) trailer.push(`artifacts: ${r["runDir"]}`);
     if (typeof r["status"] === "string" && r["status"]) trailer.push(`status: ${r["status"]}`);
+    const objectResult = r["objectResult"] as Record<string, unknown> | null | undefined;
+    if (objectResult?.["patchView"] === "unavailable")
+      trailer.push(
+        `result: kept exactly as Git objects (${String(objectResult["digest"])}); no patch view (${String(objectResult["reason"])}, ${String(objectResult["changedFiles"] ?? "?")} changed files) — it can still be applied and reverted`,
+      );
     if (!summary && trailer.length === 0) return JSON.stringify(result);
     return trailer.length > 0 ? `${summary ? `${summary}\n\n` : ""}${trailer.join("\n")}` : summary;
   }
@@ -82,5 +87,7 @@ export function structuredRunResult(result: unknown): Record<string, unknown> {
     delegatedFromRunId:
       typeof r["delegatedFromRunId"] === "string" ? r["delegatedFromRunId"] : null,
     delegation: r["delegation"] && typeof r["delegation"] === "object" ? r["delegation"] : null,
+    objectResult:
+      r["objectResult"] && typeof r["objectResult"] === "object" ? r["objectResult"] : null,
   };
 }

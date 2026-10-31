@@ -305,6 +305,27 @@ describe("RunFacts invariant validator (GH #29)", () => {
       }).outcome.reason,
     ).toBe("workspace_unavailable");
 
+    // A refused capture is its own failed reason; it can never ride a success.
+    const refusedOutcome = makeOutcomeFacts("failed", {
+      reason: "capture_refused",
+      noChanges: null,
+    });
+    expect(
+      validateRunFactsInvariants({
+        ...failedProducer,
+        outcome: refusedOutcome,
+        required_actions: requiredActionsFor(refusedOutcome, false),
+      }).outcome.reason,
+    ).toBe("capture_refused");
+    const refusedSuccess = makeOutcomeFacts("succeeded", { reason: "capture_refused" });
+    expect(() =>
+      validateRunFactsInvariants({
+        ...base,
+        outcome: refusedSuccess,
+        required_actions: requiredActionsFor(refusedSuccess, false),
+      }),
+    ).toThrow(/reason=capture_refused is incompatible with lifecycle=succeeded/);
+
     const blockedOutcome = makeOutcomeFacts("succeeded", {
       review: "blocked",
       reason: "review_blocked",
