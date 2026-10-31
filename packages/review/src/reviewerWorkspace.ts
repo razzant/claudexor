@@ -541,17 +541,19 @@ function isCopyableReviewerSymlink(
 }
 
 async function initializeReviewerWorkspaceGit(root: string): Promise<void> {
-  const noHooks = ["-c", "core.hooksPath=/dev/null"];
-  await runGitOrThrow("init", root, ["-c", "init.templateDir=", ...noHooks, "init"]);
+  // No hook runs, and the user's attributes file (`core.attributesFile`, else Git's
+  // XDG default) is no source either: see reviewerWorkspaceGitEnv.
+  const isolated = ["-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null"];
+  await runGitOrThrow("init", root, ["-c", "init.templateDir=", ...isolated, "init"]);
   for (const [key, value] of [
     ["user.email", "claudexor-review@example.invalid"],
     ["user.name", "Claudexor Review"],
   ]) {
-    await runGitOrThrow(`config ${key}`, root, [...noHooks, "config", key, value]);
+    await runGitOrThrow(`config ${key}`, root, [...isolated, "config", key, value]);
   }
-  await runGitOrThrow("add", root, [...noHooks, "add", "-A", "--force"]);
+  await runGitOrThrow("add", root, [...isolated, "add", "-A", "--force"]);
   await runGitOrThrow("commit", root, [
-    ...noHooks,
+    ...isolated,
     "commit",
     "--allow-empty",
     "--no-verify",
@@ -564,7 +566,7 @@ async function initializeReviewerWorkspaceGit(root: string): Promise<void> {
 async function runGitOrThrow(label: string, cwd: string, args: string[]): Promise<void> {
   const result = await runCapture("git", args, {
     cwd,
-    env: reviewerGitEnv(),
+    env: reviewerWorkspaceGitEnv(),
     timeoutMs: 60_000,
     windowsConsole: "none",
   });
@@ -573,6 +575,9 @@ async function runGitOrThrow(label: string, cwd: string, args: string[]): Promis
   throw new Error(`failed to prepare reviewer workspace (${label}): ${detail}`);
 }
 
+/** No Git setting a caller's environment injects and no system configuration. The
+ * candidate's own repository is still read with the user's global configuration: its
+ * ignore rules decide what is Git-visible there. */
 function reviewerGitEnv(): Record<string, string | null> {
   const gitEnv: Record<string, string | null> = Object.fromEntries(
     Object.keys(process.env)
@@ -581,6 +586,18 @@ function reviewerGitEnv(): Record<string, string | null> {
   );
   gitEnv.GIT_CONFIG_NOSYSTEM = "1";
   return gitEnv;
+}
+
+/**
+ * The reviewer workspace is Claudexor's own repository: its baseline commit holds the
+ * copied bytes, whatever the user's Git configuration says. No system or global
+ * configuration or system attributes file reaches it, so no filter driver, monitor or
+ * signing program of the user's runs while review is prepared, a required filter that
+ * cannot run does not keep review from starting, and no line-ending setting converts
+ * or refuses a file (INV-146).
+ */
+function reviewerWorkspaceGitEnv(): Record<string, string | null> {
+  return { ...reviewerGitEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" };
 }
 
 export function isSameOrInside(parent: string, target: string): boolean {
