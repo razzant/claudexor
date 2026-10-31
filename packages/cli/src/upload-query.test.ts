@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { uploadQuery } from "./upload-query.js";
 import { openDocumentSource } from "./local-document-source.js";
@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
   descriptors: [] as number[],
   handles: [] as Array<{ fd: number }>,
+  /** Runs once a real descriptor is open, before its opener sees it. */
+  opened: vi.fn(),
 }));
 vi.mock("./daemon-run.js", () => ({ connectDaemonIfRunning: mocks.connect }));
 vi.mock("./live.js", () => ({ controlApiFetch: mocks.fetch }));
@@ -29,6 +31,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     async open(...args: Parameters<typeof actual.open>) {
       const handle = await actual.open(...args);
       mocks.handles.push(handle);
+      await mocks.opened();
       return handle;
     },
   };
@@ -316,10 +319,18 @@ describe("thin upload translation and recovery", () => {
 describe("explicit local document descriptor", () => {
   it("closes a descriptor when selection changes before open validation completes", async () => {
     const path = file();
-    const pending = openDocumentSource(path, 8);
-    renameSync(path, `${path}.old`);
-    writeFileSync(path, "replaced");
-    await expect(pending).rejects.toMatchObject({ code: "attachment_source_changed" });
+    const dir = dirname(path);
+    roots.push(`${dir}.old`);
+    // Once the selected file is open, its path comes to name another file. Its directory
+    // moves, so the open file itself is untouched: only the check after open sees it.
+    mocks.opened.mockImplementationOnce(() => {
+      renameSync(dir, `${dir}.old`);
+      mkdirSync(dir);
+      writeFileSync(path, "replaced");
+    });
+    await expect(openDocumentSource(path, 8)).rejects.toMatchObject({
+      code: "attachment_source_changed",
+    });
     expect(mocks.handles).toHaveLength(1);
     expect(mocks.handles[0]?.fd).toBe(-1);
   });

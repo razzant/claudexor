@@ -53,7 +53,13 @@ export function canonicalDeliverable(args: {
       // A patch remains the canonical deliverable even when the same run also
       // satisfied a structured-output contract. Apply eligibility is bound to
       // this exact patch; choosing output.json here would manufacture an
-      // invariant failure for a valid dual-output run.
+      // invariant failure for a valid dual-output run. An object result
+      // without a rendered view (#535) is that deliverable in its canonical
+      // form: the work product naming its trees, never an empty patch.diff.
+      const unrendered =
+        (args.workProduct?.meta["patch_view"] as { available?: unknown } | undefined)?.available ===
+          false && args.workProduct?.meta["git_result"] !== undefined;
+      if (unrendered) candidates.push({ kind: "patch", path: "final/work_product.yaml" });
       candidates.push({ kind: "patch", path: "final/patch.diff" }, structuredOutput, {
         kind: "answer",
         path: "final/answer.md",

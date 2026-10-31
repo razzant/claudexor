@@ -1922,6 +1922,7 @@
                             "owner_task_gone",
                             "crash_interrupted",
                             "workspace_unavailable",
+                            "capture_refused",
                             "input_required",
                             "work_incomplete",
                             "context_capacity_exhausted",

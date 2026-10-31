@@ -178,9 +178,8 @@ enum RunPhase: String, CaseIterable, Identifiable, Hashable {
     var isFailureShaped: Bool { self == .failed || self == .interrupted || self == .unknown }
 }
 
-/// Human label for a typed terminal `RunReason` (RunOutcomeFacts.reason). The
-/// reason qualifies a non-clean terminal; it is projected verbatim from the
-/// engine and never composed client-side beyond this display mapping.
+/// Human label for a typed terminal `RunReason` (RunOutcomeFacts.reason), projected
+/// verbatim from the engine and never composed client-side beyond this display mapping.
 enum RunReasonLabel {
     static func label(_ reason: String?) -> String? {
         switch reason {
@@ -194,6 +193,7 @@ enum RunReasonLabel {
         case "not_converged": return "Not converged"
         case "stuck_no_progress": return "Stuck/no progress"
         case "workspace_unavailable": return "Workspace unavailable"
+        case "capture_refused": return "Changes not captured"
         case "wall_clock_exceeded": return "Time limit reached"
         case "crash_interrupted": return "Interrupted"
         case "user_cancelled": return "Cancelled"
@@ -474,6 +474,8 @@ struct Candidate: Identifiable, Hashable {
     var filesChanged: Int = 0
     var added: Int = 0
     var removed: Int = 0
+    /// False when the candidate has no line counts (no rendered patch): unknown is not zero.
+    var hasLineCounts: Bool = true
 }
 
 // MARK: - Task (a run)

@@ -30,7 +30,7 @@ import {
   type CreateEnvelopeOptions,
   type WorkspaceManager,
 } from "@claudexor/workspace";
-import type { CandidateRun } from "./candidateEvidence.js";
+import { hasCandidateChanges, type CandidateRun } from "./candidateEvidence.js";
 import type { ContinueFromSource } from "./continue-from.js";
 import type { ContinuationPlan } from "./continuation-later.js";
 import type { AnnouncedRunContext } from "./runTerminalContext.js";
@@ -159,7 +159,7 @@ async function worthKeeping(
   run: CandidateRun | undefined,
   attemptsDir: string,
 ): Promise<boolean> {
-  if (run && run.diff.trim().length > 0) return true;
+  if (run && hasCandidateChanges(run)) return true;
   const attempts = new Set([env.attempt_id, ...(run ? [run.attemptId] : [])]);
   if ([...attempts].some((id) => existsSync(sessionCapsuleFile(join(attemptsDir, id))))) {
     return true;

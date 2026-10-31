@@ -8,6 +8,7 @@ import {
   snapshotTree,
 } from "@claudexor/workspace";
 import type { ControlDeliveryResponse } from "@claudexor/schema";
+import { dirname } from "node:path";
 
 export interface ThreadApplyOptions {
   mode: string;
@@ -43,7 +44,12 @@ export async function applyThreadDiff(
   }
   const projectRoot = thread.repo.root;
   const base = ws.base_sha ?? "HEAD";
-  const captured = await captureWorkingTreeTransient(ws.worktree_path, base);
+  // The thread's own runtime directory keeps the captured objects in the store.
+  const owner = dirname(ws.worktree_path);
+  const captured = await captureWorkingTreeTransient(ws.worktree_path, base, [], {
+    projectRoot,
+    owner,
+  });
   if (captured.captureIncomplete) {
     const failure = captureFailureEvidence(captured.captureFailure);
     // Problem context is the existing wire/journal carrier of typed facts, so
@@ -58,7 +64,10 @@ export async function applyThreadDiff(
     );
   }
   const patch = captured.patch;
-  if (!patch.trim())
+  const changed = captured.result
+    ? captured.result.base_tree !== captured.result.candidate_tree
+    : patch.trim().length > 0;
+  if (!changed)
     return {
       applied: false,
       status: "empty",
@@ -82,11 +91,15 @@ export async function applyThreadDiff(
   // is created or pushed — when the publication scanner does not pass it.
   const delivered = await verifyAndDeliver(
     projectRoot,
-    patch,
+    captured.result
+      ? { result: captured.result, renderedPatch: captured.patchViewUnavailable ? null : patch }
+      : patch,
     {
       mode,
       branch: opts.branch,
       message: opts.message,
+      projectRoot,
+      owner,
     },
     opts.gates ?? [],
   );
@@ -112,6 +125,9 @@ export async function applyThreadDiff(
             ? "pr_opened"
             : "branched"
           : "applied";
+  // `headStranded` is the delivery owner's fact for a run's revert anchor, not part
+  // of the strict receipt: `detail` is what names the way back.
+  const { headStranded: _internal, ...receipt } = delivered;
   return {
     applied: delivered.applied,
     status,
@@ -119,6 +135,6 @@ export async function applyThreadDiff(
     detail: delivered.detail ?? null,
     // #26: the receipt now carries a typed alreadyApplied flag (default false
     // for a fresh apply); normalize the optional producer field to the receipt.
-    delivery: { ...delivered, alreadyApplied: delivered.alreadyApplied ?? false },
+    delivery: { ...receipt, alreadyApplied: receipt.alreadyApplied ?? false },
   };
 }

@@ -117,7 +117,8 @@ bytes honestly without treating them as reviewed success. Direct directory
 effects instead use the [file-result contract](#directory-execution), with no
 unproved revert anchor. Secret-like output takes no exception on this path:
 the live bytes stay where the harness wrote them, and the WorkProduct, its
-exact patch and its revert anchor are recorded as for any other turn (see
+exact result (with its patch view when one renders) and its revert anchor are
+recorded as for any other turn (see
 [Exact working content](#exact-working-content)). The one
 remaining capture-time refusal is a capture that could not observe the changes
 at all; it is recorded as `capture_refused` with `applied_review_blocked` and no
@@ -946,6 +947,15 @@ temporarily as `.claudexor-synthesis-input.md` inside the synthesis envelope,
 the argv prompt only instructs the harness to read it, and the file is removed
 before every diff/gate/review (including native retries). This prevents
 `spawn E2BIG` without truncating evidence or polluting the candidate patch.
+A candidate without a rendered patch view (#535) is given instead as a bounded
+notice, the path of a copy of its changed files and those exact changed paths as
+JSON. The copy is taken from its saved candidate tree under the run directory,
+never read from its workspace, where a configured gate may have rewritten an
+output since the capture; synthesis is told never to edit it, and it is removed
+when synthesis ends. A race keeps its candidate workspaces until then or until
+synthesis is skipped (a run that ends before synthesis, for example on a review
+failure or a cancellation, releases them then), because the copy's Git reads the
+candidate's objects there.
 
 Cursor and AGY prompts use the shared CLI loop's one-shot stdin. AGY omits
 print flags so its native stdin reader selects print mode. Claude one-shot uses
@@ -1912,21 +1922,90 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
   masked copies of the journaled tool results). When Cursor cannot confirm that a shell command ended, the
   complete native result it keeps (`native_result`: the command and its
   output) is that record and stays exact like the tool target.
-- **Patches.** `attempts/<a>/patch.diff` and `final/patch.diff` hold the exact
-  patch; `patch_sha256` is its digest. Review, synthesis, gates and apply all
-  read that one patch, with no second masked copy and no extra exact-object
-  store. Rasters are copied into `produced/` by size and symlink rules only;
+- **Results and patches.** A Git capture's exact result is its pair of trees,
+  kept as Git objects in the project object store (the capture contract under
+  [Design constraints](#design-constraints)); verification, delivery and revert
+  work on those trees. A patch is a view of them, with no second masked copy:
+  when one renders, `attempts/<a>/patch.diff` and `final/patch.diff` hold it,
+  `patch_sha256` is its digest, and review and synthesis read it. Without one
+  there is no such file, and they read a copy of the changed files taken from
+  the candidate tree. A result recorded without a Git result (by an earlier
+  release, or a non-Git capture) keeps the legacy reading: its exact patch is
+  the whole result, and review, synthesis, gates and apply read that one patch.
+  Rasters are copied into `produced/` by size and symlink rules only;
   an image the run wrote or linked but that was not saved (over the 16 MiB
   per-image cap or the 32 MiB combined budget, unreadable, not a regular file,
   a symlink or outside the workspace) is recorded as `produced_omitted`
   (`path`, `bytes`, `reason`) in `attempt.yaml` and the final work-product
   meta, and named on one `summary.md` line ("Images not saved").
+- **Apply binds to the exact result.** One resolver serves deferred Apply,
+  apply/check, `accept_clean_patch`, the `accept_risk` binding, thread
+  contribution checks and RunFacts eligibility, and each binds the identity of
+  the exact result: a Git result (`meta.git_result`) binds its digest v1
+  (defined in the capture contract under [Design constraints](#design-constraints));
+  a result recorded without one (by an earlier release, or a non-Git capture)
+  keeps the legacy binding to the digest of its exact patch. A Git result's
+  delivery or revert whose objects are in neither the user's repository nor
+  the project object store refuses typed (`result_objects_missing`) before the
+  tree is touched. `meta.patch_sha256` is set only for a rendered patch, and a
+  Git result's rendered view must match it. A delivery the owner refuses for a
+  typed reason (`result_objects_missing`, `pr_unrendered_result`, a
+  publication scan code, a composition or target refusal, a store fault)
+  answers that reason as the 409 problem code on `POST /v2/runs/:id/apply` and
+  `accept_clean_patch` the same way, and a refusal with no typed reason
+  answers `delivery_refused` on both; `apply/check` returns it as `refusal` in
+  its 200 body and thread apply in its receipt. Only a result record that is not
+  there (ENOENT, ENOTDIR) reads as no result: one that is there but cannot be
+  read (EACCES, EIO) answers 503 `artifact_read_failed` on apply, apply/check,
+  `accept_clean_patch`, `accept_risk` and thread apply, before any tree is
+  touched, and a thread history row marks its apply coverage `unavailable`. A refusal whose write stayed
+  also carries `treeMutated` in its problem context and one `requiredActions`
+  entry naming its recovery. Both routes journal a refusal as a failed delivery
+  command, so a replay with the same `Idempotency-Key` answers the same code,
+  context and actions and records nothing again. For a Git result, a `branch`,
+  `commit` or `pr` delivery that fails after writing (its checkout, its proof,
+  or the commit or ref update after it) is such a 409 refusal, where the last
+  release answered a commit-class write failure with HTTP 200 `applied:false`,
+  as a legacy patch's delivery still does. The gate checks work-product
+  integrity before the override-pending permission. A Git result's objects
+  enter the project object store during capture, so disposing its isolated
+  envelope never loses its exact bytes.
 - **Review and context.** `DIFF.patch`, `USER_INTENT.md` and the other packet
   files are exact; sealed packets are verified by manifest and digest, not
   scanned. Reviewer workspaces and context packs include credential-named and
   credential-shaped project files; root and symlink containment, the
   `.git`/`node_modules`/runtime exclusions and the candidate inventory still
-  decide what crosses.
+  decide what crosses. A Git result without a rendered patch view has a bounded
+  notice as its `DIFF.patch`; its reviewers read the exact changed files in
+  their copy, which comes from a copy of its saved candidate tree and never from
+  the workspace, where a configured gate may have rewritten an output since the
+  capture. Its checkout conversion is the one the result itself defines: the
+  attributes of that tree alone (`--attr-source`) with Git's built-in defaults,
+  in a private Git directory that reads the capture's objects, so neither the
+  workspace's `.gitattributes`, `.git/info/attributes` or `.git/config` nor the
+  user's global or system configuration and attributes reach the copy, whenever
+  they changed. A filter driver is configuration the result does not carry: a
+  file whose attributes name one is copied as its stored blob, as the rendered
+  patch view shows it. So a Git LFS pointer, an encrypted blob or another
+  filtered file is reviewed and synthesized as stored: a clean review says
+  nothing about the content it stands for, and no smudged copy is kept for
+  review. `--attr-source` needs Git 2.40 or newer: with an older
+  Git the copy fails and names every changed file unavailable (`git_failed`),
+  so such a review cannot pass clean. A symlink there is exact content (its target
+  may be an unchanged file the copy does not hold), and a changed file that could
+  not be copied or read is named, so the review cannot pass clean. Each copy is
+  checked for room first and a reviewer's is cloned where the filesystem can; a
+  copy that cannot fit, or a disk that fills on the way, names those files
+  (`space_insufficient`, a partial file removed) instead of ending the run. The
+  first copy from the saved tree names each file it could not hold with its own
+  typed cause (`space_insufficient`, `git_stalled`, `git_signal` or `git_failed`)
+  to the reviewers and to synthesis alike. That copy holds every file or, when it
+  fails, none: reviewers and synthesis then get the named files and nothing to
+  read, never its directory, which may be gone, unlistable or hold what the failed
+  copy could not remove. A copy that cannot be removed when its reader is done
+  stays where it is and ends no run; a best-effort diagnostic,
+  `<copy>.cleanup-error.json`, says why, and when that record cannot be written
+  whole either (a full disk), the leftover stays with its cleanup unconfirmed.
 - **Execution.** Gate commands are not refused for their text; Codex
   approval reviews are offered for credential-shaped commands and paths inside
   the run's cwd and granted roots (size and root checks remain).
@@ -1943,7 +2022,11 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
   because that boundary can reach outside any authorized project. Policy risk
   still rates changes to credential-named paths as critical for review.
 - **Leaving the machine.** Local `apply`, `branch` and `commit` are allowed
-  without any scan. `pr` is gated by the publication scanner (below).
+  without any scan. `pr` is gated by the publication scanner (below). A Git
+  result's `pr` passes the same gate on the tree it would deliver. A Git
+  result without a rendered patch view is refused typed (`pr_unrendered_result`)
+  before any scan, import, verification or mutation; scanning such a result
+  for `pr` is a follow-up.
 - **Historical runs.** A run written under INV-062 may carry
   `persisted_patch: redacted`, `exact_patch_object` and `secret_like`. One
   resolver still binds deferred Apply, apply/check, `accept_clean_patch`, the
@@ -1956,7 +2039,12 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
 - **Capture refusal.** A capture that cannot observe the changes (a thrown
   capture, a non-Git folder without a baseline, a `diff` that cannot read a
   file) remains a refusal under its own name: `capture_refusal` on the attempt,
-  phase `workspace`, `manual_cleanup` for live effects, nothing rolled back.
+  phase `workspace`, run reason `capture_refused`, `manual_cleanup` for live
+  effects, nothing rolled back. A directory output that cannot prove
+  containment or be read fails the same way in phase `artifact_security`: its
+  receipt names the typed cause and the redacted, bounded diagnostic, no file
+  payload is published, and an in-place folder stays for inspection
+  (`manual_cleanup`) while an isolated copy is discarded (`discarded`).
 - **Nested repositories.** A patch cannot carry another repository, so an
   untracked folder holding its own Git repository that the worktree's
   `.gitmodules` does not declare is left out of the candidate capture and of
@@ -2009,7 +2097,11 @@ are unaffected.
 
 For `pr`, `deliverUnlocked` materializes the exact candidate tree, creates the
 commit object it will publish (unreferenced until adopted) and calls
-`gatePublication` before any branch, index, ref or push. The outgoing range is
+`gatePublication` before any branch, index, ref or push. A Git result's `pr`
+(`verifyAndDeliverResultUnlocked`, #535) does the same with its delivery
+pair's post tree, the result composed onto the current target, after the
+fresh verification; a Git result without a rendered patch view is refused
+`pr_unrendered_result` before any scan. The outgoing range is
 bound to the push destinations, the URLs `git push origin` sends to
 (`git remote get-url --push --all origin`: the `pushurl` entries, or every
 `url` when none is set, with `pushInsteadOf` applied). Each is read now with
@@ -2061,7 +2153,8 @@ unpinned binary with `publication_scan_unavailable`; a nonzero exit, timeout,
 missing, empty, non-list or malformed report with `publication_scan_failed`.
 The delivery receipt carries `publicationRefusal` (code, detail, and for
 findings rule id, place, line and commit, never the matched text), and the
-run Apply route answers 409 with that code. Nothing local is changed by a
+run Apply route and the `accept_clean_patch` decision answer 409 with that
+code, journaled as a failed delivery command. Nothing local is changed by a
 refusal. Betterleaks redacts the matched value but reports a file path or
 label as given, so every distinct place in the findings (and every tracked
 path a failed tree check names) is itself scanned by the same pinned scanner,
@@ -2438,9 +2531,9 @@ routed harness resumes its own native CLI session and the next turn sees the
 work — no continuation packet for these (the native session already holds the
 delta). A best-of-N race still runs candidates in
 throwaway envelopes from the tree's current state and may auto-adopt a verified
-winner through the shared preimage-bound protected apply path. It first runs
-`git apply --check`, then a plain all-or-nothing apply; stale or conflicting
-targets leave `adopted:false` without destructive rollback. Blockers
+winner through the shared preimage-bound protected apply path
+([Live-tree mutation paths](#live-tree-mutation-paths), item 3); stale or
+conflicting targets leave `adopted:false` without destructive rollback. Blockers
 (NEEDS_HUMAN / non-clean terminal) stop
 adoption. An isolated thread's accumulated worktree diff is delivered to the
 project on demand via `POST /v2/threads/:id/apply`. The isolated workspace is
@@ -2458,9 +2551,9 @@ reviews/revalidates findings when requested, optionally synthesizes a new checke
 and arbitrates. Best-of requests review; ordinary Single and `--create` do not
 unless explicitly enabled. `--create` runs the same envelope pipeline with the
 create-from-scratch intent (the CLI verb `claudexor create` maps here).
-A candidate whose patch holds secret-like strings is an ordinary working
-candidate: it is gated, reviewed on its exact patch and arbitrated like any
-other (INV-146). A candidate whose changes could not be captured is excluded when
+A candidate whose result holds secret-like strings is an ordinary working
+candidate: it is gated, reviewed on its exact result (its rendered patch view,
+or a copy of its saved changed files) and arbitrated like any other (INV-146). A candidate whose changes could not be captured is excluded when
 another working candidate survives; an all-uncaptured race, an uncaptured
 in-place candidate, or an injected Delegate-belt failure remains terminal for
 the race.
@@ -3598,7 +3691,7 @@ not retry automatically.
   `nextActions`, and the vendor's own typed failure, when the harness keeps one,
   rides `failure.vendorFailure` as opaque evidence that carries no remedy.
 - `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
-  `accept_risk` / `override_needs_human` commit the auditable patch-hash-bound
+  `accept_risk` / `override_needs_human` commit the auditable result-digest-bound
   decision and its idempotency binding in the owning partition generation before
   ACK. The run artifact
   `arbitration/operator_decision.yaml` is only a compatibility projection for
@@ -5268,10 +5361,12 @@ per-job `job.json`, `events.jsonl`, metadata snapshot, or imported v1 registry.
 Unreadable setup state fails closed; operational artifacts cannot reconstruct or
 override lifecycle truth.
 
-Every endpoint is loopback + bearer-token guarded. Apply endpoints read
-`final/patch.diff` for Git work or the digest-bound manifest for copied-file
-work; read-only modes without an applicable result return a real error instead
-of local fake apply state.
+Every endpoint is loopback + bearer-token guarded. Apply endpoints deliver a
+Git run's object result (`meta.git_result`) whether or not `final/patch.diff`
+was rendered, the exact patch behind `final/patch.diff` for a run recorded
+without one, or the digest-bound manifest for copied-file work; read-only modes
+without an applicable result return a real error instead of local fake apply
+state.
 
 `POST /v2/runs/:id/control` is capability-based. The implemented verb is `cancel`:
 daemon abort closes the active harness stream and the process helper sends a
@@ -5307,11 +5402,11 @@ are disclosed run evidence that never blocks the selected deliverable, while a
 winner missing its review evidence record blocks exactly like an escalated
 one. The human decision is a typed server action:
 `POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
-auditable, patch-hash-bound record in the owning partition generation. The single-owner
+auditable, result-digest-bound record in the owning partition generation. The single-owner
 Control API apply gate reads that authority; the mirrored
 `arbitration/operator_decision.yaml` remains a compatibility projection for
 artifact readers. `accept_clean_patch` delivers through `verifyAndDeliver` and
-`rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
+`rerun_with_feedback` enqueues a follow-up run. A mutated result invalidates the
 override. UI must not fake local accept/unblock state.
 
 The CLI resolves a run for `inspect` from any cwd: the project store, the user Ask
@@ -5559,18 +5654,182 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
 
 1. **Envelope delivery/apply** — `POST /v2/runs/:id/apply` and CLI
    `claudexor apply` both go through the delivery-owned `verifyAndDeliver`:
-   the shared apply gate authorizes the run, a fresh verifier checks the exact
-   patch, and an unchanged target preimage is required before mutation.
+   the shared apply gate authorizes the run, a fresh verifier checks the
+   result, and an unchanged target preimage is required before mutation.
+   A Git result (base tree B, candidate tree C) has one delivery owner at
+   every size and runs no Git merge machinery. It first imports what the
+   user's repository lacks from the project object store
+   (`cat-file --batch-check` for the start objects, then
+   `rev-list --objects --missing=print` round by round); objects travel by
+   hard link on one filesystem, otherwise as one pack staged inside the
+   destination's object directory (a `tmp_*` entry Git's own prune reclaims
+   after a crash) and published there by rename, so the store and the
+   user's repository may sit on different volumes. It then composes B..C
+   onto the current target T (a snapshot of the worktree, untracked files
+   included) in a temporary index with `read-tree -m -i --aggressive B T C`.
+   Only when the two `--no-renames` path lists share a path, or the read
+   leaves one unmerged, does the full `git diff --raw` record listing run
+   (under the repository's own rename/copy settings): the unmerged paths,
+   plus rename and copy endpoints the target changed, get their exact
+   records, regenerated per pairing component and set-checked
+   (`delivery_pairing_mismatch` otherwise), and applied once with
+   `git apply --cached` onto T's entries. Everything either side changed below
+   such a path travels with it (a directory that became a file takes the
+   deletions under it; revert composes the other way, so a file that became a
+   directory is revertable by the same rule), except what both sides changed
+   alike. Those plain records come from two trees holding exactly their paths,
+   each record once; a pairing component too long for one command line is
+   limited the same way, since splitting it would change its pairs. Per path
+   this keeps `git apply` rules (overlap refuses as `delivery_conflict`) with
+   one deliberate difference: an identical outcome on both sides is accepted,
+   except on rename and copy endpoints the target changed. A name the result
+   changes, or the closure takes in, that is not valid UTF-8 (each name's own
+   bytes decoded strictly, so a name that really holds U+FFFD is valid) refuses
+   typed (`result_path_encoding`) before anything, a revert's too: Git's output
+   is read as UTF-8 and a pathspec is written as UTF-8, so such a name cannot be
+   addressed. A name only the target changed is never addressed and stays
+   byte-opaque, moved by Git's own tree reads. Then what Git does not track
+   is checked with one lstat per added path and new parent, because a snapshot leaves
+   ignored files out of T and a checkout overwrites them where no revert could
+   bring them back: a file or symlink at a path M adds, one standing where M
+   needs a directory, or a directory a file would replace that holds anything
+   the same write does not remove refuses `delivery_path_occupied`, naming it,
+   with nothing written, and `apply/check` answers the same; a path the check
+   cannot look at (a directory it cannot search) refuses too. So does a path the
+   write changes outside the sparse-checkout patterns, cone or non-cone
+   (`delivery_outside_sparse_checkout`, from one `git sparse-checkout
+   check-rules` over those paths): a snapshot's `add -A` skips such a path, a
+   tracked one keeping HEAD's blob whether its file is absent, as a sparse
+   checkout usually leaves it, or present, so neither a take-back nor a revert
+   could tell what it holds. `check-rules` needs Git 2.41: in a sparse checkout whose Git lacks it,
+   every delivery, `apply/check` and revert refuses `git_failed` before writing,
+   naming the Git version it needs; a checkout that is not sparse never asks.
+   A name is no such
+   occupant only where it reaches a path the same write removes through the
+   filesystem's case folding: spellings that differ only by case, one inode, and
+   not both spelled exactly as entries on disk, so a hard link (an entry of its
+   own) is never taken for a case-only rename. Adding into a
+   directory that exists loses nothing and delivers. The composed tree M is
+   verified in a fresh private clone at T with the configured gates
+   (INV-115), T is rechecked (`delivery_target_changed`), and M is written
+   with `read-tree -m -u T M` once its blob sizes show it fits (each path
+   counted by what it grows, with the capture's 64 MiB margin;
+   `space_insufficient` with nothing written otherwise, and a filesystem that
+   cannot report free space refuses nothing): `apply` through a temporary index that leaves
+   the user's index untouched (its scratch is removed last; one that cannot be removed
+   stays in the temp directory and never replaces the write's result or refusal), `branch`, `commit` and `pr` through the real
+   index after the clean-tree admission. The checkout runs with the sparse-checkout
+   patterns off (`--no-sparse-checkout`, and `core.sparseCheckout=false` for a new
+   branch's `checkout -b` and the checkout back): with them on, Git reapplies them
+   to every entry and deletes a clean file outside them that holds no
+   skip-worktree mark (a conflict resolved there), a path the write never
+   addressed; off, only the paths T and M differ in move, and every other entry
+   keeps its file, and its mark unless Git itself clears it (in a sparse checkout
+   Git clears the skip-worktree mark of a file that is present when it reads the
+   index, which sticks once the real index is written). `branch`, `commit` and `pr` compose onto HEAD's
+   tree, which they commit onto: after a clean `git status`, a snapshot that
+   still differs from HEAD holds only what the user's assume-unchanged or
+   skip-worktree marks hide (a local edit, a file deleted under the mark), which
+   stays on disk and out of the commit, as `apply --index` left it, and so does
+   its mark (but for the sparse-checkout case above); a result that changes such
+   a path refuses `delivery_conflict`, naming it,
+   and HEAD's tree is rechecked before the write (`delivery_target_changed`). No private operation trusts a stat
+   shortcut of the user's configuration or index: `core.ignoreStat` (which marks
+   every entry Git adds assume-valid) and the filesystem monitor are off, an
+   index copied from the user's keeps neither its monitor state nor its
+   untracked cache, and a re-added entry carries none of the user's
+   assume-unchanged or skip-worktree marks. The temporary index compares every
+   path it replaces by content, and `apply` reads the result's paths by content
+   in the snapshot T it composes onto too, so a file that kept its size and times
+   is neither "already applied" nor composed as unchanged (see the snapshot's
+   clean check under [Design constraints](#design-constraints)); the real index keeps the user's stat cache and
+   marks, its refresh comparing a marked entry whose stat moved by content (Git
+   drops the assume-unchanged mark of a file whose content changed there; the
+   mark is put back), so an edit that keeps a file's size and times is
+   overwritten, the same racy-clean limit as `git checkout`. An entry the write
+   replaces keeps a skip-worktree mark but no assume-unchanged one (Git's merge
+   carries over only the former). Every written path is then
+   proven by content (`delivery_content_mismatch`), the way `git status`
+   compares it: a private copy of the index the checkout moved, the written
+   paths re-added without stat data, `update-index --refresh`, `diff-files`.
+   Git's clean conversion therefore sees the indexed blob, so a committed CRLF
+   blob keeps its CR under `text=auto` or `core.autocrlf`; a filter that does
+   not round-trip still reads as different. With `core.symlinks=false` a link
+   is proven as the plain file holding its target that Git writes (a name Git
+   would read as quoted on stdin is quoted the way Git unquotes it). Hashing
+   prints nothing and moves no disk blocks, so the refresh and the checkout get
+   a stall bound scaled from the bytes they must read (ten minutes plus about
+   1 MiB/s) instead of a flat one that would refuse a large enough result. A
+   store or Git fault on the way to the write (the import, the snapshot, the
+   composition) refuses typed with nothing written. The delivery pair (T, M)
+   enters the project object store under the delivery's owner before
+   anything is written, so a store fault there (no space, a stalled or killed Git,
+   a prune that does not finish) does the same; the
+   receipt carries that pair, which a run delivery anchors for revert
+   (item 6). A write that then fails (a path fails its proof, the checkout
+   stops partway) is taken back on that pair by item 6's composition, so
+   `not_applied` stays true: a later user edit outside the delivery is kept,
+   one overlapping it stops the restore and nothing is overwritten. After a
+   `branch`, `commit` or `pr` write that was taken back, or that could not be,
+   the real index it moved returns to HEAD's tree (only the entries the write
+   changed, so every other entry keeps its stat data and its mark, but for the
+   sparse-checkout case above) unless it holds something
+   else (then the receipt says why, beside any reason the take-back failed), and
+   a branch the delivery created is deleted. A path that failed
+   its proof enters that composition as written only when its bytes are
+   exactly what checkout renders for M and its mode is the one M records (a
+   filter that does not round-trip), so a later edit or chmod of it is never
+   taken for the delivery's write. Whether a failed checkout wrote anything is
+   measured on the paths it would write (type, mode, size, inode and times),
+   never read from Git's message, and a measurement that cannot run counts as
+   written. Only a write that cannot be taken back stays: the receipt says
+   `treeMutated:true` and carries the pair, and the run records
+   `applied_review_blocked` with a revert anchor, never `not_applied`. A write
+   taken back with HEAD stranded on the delivery's branch is recorded
+   `applied_review_blocked` too, without an anchor: no revert returns HEAD, so
+   the receipt names the way back, and that explicit absence in
+   `delivery_state.yaml` also clears any anchor an earlier delivery of the run
+   or its work product named. When HEAD did return and only the
+   delivery's new branch could not be deleted, HEAD, tree and index are as
+   before: the delivery is refused `not_applied` (`treeMutated:false`, no
+   anchor) and the receipt names that branch and `git branch -D` to remove it.
+   A `pr`
+   whose push fails, on the Git-result and the legacy patch path alike, keeps
+   the commit on its local branch and checks out where HEAD was; when that
+   checkout fails, HEAD stays on the branch, the receipt names it and the way
+   back, and the run records `applied_review_blocked` with no revert anchor
+   for this write, since none returns branch state (the same explicit absence).
+   Limits, each leaning
+   toward reporting a change: a restored path holds T as Git holds it (the
+   restore is a Git checkout of T), so its bytes are what the user had only
+   when its own filters round-trip (with `core.autocrlf=true` an LF file comes
+   back CRLF, and after an `apply`, whose write never touched the user's index,
+   `git status` then lists that file although `git diff` shows no change; a
+   commit-class take-back refreshes the index it returned, so its status stays
+   clean); the receipt says so beside "unchanged as Git holds it", and no
+   byte-exact rollback is made; and a restore proves its paths as a write does, so it can
+   report as staying a path whose T blob does not round-trip under that
+   path's filter. Apply/check composes the same way in a scratch object directory,
+   which also receives a dirty target's snapshot, under the store's pending
+   lease (Git writes no object it finds in a mounted store, so a prune must not
+   delete one meanwhile), and writes nothing into the
+   user's repository. A result recorded without
+   an object result keeps the legacy patch path: the fresh verifier applies
+   its exact patch to a clean base, and delivery applies that patch.
    Copied directory results use the same delivery owner and target lease with
    complete manifest-bound content, reproduction on the retained selected baseline,
    and per-file preimage checks. Partial delivery retains the remaining paths;
    direct effects and discard do not enter this apply path.
    Replaying apply on an already-delivered run (a fresh invocation with a new
-   idempotency key) is a typed idempotent no-op: when the forward patch no
-   longer applies but the reverse check proves the tree is already this patch's
-   exact postimage, delivery returns `applied` with no mutation instead of a
-   `patch does not apply` failure; a diverged target still refuses as a
-   conflict, never a false success.
+   idempotency key) is a typed idempotent no-op: when the composition leaves T
+   unchanged (for a legacy patch: when the forward patch no longer applies but
+   the reverse check proves the tree is already its exact postimage), delivery
+   returns `applied` with no mutation instead of a conflict, and `branch`,
+   `commit` and `pr` refuse it; a target that diverged so the result no
+   longer applies still refuses as a conflict, never a false success. An
+   `apply` replay also returns the pair an earlier delivery by the same owner
+   kept for exactly the current tree, so a delivery whose caller died before
+   recording it still gets its revert anchor.
 2. **In-place turns (thread turns and thread-less one-shot runs)** — a write
    turn executes directly in the thread's execution tree, and the thread-less
    one-shot surface (`POST /v2/runs` with `execution.isolation: "live"`,
@@ -5587,13 +5846,20 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    footprint and observed effects instead; it does not promise a whole-tree
    baseline or full rollback.
 3. **Best-of winner adoption** — a best-of-N thread race runs candidates in
-   isolated envelopes and applies the winner's patch to the execution tree only
+   isolated envelopes and applies the winner's result to the execution tree only
    on a fully verified `success`; `ungated`, `review_not_run`, blocked,
    and failed results remain inspectable artifacts and never auto-adopt. Adoption
-   runs the PROTECTED apply path (`git apply --check` first, then a plain
-   all-or-nothing apply). A stale or concurrent target is refused and no
-   destructive rollback is attempted; `adopted:false` reports whether the
-   observed target remained unchanged (INV-114).
+   runs the PROTECTED apply path, item 1's delivery in `apply` mode: a Git
+   result is composed onto the current tree, verified fresh and written with
+   `read-tree -m -u`; a result without one keeps the legacy `git apply --check`
+   first, then a plain all-or-nothing apply. A stale or concurrent target is
+   refused and no destructive rollback is attempted; `adopted:false` means the
+   target is unchanged as Git holds it (INV-114; item 1 names what a restored
+   file's bytes can be), because a write that fails after reaching it
+   is taken back as in item 1, and one that cannot be is recorded
+   `adopted:true`, `applied_review_blocked`, with its revert anchor. The adopted
+   delivery pair, or the legacy exact patch, is the run's revert anchor
+   (item 6).
 4. **Thread apply** — `POST /v2/threads/:id/apply` delivers an isolated thread's
    accumulated worktree diff. Fences: one per-thread mutation queue refuses
    apply as `thread_busy` while a mutating turn is queued/running; every run
@@ -5601,15 +5867,17 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    success cannot launder an earlier blocked contribution). This preflight
    defers only a missing per-run final verifier, because turns may already be
    adopted into the isolated thread workspace. Review intent, independent
-   checks, work completion, patch hashes and original-root binding still gate
-   every contribution. Secret-like content is not a refusal: the thread
+   checks, work completion, result digests and original-root binding still
+   gate every contribution. Secret-like content is not a refusal: the thread
    delivers its live worktree capture, so `apply`, `branch` and `commit` carry
    the exact bytes the agent wrote; only `pr` can refuse, through the
    publication gate inside `verifyAndDeliver` before any branch, ref or push:
    the pinned Betterleaks scan of the outgoing commits (merges and messages
    included), branch name and PR title and body (`publication_scan_findings`,
-   `publication_scan_unavailable`, `publication_scan_failed`; INV-146). See
-   [Publication scanner](#publication-scanner). Delivery reuses
+   `publication_scan_unavailable`, `publication_scan_failed`; INV-146), or,
+   for a Git result without a rendered patch view, `pr_unrendered_result`
+   before any scan. See [Publication scanner](#publication-scanner). Delivery
+   captures that worktree as a Git result and reuses item 1's
    `verifyAndDeliver` with a fresh
    verifier and exact target preimage. Success advances the persistent thread
    branch and watermark with committed thread state.
@@ -5625,9 +5893,43 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    Second fence: a user-home, filesystem-root, or unclassifiable root is
    refused with the typed `git_boundary_root_refused` error before any
    mutation (INV-075 exception); a healthy home repository is untouched.
-6. **`revert_run`** — the server-owned in-place revert reads the immutable
-   external patch anchor and reverses only bytes still equal to the recorded
-   Claudexor postimage; a conflicting user edit is refused and left untouched.
+6. **`revert_run`** — the server-owned revert of a live-tree change reads the
+   immutable external anchor its run recorded (`revert_anchor_id`; object and
+   patch anchors share one id space under `<project runtime>/anchors/objects`).
+   An object anchor (`<hex>.pair`: the pre tree T and post tree M of an
+   in-place turn's snapshots, or of a delivery or adoption) imports its trees
+   first, then reverts on that pair by item 1's composition with roles (base
+   M, target the current tree S, candidate T) and the same materialization, so
+   later changes outside the delivery survive. S reads the pair's paths by
+   content, never from the index's stat cache: a delivered file whose old mtime
+   came back is still reverted, a later edit of that shape is an overlap the
+   revert refuses, and only a file that truly holds T is an already-reverted
+   no-op. A snapshot leaves ignored files
+   and nested repositories out, so S also takes in, as they are on disk, exactly
+   the paths the pair adds that S lacks (a name in the target's
+   `.git/info/exclude`, a rule written after the apply, an ignored empty
+   directory a delivered file replaced, a file inside a nested Git repository):
+   unchanged, such a path is removed; changed, it is an overlap the revert
+   refuses; every other ignored file stays out of reach. `add -f` skips a path
+   inside a nested repository and still succeeds, so what the written tree
+   lacks is staged by `update-index --add` (which reads a symlink as a link);
+   one that still cannot be taken in refuses `revert_conflict`, naming it, and
+   one whose presence cannot be told (only ENOENT and ENOTDIR are absence)
+   refuses `git_failed`, both with nothing written. A pair path outside the
+   sparse-checkout patterns refuses `delivery_outside_sparse_checkout` first,
+   since S cannot see what such a path holds. A name the revert must address that is
+   not valid UTF-8 refuses `result_path_encoding`, as in delivery. Only a later
+   edit of a path the pair changed (an overlap, or an edit under the checkout)
+   answers the 409 with reason `postimage_diverged` ("no longer available");
+   every other refusal stays available once its cause is gone and answers
+   `reverse_apply_failed`, its typed code as `refusalCode` and, where a fixed
+   remedy exists (the sparse patterns, a full disk, missing objects), that
+   remedy in the message. A legacy patch anchor
+   (`<hex>.patch`) keeps the reverse apply of its exact patch, which reverses
+   only bytes still equal to the recorded Claudexor postimage. Either way a
+   conflicting user edit is refused and left untouched, and an anchor that is
+   missing or unreadable is the typed 409 `revert_refused` (reason
+   `reverse_apply_failed`, the detail naming the anchor), with nothing changed.
 7. **Thin `CLAUDE.md` bridge** — under its own write-envelope preparation rule
    (INV-113), a project root that has `AGENTS.md`
    and no `CLAUDE.md` gets a thin `CLAUDE.md` whose body is the official Anthropic
@@ -5641,8 +5943,8 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    `project.claude_bridge.created` run event — never silent); and (b) each
    git-mode ENVELOPE checkout at workspace prep, so a Claude Code candidate racing
    inside an envelope reads the same instructions. The envelope write emits NO run
-   event — the envelope is disposable and Claudexor-owned — and diff capture
-   EXCLUDES the generated bridge from the candidate patch by exact path, gated on
+   event — the envelope is disposable and Claudexor-owned — and capture
+   EXCLUDES the generated bridge from the captured result by exact path, gated on
    BOTH the created-this-run fact AND BYTE-EQUALITY with the generated bridge
    content (A-3: byte-equality alone is necessary but not sufficient — it cannot
    tell our fresh bridge from a candidate that rewrote a pre-existing committed
@@ -5650,7 +5952,7 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    "Claudexor created the bridge this run"). Only a pristine, untouched bridge is
    excluded; a candidate-authored `CLAUDE.md`, or any candidate EDIT of the bridge
    — even one that keeps the ownership marker comment — differs from the exact
-   bytes and is captured in `patch.diff` like any other real change, the same
+   bytes and is captured in the result like any other real change, the same
    positive-ownership doctrine as the marker-bound artifact-child exclusion.
    Fences on both writes: the create is EXCLUSIVE (`O_CREAT|O_EXCL`)
    and NO-FOLLOW, so a hand-written `CLAUDE.md`, a symlink (even dangling), or a
@@ -6459,9 +6761,13 @@ close the source, both within one cleanup deadline, not one each. What they read
 then is stored as evidence only and is not published to live observers, even
 when the observer callback for the same message is what pressed Stop. Directory
 attempts still collect the typed file paths those late events name, so files
-written before Stop remain in the captured result; a late raw `patch_produced`
-envelope is not accepted or materialized and its bytes are not retained, while
-one accepted before Stop is still consumed after the stream. A model route or
+written before Stop remain in the captured result; a Git attempt needs no such
+list, because its capture reads the whole tree into the usual object result
+(capture contract under [Design constraints](#design-constraints)). A late raw
+`patch_produced` envelope is not accepted or materialized and its bytes are not
+retained (nothing of it enters the project object store), while one accepted
+before Stop is still consumed after the stream and captured like any change.
+A model route or
 Codex preamble stopped before its native process starts does not start it. A
 read already pending when Stop arrives is not woken by Stop itself; it ends when
 the source answers or the inactivity timer fires.
@@ -6625,12 +6931,13 @@ authority. Readers also bind the receipt's run/task identity (and terminal
 lifecycle where available) to the requested daemon record; copying a valid
 receipt from another run cannot make it authoritative.
 
-Convergence can also finish as `stuck_no_progress`: the same candidate diff was
+Convergence can also finish as `stuck_no_progress`: the same candidate result was
 produced repeatedly while a required deterministic gate still failed. That state
 is terminal, non-applyable, and diagnostic; it tells the operator to inspect the
-stable patch and gate output rather than burning more identical repair attempts.
+stable result and gate output rather than burning more identical repair attempts.
 
-Review prompts are file-backed: the full candidate patch is written to the
+Review prompts are file-backed: the full candidate patch (for a result without
+a rendered patch view, a bounded notice; below) is written to the
 candidate evidence packet as `DIFF.patch` with `DIFF_SUMMARY.md` and digest
 sidecars. The process prompt is concise and points the reviewer to those files;
 it must not embed large full diffs in argv. Per-reviewer telemetry records
@@ -6646,12 +6953,21 @@ directories needed to reach those files are traversed. This retains a tracked
 file that later became ignored and an ignored generated file explicitly present
 in the diff, while excluding unrelated ignored local notes and their siblings.
 Symlink containment remains a final exclusion over that inventory; a file's
-name or content never is (INV-146). Membership follows host path semantics: a literal backslash in
+name or content never is (INV-146). A file that cannot be read is never
+silently dropped: it is not copied, its path and error code are named in the
+reviewer prompt (a claim that depends on it is INSUFFICIENT_EVIDENCE), and it
+is recorded as `uninspectable_files` in the reviewer metadata and in
+`reviews/<attempt>.yaml`. Membership follows host path semantics: a literal backslash in
 a POSIX file name is never normalized into a directory separator. Without a Git
 inventory the legacy candidate plane is limited to diff-touched postimages.
 Directory results instead supply the complete selected postimage manifest,
 including unchanged selected inputs needed to review the result, through
-`candidatePaths`. A text diff may be empty. The evidence
+`candidatePaths`. A Git result without a rendered patch view (#535) supplies
+its exact changed paths the same way, with a bounded notice as its
+`DIFF.patch`, so its reviewers read the changed files themselves. In such an
+explicit-manifest review a file a reviewer could not inspect also adds an
+INSUFFICIENT_EVIDENCE finding for that reviewer, so the review cannot pass
+clean. A text diff may be empty. The evidence
 directory never inherits either rule: it is copied through its own explicit
 evidence or sealed-packet boundary. Each reviewer artifact records which
 inventory mode was used.
@@ -7521,11 +7837,12 @@ code touching one of these areas must honor it or change it explicitly here.
   baseline, a failed `diff`), Claudexor records a capture refusal: a sanitized
   `manual_cleanup` receipt in phase `workspace`, with nothing rolled back; it
   never substitutes an empty diff and asks reviewers to trust the live tree.
-  All `runCaptureRaw` callers share a combined stdout/stderr buffer policy of
-  256 MiB (not an RSS bound): capture, delivery/revert Git and reviewer inventory
-  reads refuse larger output. Binary content is never inspected or withheld:
-  local apply, branch and commit deliver its exact bytes, and `pr` relies on
-  the publication scanner, which skips some binary content by design.
+  Buffered `runCaptureRaw` reads share a combined stdout/stderr buffer policy of
+  256 MiB (not an RSS bound); patch and pack bytes on the object path stream
+  through files instead and are never held as one string. Binary content is
+  never inspected or withheld: local apply, branch and commit deliver its exact
+  bytes, and `pr` relies on the publication scanner, which skips some binary
+  content by design.
   Overflow,
   spawn/I/O or scratch-cleanup failure becomes typed workspace evidence,
   including budget/stream, primary cause, cleanup and any available
@@ -7534,6 +7851,156 @@ code touching one of these areas must honor it or change it explicitly here.
   replays that context. Completed answers are saved per attempt and observed
   spend survives both post-try and final-only refusal. The failed post-try
   capture is reused; a new native try resets it.
+  Since #535 the canonical result of every Git capture is Git objects, never a
+  patch string. The candidate tree is written through a scratch index into a
+  private scratch object directory (the user's object database is a read-only
+  alternate, and the project object store is one only while the capture holds
+  a pending lease, because Git writes no object it finds there); everything it
+  needs beyond its
+  boundary (its base commit, or a Claudexor dirty snapshot's parent) enters the
+  project object store `<runtime>/git-store`, a private bare repository that is
+  never an alternate of the user's repository; `<runtime>` is the project's also
+  when the run executes elsewhere (a delegated workspace, an isolated thread's
+  worktree: Git runs there, the objects and pair anchors stay with the project,
+  where delivery and retention look for them, and only the envelope's scoped
+  directories stay under the execution root's namespace, where the orphan
+  sweeper finds them). One project therefore keeps one Git object format: a
+  capture, envelope, check or delivery whose repository uses the other one
+  (sha1 or sha256) is refused, typed and naming both formats, before anything
+  is written or the store is mounted (`capture_failed` at capture and envelope
+  creation, `result_objects_missing` at check and delivery), and a store is
+  never created in another format than the project repository's. The store is
+  verified against the store
+  alone, and is recorded under an owner (the run directory, a thread directory,
+  an envelope or a revert anchor) whose existence keeps it live; a run that
+  retention retired keeps only `tombstone.yaml` and no longer holds its
+  objects. Identity is the typed
+  digest v1 (sha256 of {schema `git_objects/v1`, object_format, base_tree_oid,
+  candidate_tree_oid}); Apply, decisions and gates bind it as described under
+  [Exact working content](#exact-working-content).
+  Capture runs no rename detection. The patch is a VIEW: rendered once when
+  an estimate computed from its blob sizes fits the 256 MiB view limit and the
+  render itself stays within that buffer,
+  otherwise absent with a typed `patch_view`
+  ({available:false, reason, limitBytes, estimatedBytes}) and a bounded
+  `change_inventory`. Its `reason` is `exceeds_view_limit`, or `render_failed`
+  when the render fails for another cause (its timeout, a Git failure, a binary
+  stub): the objects are already kept, so a failed render costs only the view,
+  and `estimatedBytes` stays the estimate. That estimate is computed before rendering (about
+  1 KiB plus 1.25 times the old and new blob sizes per changed path, and 1 KiB
+  alone for a mode-only change); when the render itself overflows, the recorded
+  `estimatedBytes` is the limit plus one byte, the least the view can be. So a
+  result whose changed files are very large gets no view even for a small edit:
+  one changed line in a 110 MiB file estimates about 275 MiB, and a pure rename
+  of a very large file is estimated as a delete plus an add (capture runs no
+  rename detection), so it gets no view either. This is a
+  disclosed limitation: such a result stays exact, verifiable, deliverable and
+  revertable, and `pr` refuses it typed (`pr_unrendered_result`) before any
+  scan; scanning such a result for `pr` is a follow-up. There is never an empty or descriptor `patch.diff`: the
+  artifact route answers 413 `patch_view_unavailable` (a result record it
+  cannot read for any cause but absence is an error, never a 404, which clients
+  show as no changes), review and synthesis get
+  an explicit bounded notice and read the changed files themselves, from a copy
+  of the saved candidate tree and never from the workspace (reviewers, see
+  [Exact working content](#exact-working-content); synthesis, see
+  [Routing](#4-routing)), path policy reads the
+  full no-renames path list, and the canonical deliverable is the work product.
+  A free-space preflight runs before capture writes anything (where the
+  filesystem cannot report free space it refuses nothing, and a write that
+  then runs out of space is the same typed refusal). Every Git child of a
+  capture runs with no wall clock, only a stall bound (no output on either
+  stream, buffered or not, and no disk progress for ten minutes), as composition
+  and checkout do. The `add` that re-hashes the tracked files from a scratch
+  index gets ten minutes plus about one second per MiB of the base tree's blobs
+  (read from object headers, no content), since a blob the repository already
+  holds is re-hashed without output or a new object. Excepted are these,
+  which keep the plain helper's 60-second timeout: the nested-repository
+  listing, the patch-view render, the inventory pass, and the dirty snapshot's
+  `status`, `rev-parse --show-toplevel`, `--git-path index`, `HEAD` and
+  `HEAD^{tree}`, the `update-index` that clears marks in its private index
+  copy, `read-tree`, `write-tree` and `commit-tree` (its `ls-files -v` has the
+  plain stall bound, its `add` the scaled one, like the capture's). The dirty
+  snapshot's clean check is a `status` that trusts no stat shortcut of the
+  user's configuration (`core.ignoreStat`, a filesystem monitor, the untracked
+  cache), and runs on a private copy of the user's index with the user's
+  assume-unchanged and skip-worktree marks cleared, so it answers what the
+  snapshot's `add -A` records. The one exception is an absent file the
+  sparse-checkout patterns leave out (one `check-rules` over the absent marked
+  files): a sparse checkout leaves it absent on purpose, and `add -A` skips it
+  too. A marked file
+  that is gone otherwise (its parent become a file included) is a deletion, so a
+  clean worktree's snapshot and a dirty one's agree; a Git without `check-rules`
+  makes that snapshot read every file instead. Like the user's own `status`, that
+  check trusts the index's stat cache for every other file: an edit that keeps a
+  file's size and times (with `core.checkStat=minimal` and
+  `core.trustctime=false`, a restored mtime is enough) reads as unchanged. So
+  the paths an operation decides on are read by content: `apply` and its check
+  the paths the result changes, a revert and a take-back the paths of their
+  delivery pair. Those entries are re-added to the private copy without stat
+  data (an out-of-pattern absence above still excepted), so the check hashes
+  exactly those files, not the whole tree a dirty snapshot's `add -A` re-reads.
+  The copy keeps the user's index time, so an entry Git would compare as racily
+  clean is still compared. `branch`, `commit` and `pr` keep the stat cache for
+  the paths they write through the real index (the limit `git checkout` has). A modified file outside the
+  patterns is still skipped by `add -A`, so a snapshot and an in-place turn's
+  capture miss that edit, as before. Such a timeout fails that capture or snapshot,
+  except that the render's only leaves its view out (`render_failed`) and the
+  inventory pass only leaves its inventory out. Claudexor's own isolated clones list the store as
+  a second alternate, and a dirty isolated base enters the store before the
+  clone, so it resolves after the user's prune.
+  Delivery, adoption and revert of these results, with their typed refusals,
+  are described under [Live-tree mutation paths](#live-tree-mutation-paths)
+  (items 1, 3 and 6). Retention prunes the store by reachability
+  from live root records (a dry run counts the runs it would retire as dead
+  too), yields to a live import (pending records against a prune lock), gives
+  the event loop a turn every 2,048 loose objects it walks, and
+  never prunes objects younger than one hour. A root record appears whole by one
+  rename, so a crash or a full disk cannot leave one torn; a record that is whole
+  and unreadable still refuses pruning, and an owner whose presence cannot be
+  told (only ENOENT and ENOTDIR say it is gone) keeps its objects. A control
+  directory (root or pending records) that cannot be searched is never read as
+  empty: the prune and a replay's look for its kept pair fail loudly instead. Whatever mounts the store as an alternate
+  (a capture, `apply/check`, a copy of saved files) holds a pending record while
+  it does. A record its holder cannot remove when done (a directory that refuses the
+  unlink) is not released: it stays and only delays pruning, while the holder's
+  answer and the rest of its cleanup stand. A pending record names its
+  process by PID and kernel birth and stays live while that process runs,
+  however long the import takes; a dead or reused-PID owner's record is
+  reclaimed after the hour (where no birth can be read, a record its running
+  import renews lives an hour past its last renewal). The prune lock appears
+  with its owner in one rename; a stale one is moved aside and checked before
+  removal, and a pruner that no longer holds the lock deletes nothing more.
+  What still fails (no space, a stalled or signalled Git, a read error, a
+  missing object) is a capture refusal. A terminal that a capture refusal
+  leads ends `failed` with reason `capture_refused` ("Failed (changes
+  not captured)"), never `workspace_unavailable`, in race and convergence
+  alike; one orchestrator owner maps that outcome. Its receipt (the attempt's
+  `capture_refusal.detail`, the failure `safeMessage` that the CLI prints as
+  `failure message:` and the macOS app shows, the live record's
+  `recovery_detail`) names the cause, then the typed failure's own redacted,
+  bounded diagnostic on one line (`Detail: …`), what was not recorded (the
+  exact result, a revert point for live effects, apply eligibility, and the
+  configured checks and requested review, which did not run) and what is kept
+  (the final answer, run-produced media, the live changes or the retained
+  isolated source). Its
+  next actions inspect and decide; none advises retrying the run, because
+  capture runs after the work. A refusal is packaging, not an execution error:
+  in-run continuity decides `resumable` from the work alone, so completed work
+  whose only defect is the capture carries no block, while a harness error, a
+  cancellation or an unfinished `work_state` still does. An eligible isolated
+  singleton still keeps its source in continuation custody, which run detail
+  projects as continuable from that retained envelope. The executor's answer
+  remains the diagnostic primary output (`final/retained-output.md`). Produced
+  media are still copied into `attempts/<id>/produced/`, and in-place disposal
+  keeps the run-owned artifact directory, so a screenshot beyond those copy
+  bounds is not deleted. When the capture had already written its candidate
+  tree, a separate bounded pass over that tree (`git diff --raw` plus blob
+  sizes, each under the same buffer budget, never the refused patch bytes, run
+  before the scratch is removed) records an `inventory` on `captureFailure`: an
+  explicitly non-exact (`exact: false`) list of up to 20 largest changed files
+  with change kind and size, shown by `inspect` and the run summary. It is never
+  a patch and is never applied, reviewed or reverted; when its own pass fails
+  there is no inventory and the refusal is unchanged.
   Isolated sources survive disposal and startup sweeping in existing durable
   envelope custody, with auth stripped. Eligible daemon singletons retain their
   continuation pointer; other sources have distinct
@@ -7579,8 +8046,8 @@ code touching one of these areas must honor it or change it explicitly here.
   inspection beyond that preview. A clipped preview carries explicit incomplete
   capture and cannot enter exact apply/revert/digest/synthesis; the live source
   remains available. Complete small previews retain their existing behavior.
-  Explicit directory file-manifest capture is separate: its refusal carries no
-  typed capture facts, so the late-cancel and drain rules above do not keep it.
+  Explicit directory file-manifest capture is separate; its typed refusal carries
+  the capture cause and any available partial-payload cleanup diagnostic.
   No truncated exact Git patch is delivered. Cursor NDJSON frames remain uncapped.
 - Isolated-thread worktrees are pinned by persistent `claudexor/thread-*`
   branches. The stored SHA is a checked cache; successful apply advances the

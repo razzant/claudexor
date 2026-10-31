@@ -1177,6 +1177,41 @@ describe("'pr' publishes only what the pinned publication scanner passes (INV-14
       expect(refs()).toBe(remoteBefore);
     });
 
+    /** A remote whose receive hook refuses every push, after the scan passed. */
+    async function refusingRemote(newLine: string) {
+      const made = await repoWithRemote(newLine);
+      const remote = (await git(made.repo, ["remote", "get-url", "origin"])).stdout.trim();
+      writeFileSync(join(remote, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n");
+      chmodSync(join(remote, "hooks", "pre-receive"), 0o755);
+      return made;
+    }
+
+    it("a failed push returns the tree to its branch and keeps the commit on the local branch (INV-114)", async () => {
+      const { repo, patch, refs } = await refusingRemote("ordinary line");
+      const remoteBefore = refs();
+      const before = (await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res).toMatchObject({ applied: false, treeMutated: false });
+      expect(res.detail).toContain("push failed");
+      expect((await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim()).toBe(before);
+      expect((await git(repo, ["status", "--porcelain"])).stdout).toBe("");
+      expect((await git(repo, ["rev-parse", res.branch as string])).stdout.trim()).toBe(res.commit);
+      // The tree went back, so nothing asks for recovery.
+      expect(res.detail).not.toContain("RECOVERY REQUIRED");
+      expect(refs()).toBe(remoteBefore);
+    });
+
+    it("a failed push from a detached HEAD returns the tree to that commit, still detached (INV-114)", async () => {
+      const { repo, patch } = await refusingRemote("ordinary line");
+      const head = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+      await git(repo, ["checkout", "-q", "--detach", head]);
+      const res = await deliver(repo, patch, { mode: "pr", message: "open pr" });
+      expect(res).toMatchObject({ applied: false, treeMutated: false });
+      expect(res.detail).toContain("push failed");
+      expect((await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim()).toBe("HEAD");
+      expect((await git(repo, ["rev-parse", "HEAD"])).stdout.trim()).toBe(head);
+    });
+
     it("reports a pushed branch as applied when PR creation fails", async () => {
       const { repo, patch, refs } = await repoWithRemote("ordinary line");
       await withFakeGh(async () => {

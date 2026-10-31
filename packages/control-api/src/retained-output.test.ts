@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import { ControlRunDetail } from "@claudexor/schema";
-import { createRevertAnchorOrNull, snapshotTree } from "@claudexor/workspace";
+import {
+  createRevertAnchorFromPatchOrNull,
+  createRevertAnchorOrNull,
+  snapshotTree,
+} from "@claudexor/workspace";
+import { projectRuntimeDir } from "@claudexor/util";
 import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import {
   DaemonControlApiServer,
@@ -172,7 +177,9 @@ describe("retained results through the public control API", () => {
       const before = await snapshotTree(execution);
       writeFileSync(join(execution, "file.txt"), "cancelled edit\n");
       const after = await snapshotTree(execution);
-      const anchor = await createRevertAnchorOrNull(execution, before, after);
+      // Git reads the pair in the execution tree; the project keeps it, as the
+      // orchestrator writes it for a run whose execution root is not its project.
+      const anchor = await createRevertAnchorOrNull(execution, before, after, project);
       expect(anchor).not.toBeNull();
       writeFileSync(
         join(runDir, "final/work_product.yaml"),
@@ -205,6 +212,13 @@ describe("retained results through the public control API", () => {
         const response = await get("/runs/run-1/decision", { action: "revert_run" });
         const body = await response.json();
         expect(response.status, JSON.stringify(body)).toBe(conflict ? 409 : 200);
+        // A later edit of what the turn changed is the one cause that ends the revert.
+        if (conflict)
+          expect(body).toMatchObject({
+            code: "revert_refused",
+            message: expect.stringContaining("changed after this turn"),
+            context: { reason: "postimage_diverged", refusalCode: "revert_conflict" },
+          });
       });
       expect(readFileSync(join(execution, "file.txt"), "utf8")).toBe(
         conflict ? "later user edit\n" : "before\n",
@@ -212,4 +226,149 @@ describe("retained results through the public control API", () => {
       expect(readFileSync(join(project, "file.txt"), "utf8")).toBe("before\n");
     },
   );
+});
+
+/** A cancelled live turn in `execution`, whose project keeps its revert anchor. */
+async function liveTurn(anchorOf: "pair" | "patch") {
+  const project = initRepo(),
+    execution = initRepo(),
+    runDir = directory();
+  mkdirSync(join(runDir, "final"));
+  const before = await snapshotTree(execution);
+  writeFileSync(join(execution, "file.txt"), "cancelled edit\n");
+  const after = await snapshotTree(execution);
+  const anchor =
+    anchorOf === "pair"
+      ? await createRevertAnchorOrNull(execution, before, after, project)
+      : createRevertAnchorFromPatchOrNull(
+          execution,
+          execFileSync("git", ["-C", execution, "diff", "--binary", before, after]).toString(),
+        );
+  expect(anchor).toMatch(/^sha256:[0-9a-f]{64}$/);
+  const file = join(
+    projectRuntimeDir(anchorOf === "pair" ? project : execution),
+    "anchors",
+    "objects",
+    `${anchor!.slice(7)}.${anchorOf}`,
+  );
+  expect(existsSync(file)).toBe(true);
+  writeFileSync(
+    join(runDir, "final/work_product.yaml"),
+    stringify({
+      id: "wp-1",
+      kind: "patch",
+      source_task_id: "task-1",
+      producer_attempt_id: "a01",
+      meta: {
+        result_kind: "patch",
+        lifecycle: "cancelled",
+        adopted: true,
+        apply_state: "applied_review_blocked",
+        pre_turn_sha: before,
+        post_turn_sha: after,
+        revert_anchor_id: anchor,
+        execution_root: execution,
+      },
+    }),
+  );
+  const record: DaemonRunRecord = {
+    id: "job-1",
+    runId: "run-1",
+    taskId: "task-1",
+    state: "cancelled",
+    runDir,
+    params: { mode: "agent", scope: { kind: "project", root: project } },
+  };
+  return { project, execution, runDir, anchor: anchor!, file, record };
+}
+
+// #535 round 9: a revert whose retained anchor is gone or unreadable is the typed
+// 409 `revert_refused` (and its audited rejection), never a raw 400 naming a file.
+describe("a revert whose retained anchor is missing or unreadable", () => {
+  it.each([
+    { anchorOf: "pair", damage: "removed", says: "is missing" },
+    { anchorOf: "pair", damage: "garbled", says: "is unreadable" },
+    { anchorOf: "patch", damage: "removed", says: "is missing" },
+    { anchorOf: "patch", damage: "garbled", says: "is unreadable" },
+  ] as const)(
+    "a $damage $anchorOf anchor answers 409 revert_refused, audited, and changes nothing",
+    async ({ anchorOf, damage, says }) => {
+      const f = await liveTurn(anchorOf);
+      if (damage === "removed") rmSync(f.file);
+      else writeFileSync(f.file, readFileSync(f.file, "utf8").slice(0, 40));
+      await withApi(f.record, async (get) => {
+        const response = await get("/runs/run-1/decision", { action: "revert_run" });
+        const problem = (await response.json()) as {
+          code: string;
+          message: string;
+          context: { reason: string; detail: string };
+        };
+        expect(response.status, JSON.stringify(problem)).toBe(409);
+        expect(problem.code).toBe("revert_refused");
+        expect(problem.context.reason).toBe("reverse_apply_failed");
+        expect(problem.context.detail).toContain(`retained revert anchor ${f.anchor} ${says}`);
+        expect(problem.context.detail).toContain("nothing was changed");
+        // Never a file the anchor never was.
+        if (anchorOf === "pair") expect(problem.context.detail).not.toContain(".patch");
+        const detail = ControlRunDetail.parse(await (await get("/runs/run-1")).json());
+        expect(detail.summary.result).toMatchObject({
+          applyState: "applied_review_blocked",
+          revertAnchorId: f.anchor,
+        });
+      });
+      expect(readFileSync(join(f.execution, "file.txt"), "utf8")).toBe("cancelled edit\n");
+      expect(readFileSync(join(f.project, "file.txt"), "utf8")).toBe("before\n");
+      const rejected = readFileSync(join(f.runDir, "events.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { type: string; payload: Record<string, unknown> })
+        .filter((event) => event.type === "control.rejected");
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]!.payload).toMatchObject({
+        decision: "revert_run",
+        reason: "reverse_apply_failed",
+      });
+      expect(String(rejected[0]!.payload["detail"])).toContain(f.anchor);
+    },
+  );
+});
+
+// #535 R5 E1: only a later edit of what the turn changed ends a revert. Every other
+// refusal that left the tree untouched read "Revert is no longer available because
+// the affected files changed after this turn", although it stays available once its
+// cause is gone; the typed cause now rides the problem, with its remedy.
+describe("a revert refused for a cause other than a later edit", () => {
+  it("answers reverse_apply_failed with the typed cause and its remedy, writing nothing", async () => {
+    const f = await liveTurn("pair");
+    execFileSync("git", ["-C", f.execution, "sparse-checkout", "set", "--no-cone", "/other/"]);
+    await withApi(f.record, async (get) => {
+      const response = await get("/runs/run-1/decision", { action: "revert_run" });
+      const problem = (await response.json()) as {
+        code: string;
+        message: string;
+        context: { reason: string; detail: string; refusalCode?: string };
+      };
+      expect(response.status, JSON.stringify(problem)).toBe(409);
+      expect(problem).toMatchObject({
+        code: "revert_refused",
+        context: {
+          reason: "reverse_apply_failed",
+          refusalCode: "delivery_outside_sparse_checkout",
+        },
+      });
+      expect(problem.message).toContain("git sparse-checkout add");
+      expect(problem.message).not.toContain("no longer available");
+      expect(problem.context.detail).toContain("file.txt");
+    });
+    expect(readFileSync(join(f.execution, "file.txt"), "utf8")).toBe("cancelled edit\n");
+    const rejected = readFileSync(join(f.runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; payload: Record<string, unknown> })
+      .filter((event) => event.type === "control.rejected");
+    expect(rejected.at(-1)!.payload).toMatchObject({
+      reason: "reverse_apply_failed",
+      refusalCode: "delivery_outside_sparse_checkout",
+    });
+  });
 });

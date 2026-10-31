@@ -733,6 +733,11 @@
                               "capture_output_exceeded",
                               "capture_output_incomplete",
                               "capture_preview_truncated",
+                              "capture_space_insufficient",
+                              "capture_git_stalled",
+                              "capture_git_signal",
+                              "capture_read_failed",
+                              "capture_object_missing",
                               "capture_failed"
                             ]
                           },
@@ -757,6 +762,22 @@
                             "type": "string",
                             "const": "truncated"
                           },
+                          "requiredBytes": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "availableBytes": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "signal": {
+                            "type": "string",
+                            "maxLength": 32
+                          },
+                          "stallMs": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
                           "cleanup": {
                             "type": "object",
                             "properties": {
@@ -775,6 +796,72 @@
                               "message"
                             ],
                             "additionalProperties": false
+                          },
+                          "inventory": {
+                            "type": "object",
+                            "properties": {
+                              "exact": {
+                                "type": "boolean",
+                                "const": false,
+                                "description": "Always false: an inventory names files; it is not the exact change."
+                              },
+                              "changedFiles": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Changed paths the pass counted."
+                              },
+                              "largest": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string",
+                                      "maxLength": 1024,
+                                      "description": "Top-relative changed path, exact within the length cap."
+                                    },
+                                    "change": {
+                                      "type": "string",
+                                      "enum": [
+                                        "added",
+                                        "modified",
+                                        "deleted",
+                                        "type_changed"
+                                      ],
+                                      "description": "What happened to the path between the turn's base and the uncaptured tree."
+                                    },
+                                    "sizeBytes": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "description": "Size of the new blob (of the old blob for a deletion); null when Git could not size it."
+                                    }
+                                  },
+                                  "required": [
+                                    "path",
+                                    "change",
+                                    "sizeBytes"
+                                  ],
+                                  "additionalProperties": false,
+                                  "description": "One changed path of a non-exact capture inventory."
+                                },
+                                "maxItems": 20,
+                                "description": "The largest changed files, largest first."
+                              }
+                            },
+                            "required": [
+                              "exact",
+                              "changedFiles",
+                              "largest"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Bounded non-exact inventory of the changed files behind a refused capture."
                           }
                         },
                         "required": [
@@ -1962,6 +2049,7 @@
                               "owner_task_gone",
                               "crash_interrupted",
                               "workspace_unavailable",
+                              "capture_refused",
                               "input_required",
                               "work_incomplete",
                               "context_capacity_exhausted",

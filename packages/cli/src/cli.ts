@@ -32,9 +32,12 @@ import {
   TaskContract,
   type TestCommandInvocation,
   type ResourceAttachmentRef,
+  CaptureChangeInventory,
+  captureInventoryLines,
   runOutcomeLabel,
   taskGroupReceiptMetadata,
 } from "@claudexor/schema";
+import { projectObjectResultDisclosure } from "./mcp-run-projections.js";
 import {
   flagBool,
   flagStr,
@@ -1101,7 +1104,9 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
         return summary || primary ? 0 : 1;
       }
       print(`run ${runId} @ ${paths.root}`);
-      if (runFacts) print(`lifecycle: ${runFacts.outcome.lifecycle}`);
+      const reason = runFacts?.outcome.reason;
+      if (runFacts)
+        print(`lifecycle: ${runFacts.outcome.lifecycle}${reason ? ` (${reason})` : ""}`);
       if (contract.success) {
         print(`mode: ${contract.data.mode.kind}`);
         print(
@@ -1124,12 +1129,25 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
         );
       }
       print(`output: ${outputReadyState}${primary ? ` ${primary.path}` : ""}`);
+      const objectResult = projectObjectResultDisclosure({ workProduct });
+      if (objectResult?.patchView === "unavailable") {
+        // #535: an exact result too large to render as one patch is still deliverable.
+        print(
+          `result: kept exactly as Git objects (${objectResult.digest}); no patch view (${objectResult.reason}, estimated ${objectResult.estimatedBytes ?? "?"} bytes) — apply and revert still work`,
+        );
+        const changes = CaptureChangeInventory.safeParse(
+          (workProduct as { meta?: Record<string, unknown> } | null)?.meta?.["change_inventory"],
+        );
+        if (changes.success) for (const line of captureInventoryLines(changes.data)) print(line);
+      }
       if (failure) {
         print(
           `failure: ${failure.category}${failure.code ? `/${failure.code}` : ""} phase=${failure.phase}${failure.harnessId ? ` harness=${failure.harnessId}` : ""}${failure.vendorFailure?.code ? ` vendor_code=${failure.vendorFailure.code} (${failure.vendorFailure.source})` : ""}`,
         );
         print(`failure message: ${failure.safeMessage}`);
         for (const action of failure.nextActions) print(`next action: ${action}`);
+        const inventory = failure.captureFailure?.inventory;
+        if (inventory) for (const line of captureInventoryLines(inventory)) print(line);
       }
       {
         // Structured-output contract receipt (only present when the run was

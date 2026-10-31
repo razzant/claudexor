@@ -3,8 +3,26 @@ import { lstatSync, readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readFileUtf8BoundedSync } from "@claudexor/util";
-import { safeArtifactPath } from "./artifact-paths.js";
+import { isVanishedErrno, safeArtifactPath } from "./artifact-paths.js";
 import type { DaemonRunRecord } from "./run-record.js";
+
+/**
+ * A run record that is there but cannot be read (EACCES, EIO and any other errno
+ * but ENOENT and ENOTDIR) says nothing about what it holds: it is refused typed
+ * (`artifact_read_failed`, 503), never read as absent nor as the client's fault.
+ * Any other error (a bounded read's own refusal included) is returned as it is.
+ */
+export function artifactReadFault(relPath: string, error: unknown): unknown {
+  const errno = (error as NodeJS.ErrnoException | null)?.code;
+  if (typeof errno !== "string" || isVanishedErrno(error) || errno.startsWith("artifact_"))
+    return error;
+  return Object.assign(
+    new Error(
+      `this run's record ${relPath} cannot be read (${errno}), so what it holds is unknown; nothing was done`,
+    ),
+    { status: 503, code: "artifact_read_failed", retryable: false, cause: error },
+  );
+}
 
 export function readTextArtifact(
   rec: DaemonRunRecord,

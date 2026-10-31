@@ -1,5 +1,6 @@
 import { z } from "zod/v3";
 import { FinalVerifyRecord } from "./decision.js";
+import { GitDeliveryPair, GitResultRefusal } from "./git-result.js";
 
 /** Why the publication scanner stopped `pr` before anything left the machine
  * (INV-146). Findings name rule and place only, never the matched text. */
@@ -65,6 +66,14 @@ export const DeliveryReceipt = z
       .describe("Coarse typed delivery disposition (applied / already_applied / refused)."),
     finalVerify: FinalVerifyRecord.describe("Fresh verifier evidence for this delivery attempt."),
     targetPreimageSha: z.string().describe("Target snapshot verified immediately before delivery."),
+    /** #535: why an object delivery refused, typed, with the paths it concerns. */
+    refusal: GitResultRefusal.optional().describe(
+      "Typed refusal of an object-result delivery (code, message, bounded paths); absent on success or a legacy patch refusal.",
+    ),
+    /** #535: the actual pair an object delivery wrote; revert runs on it. */
+    deliveryPair: GitDeliveryPair.optional().describe(
+      "Pre/post trees of an object-result delivery whose write is on the target (revert runs on this pair); absent when nothing of it stayed, and for a legacy patch delivery.",
+    ),
   })
   .strict()
   .describe("Immutable receipt for a freshly verified delivery attempt.");

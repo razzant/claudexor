@@ -138,6 +138,14 @@ describe("outcomeBanner (D18 server-owned headline)", () => {
       "Cancelled",
     );
   });
+
+  it("a refused capture fails closed under its own name, never as a missing workspace", () => {
+    const refused = makeOutcomeFacts("failed", { reason: "capture_refused", noChanges: null });
+    expect(runOutcomeLabel(refused)).toBe("Failed (changes not captured)");
+    expect(outcomeBanner(refused, patch)).toBe("Failed (changes not captured)");
+    expect(outcomeExitCode(refused)).toBe(1);
+    expect(processExitCode(refused.lifecycle)).toBe(1);
+  });
 });
 
 describe("D-16 work_state veto projections (INV-116)", () => {

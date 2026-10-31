@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { WorkspaceError } from "@claudexor/core";
-import type { WorkspaceEnvelope } from "@claudexor/schema";
+import type { GitObjectResult, WorkspaceEnvelope } from "@claudexor/schema";
 import { projectRuntimeDir, sha256, prunePatchObjects } from "@claudexor/util";
 import {
   createRevertAnchorFromPatchOrNull,
@@ -12,7 +12,13 @@ import {
   type WorkspaceManager,
 } from "@claudexor/workspace";
 
-import { attemptDisclosure, captureCandidateWorkspace, persistFinalPatch } from "./secretDiff.js";
+import {
+  attemptDisclosure,
+  captureCandidateWorkspace,
+  persistFinalPatch,
+  resultSummaryDisclosure,
+  resultSummaryLines,
+} from "./secretDiff.js";
 
 const envelope = {
   id: "env-test",
@@ -50,16 +56,17 @@ function textPatch(path: string, line: string): string {
 function fakeManager(
   capture: () => Promise<{
     diff: string;
-    binarySecretPaths: string[];
     captureIncomplete: boolean;
     excludedNestedRepositories?: string[];
   }>,
   retained: string[] = [],
+  keptArtifacts: string[] = [],
 ): WorkspaceManager {
   return {
     captureDiff: capture,
     ownedArtifactRelativeDirectory: () => null,
     retainEnvelope: (env: WorkspaceEnvelope) => retained.push(env.id),
+    keepArtifactDirectory: (env: WorkspaceEnvelope) => keptArtifacts.push(env.id),
   } as unknown as WorkspaceManager;
 }
 
@@ -90,6 +97,7 @@ const capture = (
     })(),
     inPlace,
     holder: { runId: "run-test", runDir: tempRoot("cx-capture-run-") },
+    contract: { tests: { commands: [] }, review_requested: false },
     ...extra,
   });
 
@@ -98,20 +106,44 @@ describe("capture refusal is the only capture-time refusal", () => {
     { inPlace: true, disposition: "manual_cleanup" },
     { inPlace: false, disposition: "retained" },
   ] as const)(
-    "names a capture exception honestly for inPlace=$inPlace without echoing it",
+    "names a capture exception honestly for inPlace=$inPlace without echoing a secret",
     async ({ inPlace, disposition }) => {
-      const wsm = fakeManager(async () => {
-        throw new Error("sensitive capture sentinel");
-      });
+      const retained: string[] = [];
+      const keptArtifacts: string[] = [];
+      const secret = fakeKey("s");
+      const wsm = fakeManager(
+        async () => {
+          throw new Error(`sensitive capture sentinel ${secret}`);
+        },
+        retained,
+        keptArtifacts,
+      );
 
       const result = await capture(wsm, inPlace);
 
       expect(result.diff).toBe("");
       expect(result.captureRefusal?.disposition).toBe(disposition);
-      expect(result.captureRefusal?.detail).not.toContain("sensitive capture sentinel");
-      expect(result.captureRefusal?.detail).toMatch(
-        inPlace ? /changed files are untouched/ : /retained/,
+      // #535 F11: the prose carries the typed failure's diagnostic, masked: an
+      // engine diagnostic is not working content (INV-146).
+      expect(result.captureRefusal?.detail).toContain(
+        "Detail: sensitive capture sentinel [redacted].",
       );
+      expect(result.captureRefusal?.detail).not.toContain(secret);
+      // The receipt names what was not recorded and what is kept, never a retry.
+      expect(result.captureRefusal?.detail).toMatch(/^The changes could not be captured exactly/);
+      expect(result.captureRefusal?.detail).toContain(
+        inPlace
+          ? "Not recorded: the exact result; a revert point; apply eligibility."
+          : "Not recorded: the exact result; apply eligibility.",
+      );
+      expect(result.captureRefusal?.detail).toMatch(
+        inPlace
+          ? /changed files in .* \(already in place, not reviewed\)/
+          : /retained isolated source/,
+      );
+      // Live media keep their run-owned directory; an isolated envelope is kept whole.
+      expect(keptArtifacts).toEqual(inPlace ? ["env-test"] : []);
+      expect(retained).toEqual(inPlace ? [] : ["env-test"]);
     },
   );
 
@@ -139,7 +171,6 @@ describe("capture refusal is the only capture-time refusal", () => {
   it("turns an incomplete capture into a refusal instead of a fabricated empty result", async () => {
     const wsm = fakeManager(async () => ({
       diff: "",
-      binarySecretPaths: [],
       captureIncomplete: true,
     }));
 
@@ -147,7 +178,7 @@ describe("capture refusal is the only capture-time refusal", () => {
 
     expect(result.diff).toBe("");
     expect(result.captureRefusal).toMatchObject({ disposition: "manual_cleanup" });
-    expect(result.captureRefusal?.detail).toMatch(/could not be captured as a complete patch/);
+    expect(result.captureRefusal?.detail).toMatch(/could not be captured exactly/);
   });
 });
 
@@ -157,7 +188,6 @@ describe("credential-shaped content is ordinary exact work (#555)", () => {
     const patch = textPatch("LEAK.txt", secret);
     const wsm = fakeManager(async () => ({
       diff: patch,
-      binarySecretPaths: [],
       captureIncomplete: false,
     }));
 
@@ -172,7 +202,6 @@ describe("credential-shaped content is ordinary exact work (#555)", () => {
     const kept = await capture(
       fakeManager(async () => ({
         diff: patch,
-        binarySecretPaths: [],
         captureIncomplete: false,
         excludedNestedRepositories: [name, ".review-evidence/base-copy"],
       })),
@@ -183,7 +212,7 @@ describe("credential-shaped content is ordinary exact work (#555)", () => {
       excluded_nested_repositories: [".review-evidence/base-copy", name].sort(),
     });
     const plain = await capture(
-      fakeManager(async () => ({ diff: patch, binarySecretPaths: [], captureIncomplete: false })),
+      fakeManager(async () => ({ diff: patch, captureIncomplete: false })),
       true,
     );
     expect(attemptDisclosure(plain)).not.toHaveProperty("excluded_nested_repositories");
@@ -233,7 +262,7 @@ describe("persistFinalPatch", () => {
     expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).toBe(diff);
     expect(saved).toEqual({ patchSha256: sha256(diff), meta: {} });
     // No parallel exact-object store is written for the final patch.
-    expect(() => readRevertAnchor(repo, saved.patchSha256)).toThrow();
+    expect(() => readRevertAnchor(repo, saved.patchSha256!)).toThrow();
   });
 
   it("records the nested repositories the patch left out", () => {
@@ -247,5 +276,48 @@ describe("persistFinalPatch", () => {
 
     expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).toBe(diff);
     expect(saved.meta).toEqual({ excluded_nested_repositories: [".review-evidence/copy"] });
+  });
+});
+
+describe("work-product summary lines (#535 composed with #555)", () => {
+  const result: GitObjectResult = {
+    schema: "git_objects/v1",
+    object_format: "sha1",
+    base_tree: "a".repeat(40),
+    candidate_tree: "b".repeat(40),
+    base_commit: null,
+    store_boundary_commit: null,
+    digest: `sha256:${"c".repeat(64)}`,
+  };
+  const omitted = [
+    { path: "big.png", reason: "over_file_cap" as const, bytes: 16 * 1024 * 1024 + 1 },
+  ];
+  const imagesLine =
+    "- Images not saved: 1 (big.png: over the 16 MiB per-image cap, 16777217 bytes)";
+
+  it("names unsaved images exactly as main's summary did, and nothing for a clean run", () => {
+    expect(resultSummaryLines({ result, producedOmitted: omitted })).toBe(imagesLine);
+    expect(resultSummaryDisclosure({ result, producedOmitted: omitted })).toBe(`\n${imagesLine}`);
+    expect(resultSummaryDisclosure({ result, producedOmitted: [] })).toBe("");
+    expect(resultSummaryLines(undefined)).toBeNull();
+  });
+
+  it("keeps both the unsaved images and the unrendered result, images first", () => {
+    const lines = resultSummaryLines({
+      result,
+      patchViewUnavailable: {
+        reason: "exceeds_view_limit",
+        limitBytes: 268_435_456,
+        estimatedBytes: 300_000_000,
+      },
+      inventory: { exact: false, changedFiles: 1, largest: [] },
+      producedOmitted: omitted,
+    })?.split("\n");
+    expect(lines).toEqual([
+      imagesLine,
+      `- Result: kept exactly as Git objects (sha256:${"c".repeat(64)}); too large to show as one patch` +
+        " (estimated 300000000 bytes, view limit 268435456). It can still be verified, applied and reverted.",
+      "  Largest changed files (inventory, not exact, not a patch): 1 changed, 1 not listed",
+    ]);
   });
 });

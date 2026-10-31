@@ -17,7 +17,7 @@ import {
   type RunParticipant,
 } from "@claudexor/schema";
 import { nowIso, readTextSafe, sha256 } from "@claudexor/util";
-import { resolveExactPatch } from "@claudexor/workspace";
+import { resolveExactPatch, verifiedGitObjectResult } from "@claudexor/workspace";
 import type { AnnouncedRunContext } from "./runTerminals.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { readReviewArtifacts } from "./runFactsReview.js";
@@ -459,6 +459,12 @@ export function buildRunFacts(
     roots: [contract?.repo.root, workProduct?.meta["execution_root"] as string | undefined],
   });
   const patch = exactPatch.ok ? exactPatch.patch : savedPatch;
+  // An object result (#535) binds and applies by its trees; its view is optional.
+  const gitResult =
+    workProduct?.kind === "files" ? null : verifiedGitObjectResult(workProduct?.meta["git_result"]);
+  const resultChanged = gitResult
+    ? gitResult.base_tree !== gitResult.candidate_tree
+    : patch.trim().length > 0;
   const manifestText =
     workProduct?.kind === "files" && workProduct.files.manifest
       ? readTextSafe(join(ctx.paths.root, workProduct.files.manifest))
@@ -469,12 +475,12 @@ export function buildRunFacts(
   const manifestSha256 = manifestText ? sha256(manifestText) : undefined;
   const operatorDecisionMatchesPatch =
     !!operatorDecision &&
-    (patch.trim().length > 0 || filesManifest !== undefined) &&
+    (resultChanged || filesManifest !== undefined) &&
     (operatorDecision["action"] === "accept_risk" ||
       operatorDecision["action"] === "override_needs_human") &&
     (filesManifest
       ? operatorDecision["manifest_sha256"] === manifestSha256
-      : operatorDecision["patch_sha256"] === sha256(patch));
+      : operatorDecision["patch_sha256"] === (gitResult?.digest ?? sha256(patch)));
   const deliverable = canonicalDeliverable({
     ctx,
     mode: ctx.mode,
@@ -511,12 +517,12 @@ export function buildRunFacts(
   });
   const decisionWithCanonicalFacts = decision ? { ...decision, facts: outcome } : null;
   const applyEligibility =
-    (patch.trim() || filesManifest) && contract && decisionWithCanonicalFacts
+    (resultChanged || filesManifest) && contract && decisionWithCanonicalFacts
       ? deriveApplyEligibility({
           state: outcome.lifecycle,
           decision: decisionWithCanonicalFacts,
           workProduct,
-          ...{ patch, exactPatchUnavailable: !exactPatch.ok },
+          ...{ patch, gitResult, exactPatchUnavailable: gitResult ? false : !exactPatch.ok },
           filesManifest,
           manifestSha256,
           originalRepoRoot: contract.repo.root,

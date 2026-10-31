@@ -68,6 +68,8 @@ export function outcomeExitCode(facts: RunOutcomeFacts | null | undefined): numb
 export function runOutcomeLabel(facts: RunOutcomeFacts): string {
   switch (facts.lifecycle) {
     case "failed":
+      // A capture refusal names what is missing (the exact result), not a verb.
+      if (facts.reason === "capture_refused") return "Failed (changes not captured)";
       return facts.reason ? `Failed (${facts.reason.replaceAll("_", " ")})` : "Failed";
     case "cancelled":
       // The new provenance must survive to the human label too, or the whole

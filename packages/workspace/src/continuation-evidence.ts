@@ -1,5 +1,5 @@
 /** Shared evidence facts for admission and the successor's carrier planner. */
-import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as yamlParse } from "yaml";
 import { RunResumable, RunTelemetry, SessionCapsule, type RunEvent } from "@claudexor/schema";
@@ -14,15 +14,7 @@ import {
 } from "./continuation-facts.js";
 import { readContinuationSources } from "./continuation-sources.js";
 
-export function runFilesExpired(runDir: string): boolean {
-  try {
-    lstatSync(join(runDir, "tombstone.yaml"));
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
+export { runFilesExpired } from "./run-expiry.js";
 
 export function readSessionCapsule(attemptDir: string): SessionCapsule | null {
   try {

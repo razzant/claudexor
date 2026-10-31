@@ -186,8 +186,9 @@ invariant or operator decision before proceeding.
   `applied_review_blocked`, emits the WorkProduct event before the terminal, and
   preserves a revert anchor; it never misreports the tree as untouched.
   Secret-like output takes no exception here: the live bytes stay where the
-  harness wrote them, and the WorkProduct, its exact patch and its revert
-  anchor are recorded as for any other turn (INV-146). The capture inspects no
+  harness wrote them, and the WorkProduct, its exact result (with its patch
+  view when one renders) and its revert anchor are recorded as for any other
+  turn (INV-146). The capture inspects no
   content: the `pr` publication boundary scans the outgoing commits themselves
   (INV-146). A capture that could not
   observe the live changes at all remains a sanitized `adopted:true`/
@@ -266,12 +267,16 @@ invariant or operator decision before proceeding.
   target, never from model edit narration. Directory work products record observed
   file bytes in a digest-bound manifest; a text diff is only a preview. Copied
   file results retain the selected baseline and complete output bytes for exact
-  delivery, while direct effects disclose any unknown preimages. Captured diffs must round-trip:
-  the exact patch object recorded as the work product must `git apply` cleanly to
-  the base it was captured against (no silent corruption — CRLF, quoted
-  paths, binary — between capture and delivery); saved copies are that exact
-  patch (INV-146), and only historical runs kept a masked display copy beside
-  a private exact object. verify: workspace diff
+  delivery, while direct effects disclose any unknown preimages. Captured results must round-trip:
+  the work product of a Git capture is its base and candidate trees as Git
+  objects, which must reproduce the candidate exactly on the base it was
+  captured against; a patch is only a view of that pair, rendered only when an
+  estimate computed from its blob sizes and the render itself both fit 256 MiB,
+  must `git apply` cleanly to that base, and is otherwise a typed absence,
+  never an empty patch
+  (no silent corruption — CRLF, quoted paths, binary — between capture and
+  delivery); saved copies are that exact view (INV-146), and only historical
+  runs kept a masked display copy beside a private exact object. verify: workspace diff
   tests incl. the CRLF and binary round-trip cases (byte-faithful raw
   capture; `git diff --binary`).
 - **INV-042** Reviews are trusted only when reviewer output is parseable,
@@ -279,7 +284,8 @@ invariant or operator decision before proceeding.
   argv echo), reviewer telemetry is persisted, and the reviewer read the
   candidate evidence files rather than a giant prompt-only diff. A reviewer
   workspace is an explicit candidate projection, never a recursive copy of
-  the live checkout: Git-visible files plus exact diff-touched paths, subject to
+  the live checkout: Git-visible files plus exact diff-touched paths (for a Git
+  result with no rendered patch, only its exact changed paths), subject to
   root and symlink containment, are the candidate plane; the sealed evidence
   packet (exact bytes, INV-146) is a separate explicit plane. Gitignored
   local state that is absent from the diff never crosses the reviewer boundary.
@@ -345,7 +351,9 @@ invariant or operator decision before proceeding.
   only the gate/test-path policy and never bypasses built-in
   critical/security human gates. Path parsing for these gates must handle
   every path git can emit (quoted, non-ASCII) — the shared quote-aware
-  diff parser is the one owner. verify: policy tests; core diff parser
+  diff parser is the one owner for a rendered patch; an unrendered result
+  takes paths from NUL-delimited `diff-tree --raw -z` records. verify: policy
+  tests; core diff parser
   tests.
 - **INV-051** Run artifacts live in two honest planes that are never
   conflated: the run tree under the external per-project runtime namespace
@@ -409,7 +417,12 @@ invariant or operator decision before proceeding.
   patches, reviewer evidence and served artifacts carry the bytes the user and
   the harness produced. No surface refuses, masks, omits or withholds them for
   looking like a credential, by content pattern or by file name. Review reads
-  the same exact patch that apply consumes; there is no second masked copy.
+  the same exact result that apply consumes: its rendered patch view, or the
+  exact changed files of a result with no rendered patch view (a file it cannot
+  read is named, and the review cannot pass clean); there is no second masked copy.
+  For a Git-object result, both views come from its saved objects alone: no
+  configured filter driver runs, so a Git LFS pointer or an encrypted blob is
+  reviewed as stored, which shows nothing of the content it stands for.
   Tool results keep unmasked summaries of a tool's output within each
   adapter's existing bound and whitespace normalization; answers, patches and
   artifact bytes stay byte-exact.
@@ -441,15 +454,30 @@ invariant or operator decision before proceeding.
   and refuses typed on a finding (`publication_scan_findings`), an unavailable
   scanner (`publication_scan_unavailable`) or a failed scan
   (`publication_scan_failed`); the scanner skips some binary, archive and
-  lockfile content, so a clean scan is not proof of absence. Local apply,
-  branch and commit stay available. A run the old
+  lockfile content, so a clean scan is not proof of absence. A Git result's
+  `pr` passes the same scan on the commit of the tree it delivers; `pr` of a
+  result with no rendered patch view is refused typed (`pr_unrendered_result`)
+  before any scan, and scanning such a result for `pr` is a follow-up. Local
+  apply, branch and commit stay available. Apply binds a Git result to its
+  digest v1: its trees are read from the target repository or the private
+  project object store; trees missing from both refuse apply and revert typed
+  (`result_objects_missing`), and another store fault refuses with its own
+  typed code: `space_insufficient` for a full disk, `git_stalled` for a Git
+  child stopped after making no progress, `git_signal` for one a signal
+  terminated, and `git_failed` for any other. A capture that cannot observe or keep the
+  changes is the only capture-time refusal, under its own name
+  (`capture_refused`). A run the old
   rule saved with `persisted_patch: redacted` still binds apply to its exact
   patch object or refuses typed (`patch_exact_bytes_unavailable`). verify:
   canary `[INV-146:exact-working-content]`; ingress, contract and thread
   tests; `packages/orchestrator/src/secretDiff.test.ts`;
   `packages/orchestrator/src/runSupport.test.ts`; reviewer-workspace and
   evidence tests; the delivery `pr` publication-scanner tests
-  (`packages/delivery/src/publication-scan.test.ts`); the Control API
+  (`packages/delivery/src/publication-scan.test.ts`) and the Git-result `pr`
+  and `pr_unrendered_result` tests (`packages/delivery/src/object-delivery.test.ts`);
+  `packages/control-api/src/run-delivery-refusal-code.test.ts`;
+  `packages/orchestrator/src/unrendered-result.integration.test.ts`;
+  `packages/orchestrator/src/capture-overflow.test.ts`; the Control API
   historical exact-object Apply and `patch_exact_bytes_unavailable` tests.
 - **INV-063** Scoped harness homes/config dirs stay outside every mutation
   worktree, in the external per-project runtime namespace, so `git add -A`
@@ -656,7 +684,12 @@ invariant or operator decision before proceeding.
   no-op. While a turn runs, Send swaps to a server-owned Stop. verify:
   composer state tests (ComposerTurnState).
 - **INV-093** Every turn shows its HONEST outcome: a plan says "no files
-  changed" and offers to implement; a patch shows its diffstat; a race shows
+  changed" and offers to implement; a patch shows its diffstat, and a Git
+  result with no rendered patch shows no diffstat but its typed absence:
+  with the bounded list of its largest changed files in `claudexor inspect`
+  and `summary.md`, with the number of its changed files in the macOS
+  Changes view and the MCP result (the macOS candidate card hides the line
+  counts); a race shows
   the adopted winner; a terminal failure with no output renders an inline
   failure card with the engine's reason. A turn whose run was refused BEFORE
   it started (trust gate, preflight) persists the refusal on the turn
@@ -792,11 +825,11 @@ invariant or operator decision before proceeding.
   negotiated major, while unversioned product aliases are refused. verify:
   control-api handshake/catalog tests; docs-truth catalog parity; UI review.
 - **INV-111** Apply is allowed only for successful runs with a successful
-  decision record and a digest-bound patch or copied-files WorkProduct for the original verified repo
+  decision record and a digest-bound Git result, patch or copied-files WorkProduct for the original verified repo
   root — with one typed, server-owned exception: an operator decision
   (`POST /v2/runs/:id/decision`, `accept_risk`/`override_needs_human`)
-  persists an auditable, patch-hash-bound record that unblocks apply for a
-  `blocked` run; a mutated patch invalidates the override. The human
+  persists an auditable, result-digest-bound record that unblocks apply for a
+  `blocked` run; a mutated result invalidates the override. The human
   decision is never client-faked state. Direct file effects are already in place
   and do not offer a second apply or an unproved full rollback. Explicit discard
   ends pending copy delivery without applying or reverting files; existing
@@ -811,7 +844,7 @@ invariant or operator decision before proceeding.
   permits successful unreviewed work to be applied normally, with honest
   `not_run` review facts and no extra risk-acceptance step for that absence.
   Required checks, independent policy findings, work-completion requirements,
-  and fresh patch-integrity verification remain enforced. Historical records
+  and fresh result-integrity verification remain enforced. Historical records
   without the intent field retain the previous review-required meaning.
   Requested review must actually pass; it is never fabricated as approved.
   A clean cross-family verified review is sufficient verification even
@@ -841,31 +874,45 @@ invariant or operator decision before proceeding.
   `--in-place` targets) and each
   git-mode ENVELOPE worktree (an envelope materializes only the committed tree,
   so an untracked project-root bridge never reaches a candidate; the envelope
-  write emits no event and is EXCLUDED from the candidate patch ONLY when
+  write emits no event and is EXCLUDED from the captured result ONLY when
   Claudexor created the bridge THIS run AND its bytes still equal
   `CLAUDE_BRIDGE_CONTENT` exactly (A-3), so a candidate-authored `CLAUDE.md` — or
   any candidate EDIT of the bridge, even one that keeps the ownership marker —
-  differs from those bytes and IS captured in `patch.diff`). An
+  differs from those bytes and IS captured in the result). An
   unlisted mutation path is a release blocker. verify: mutation-path
   inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
   tests; claude-bridge exclusive-create/no-follow/race/idempotency tests +
   envelope-bridge patch-cleanliness test (locked operator decision).
 - **INV-114** Apply/adoption captures and rechecks the exact target preimage
-  immediately around the mutation; stale or conflicting targets are refused
+  immediately around the mutation (as Git sees it: an edit that keeps a file's
+  size and times stays invisible to a `branch`, `commit` or `pr` checkout, the
+  limit `git checkout` has); stale or conflicting targets are refused
   without destructive rollback. `adopted:false`/`not_applied` means the tree
-  is unchanged. Revert changes only the Claudexor-recorded postimage and
-  refuses overlap with later user edits. verify: protected-apply conflict and
+  is unchanged (as Git holds it), except after a copied directory result's
+  partial delivery, which stays `not_applied` and lists the files it wrote in
+  `appliedPaths`. Revert changes only the Claudexor-recorded postimage and
+  refuses overlap with later user edits that differ from the reverted
+  content; for a Git result, an identical outcome already present in the target
+  is not a conflict, except at rename and copy endpoints. A Git result's apply,
+  check or revert that must write or remove a path outside the target's
+  sparse-checkout patterns refuses typed before writing
+  (`delivery_outside_sparse_checkout`), naming those paths; where the target's
+  Git cannot check those patterns (before 2.41), every apply, check and revert
+  of a Git result in that sparse checkout refuses `git_failed` before writing.
+  verify: protected-apply conflict and
   concurrent-edit tests (byte-identical index/worktree preservation).
-- **INV-115** Before an envelope-produced patch is applied or adopted —
+- **INV-115** Before an envelope-produced result is applied or adopted —
   manual apply, race winner, thread delivery, or convergence result — it is
   re-verified by the delivery owner in a fresh
-  envelope (`git apply` to a clean base + configured deterministic gates
-  there) immediately before the target preimage check; a copied directory result
+  envelope (a Git result: composed onto the current target, then written by
+  checkout into a fresh private clone at the target snapshot; a legacy patch:
+  `git apply` to a clean base; plus configured deterministic gates there)
+  immediately before the target preimage check; a copied directory result
   instead verifies its manifest, full content hashes, and reproduction on the
   retained selected baseline through that same verifier owner. The result is recorded
   in the decision/receipt, and a missing, stale, or failed verifier
   infrastructure error blocks fail-closed exactly like a proven failure.
-  A patch that cannot survive a clean base does not touch the live tree.
+  A result that cannot survive a clean base does not touch the live tree.
   In-place turns are exempt: their diff is produced against the LIVE tree,
   and a bare snapshot worktree (no gitignored deps) would false-block
   green work. Deterministic gates must be hermetic to the checkout for the

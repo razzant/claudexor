@@ -44,13 +44,15 @@ export function projectHistoryRun(
 ) {
   const coverageState = { apply: "complete" as "complete" | "unavailable" };
   let operatorDecisionCoverage: "complete" | "unavailable" = "complete";
-  // A bounded history preview cannot verify unlimited exact patch bytes. Keep
-  // the per-run owner's typed refusal intact; only this row loses coverage.
+  // A bounded history preview cannot verify unlimited exact patch bytes, nor a
+  // result record it cannot read. Keep the per-run owner's typed refusal intact;
+  // only this row loses coverage.
   const boundedApply = <T>(read: () => T): T | null => {
     try {
       return read();
     } catch (error) {
-      if ((error as { code?: string }).code !== "artifact_read_limit") throw error;
+      const code = (error as { code?: string }).code;
+      if (code !== "artifact_read_limit" && code !== "artifact_read_failed") throw error;
       coverageState.apply = "unavailable";
       return null;
     }

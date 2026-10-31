@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { CaptureChangeInventory } from "./capture-inventory.js";
 import { HarnessRequestRefusal } from "./harness-input.js";
 import { RawContextShortfall } from "./raw.js";
 import { HarnessFailureCategory } from "./telemetry.js";
@@ -101,6 +102,11 @@ export const WorkspaceCaptureFailure = z.object({
     "capture_output_exceeded",
     "capture_output_incomplete",
     "capture_preview_truncated",
+    "capture_space_insufficient",
+    "capture_git_stalled",
+    "capture_git_signal",
+    "capture_read_failed",
+    "capture_object_missing",
     "capture_failed",
   ]),
   message: z.string(),
@@ -108,7 +114,12 @@ export const WorkspaceCaptureFailure = z.object({
   bufferBudgetBytes: z.number().int().nonnegative().optional(),
   stream: z.enum(["stdout", "stderr"]).optional(),
   drain: z.literal("truncated").optional(),
+  requiredBytes: z.number().int().nonnegative().optional(),
+  availableBytes: z.number().int().nonnegative().optional(),
+  signal: z.string().max(32).optional(),
+  stallMs: z.number().int().nonnegative().optional(),
   cleanup: z.object({ code: z.string().nullable(), message: z.string() }).optional(),
+  inventory: CaptureChangeInventory.optional(),
 });
 export type WorkspaceCaptureFailure = z.infer<typeof WorkspaceCaptureFailure>;
 

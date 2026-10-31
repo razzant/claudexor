@@ -9,6 +9,7 @@ import {
   RunFailureCode,
   type ModeKind,
   type RunOutcomeFacts,
+  type RunReason,
   type RunResumable,
   type VendorFailureEvidence,
   type PoolAttemptFailure,
@@ -21,6 +22,7 @@ import { poolFailure, redactVendorFailure } from "./pool-attempt-evidence.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { resumableTerminal, type ContinuityTerminalFacts } from "./continuity-terminal.js";
 import { terminalOutcomeFacts } from "./terminalOutcome.js";
+import { captureInventorySummary } from "./captureRefusal.js";
 
 export function writeFailure(
   store: ArtifactStore,
@@ -331,6 +333,8 @@ export function failTerminally(
     /** Actions that follow this terminal's own remedy (an earlier record's capture actions). */
     followUps?: readonly string[];
     priorFacts?: RunOutcomeFacts;
+    /** The leading cause's own reason when the phase does not name it (capture refusal). */
+    reason?: RunReason;
     continuity?: readonly ContinuityTerminalFacts[];
     /** Every attempt whose failed tries this terminal names (default: `continuity`). */
     attempts?: readonly ContinuityTerminalFacts[];
@@ -349,11 +353,13 @@ export function failTerminally(
   const failFacts = terminalOutcomeFacts(
     failureMeta.priorFacts,
     "failed",
-    budget?.reason ?? (phase === "workspace" ? "workspace_unavailable" : "harness_failed"),
+    budget?.reason ??
+      failureMeta.reason ??
+      (phase === "workspace" ? "workspace_unavailable" : "harness_failed"),
   );
   store.writeText(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: ${phase}\n\n${message}\n`,
+    `# Run ${runId} (${mode})\n\n- Lifecycle: failed${failFacts.reason ? ` (${failFacts.reason})` : ""}\n- Phase: ${phase}\n\n${message}\n${captureInventorySummary(failureMeta.captureFailure)}`,
   );
   writeFailure(store, paths, {
     phase,

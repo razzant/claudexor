@@ -65,7 +65,9 @@ struct CandidateCard: View {
             HStack(spacing: Theme.Spacing.md) {
                 Label("\(candidate.gatesPassed)/\(candidate.gatesTotal)", systemImage: "checklist")
                     .foregroundStyle(candidate.gatesTotal > 0 && candidate.gatesPassed == candidate.gatesTotal ? Theme.status(.positive) : Theme.status(.caution))
-                Label("+\(candidate.added) −\(candidate.removed)", systemImage: "plusminus").foregroundStyle(.secondary)
+                if candidate.hasLineCounts {
+                    Label("+\(candidate.added) −\(candidate.removed)", systemImage: "plusminus").foregroundStyle(.secondary)
+                }
                 Spacer()
                 EstimatedCostBadge(cost: candidate.costUsd, estimated: candidate.estimated)
             }

@@ -428,6 +428,7 @@ export function validateRunFactsInvariants(value: unknown): RunFacts {
       "stuck_no_progress",
       "work_report_contract",
       "workspace_unavailable",
+      "capture_refused",
     ]),
     cancelled: new Set([
       "user_cancelled",

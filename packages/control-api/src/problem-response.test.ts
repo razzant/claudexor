@@ -61,6 +61,25 @@ describe("revertRefusedProblem — typed reason from the producer (W3)", () => {
     expect(p.message).toContain("could not be applied");
   });
 
+  // #535 R5 E1: an object revert's typed cause rides along; a fixed remedy is named.
+  it("names a typed cause with a remedy, and keeps the code as context", () => {
+    const sparse = revertRefusedProblem(
+      "3 path(s) this revert must change are outside ...",
+      "reverse_apply_failed",
+      "delivery_outside_sparse_checkout",
+    );
+    expect(sparse.message).toContain("git sparse-checkout add");
+    expect(sparse.context).toMatchObject({
+      reason: "reverse_apply_failed",
+      refusalCode: "delivery_outside_sparse_checkout",
+    });
+    const other = revertRefusedProblem("EACCES ...", "reverse_apply_failed", "git_failed");
+    expect(other.message).toBe("Revert could not be applied to the current project tree.");
+    expect(other.context.refusalCode).toBe("git_failed");
+    const diverged = revertRefusedProblem("overlap", "postimage_diverged", "revert_conflict");
+    expect(diverged.message).toContain("changed after this turn");
+  });
+
   it("falls back to the English-prefix regex for a legacy result with no typed code", () => {
     expect(revertRefusedProblem("turn-owned postimage no longer matches; ...").context.reason).toBe(
       "postimage_diverged",

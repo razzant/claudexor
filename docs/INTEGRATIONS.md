@@ -704,7 +704,46 @@ semantics are defined once in
 [ARCHITECTURE](ARCHITECTURE.md#7-control-api).
 
 Terminal state may include diagnostic non-success states such as
-`stuck_no_progress` (the same diff repeated while a required gate still failed).
+`stuck_no_progress` (the same result repeated while a required gate still failed).
+A run's code result is exact Git objects of any size (`work_product.meta.git_result`,
+digest v1). When it is too large to render as one patch (judged by an estimate
+computed from the changed files' blob sizes, so a small edit of a very large file counts too,
+or by a render that still overflows the same limit,
+and `pr` refuses such a result typed `pr_unrendered_result` before any scan;
+scanning it for `pr` is a follow-up), `final/patch.diff` is
+absent with `meta.patch_view.available: false` and a bounded `change_inventory`;
+the artifact route answers 413 `patch_view_unavailable`, MCP results carry
+`objectResult` (run tools and read tools alike, in text and structured content),
+and apply, verify and revert still work. A render that fails for another cause
+is the same typed absence with `reason: render_failed`. A delivery that would
+overwrite what Git does not track (an ignored file at a path the result adds)
+refuses `delivery_path_occupied`, one that must address a name that is not
+valid UTF-8 (a name the result changes) refuses `result_path_encoding`, and in a
+sparse checkout one that adds, changes or removes a path outside its patterns
+refuses `delivery_outside_sparse_checkout` (a revert after the patterns were
+narrowed too), each naming the paths with nothing written; a name only your
+project changed stays as it is, and every path an operation does not address
+keeps its bytes, and its index mark except that in a sparse checkout Git itself
+clears the skip-worktree mark of a file that is present, which sticks once a
+`branch`, `commit` or `pr` delivery writes the index; such a write also drops
+the assume-unchanged mark of a path it changes. The sparse check needs Git 2.41 or newer
+(`git sparse-checkout check-rules`); with an older Git, a sparse checkout's
+deliveries, `apply/check` and reverts refuse `git_failed`, naming that need,
+before writing. `apply/check` answers a store, Git or filesystem fault with the
+same typed `refusal` as the delivery. A `branch`, `commit` or `pr` delivery
+commits onto HEAD and leaves what assume-unchanged or skip-worktree marks hide
+locally on disk and out of the commit; a result that changes such a file
+refuses `delivery_conflict`. A `revert_run` refused for anything but a later
+edit of what the run changed answers 409 `revert_refused` with
+`context.reason: reverse_apply_failed` and the typed cause as
+`context.refusalCode` (the message names a fixed remedy where one exists, such
+as widening the sparse checkout); only `postimage_diverged` means the revert is
+no longer available. A run whose changes could
+not be recorded exactly (no space, a stalled or signalled Git, a read error, a
+missing object) ends `failed` with reason `capture_refused`. Re-running is not its
+remedy: the answer stays the diagnostic primary output, live changes stay in place
+without a revert point, the failure's `captureFailure` keeps the typed cause and,
+when it could be read, a non-exact `inventory` of the largest changed files.
 Telemetry attempts can include adapter-declared transient failures; integrations
 should render those as infrastructure/retry evidence, not as model findings.
 
@@ -1379,8 +1418,12 @@ A successful isolated (`envelope`) Agent run keeps no envelope, so its
 successor starts from the project base and receives only the path of the
 unapplied saved patch (`final/patch.diff`). The patch is not the successor's
 tree, and nothing is applied automatically, so such a step can review the diff
-but not test the changed files. To test them, run the predecessor in a live
-caller-owned workspace, or Apply its result and continue explicitly.
+but not test the changed files. A result too large to render as one patch has
+no `final/patch.diff`: its successor receives no patch path and no changed-file
+list, so it cannot read those changes (the predecessor's attempt record keeps
+only a bounded, non-exact inventory of the largest changed files). To test or
+read them, run the predecessor in a live caller-owned workspace, or Apply its
+result and continue explicitly.
 
 Promotion resolves the captured request through current canonical project
 routing in the same transaction as acceptance. A relinked root or a different

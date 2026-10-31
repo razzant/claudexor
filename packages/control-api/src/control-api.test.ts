@@ -14,6 +14,7 @@ import { producedRepoRoot, resolveProducedRoot } from "./artifact-serve-routes.j
 import { unboundRunStartResponse } from "./run-start.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
 import {
+  chmodSync,
   existsSync,
   appendFileSync,
   mkdtempSync,
@@ -8356,6 +8357,77 @@ describe("DaemonControlApiServer", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #535 R14 O3: a record that is there but cannot be read is no missing evidence:
+  // the contribution check refuses it typed, not as thread_run_unverifiable.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "refuses a thread run whose result record cannot be read, typed and naming the read",
+    async () => {
+      const dir = reapMk(join(tmpdir(), "claudexor-thread-unreadable-record-"));
+      const runDir = join(dir, "run");
+      mkdirSync(join(runDir, "final"), { recursive: true });
+      const record = join(runDir, "final/work_product.yaml");
+      writeFileSync(record, "id: wp\nkind: patch\nmeta: {}\n");
+      chmodSync(record, 0o000);
+      const now = new Date().toISOString();
+      const run = { id: "job", state: "succeeded", runId: "run-unreadable", runDir };
+      const daemon: DaemonFacadeClient = {
+        async enqueue() {
+          return { id: "job", state: "queued" };
+        },
+        async status() {
+          return run;
+        },
+        async list() {
+          return [run];
+        },
+        async cancel() {
+          return { ok: true };
+        },
+      };
+      let applied = 0;
+      const server = new DaemonControlApiServer({
+        ...readyIdentity,
+        token,
+        daemon,
+        services: {
+          threadDetail: async () => ({
+            thread: {
+              id: "th-unreadable",
+              created_at: now,
+              updated_at: now,
+              repo: { root: dir, base_ref: "HEAD" },
+              workspace: { mode: "in_place", base_sha: "abc" },
+              run_ids: ["run-unreadable"],
+              head_run_id: "run-unreadable",
+              state: "active",
+            },
+            sessions: [],
+            turns: [],
+          }),
+          applyThread: async () => {
+            applied += 1;
+            return { applied: true, status: "applied" };
+          },
+        },
+      });
+      const { host, port } = await server.start();
+      try {
+        const response = await apiFetch(`http://${host}:${port}/threads/th-unreadable/apply`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ mode: "apply" }),
+        });
+        expect(response.status).toBe(503);
+        expect(((await response.json()) as { code: string }).code).toBe("artifact_read_failed");
+        expect(applied).toBe(0);
+      } finally {
+        chmodSync(record, 0o600);
+        await server.stop();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("refuses a successful thread run whose required patch artifact is missing", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-thread-missing-patch-"));

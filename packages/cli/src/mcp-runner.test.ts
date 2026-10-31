@@ -343,6 +343,57 @@ describe("mcp daemon body mapping", () => {
     },
   );
 
+  it.each([
+    [
+      "names a Git result's typed refusal",
+      {
+        ok: false,
+        code: 1,
+        stderr: "2 Git object(s) of this result are missing; nothing was written",
+        refusal: { code: "result_objects_missing", message: "m", paths: [], pathCount: 0 },
+      },
+      "apply check refused: result_objects_missing: 2 Git object(s) of this result are missing; nothing was written",
+    ],
+    [
+      "counts a typed refusal's paths",
+      {
+        ok: false,
+        code: 1,
+        stderr: "both changed x",
+        refusal: { code: "delivery_conflict", message: "m", paths: ["x"], pathCount: 3 },
+      },
+      "apply check refused: delivery_conflict (3 path(s)): both changed x",
+    ],
+    [
+      "keeps an untyped failure a patch conflict",
+      { ok: false, code: 1, stderr: "error: patch failed: x:1" },
+      "apply check failed: the patch does NOT apply cleanly: error: patch failed: x:1",
+    ],
+  ])("__apply_check %s", async (_case, body, summary) => {
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const connectSpy = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+      engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => body })) as never,
+    );
+    try {
+      expect(await mcpSurfaceRunner()({ mode: "__apply_check", runId: "run-x" })).toMatchObject({
+        summary,
+        runId: "run-x",
+        eligible: false,
+        check: body,
+      });
+    } finally {
+      connectSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("preserves the daemon's typed error field for a missing-run belt roundtrip", async () => {
     const { mcpSurfaceRunner } = await import("./mcp-runner.js");
     const daemonRun = await import("./daemon-run.js");
@@ -1482,6 +1533,7 @@ describe("mcp daemon body mapping", () => {
         delegatedFromRunId: null,
         delegation: null,
         secretLike: null,
+        objectResult: null,
         detailProblem: {
           code: problemCode,
           message: `typed ${problemCode}`,

@@ -488,6 +488,7 @@
                             "owner_task_gone",
                             "crash_interrupted",
                             "workspace_unavailable",
+                            "capture_refused",
                             "input_required",
                             "work_incomplete",
                             "context_capacity_exhausted",
@@ -1243,6 +1244,11 @@
                         "capture_output_exceeded",
                         "capture_output_incomplete",
                         "capture_preview_truncated",
+                        "capture_space_insufficient",
+                        "capture_git_stalled",
+                        "capture_git_signal",
+                        "capture_read_failed",
+                        "capture_object_missing",
                         "capture_failed"
                       ]
                     },
@@ -1267,6 +1273,22 @@
                       "type": "string",
                       "const": "truncated"
                     },
+                    "requiredBytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "availableBytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "signal": {
+                      "type": "string",
+                      "maxLength": 32
+                    },
+                    "stallMs": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
                     "cleanup": {
                       "type": "object",
                       "properties": {
@@ -1285,6 +1307,72 @@
                         "message"
                       ],
                       "additionalProperties": false
+                    },
+                    "inventory": {
+                      "type": "object",
+                      "properties": {
+                        "exact": {
+                          "type": "boolean",
+                          "const": false,
+                          "description": "Always false: an inventory names files; it is not the exact change."
+                        },
+                        "changedFiles": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "Changed paths the pass counted."
+                        },
+                        "largest": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "path": {
+                                "type": "string",
+                                "maxLength": 1024,
+                                "description": "Top-relative changed path, exact within the length cap."
+                              },
+                              "change": {
+                                "type": "string",
+                                "enum": [
+                                  "added",
+                                  "modified",
+                                  "deleted",
+                                  "type_changed"
+                                ],
+                                "description": "What happened to the path between the turn's base and the uncaptured tree."
+                              },
+                              "sizeBytes": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "Size of the new blob (of the old blob for a deletion); null when Git could not size it."
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "change",
+                              "sizeBytes"
+                            ],
+                            "additionalProperties": false,
+                            "description": "One changed path of a non-exact capture inventory."
+                          },
+                          "maxItems": 20,
+                          "description": "The largest changed files, largest first."
+                        }
+                      },
+                      "required": [
+                        "exact",
+                        "changedFiles",
+                        "largest"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Bounded non-exact inventory of the changed files behind a refused capture."
                     }
                   },
                   "required": [
@@ -2511,6 +2599,73 @@
             }
           ],
           "description": "Historical disclosure of a run written under the retired INV-062 that hid secret-like strings in its saved copies (paths and counts only); null for current runs, which save exact bytes.",
+          "default": null
+        },
+        "objectResult": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "description": "Result digest v1 (sha256 of the canonical object descriptor)."
+                },
+                "patchView": {
+                  "type": "string",
+                  "enum": [
+                    "rendered",
+                    "unavailable"
+                  ],
+                  "description": "Whether final/patch.diff holds a rendered view of the result."
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why no view was rendered (for example exceeds_view_limit); null when rendered."
+                },
+                "estimatedBytes": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Estimate of the view size from blob sizes, not an upper bound; just above the view limit when the render itself overflowed; null when rendered or unknown."
+                },
+                "changedFiles": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Changed paths of an unrendered result (from its inventory); null otherwise."
+                }
+              },
+              "required": [
+                "digest",
+                "patchView",
+                "reason",
+                "estimatedBytes",
+                "changedFiles"
+              ],
+              "additionalProperties": false,
+              "description": "The exact object result of a run and whether its patch view exists."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "#535: the exact Git-object result and whether its patch view exists; null for a run without an object result.",
           "default": null
         }
       },

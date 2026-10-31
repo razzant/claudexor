@@ -91,9 +91,29 @@ export interface ReviewerArtifactContext {
   metadata: Record<string, unknown>;
 }
 
+/** A candidate file the reviewer copy could not inspect (#535): it is never
+ * copied (its content was not checked) and never silently dropped either —
+ * the reviewer's prompt names it and the review returns it. */
+export interface UninspectableReviewerFile {
+  /** Relative to the candidate root, slash-separated. */
+  path: string;
+  /** The read failure's code (`EACCES`, `EIO`, ...), or `excluded_from_review_copy`. */
+  reason: string;
+}
+
+/**
+ * What a reviewer copy holds and what shows the change. `explicit_manifest` is a
+ * directory result (its FILES.json); `explicit_paths` is a Git result with no
+ * rendered patch (its CHANGED_PATHS.json). In both, the listed files are all a
+ * review sees; no patch shows the change.
+ */
+export type ReviewerInventoryMode =
+  "git_visible" | "diff_only" | "explicit_manifest" | "explicit_paths";
+
 export interface ReviewerWorkspace {
   root: string;
   evidenceDir: string;
+  uninspectable: UninspectableReviewerFile[];
 }
 
 export interface ReviewerProgressEvent {
@@ -145,6 +165,8 @@ export interface ReviewCandidateResult {
   reviewValuationKnowledge: CostKnowledge;
   reviewUnknownUsd: number;
   reviewAllowanceDebitUnobserved?: boolean;
+  /** Candidate files some reviewer workspace could not inspect (absent when none). */
+  uninspectableFiles?: UninspectableReviewerFile[];
 }
 
 export function summarizeReviewerSpend(

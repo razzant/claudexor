@@ -40,7 +40,7 @@ import type {
 } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest, RunFacts, makeOutcomeFacts } from "@claudexor/schema";
 import { hashJson, noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
-import { readRevertAnchor, revertWorkingTreePatch } from "@claudexor/workspace";
+import { readRevertAnchor } from "@claudexor/workspace";
 import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
@@ -15246,8 +15246,9 @@ describe("delegation belt injection (D32)", () => {
           "Secret-like strings",
         );
       }
-      // Revert uses the exact private anchor and restores the tree.
-      const reverted = await revertWorkingTreePatch(repo, readRevertAnchor(repo, anchor));
+      // Revert uses the exact private anchor (#535: the turn's object pair) and restores the tree.
+      const { revertInPlaceFromAnchor } = await import("@claudexor/delivery");
+      const reverted = await revertInPlaceFromAnchor(repo, anchor);
       expect(reverted.reverted).toBe(true);
       expect(existsSync(join(repo, "LEAK.txt"))).toBe(false);
     },
@@ -15536,7 +15537,9 @@ describe("delegation belt injection (D32)", () => {
     expect(workProduct).not.toContain("secret_");
     const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
     expect(failure).toContain("phase: workspace");
-    expect(failure).toContain("could not be captured as a complete patch");
+    expect(failure.replace(/\s+/g, " ")).toContain(
+      "The changes could not be captured exactly: the capture failed.",
+    );
     expect(readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8")).toContain(
       "capture_refusal:",
     );
@@ -15803,7 +15806,7 @@ describe("delegation belt injection (D32)", () => {
         expect(workProduct).toContain("capture_refused: true");
         expect(workProduct).toContain("capture_recovery: manual_cleanup");
         expect(workProduct.replace(/\s+/g, " ")).toContain(
-          "could not be captured as a complete patch",
+          "The changes could not be captured exactly: the capture failed.",
         );
         expect(workProduct).not.toContain("later user edits");
         expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(

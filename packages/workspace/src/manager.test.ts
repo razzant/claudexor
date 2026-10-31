@@ -25,7 +25,10 @@ import {
   snapshotTree,
 } from "./git.js";
 import { revertWorkingTreePatch, revertWorkingTreeTo } from "./revert.js";
-import { createRevertAnchor, readRevertAnchor } from "./anchor-store.js";
+import { createRevertAnchor, readRevertPair } from "./anchor-store.js";
+import { treeOf } from "./git-result.js";
+import { importIntoRepository } from "./object-store.js";
+import { revertDeliveryPair } from "./object-revert.js";
 import { CLAUDE_BRIDGE_CONTENT, CLAUDE_BRIDGE_MARKER } from "./claude-bridge.js";
 import { WorkspaceManager } from "./manager.js";
 import { relativizePlainDiffHeaders } from "./plain-diff.js";
@@ -915,7 +918,21 @@ describe("WorkspaceManager", () => {
 
     await git(repo, ["reflog", "expire", "--expire=now", "--all"]);
     await git(repo, ["gc", "--prune=now"]);
-    const reverted = await revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId));
+    // #535: the anchor is the turn's actual object pair, kept in the project
+    // store; revert imports what the user's gc removed, then runs on that pair.
+    const pair = readRevertPair(repo, anchorId);
+    expect(pair).not.toBeNull();
+    const imported = await importIntoRepository({
+      projectRoot: repo,
+      repo,
+      roots: [pair!.pre_tree, pair!.post_tree],
+    });
+    expect(imported.missing).toEqual([]);
+    const reverted = await revertDeliveryPair({
+      worktree: repo,
+      pair: pair!,
+      currentTree: await treeOf(repo, await snapshotTree(repo)),
+    });
 
     expect(reverted.reverted).toBe(true);
     expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# test\n");

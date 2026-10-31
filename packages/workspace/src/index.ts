@@ -26,3 +26,10 @@ export {
   runFilesExpired,
   unrepresentedOutput,
 } from "./continuation-evidence.js";
+export * from "./git-observed.js";
+export * from "./git-result.js";
+export * from "./object-store.js";
+export * from "./object-compose.js";
+export * from "./object-materialize.js";
+export * from "./object-saved-files.js";
+export * from "./object-revert.js";

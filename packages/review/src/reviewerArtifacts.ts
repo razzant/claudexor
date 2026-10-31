@@ -6,10 +6,13 @@ import { appendLine, ensureDir, newId, redactSecrets, writeJson, writeText } fro
 import type { ReviewerSpec, ReviewCandidateInput, TransientRetryPolicy } from "./reviewEngine.js";
 import type {
   ReviewerArtifactContext,
+  ReviewerInventoryMode,
   ReviewerProgressEvent,
   ReviewerWorkspace,
+  UninspectableReviewerFile,
 } from "./reviewRuntimeTypes.js";
 import type { ReviewerInfo } from "./findings.js";
+import { describeUninspectableFiles } from "./reviewPrompt.js";
 
 export async function cleanupReviewerWorkspace(
   workspace: ReviewerWorkspace,
@@ -148,14 +151,18 @@ export function redactValue<T>(value: T): T {
   }
 }
 
-export function insufficientEvidenceFinding(reviewer: ReviewerInfo, claim: string): ReviewFinding {
+export function insufficientEvidenceFinding(
+  reviewer: ReviewerInfo,
+  claim: string,
+  proposedFix = "Treat this review as inconclusive and rerun with a healthy reviewer.",
+): ReviewFinding {
   return ReviewFindingSchema.parse({
     id: newId("f"),
     severity: "INSUFFICIENT_EVIDENCE",
     category: "test_gap",
     claim,
     evidence: {},
-    proposed_fix: "Treat this review as inconclusive and rerun with a healthy reviewer.",
+    proposed_fix: proposedFix,
     reviewer: {
       harness_id: reviewer.harness_id,
       requested_model: reviewer.requested_model ?? null,
@@ -171,4 +178,22 @@ export function insufficientEvidenceFinding(reviewer: ReviewerInfo, claim: strin
     },
     status: "insufficient_evidence",
   });
+}
+
+/** An explicit manifest or path list is all its review sees (no patch shows the
+ * change), so a listed file the reviewer copy could not inspect leaves that review
+ * incomplete (#535); other inventories still show the change in their patch. */
+export function uninspectedManifestFindings(
+  reviewer: ReviewerInfo,
+  mode: ReviewerInventoryMode,
+  files: readonly UninspectableReviewerFile[],
+): ReviewFinding[] {
+  if ((mode !== "explicit_manifest" && mode !== "explicit_paths") || files.length === 0) return [];
+  return [
+    insufficientEvidenceFinding(
+      reviewer,
+      `Review is incomplete: ${describeUninspectableFiles(files)}; no reviewer saw their content.`,
+      "Make those files readable, then review this result again.",
+    ),
+  ];
 }

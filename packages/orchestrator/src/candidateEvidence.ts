@@ -7,16 +7,28 @@ import type { DeclaredFailure } from "./runTerminalResults.js";
 import type { AppliedAttemptFacts } from "./delegatedHome.js";
 import type { ProducedOmission } from "./candidateOutputs.js";
 import type { CaptureRefusal } from "./secretDiff.js";
+import { captureRefusedFacts } from "./captureRefusal.js";
 import { toolWarnings } from "./attemptTelemetry.js";
 import { directoryHasOutput, type DirectoryCandidate } from "./directoryCandidate.js";
 import { gatesPassed } from "@claudexor/review";
 
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
+import type { CandidateObjectFacts } from "./secretDiff.js";
 
-export interface CandidateRun extends ContinuityTerminalFacts {
+/** THE one "did this candidate change the tree?" test (#535): an object result
+ * answers by its trees, since its patch view may be absent; a legacy patch by
+ * its text; a directory result by its manifest. */
+export function hasCandidateChanges(run: Pick<CandidateRun, "diff" | "result" | "files">): boolean {
+  if (run.files) return run.files.noChanges !== true;
+  if (run.result) return run.result.base_tree !== run.result.candidate_tree;
+  return run.diff.trim().length > 0;
+}
+
+export interface CandidateRun extends ContinuityTerminalFacts, CandidateObjectFacts {
   attemptId: string;
   harnessId: string;
   label: string;
+  /** The rendered patch view ("" when absent); `result` is canonical when present. */
   diff: string;
   files?: DirectoryCandidate;
   answerText?: string;
@@ -113,7 +125,7 @@ export function isWorkingCandidate(run: CandidateRun): boolean {
   return (
     !run.captureRefusal &&
     run.outcomeClass !== "interrupted" &&
-    (!run.errored || run.diff.length > 0 || directoryHasOutput(run.files))
+    (!run.errored || (!run.files && hasCandidateChanges(run)) || directoryHasOutput(run.files))
   );
 }
 
@@ -141,20 +153,12 @@ export function partitionCandidates(runs: CandidateRun[]): {
   const working = runs.filter(isWorkingCandidate);
   const noChanges = runs.some((r) => r.captureRefusal || r.files?.noChanges === null)
     ? null
-    : runs.every((r) =>
-        r.files
-          ? r.files.noChanges === true && !r.answerText
-          : r.diff.trim().length === 0 && !r.answerText,
-      );
+    : runs.every((r) => !hasCandidateChanges(r) && !r.answerText);
   const facts = runs.some((r) => r.outcomeClass === "interrupted")
     ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted", noChanges })
-    : makeOutcomeFacts("failed", {
-        reason:
-          runs.length > 0 && runs.every((r) => r.captureRefusal)
-            ? "workspace_unavailable"
-            : "harness_failed",
-        noChanges,
-      });
+    : runs.length > 0 && runs.every((r) => r.captureRefusal)
+      ? captureRefusedFacts()
+      : makeOutcomeFacts("failed", { reason: "harness_failed", noChanges });
   const why = runs
     .map((r) => {
       const reason =
@@ -234,7 +238,12 @@ export function toCandidateEvidence(
     reviewVerified,
     toolWarningsCount:
       run.telemetry.outcome?.toolWarningsCount ?? toolWarnings(run.telemetry).length,
-    diffSize: run.files ? run.files.changedPaths.length : run.diff.split("\n").length,
+    // An unrendered object result is sized by its inventory, never by an empty view.
+    diffSize: run.files
+      ? run.files.changedPaths.length
+      : run.patchViewUnavailable
+        ? (run.inventory?.changedFiles ?? 1)
+        : run.diff.split("\n").length,
     diffBytes: run.files
       ? run.files.manifest.entries
           .filter((entry) => run.files!.changedPaths.includes(entry.path))
@@ -243,7 +252,7 @@ export function toCandidateEvidence(
               sum + (entry.after?.kind === "file" ? Math.max(1, entry.after.sizeBytes) : 1),
             0,
           )
-      : Buffer.byteLength(run.diff, "utf8"),
+      : (run.patchViewUnavailable?.estimatedBytes ?? Buffer.byteLength(run.diff, "utf8")),
     costUsd: run.cost,
     ...(run.telemetry.outcome?.workState ? { workState: run.telemetry.outcome.workState } : {}),
   };

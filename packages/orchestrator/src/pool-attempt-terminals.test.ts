@@ -1123,9 +1123,11 @@ const liveTouchGate = {
   program: "sh",
   // Only the fresh verify tree touches the live tree: delivery then sees the
   // target change after a passing verify and refuses (not a verify failure).
+  // The verify tree of an object result is a private clone (#535); its first
+  // alternate is the live repository's object directory.
   args: [
     "-c",
-    'case "$PWD" in *claudexor-verify-*) echo touched >> "$(git rev-parse --git-common-dir)/../live-touch.txt";; esac',
+    'case "$PWD" in *claudexor-verify-*) live="$(dirname "$(dirname "$(sed -n 1p "$(git rev-parse --git-common-dir)/objects/info/alternates")")")"; echo touched >> "$live/live-touch.txt";; esac',
   ],
   envAllowlist: [],
 };

@@ -242,6 +242,7 @@ struct RunDiffSection: View {
                     .loaded(model.task(runId, at: locationID)?.diff ?? []),
                     for: id)
             case .unavailable, .empty: diffSlot.commit(.empty, for: id)
+            case .tooLarge(let message): diffSlot.commit(.failed(.notRenderable(message)), for: id)
             case .failed(let message): diffSlot.commit(.failed(.transport(message)), for: id)
             }
         }
