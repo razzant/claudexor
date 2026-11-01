@@ -13,6 +13,8 @@ enum TranscriptPresentation {
         /// `count` consecutive OK calls of the same tool, one quiet line.
         case toolGroup(id: String, name: String, kind: String?, count: Int)
         case message(id: String, text: String)
+        /// An engine receipt: never grouped, never dimmed as narration.
+        case notice(id: String, TranscriptNotice)
 
         var id: String {
             switch self {
@@ -20,6 +22,7 @@ enum TranscriptPresentation {
             case .tool(let id, _): return id
             case .toolGroup(let id, _, _, _): return "group-\(id)"
             case .message(let id, _): return id
+            case .notice(let id, _): return id
             }
         }
     }
@@ -59,6 +62,9 @@ enum TranscriptPresentation {
             case .message(let id, let text):
                 flushTools()
                 rows.append(.message(id: id, text: text))
+            case .notice(let id, let notice):
+                flushTools()
+                rows.append(.notice(id: id, notice))
             case .tool(let id, let tool):
                 // Only quiet successes group; a running, failed or unconfirmed
                 // tool always stands alone (its status is the information).
@@ -83,6 +89,14 @@ enum TranscriptPresentation {
         let all = rows(blocks)
         let omitted = max(0, all.count - chatRowLimit)
         return (Array(all.suffix(chatRowLimit)), omitted)
+    }
+
+    /// A receipt's text under the same per-row character bound as narration,
+    /// plain (not markdown), with the same pointer to the complete record.
+    static func chatNotice(_ text: String) -> String {
+        guard text.count > chatMessageCharLimit else { return text }
+        return String(text.prefix(chatMessageCharLimit))
+            + " … \(text.count - chatMessageCharLimit) more characters are available in Diagnostics / events.jsonl."
     }
 
     static func chatMessage(_ text: String) -> (text: String, omittedCharacters: Int) {

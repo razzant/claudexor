@@ -7,7 +7,11 @@ import { EventLog } from "@claudexor/event-log";
 import { projectRuntimeDir, sha256 } from "@claudexor/util";
 import type { CandidateRun } from "./candidateEvidence.js";
 import { createAttemptTelemetry } from "./attemptTelemetry.js";
-import { persistFailedInPlaceWorkProduct } from "./delegationFailure.js";
+import {
+  dominantRaceCandidateFailure,
+  persistFailedInPlaceWorkProduct,
+  raceSummaryDisclosure,
+} from "./delegationFailure.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -108,5 +112,83 @@ describe("uncaptured in-place receipt", () => {
     expect(receipt).not.toContain("exact_patch_object");
     expect(receipt).toContain(`patch_sha256: ${sha256(diff)}`);
     expect(receipt).toContain("apply_state: applied_review_blocked");
+  });
+});
+
+// #563 owner decision A: in a directory race, a candidate whose isolated copy
+// could not be retained durably is excluded, never fatal for a healthy sibling.
+// Every other dominant failure keeps its precedence.
+describe("race precedence of a capture refusal", () => {
+  const candidate = (
+    attemptId: string,
+    captureRefusal?: CandidateRun["captureRefusal"],
+    telemetry = createAttemptTelemetry("auto", false),
+  ) =>
+    ({
+      attemptId,
+      harnessId: `h-${attemptId}`,
+      label: `Candidate ${attemptId}`,
+      diff: "",
+      gates: [],
+      cost: 0,
+      errored: captureRefusal !== undefined,
+      costEstimated: false,
+      errors: captureRefusal ? [captureRefusal.detail] : [],
+      telemetry,
+      ...(captureRefusal ? { captureRefusal } : {}),
+    }) satisfies CandidateRun;
+  const retentionFailed = {
+    disposition: "manual_cleanup" as const,
+    phase: "artifact_security" as const,
+    sourceRoot: "/runtime/workspaces/task/a01/tree",
+    detail:
+      "Directory output capture failed … held by this process only (durable retention could not be recorded).",
+    retentionFailure: { code: "capture_failed" as const, message: "ENOTEMPTY: rename" },
+  };
+  const healthy = candidate("a02");
+
+  it("excludes a directory copy whose retention failed instead of failing the race", () => {
+    expect(
+      dominantRaceCandidateFailure([candidate("a01", retentionFailed), healthy], {
+        workspaceKind: "directory",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps a Git source whose retention failed race-fatal (unchanged)", () => {
+    const git = candidate("a01", { ...retentionFailed, phase: "workspace" });
+    expect(dominantRaceCandidateFailure([git, healthy], { workspaceKind: "git" })).toBe(git);
+    expect(dominantRaceCandidateFailure([git, healthy], {})).toBe(git);
+  });
+
+  it("keeps an in-place directory refusal race-fatal (unchanged)", () => {
+    const live = candidate("a01", {
+      disposition: "manual_cleanup",
+      phase: "artifact_security",
+      detail: "Directory output capture failed … Direct effects require inspection.",
+    });
+    expect(dominantRaceCandidateFailure([live, healthy], { workspaceKind: "directory" })).toBe(
+      live,
+    );
+  });
+
+  it("lets an injected Delegate belt failure lead over every capture refusal (unchanged)", () => {
+    const telemetry = createAttemptTelemetry("auto", false);
+    telemetry.delegationBelt.requested = true;
+    telemetry.delegationBelt.failed = true;
+    const belt = candidate("a03", undefined, telemetry);
+    expect(
+      dominantRaceCandidateFailure([candidate("a01", retentionFailed), healthy, belt], {
+        workspaceKind: "directory",
+      }),
+    ).toBe(belt);
+  });
+
+  it("names every excluded sibling's exact receipt beside the winner in the summary", () => {
+    const refused = candidate("a01", retentionFailed);
+    expect(raceSummaryDisclosure(healthy, [refused, healthy])).toBe(
+      `- Excluded Candidate a01 (a01, h-a01): ${retentionFailed.detail}`,
+    );
+    expect(raceSummaryDisclosure(healthy, [healthy])).toBeNull();
   });
 });

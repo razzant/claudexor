@@ -17,6 +17,8 @@ struct TurnReceiptRow: View {
     @Environment(AppModel.self) private var model
     let run: TaskRun
     let runId: String
+    /// Where the run executes: its transcript is read for that location only.
+    let locationID: ExecutionLocationID
     let expanded: Bool
     let onToggle: () -> Void
     let onOpenWorkspace: () -> Void
@@ -33,11 +35,17 @@ struct TurnReceiptRow: View {
     }
 
     private var countSummary: String? {
-        if let historyRun { return HistoryRunPresentation.counts(historyRun) }
-        return TurnPresentation.activitySummary(blocks: model.transcriptBlocks(runId))
+        if let historyRun {
+            let warning = TurnPresentation.noticeSummary(blocks: blocks)
+            let parts = [HistoryRunPresentation.counts(historyRun), warning].compactMap { $0 }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        return TurnPresentation.activitySummary(blocks: blocks)
     }
 
-    private var hasActivity: Bool { !model.transcriptBlocks(runId).isEmpty }
+    private var blocks: [TranscriptBlock] { model.transcript(runId, at: locationID)?.blocks ?? [] }
+
+    private var hasActivity: Bool { !blocks.isEmpty }
 
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
@@ -82,7 +90,7 @@ struct TurnReceiptRow: View {
             // inlineActivity transcript below already shows it — so suppress the
             // one-liner to avoid duplication.
             if run.phase.isActive, !expanded,
-               let activity = TurnPresentation.lastActivityLine(blocks: model.transcriptBlocks(runId)) {
+               let activity = TurnPresentation.lastActivityLine(blocks: blocks) {
                 Text("· \(activity)")
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)

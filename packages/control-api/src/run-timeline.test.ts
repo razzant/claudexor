@@ -112,3 +112,38 @@ describe("timelineEvents classifies a workspace settlement failure (#411f)", () 
     expect(rows[0]!.attemptId).toBe("a01");
   });
 });
+
+describe("timelineEvents projects workspace.prepared (#563)", () => {
+  const row = (scope: string[], copied: Record<string, number>, missing: string[]) =>
+    timelineEvents({}, [
+      {
+        type: "workspace.prepared",
+        payload: {
+          attempt_id: "a01",
+          source_root: "/work/project",
+          scope_paths: scope,
+          copied: { files: 0, directories: 0, symlinks: 0, ...copied },
+          missing_paths: missing,
+        },
+      },
+    ])[0]!;
+
+  it("is a warning naming the missing path and its root when a selection was not found", () => {
+    const missing = row(["new.txt"], {}, ["new.txt"]);
+    expect(missing).toMatchObject({
+      type: "workspace.prepared",
+      attemptId: "a01",
+      severity: "warning",
+      title: "Isolated workspace copy prepared",
+    });
+    expect(missing.detail).toContain('Not found there when the copy was prepared: "new.txt"');
+    expect(missing.detail).toContain("/work/project");
+    expect(row([], {}, []).severity).toBe("warning");
+  });
+
+  it("stays informational when every selection was copied, an empty directory included", () => {
+    expect(row(["input.txt"], { files: 1 }, []).severity).toBe("info");
+    expect(row(["empty"], { directories: 1 }, []).severity).toBe("info");
+    expect(row(["link"], { symlinks: 1 }, []).detail).toContain("copied as links, not followed");
+  });
+});

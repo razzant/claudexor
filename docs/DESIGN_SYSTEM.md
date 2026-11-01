@@ -588,7 +588,9 @@ frequency and volume are. The contracts:
   run release their heavy feed and transcript arrays on route/thread change;
   the history page restores settled receipts and answers; explicit workspace
   inspection can read the run timeline (`loadRunDetail`).
-  Live/streaming runs are never evicted.
+  Live/streaming runs are never evicted. A remote run's transcript store holds
+  only its bounded preparation receipts and is released with its location, not
+  per run, so it grows with the remote runs visited until that teardown.
 
 ---
 

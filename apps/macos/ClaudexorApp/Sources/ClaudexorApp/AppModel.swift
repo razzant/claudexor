@@ -388,6 +388,10 @@ final class AppModel {
     /// TERMINAL chat transcripts per run (live transcripts stream in the run's
     /// RunLiveBox; foldLiveBox moves the final reducer here at terminal).
     var transcripts: [String: TranscriptReducer] = [:]
+    /// A REMOTE run's engine receipts (`workspace.prepared`, #563), keyed by
+    /// location and run id so identical daemon run ids never mix. Remote runs
+    /// fold no executor transcript; only these receipts reach their turn card.
+    var remoteTranscripts: [RunDetailLoadKey: TranscriptReducer] = [:]
     /// Per-run live streaming boxes (P1 granularity): the dictionary property
     /// only changes on attach/fold (rare); hot per-event writes mutate the
     /// box CLASS internals and invalidate only that box's readers.

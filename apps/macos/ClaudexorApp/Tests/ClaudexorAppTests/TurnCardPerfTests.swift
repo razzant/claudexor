@@ -41,7 +41,7 @@ struct TurnCardPerfTests {
         for i in 1...500 { box.transcript.apply(message(i, "narration step \(i)")) }
         let blocks = model.transcriptBlocks("run-cap")
         #expect(blocks.count <= 200)                          // reducer cap — laziness buys nothing
-        #expect(model.transcriptTrimmedCount("run-cap") > 0)  // and the drop is disclosed
+        #expect((model.transcript("run-cap", at: .local)?.trimmed ?? 0) > 0)  // and the drop is disclosed
     }
 
     /// D-13 E containment: an UNRELATED AppModel write (a background sidebar

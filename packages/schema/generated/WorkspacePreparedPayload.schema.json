@@ -1,0 +1,67 @@
+{
+  "$ref": "#/definitions/WorkspacePreparedPayload",
+  "definitions": {
+    "WorkspacePreparedPayload": {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Attempt that first runs in the prepared copy."
+        },
+        "source_root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Folder the selected paths were resolved against."
+        },
+        "scope_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Selected input paths exactly as requested; empty when none were selected."
+        },
+        "copied": {
+          "type": "object",
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "directories": {
+              "$ref": "#/definitions/WorkspacePreparedPayload/properties/copied/properties/files"
+            },
+            "symlinks": {
+              "$ref": "#/definitions/WorkspacePreparedPayload/properties/copied/properties/files"
+            }
+          },
+          "required": [
+            "files",
+            "directories",
+            "symlinks"
+          ],
+          "additionalProperties": false,
+          "description": "Entries copied into the isolated copy; symbolic links are copied as links, not followed."
+        },
+        "missing_paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WorkspacePreparedPayload/properties/scope_paths/items"
+          },
+          "description": "Selected paths that did not exist under source_root when the copy was prepared."
+        }
+      },
+      "required": [
+        "attempt_id",
+        "source_root",
+        "scope_paths",
+        "copied",
+        "missing_paths"
+      ],
+      "additionalProperties": false,
+      "description": "Validated payload of a workspace.prepared run event (isolated directory copy)."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

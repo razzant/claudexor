@@ -232,6 +232,11 @@ export const RunEventType = z
      * adoption (`continueFrom`), apply or the discard decision; never removed
      * automatically. */
     "workspace.retained",
+    /** An isolated directory copy was prepared, before its first executor
+     * starts: what was copied and which selected paths were not found
+     * (`WorkspacePreparedPayload`; a warning when nothing was copied or a
+     * selected path was missing). Once per copy. */
+    "workspace.prepared",
     /** Settling a kept-or-disposed candidate envelope failed before the
      * deferred terminal was published; the run's outcome is unchanged and the
      * tree may remain. Payload: {attempt_id, envelope_id, root, stage

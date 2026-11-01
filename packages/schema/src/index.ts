@@ -62,6 +62,7 @@ export * from "./config.js";
 export * from "./runtime-concurrency.js";
 export * from "./workspace.js";
 export * from "./files-manifest.js";
+export * from "./workspace-preparation.js";
 export * from "./thread.js";
 export * from "./project.js";
 export * from "./cancel-reason.js";

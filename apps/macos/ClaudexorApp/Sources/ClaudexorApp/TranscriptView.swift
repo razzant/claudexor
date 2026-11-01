@@ -72,6 +72,21 @@ struct TranscriptView: View, Equatable {
                         remoteFileScope: remoteFileScope)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .opacity(0.7)
+                case .notice(_, let notice):
+                    // Engine-authored (not the model's words, not a tool):
+                    // the warning tint marks nothing copied or a selected path
+                    // not found; every path is in the text, selectable.
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(notice.title,
+                              systemImage: notice.warning ? "exclamationmark.triangle.fill" : "info.circle")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(notice.warning ? Theme.status(.caution) : .secondary)
+                        Text(TranscriptPresentation.chatNotice(notice.text))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }

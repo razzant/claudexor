@@ -285,6 +285,34 @@ describe("claudexor follow", () => {
     );
   });
 
+  it("renders workspace.prepared with a warning only when nothing was copied or a selected path was not found (#563)", () => {
+    const prepared = (scope: string[], files: number, missing: string[]) =>
+      formatRunEventLine({
+        type: "workspace.prepared",
+        payload: {
+          attempt_id: "a01",
+          source_root: "/work/project",
+          scope_paths: scope,
+          copied: { files, directories: 0, symlinks: 0 },
+          missing_paths: missing,
+        },
+      });
+    expect(prepared([], 0, [])).toBe(
+      "[a01] WARNING: Isolated copy prepared from /work/project: nothing copied (no input paths were selected).",
+    );
+    expect(prepared(["input.txt", "new.txt"], 1, ["new.txt"])).toBe(
+      '[a01] WARNING: Isolated copy prepared from /work/project: 1 file copied from "input.txt", "new.txt".' +
+        ' Not found there when the copy was prepared: "new.txt" (absent in the copy; may be created as new output).',
+    );
+    expect(prepared(["input.txt"], 1, [])).toBe(
+      '[a01] Isolated copy prepared from /work/project: 1 file copied from "input.txt".',
+    );
+    // A malformed payload is not rendered as a fact.
+    expect(formatRunEventLine({ type: "workspace.prepared", payload: { attempt_id: "a01" } })).toBe(
+      null,
+    );
+  });
+
   it("resumes after a mid-stream drop via Last-Event-ID and exits 0 on the terminal", async () => {
     let connections = 0;
     const { server, port } = await sseServer((lastEventId, res) => {

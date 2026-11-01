@@ -69,6 +69,7 @@ import {
 import { processAttemptUsage } from "./attemptUsage.js";
 import {
   captureDirectoryCandidate,
+  directoryPreparationNotice,
   directoryHasOutput,
   directoryCandidateStable,
   observeDirectoryPaths,
@@ -88,6 +89,8 @@ import * as AC from "./attemptUsageCost.js";
 import * as custody from "./continuation-custody.js";
 import {
   type CandidateRun,
+  candidateCaptureRefusals,
+  candidateCompletion,
   candidateRoster,
   candidateStatuses,
   convergenceOutcomeFacts,
@@ -2320,12 +2323,13 @@ export class Orchestrator {
     const inPlaceEnvelope = envelope.worktree_path === envelope.repo_root;
     const directory = envelope.workspace_kind === "directory";
     let directoryCapture: Awaited<ReturnType<typeof captureDirectoryCandidate>> = {};
-    const captureDirectory = async () =>
+    const captureDirectory = async (final = false) =>
       (directoryCapture = await captureDirectoryCandidate({
         manager: wsm,
         envelope,
         artifactRoot: join(paths.attemptsDir, attemptId),
         observedPaths: [...observedPaths],
+        ...(final ? { holder: { runId: paths.runId, runDir: paths.root } } : {}),
       }));
     const sessionFields = runInput
       ? await this.sessionSpecFields(
@@ -2392,6 +2396,7 @@ export class Orchestrator {
         [
           prompt,
           outerBoundaryNotice(harnessHome, routed.auxiliaryWritableRoots),
+          await directoryPreparationNotice(envelope, attemptId, log),
           laneContinuity?.pointerLine,
           continuationPointer,
         ]
@@ -2766,7 +2771,7 @@ export class Orchestrator {
       { sideToolReport: telemetry.sideToolWorkReport ?? undefined },
     );
     const answerText = unwrapped.deliverable.trim().length > 0 ? unwrapped.deliverable : undefined;
-    if (directory) await captureDirectory();
+    if (directory) await captureDirectory(true);
     const captured: secretDiff.CandidateCapture = directory
       ? { diff: "", captureRefusal: directoryCapture.refusal }
       : await secretDiff.captureCandidateWorkspace({
@@ -3385,17 +3390,7 @@ export class Orchestrator {
             run.telemetry.usageCost,
           ),
         );
-        log.emit("harness.completed", {
-          harness_id: adapter.id,
-          attempt_id: slot.attemptId,
-          // QA-027: never claim `success` over an attempt the operator/deadline
-          // cut short. An abort makes the run non-successful; the top-level
-          // status axis must say `cancelled` (the nested outcome axis already
-          // rides in telemetrySummary), not launder a torn-off stream as clean.
-          status: input.signal?.aborted ? "cancelled" : run.errored ? "failed" : "success",
-          cost_usd: run.cost,
-          ...telemetrySummary(run.telemetry),
-        });
+        log.emit("harness.completed", candidateCompletion(run, input.signal));
         // D-16d one-shot continuation for an ENVELOPED candidate (parity with the
         // read-only loop, which had the ONLY continuation wiring). An eligible
         // terminal context exhaustion (repeated_refill, no completed report) gets
@@ -3518,20 +3513,17 @@ export class Orchestrator {
                     contRun.telemetry.usageCost,
                   ),
                 );
-                log.emit("harness.completed", {
-                  harness_id: adapter.id,
-                  attempt_id: contAttemptId,
-                  status: input.signal?.aborted
-                    ? "cancelled"
-                    : contRun.errored
-                      ? "failed"
-                      : "success",
-                  cost_usd: contRun.cost,
-                  ...telemetrySummary(contRun.telemetry),
-                });
+                log.emit("harness.completed", candidateCompletion(contRun, input.signal));
                 // Supersede the exhausted candidate ONLY after the continuation
                 // actually completes cleanly (never over a torn-off/aborted stream).
                 if (!contRun.errored && !input.signal?.aborted) effectiveRun = contRun;
+                // A refused capture is errored: the original keeps leading, and
+                // the copy they share stays kept under the continuation's receipt.
+                if (contRun.captureRefusal)
+                  effectiveRun.continuationRefusal = {
+                    attemptId: contRun.attemptId,
+                    refusal: contRun.captureRefusal,
+                  };
               } catch (err) {
                 ledger.settle(
                   contLeaseId,
@@ -3705,7 +3697,7 @@ export class Orchestrator {
       return cancelledRaceResult();
     }
 
-    const failedDelegation = delegateFailure.dominantRaceCandidateFailure(runs);
+    const failedDelegation = delegateFailure.dominantRaceCandidateFailure(runs, input);
     if (failedDelegation) {
       await disposeReviewEnvelopes();
       const failedOutput: Parameters<typeof delegateFailure.persistFailedCandidateOutput>[0] = {
@@ -3734,7 +3726,7 @@ export class Orchestrator {
           budgetDenial,
           ...(mutatingRun ? { liveCapture: failedOutput } : {}),
         });
-      const failure = delegateFailure.candidateFailureTerminal(failedDelegation, "race");
+      const failure = delegateFailure.candidateFailureTerminal(failedDelegation, "race", runs);
       if (mutatingRun) await delegateFailure.persistFailedCandidateOutput(failedOutput);
       raceTerminal.writeTelemetry();
       return failTerminally(
@@ -4319,7 +4311,7 @@ export class Orchestrator {
             evidences,
             synth.reason,
             actualReviewVerified,
-            secretDiff.resultSummaryLines(winnerRun),
+            delegateFailure.raceSummaryDisclosure(winnerRun, runs),
           ),
           racePool(),
         ),
@@ -4362,12 +4354,15 @@ export class Orchestrator {
     const needsDecisionTerminal = facts.review === "blocked" || facts.checks === "failed";
     const isFailureTerminal = facts.lifecycle !== "succeeded" || needsDecisionTerminal;
     const pool = racePool();
+    // Beside whichever failure record leads, a source another attempt kept stays named.
+    const keptSources = candidateCaptureRefusals(runs).flatMap(secretDiff.captureInspectionActions);
     if (deliveryFailureReason && !finalVerifyFailed) {
       const refused = deliveryRefusalFailure(deliveryFailureReason, paths.root);
       writeFailure(store, paths, {
         ...refused,
         safeMessage: withPoolAttempts(refused.safeMessage, pool),
         poolAttempts: pool,
+        nextActions: [...refused.nextActions, ...keptSources],
       });
     } else if (finalVerifyFailed) {
       writeFailure(store, paths, {
@@ -4383,8 +4378,8 @@ export class Orchestrator {
         ),
         poolAttempts: pool,
         runDir: paths.root,
-        nextActions:
-          finalVerify?.applied_cleanly === null
+        nextActions: [
+          ...(finalVerify?.applied_cleanly === null
             ? [
                 "Inspect arbitration/decision.yaml (final_verify) for the verifier error",
                 "Fix the verify infrastructure (git worktree/tmp) and re-run, or accept_risk to override",
@@ -4392,7 +4387,9 @@ export class Orchestrator {
             : [
                 "Inspect arbitration/decision.yaml (final_verify)",
                 "Re-run after fixing the base conflict or the failing gates",
-              ],
+              ]),
+          ...keptSources,
+        ],
       });
     } else if (isFailureTerminal) {
       // QA-010c: a reviewer-accepted BLOCK/FIX_FIRST (or a failed deterministic
@@ -4426,19 +4423,22 @@ export class Orchestrator {
           ? `attempts/${winnerRun.attemptId}/attempt.yaml`
           : undefined,
         runDir: paths.root,
-        nextActions: decisionBlock
-          ? [
-              "Review the blocking findings on the run's turn",
-              "Accept the risk to apply this exact patch, or discard the change",
-              ...(facts.checks === "failed"
-                ? ["Configure/approve the deterministic test command, then re-run"]
-                : []),
-            ]
-          : [
-              "Open diagnostics",
-              "Inspect candidate artifacts",
-              "Retry with a narrower prompt or different harness pool",
-            ],
+        nextActions: [
+          ...(decisionBlock
+            ? [
+                "Review the blocking findings on the run's turn",
+                "Accept the risk to apply this exact patch, or discard the change",
+                ...(facts.checks === "failed"
+                  ? ["Configure/approve the deterministic test command, then re-run"]
+                  : []),
+              ]
+            : [
+                "Open diagnostics",
+                "Inspect candidate artifacts",
+                "Retry with a narrower prompt or different harness pool",
+              ]),
+          ...keptSources,
+        ],
       });
       if (!winnerRun) {
         store.writeText(
@@ -5038,14 +5038,13 @@ export class Orchestrator {
             ),
           };
           if (envelope.workspace_kind === "directory") {
-            const captured = await captureDirectoryCandidate({
+            ({ files: run.files, refusal: run.captureRefusal } = await captureDirectoryCandidate({
               manager: wsm,
               envelope,
               artifactRoot: join(paths.attemptsDir, attemptId),
               observedPaths: [...observedPaths],
-            });
-            run.files = captured.files;
-            run.captureRefusal = captured.refusal;
+              holder: { runId: paths.runId, runDir: paths.root },
+            }));
           }
         }
         lastRun = run;

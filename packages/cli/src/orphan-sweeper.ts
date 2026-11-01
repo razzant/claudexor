@@ -30,6 +30,7 @@ import {
   WorkspaceManager,
   git,
   processStartTime,
+  readEnvelopeCustody,
   recoverOrphanCustody,
 } from "@claudexor/workspace";
 import { projectRuntimeDir } from "@claudexor/util";
@@ -118,8 +119,13 @@ async function sweepEnvelopesUnder(execRoot: string): Promise<string[]> {
       }
       const held = await recoverOrphanCustody(join(taskDir, attemptId));
       if (held) {
+        // A capture-refused source is kept for inspection only, not continuation.
+        const purpose =
+          readEnvelopeCustody(join(taskDir, attemptId))?.continuation_eligible === false
+            ? "for inspection"
+            : "for continueFrom";
         actions.push(
-          `${held === "kept" ? "kept retained" : "retained interrupted"} envelope ${taskId}/${attemptId} under ${execRoot} for continueFrom`,
+          `${held === "kept" ? "kept retained" : "retained interrupted"} envelope ${taskId}/${attemptId} under ${execRoot} ${purpose}`,
         );
         continue;
       }

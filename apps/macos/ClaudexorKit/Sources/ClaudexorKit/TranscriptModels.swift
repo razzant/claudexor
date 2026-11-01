@@ -10,12 +10,15 @@ public enum TranscriptBlock: Identifiable, Sendable, Equatable {
     case thinking(id: String, text: String, seconds: Double = 0)
     case message(id: String, text: String)
     case tool(id: String, ToolBlock)
+    /// An engine-authored receipt (e.g. what an isolated copy was prepared with).
+    case notice(id: String, TranscriptNotice)
 
     public var id: String {
         switch self {
         case .thinking(let id, _, _): return id
         case .message(let id, _): return id
         case .tool(let id, _): return id
+        case .notice(let id, _): return id
         }
     }
 }
@@ -127,6 +130,10 @@ public struct TranscriptReducer: Sendable {
     /// answer bubble (QA-009). Tracked by id — no prose comparison — and it
     /// survives an intervening tool/thinking block. Cleared on final.
     private var messageCandidateId: String?
+    /// Engine notices that left the window (evicted, or restored into a full
+    /// window and never placed): restoring one again neither re-inserts nor
+    /// recounts it. One id per prepared copy of the run, never per event.
+    private var accountedNoticeIds: Set<String> = []
     private let cap: Int
     /// W23 P0-hang bounds: the block COUNT cap alone let a single merged
     /// thinking block grow to megabytes — SwiftUI then laid out that Text on
@@ -148,8 +155,9 @@ public struct TranscriptReducer: Sendable {
         self.toolFieldCap = toolFieldCap
     }
 
-    /// Apply one envelope. Only `harness.event` run events contribute; everything
-    /// else is ignored. Returns true if the transcript changed.
+    /// Apply one envelope. `harness.event` run events and the engine's
+    /// `workspace.prepared` receipt contribute; everything else is ignored.
+    /// Returns true if the transcript changed.
     ///
     /// The per-run SSE sets `BusEnvelope.kind` to the event NAME (e.g.
     /// "harness.event"), not the literal "run" — so we discriminate on the RunEvent
@@ -158,6 +166,11 @@ public struct TranscriptReducer: Sendable {
     @discardableResult
     public mutating func apply(_ env: BusEnvelope) -> Bool {
         if env.seq <= lastSeq { return false }   // already folded (replay)
+        if env.event["type"]?.stringValue == "workspace.prepared" {
+            lastSeq = env.seq
+            guard let prepared = TranscriptNotice.prepared(env.event["payload"]) else { return false }
+            return applyNotice(id: TranscriptNotice.preparedId(attemptId: prepared.attemptId), prepared.notice)
+        }
         guard env.event["type"]?.stringValue == "harness.event" else {
             lastSeq = max(lastSeq, env.seq)
             return false
@@ -313,6 +326,40 @@ public struct TranscriptReducer: Sendable {
         }
     }
 
+    /// Fold one engine receipt, once per `id` (live, replayed or restored from
+    /// a snapshot row). `atStart` places a receipt restored after later blocks
+    /// before them: it was emitted before its executor's first event. Its text
+    /// keeps the same per-block bound as every other block, disclosed. A
+    /// restored receipt with no room before a full window would be the first
+    /// block evicted: it is counted once as an earlier block not shown, with no
+    /// bound disclosed for text that was never placed.
+    @discardableResult
+    public mutating func applyNotice(id: String, _ notice: TranscriptNotice, atStart: Bool = false) -> Bool {
+        if accountedNoticeIds.contains(id) || blocks.contains(where: { $0.id == id }) { return false }
+        if atStart, !blocks.isEmpty {
+            let size = clip(notice.title, cap: toolFieldCap, keepTail: false).count
+                + clip(notice.text, cap: blockCharCap, keepTail: false).count
+            if blocks.count >= cap || textChars + size > totalCharBudget {
+                accountedNoticeIds.insert(id)
+                trimmed += 1
+                return false
+            }
+        }
+        let block = TranscriptBlock.notice(id: id, TranscriptNotice(
+            title: bound(notice.title, cap: toolFieldCap, keepTail: false),
+            text: boundHead(notice.text), warning: notice.warning))
+        guard atStart, !blocks.isEmpty else {
+            append(block)
+            return true
+        }
+        blocks.insert(block, at: 0)
+        textChars += chars(of: block)
+        toolIndexByUseId = toolIndexByUseId.mapValues { $0 + 1 }
+        lastOpenToolByName = lastOpenToolByName.mapValues { $0 + 1 }
+        enforceBudget()
+        return true
+    }
+
     /// Keep the newest `blockCharCap` characters (live-progress semantics).
     private mutating func boundTail(_ text: String) -> String {
         bound(text, cap: blockCharCap, keepTail: true)
@@ -369,6 +416,7 @@ public struct TranscriptReducer: Sendable {
         case .tool(_, let b):
             return b.name.count + (b.kind?.count ?? 0) + (b.target?.count ?? 0) + (b.detail?.count ?? 0)
                 + (b.commandOutcome?.shellId?.count ?? 0)
+        case .notice(_, let notice): return notice.title.count + notice.text.count
         }
     }
 
@@ -381,6 +429,7 @@ public struct TranscriptReducer: Sendable {
             drop += 1
         }
         guard drop > 0 else { return }
+        for case .notice(let id, _) in blocks.prefix(drop) { accountedNoticeIds.insert(id) }
         blocks.removeFirst(drop)
         textChars = remaining
         trimmed += drop

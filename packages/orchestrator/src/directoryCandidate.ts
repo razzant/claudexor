@@ -6,10 +6,13 @@ import {
   type WorkspaceEnvelope,
   type WorkspaceFilesManifest,
   WorkProduct,
+  WorkspacePreparedPayload,
+  workspacePreparationSummary,
 } from "@claudexor/schema";
 import {
   type WorkspaceManager,
   type CapturedWorkspaceFiles,
+  directoryPreparation,
   materializeWorkspaceFile,
   readWorkspaceFile,
   sameWorkspaceFile,
@@ -41,11 +44,34 @@ export function observeDirectoryPaths(paths: Set<string>, event: HarnessEvent, c
   }
 }
 
+const announcedPreparations = new WeakSet<WorkspaceEnvelope>();
+
+/** An isolated copy's preparation fact, announced once per copy before its
+ * first executor starts, and the same fact as that executor's prompt notice.
+ * Worded for the copy's creation: a later round's copy also holds that round's work. */
+export async function directoryPreparationNotice(
+  envelope: WorkspaceEnvelope,
+  attemptId: string,
+  log: EventLog | undefined,
+): Promise<string | undefined> {
+  const prepared = await directoryPreparation(envelope);
+  if (!prepared) return undefined;
+  const payload = WorkspacePreparedPayload.parse({ attempt_id: attemptId, ...prepared });
+  if (!announcedPreparations.has(envelope)) {
+    announcedPreparations.add(envelope);
+    log?.emit("workspace.prepared", payload);
+  }
+  return `When this workspace was created: ${workspacePreparationSummary(payload).text}`;
+}
+
+/** Only the run's final capture passes `holder`: its refusal keeps the isolated
+ * copy for inspection. Per-try and stability captures are superseded, never kept. */
 export async function captureDirectoryCandidate(input: {
   manager: WorkspaceManager;
   envelope: WorkspaceEnvelope;
   artifactRoot: string;
   observedPaths: string[];
+  holder?: { runId: string; runDir: string };
 }): Promise<{ files?: DirectoryCandidate; refusal?: CaptureRefusal }> {
   if (
     input.envelope.policy_profile === "readonly" &&
@@ -67,7 +93,10 @@ export async function captureDirectoryCandidate(input: {
         Object.defineProperty(error, "cleanupError", { value: cleanupError, enumerable: false });
     }
     const inPlace = input.envelope.worktree_path === input.envelope.repo_root;
-    return { refusal: directoryCaptureRefusal(error, inPlace) };
+    const { manager: wsm, envelope, holder } = input;
+    return {
+      refusal: directoryCaptureRefusal(error, inPlace, holder && { wsm, envelope, holder }),
+    };
   }
 }
 
@@ -202,7 +231,7 @@ export async function publishDirectoryCandidate(input: {
   });
   store.writeText(
     join(paths.finalDir, "files/result.md"),
-    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files prepared in a separate copy. The original folder is unchanged; the result is ready to inspect and apply."}\n\n${listing.join("\n")}\n`,
+    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files captured from a separate copy. Inspect the captured files; application is subject to the run's outcome and a delivery check."}\n\n${listing.join("\n")}\n`,
   );
   const product = WorkProduct.parse({
     id: newId("wp"),

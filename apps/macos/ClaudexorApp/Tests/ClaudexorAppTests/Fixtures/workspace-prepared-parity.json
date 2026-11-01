@@ -1,0 +1,348 @@
+{
+  "generatedBy": ["WorkspacePreparedPayload", "timelineEvents"],
+  "cases": [
+    {
+      "name": "nothing-selected",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": [],
+          "copied": { "files": 0, "directories": 0, "symlinks": 0 },
+          "missing_paths": []
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: nothing copied (no input paths were selected).",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "warning",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    },
+    {
+      "name": "missing-only",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": ["new-output.txt"],
+          "copied": { "files": 0, "directories": 0, "symlinks": 0 },
+          "missing_paths": ["new-output.txt"]
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: nothing copied from \"new-output.txt\". Not found there when the copy was prepared: \"new-output.txt\" (absent in the copy; may be created as new output).",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "warning",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    },
+    {
+      "name": "partial",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": ["input.txt", "new-output.txt"],
+          "copied": { "files": 1, "directories": 0, "symlinks": 0 },
+          "missing_paths": ["new-output.txt"]
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: 1 file copied from \"input.txt\", \"new-output.txt\". Not found there when the copy was prepared: \"new-output.txt\" (absent in the copy; may be created as new output).",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "warning",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    },
+    {
+      "name": "copied-file",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": ["input.txt"],
+          "copied": { "files": 1, "directories": 0, "symlinks": 0 },
+          "missing_paths": []
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: 1 file copied from \"input.txt\".",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "info",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    },
+    {
+      "name": "whole-folder",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": ["."],
+          "copied": { "files": 4, "directories": 3, "symlinks": 1 },
+          "missing_paths": []
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: 4 files, 3 directories, 1 symbolic link copied from \".\". Symbolic links were copied as links, not followed.",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "info",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    },
+    {
+      "name": "empty-directory",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": ["empty"],
+          "copied": { "files": 0, "directories": 1, "symlinks": 0 },
+          "missing_paths": []
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: 1 directory copied from \"empty\".",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "info",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    },
+    {
+      "name": "symlink",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": ["link"],
+          "copied": { "files": 0, "directories": 0, "symlinks": 1 },
+          "missing_paths": []
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: 1 symbolic link copied from \"link\". Symbolic links were copied as links, not followed.",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "info",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    },
+    {
+      "name": "many-and-unusual-missing",
+      "event": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "payload": {
+          "attempt_id": "a01",
+          "source_root": "/work/project with space",
+          "scope_paths": [
+            "input.txt",
+            "out/new-01.md",
+            "out/new-02.md",
+            "out/new-03.md",
+            "out/new-04.md",
+            "out/new-05.md",
+            "out/new-06.md",
+            "out/new-07.md",
+            "out/new-08.md",
+            "out/new-09.md",
+            "out/new-10.md",
+            "out/new-11.md",
+            "out/new-12.md",
+            "out/new-13.md",
+            "out/new-14.md",
+            "out/new-15.md",
+            "out/new-16.md",
+            "out/new-17.md",
+            "out/new-18.md",
+            "out/new-19.md",
+            "out/new-20.md",
+            "out/new-21.md",
+            "out/new-22.md",
+            "out/new-23.md",
+            "out/new-24.md",
+            "out/new-25.md",
+            "line\nbreak.txt",
+            "quote\".md",
+            "é/ü 日本.txt",
+            "tab\tname",
+            "bell\u0007.txt"
+          ],
+          "copied": { "files": 1, "directories": 2, "symlinks": 0 },
+          "missing_paths": [
+            "out/new-01.md",
+            "out/new-02.md",
+            "out/new-03.md",
+            "out/new-04.md",
+            "out/new-05.md",
+            "out/new-06.md",
+            "out/new-07.md",
+            "out/new-08.md",
+            "out/new-09.md",
+            "out/new-10.md",
+            "out/new-11.md",
+            "out/new-12.md",
+            "out/new-13.md",
+            "out/new-14.md",
+            "out/new-15.md",
+            "out/new-16.md",
+            "out/new-17.md",
+            "out/new-18.md",
+            "out/new-19.md",
+            "out/new-20.md",
+            "out/new-21.md",
+            "out/new-22.md",
+            "out/new-23.md",
+            "out/new-24.md",
+            "out/new-25.md",
+            "line\nbreak.txt",
+            "quote\".md",
+            "é/ü 日本.txt",
+            "tab\tname",
+            "bell\u0007.txt"
+          ]
+        }
+      },
+      "row": {
+        "type": "workspace.prepared",
+        "ts": "2026-11-01T00:00:00.000Z",
+        "harnessId": null,
+        "attemptId": "a01",
+        "messageId": null,
+        "outcome": null,
+        "title": "Isolated workspace copy prepared",
+        "detail": "Isolated copy prepared from /work/project with space: 1 file, 2 directories copied from \"input.txt\", \"out/new-01.md\", \"out/new-02.md\", \"out/new-03.md\", \"out/new-04.md\", \"out/new-05.md\", \"out/new-06.md\", \"out/new-07.md\", \"out/new-08.md\", \"out/new-09.md\", \"out/new-10.md\", \"out/new-11.md\", \"out/new-12.md\", \"out/new-13.md\", \"out/new-14.md\", \"out/new-15.md\", \"out/new-16.md\", \"out/new-17.md\", \"out/new-18.md\", \"out/new-19.md\", \"out/new-20.md\", \"out/new-21.md\", \"out/new-22.md\", \"out/new-23.md\", \"out/new-24.md\", \"out/new-25.md\", \"line\\nbreak.txt\", \"quote\\\".md\", \"é/ü 日本.txt\", \"tab\\tname\", \"bell\\u0007.txt\". Not found there when the copy was prepared: \"out/new-01.md\", \"out/new-02.md\", \"out/new-03.md\", \"out/new-04.md\", \"out/new-05.md\", \"out/new-06.md\", \"out/new-07.md\", \"out/new-08.md\", \"out/new-09.md\", \"out/new-10.md\", \"out/new-11.md\", \"out/new-12.md\", \"out/new-13.md\", \"out/new-14.md\", \"out/new-15.md\", \"out/new-16.md\", \"out/new-17.md\", \"out/new-18.md\", \"out/new-19.md\", \"out/new-20.md\", \"out/new-21.md\", \"out/new-22.md\", \"out/new-23.md\", \"out/new-24.md\", \"out/new-25.md\", \"line\\nbreak.txt\", \"quote\\\".md\", \"é/ü 日本.txt\", \"tab\\tname\", \"bell\\u0007.txt\" (absent in the copy; may be created as new output).",
+        "textKind": null,
+        "textDelta": false,
+        "speechKey": null,
+        "speechOp": null,
+        "textFinal": false,
+        "severity": "warning",
+        "toolName": null,
+        "target": null,
+        "errorSummary": null,
+        "ignoredSettings": [],
+        "rawRef": "events.jsonl"
+      }
+    }
+  ]
+}

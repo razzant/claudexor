@@ -99,10 +99,11 @@ enum TurnPresentation {
             case .tool(_, let tool):
                 tools += 1
                 if tool.kind == "file" { files += 1 }
-            case .message: break
+            case .message, .notice: break
             }
         }
         var parts: [String] = []
+        if let warning = noticeSummary(blocks: blocks) { parts.append(warning) }
         if thinkingSeconds >= 1 { parts.append("Thinking \(Int(thinkingSeconds))s") }
         if tools > 0 { parts.append("\(tools) tool\(tools == 1 ? "" : "s")") }
         if files > 0 { parts.append("\(files) file\(files == 1 ? "" : "s")") }
@@ -125,10 +126,24 @@ enum TurnPresentation {
                 return String(line.prefix(140))
             case .thinking(_, _, let seconds):
                 return seconds >= 1 ? "Thinking · \(Int(seconds))s" : "Thinking"
-            case .message:
+            case .message, .notice:
                 continue
             }
         }
         return nil
+    }
+
+    /// Whether the transcript holds anything the executor produced: an engine
+    /// notice alone does not hide a failed turn's reason card.
+    static func hasExecutorActivity(blocks: [TranscriptBlock]) -> Bool {
+        blocks.contains { if case .notice = $0 { false } else { true } }
+    }
+
+    /// "Input warning" on the receipt row when an engine receipt warns (e.g. an
+    /// isolated copy with nothing copied or a selected path not found), so a
+    /// collapsed or restored turn still says so; the text is one click away.
+    static func noticeSummary(blocks: [TranscriptBlock]) -> String? {
+        let warnings = blocks.filter { if case .notice(_, let notice) = $0 { notice.warning } else { false } }
+        return warnings.isEmpty ? nil : warnings.count == 1 ? "Input warning" : "\(warnings.count) input warnings"
     }
 }
