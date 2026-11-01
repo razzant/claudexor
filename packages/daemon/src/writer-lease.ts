@@ -15,12 +15,19 @@ import {
   defaultProcessObservationReader,
   isKnownProcessIdentity,
   observeProcess,
+  ProcessIdentityService,
+  executeWin32ProcessTimes,
   type KnownProcessIdentity,
   type ProcessIdentityReader,
   type ProcessObservation,
   type ProcessObservationReader,
 } from "@claudexor/core";
 import { daemonDir, isWindowsPipePath } from "./token.js";
+
+const daemonIdentity =
+  process.platform === "win32"
+    ? new ProcessIdentityService({ runWin32Reader: executeWin32ProcessTimes })
+    : defaultProcessIdentityService;
 
 /** Marker file whose presence turns a lease directory into the permanent
  * root-authority barrier (issue #165 D1). The barrier directory deliberately
@@ -310,7 +317,8 @@ export function classifyDaemonLeaseOwner(
   owner: DaemonLeaseOwner,
   deps: DaemonWriterLeaseDependencies = {},
 ): DaemonLeaseOwnerCapability {
-  const identity = deps.identity ?? defaultProcessIdentityService;
+  const identity =
+    deps.identity ?? (owner.identity ? daemonIdentity : defaultProcessIdentityService);
   const observationReader =
     deps.observation ??
     (identity === defaultProcessIdentityService ? defaultProcessObservationReader : undefined);
@@ -443,7 +451,7 @@ export function acquireDaemonWriterLease(
   const token = randomUUID();
   const ownerPath = join(path, "owner.json");
   const fs = filesystem(effectiveDeps);
-  const self = (identity ?? defaultProcessIdentityService).self();
+  const self = (identity ?? daemonIdentity).self();
   const owner: DaemonLeaseOwner = {
     pid: process.pid,
     token,
