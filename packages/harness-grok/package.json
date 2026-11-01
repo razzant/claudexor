@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-grok",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "license": "MIT",
   "description": "Grok Build CLI adapter using grok.com subscription authentication.",
   "type": "module",

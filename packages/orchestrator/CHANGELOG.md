@@ -1,5 +1,25 @@
 # @claudexor/orchestrator
 
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/arbitration@5.0.1
+- @claudexor/artifact-store@5.0.1
+- @claudexor/budget@5.0.1
+- @claudexor/config@5.0.1
+- @claudexor/context@5.0.1
+- @claudexor/core@5.0.1
+- @claudexor/delivery@5.0.1
+- @claudexor/event-log@5.0.1
+- @claudexor/gateway@5.0.1
+- @claudexor/policy@5.0.1
+- @claudexor/review@5.0.1
+- @claudexor/schema@5.0.1
+- @claudexor/synthesis@5.0.1
+- @claudexor/util@5.0.1
+- @claudexor/workspace@5.0.1
+
 ## 5.0.0
 
 ### Patch Changes

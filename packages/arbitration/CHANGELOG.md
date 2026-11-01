@@ -1,5 +1,11 @@
 # @claudexor/arbitration
 
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/schema@5.0.1
+
 ## 5.0.0
 
 ### Patch Changes

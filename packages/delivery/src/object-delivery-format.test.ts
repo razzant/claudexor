@@ -36,8 +36,11 @@ function temp(prefix: string): string {
   dirs.push(dir);
   return dir;
 }
+/** Auto-maintenance a command starts here finishes before it returns: since Git 2.55 a
+ * detached one keeps `objects/maintenance.lock` after `git commit`, which the object
+ * inventory would read as a write. */
 const git = (repo: string, args: string[]) =>
-  execFileSync("git", ["-C", repo, ...args], { env: ENV })
+  execFileSync("git", ["-C", repo, "-c", "maintenance.autoDetach=false", ...args], { env: ENV })
     .toString("utf8")
     .trim();
 function repo(format: "sha1" | "sha256"): string {

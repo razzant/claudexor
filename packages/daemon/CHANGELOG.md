@@ -1,5 +1,14 @@
 # @claudexor/daemon
 
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/core@5.0.1
+- @claudexor/schema@5.0.1
+- @claudexor/util@5.0.1
+- @claudexor/workspace@5.0.1
+
 ## 5.0.0
 
 ### Minor Changes
