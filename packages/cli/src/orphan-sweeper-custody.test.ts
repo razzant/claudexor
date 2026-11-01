@@ -17,7 +17,9 @@ import {
   envelopeBaseOf,
   readEnvelopeCustody,
   retainForContinuation,
+  retainForInspection,
   retainedEnvelopeOfRun,
+  retainedSourcesOfRun,
 } from "@claudexor/workspace";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
 
@@ -76,11 +78,40 @@ describe("crash GC honors continuation custody", () => {
     const actions = await sweepOrphanWorkspaces({ knownProjectRoots });
 
     expect(actions.some((a) => a.startsWith("kept retained envelope task-kept/a01"))).toBe(true);
+    expect(actions.find((a) => a.includes("task-kept/a01"))).toMatch(/ for continueFrom$/);
     const custody = retainedEnvelopeOfRun(runDir, "run-task-kept");
     expect(custody?.envelope.id).toBe(env.id);
     const adopted = adoptRetainedEnvelope(custody!, { runId: "run-next", runDir: temp("next") });
     expect(readFileSync(join(adopted.worktree_path, "a.txt"), "utf8")).toBe("edited\n");
     expect(readFileSync(join(adopted.worktree_path, "new.txt"), "utf8")).toBe("new file\n");
+  });
+
+  it("keeps a capture-refused directory copy for inspection, not continuation (#563)", async () => {
+    const source = temp("folder");
+    writeFileSync(join(source, "input.txt"), "selected\n");
+    const runDir = temp("run");
+    const env = await new WorkspaceManager(source).create({
+      taskId: "task-inspect",
+      attemptId: "a01",
+      workspaceKind: "directory",
+      scopePaths: ["input.txt"],
+    });
+    writeFileSync(join(env.worktree_path, "authored.txt"), "authored\n");
+    retainForInspection(env, { runId: "run-task-inspect", runDir });
+    rmSync(join(runDir, "attempts/a01/retained-envelope.json"));
+    ownerDied(envelopeBaseOf(env));
+
+    const knownProjectRoots = () =>
+      commandScopeRoots([{ params: { scope: { kind: "project", root: source } } }]);
+    const actions = await sweepOrphanWorkspaces({ knownProjectRoots });
+
+    const line = actions.find((a) => a.includes("task-inspect/a01"));
+    expect(line).toMatch(/^kept retained envelope task-inspect\/a01 under .* for inspection$/);
+    expect(line).not.toContain("continueFrom");
+    expect(readFileSync(join(env.worktree_path, "authored.txt"), "utf8")).toBe("authored\n");
+    // Recovery restored its per-attempt address; it is not a continuation source.
+    expect(retainedSourcesOfRun(runDir, "run-task-inspect")).toHaveLength(1);
+    expect(retainedEnvelopeOfRun(runDir, "run-task-inspect")).toBeNull();
   });
 
   it("keeps the edits of a run interrupted mid-attempt and sweeps an untouched one", async () => {

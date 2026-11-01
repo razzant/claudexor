@@ -2044,7 +2044,18 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
   containment or be read fails the same way in phase `artifact_security`: its
   receipt names the typed cause and the redacted, bounded diagnostic, no file
   payload is published, and an in-place folder stays for inspection
-  (`manual_cleanup`) while an isolated copy is discarded (`discarded`).
+  (`manual_cleanup`). When the run's final capture of an isolated copy refuses
+  (also the capture after a convergence infrastructure error), the copy with its
+  authored files is kept for inspection like an isolated Git source (`retained`,
+  per-attempt address and custody below, its path named in the receipt and next
+  actions, no exact result to apply or revert). When retention setup fails the
+  refusal is `manual_cleanup` with `retentionFailure`, and the receipt names the
+  stage from the custody record itself: custody written but the run's address
+  not, so setup is incomplete until crash recovery restores that address (an
+  unreadable address holds the run for GC and is reported), or custody not
+  written, so the copy is held by this process only. A per-try or post-review stability
+  capture that a later capture supersedes keeps nothing (`discarded`). Directory
+  runs copy no produced media separately, so their receipt does not claim any.
 - **Nested repositories.** A patch cannot carry another repository, so an
   untracked folder holding its own Git repository that the worktree's
   `.gitmodules` does not declare is left out of the candidate capture and of
@@ -2329,7 +2340,32 @@ The CLI exposes these fields as `--workspace-kind directory`, repeatable
 footprint selects no existing inputs; `--scope-path .` explicitly selects the
 whole folder. A selected path may be absent at preparation and become a new
 output. Selection controls copied inputs and capture coverage, not the native
-harness's filesystem permissions.
+harness's filesystem permissions. Before an isolated copy's first executor starts,
+the run records `workspace.prepared` once per copy (`WorkspacePreparedPayload`,
+read from the copy's own selected-input baseline, never a second source scan):
+the resolution root, the selected paths, the copied file, directory and
+symbolic-link counts, and the selected paths not found there. Its text names
+every selected and missing path, JSON-quoted and unclipped, because no other
+record names an absent selection. The snapshot timeline row and the CLI line are
+a warning when nothing was copied or a selected path was not found, and
+informational otherwise. For a run on the local engine, the macOS turn card shows
+the same title, text and severity as an engine notice in the turn's transcript
+(neither model text nor a tool row), from the live or replayed event and, for a
+restored or re-attached run whose stream resumes after the snapshot, from that
+snapshot's timeline row; one block per copy, pinned to the server wording by a
+generated parity fixture. A remote (SSH) run's card shows the same receipt from
+the remote run stream and the remote run-detail load, held per location and run
+id so a local run and remote runs with the same id never show each other's
+transcript; remote runs still keep no executor transcript. Each remote run holds
+only these bounded receipts, so that store grows with the remote runs visited and
+is released when the location is torn down, with no per-run eviction. The receipt row says "Input warning" while collapsed; the notice is
+not executor output, so a failed turn without output keeps its reason card. It
+keeps the transcript's existing per-block and per-row bounds with the pointer to
+`events.jsonl`, and a receipt that no longer fits the window is counted once as an
+earlier block not shown; a copied empty directory or link is present,
+never missing, and a missing path is reported as possible new output, not an
+error or a refusal. Each executor prompt in that copy carries the same fact,
+worded for the copy's creation. Live directory work records no such event.
 
 Read-only live directory Agents keep the source root and existing harness HOME
 selection, but skip write-oriented input inventory, baseline hashing and output
@@ -2361,7 +2397,14 @@ A partial selection records `appliedPaths` in `final/delivery_state.yaml` and
 keeps `applyState: not_applied` while changes remain. Only complete delivery
 sets `applyState: applied`.
 Explicit `discard` closes remaining copy delivery without applying or reverting
-anything. A conflict preserves unrelated target edits; if application stops after
+anything. One decision gives up everything the run still holds: a best-of
+directory run can hold a refused candidate's kept copy beside its winner's
+pending files, and both are discarded before the decision reports success (the
+files flip first; a source release that then fails is reported, leaves the rest
+held, and a repeated decision completes it). Releasing a source ends its custody
+first and removes its files best-effort, so the answer reports custody released,
+not files deleted. An applied or direct result stays as
+it is. A conflict preserves unrelated target edits; if application stops after
 some entries changed, the receipt names the applied paths and retains the rest.
 It is not a whole-tree atomic transaction. Direct effects are already in place
 and have no promised full rollback. Binary, large, GUI-created and file-only
@@ -2554,9 +2597,20 @@ create-from-scratch intent (the CLI verb `claudexor create` maps here).
 A candidate whose result holds secret-like strings is an ordinary working
 candidate: it is gated, reviewed on its exact result (its rendered patch view,
 or a copy of its saved changed files) and arbitrated like any other (INV-146). A candidate whose changes could not be captured is excluded when
-another working candidate survives; an all-uncaptured race, an uncaptured
-in-place candidate, or an injected Delegate-belt failure remains terminal for
-the race.
+another working candidate survives. That includes an isolated directory copy
+whose retention setup then failed (owner decision): the healthy winner can be
+applied, while the excluded candidate's exact receipt (cause, kept copy, the
+retention stage that failed) is listed in the run summary and carried as the
+error of its `harness.completed` event (full timeline row, bounded CLI follow preview). The
+D-16d one-shot continuation reruns in its candidate's copy, so when its final capture refuses
+the copy is kept and the exhausted original still leads (`interrupted`,
+`context_capacity_exhausted`, unknown changes, never adopted). The continuation's receipt, under
+its own attempt id, is the error of its `harness.completed` event and is named beside the
+terminal: in the failure message, summary and decision evidence, with the record's capture facts
+and inspection action; with a winner, in the summary and any blocked record's next actions. An
+all-uncaptured race, an uncaptured in-place candidate, an isolated Git source
+whose retention setup failed, or an injected Delegate-belt failure remains
+terminal for the race.
 
 ### Agent --attempts / --until-clean
 
@@ -8007,7 +8061,9 @@ code touching one of these areas must honor it or change it explicitly here.
   `attempts/<envelope-attempt>/retained-envelope.json` addresses and are for manual
   inspection, not automatic continuation or already-applied live results.
   File GC and command pruning keep these addresses, like the continuation
-  pointer, until explicit discard. Only these destructive owners read strictly:
+  pointer, until explicit discard. The crash sweep logs such a source as kept
+  for inspection, and a discard that releases only inspection sources says so
+  without promising a continuation. Only these destructive owners read strictly:
   an absent or stale address and released custody read as nothing held, while
   an unreadable or invalid pointer or custody record (not only an unreadable
   attempts directory) keeps its run and is reported (GC `errors[]`, daemon log);
@@ -8019,8 +8075,8 @@ code touching one of these areas must honor it or change it explicitly here.
   their cause and publish no exact patch (live effects keep their capture-refused
   record, in race cancellation too, so the public result never reads as
   `not_applied` while the tree already changed). A race cancellation writes no
-  failure record: an isolated source it leaves in retained custody is named
-  only by attempt evidence. A budget terminal the ledger
+  failure record: an isolated source it leaves in retained custody is named by
+  attempt evidence and its attempt's `harness.completed` error. A budget terminal the ledger
   settled on the same attempt (stream hard cap, exact overshoot, unverifiable
   cash) outranks that attempt's capture failure in race and convergence: the
   shared classifier names the budget cause and remedy first and the capture

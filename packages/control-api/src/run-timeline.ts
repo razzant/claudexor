@@ -13,6 +13,8 @@ import {
   type ControlEvidenceIntegrity,
   ControlWebEvidence,
   FallbackReason,
+  WorkspacePreparedPayload,
+  workspacePreparationSummary,
   HarnessSpeech,
   type RunTelemetry,
   type TaskContract,
@@ -389,24 +391,32 @@ export function timelineEvents(
         : null;
     const partialGitInitialization =
       type === "project.git.initialized" && payload["partial"] === true;
+    // Its severity follows the payload: nothing copied or a selected path missing.
+    const prepared =
+      type === "workspace.prepared" ? WorkspacePreparedPayload.safeParse(payload).data : undefined;
+    const preparation = prepared ? workspacePreparationSummary(prepared) : null;
     const title =
       (partialGitInitialization
         ? "Git repository initialization incomplete"
-        : stringOrNull(
-            payload["title"] ??
-              payload["message"] ??
-              payload["summary"] ??
-              payload["text"] ??
-              payload["error"],
-          )) ?? prettyEventType(type);
+        : preparation
+          ? "Isolated workspace copy prepared"
+          : stringOrNull(
+              payload["title"] ??
+                payload["message"] ??
+                payload["summary"] ??
+                payload["text"] ??
+                payload["error"],
+            )) ?? prettyEventType(type);
     const errorSummary = stringOrNull(tool["error_summary"] ?? payload["error"]);
     const detail = textKind
       ? stringOrNull(payload["text"])
       : partialGitInitialization
         ? `Stopped during ${String(payload["failed_stage"] ?? "unknown")} at ${String(payload["repo_root"] ?? "?")}; partial Git metadata may remain.`
-        : (stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
-          stringOrNull(tool["content_summary"]) ??
-          errorSummary);
+        : preparation
+          ? preparation.text
+          : (stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
+            stringOrNull(tool["content_summary"]) ??
+            errorSummary);
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
     // INV-105 disclosure (QA-070): unsupported per-harness knobs the route could
@@ -419,7 +429,7 @@ export function timelineEvents(
           .filter((s): s is string => s !== null)
       : [];
     const severity =
-      ignoredSettings.length > 0 || partialGitInitialization
+      ignoredSettings.length > 0 || partialGitInitialization || preparation?.warning
         ? "warning"
         : timelineSeverity(type, payload, tool);
     out.push(

@@ -121,24 +121,64 @@ function captureDiagnostic(failure: WorkspaceCaptureFailure): string {
   return text ? ` Detail: ${text}${/[.!?]$/.test(text) ? "" : "."}` : "";
 }
 
+/** Where a final directory refusal keeps its isolated copy: the run that holds it. */
+export interface DirectorySourceHolder {
+  wsm: WorkspaceManager;
+  envelope: WorkspaceEnvelope;
+  holder: { runId: string; runDir: string };
+}
+
 /**
  * A directory capture that could not prove containment or read its files fails
  * closed with its typed cause, named as the Git lane names it; content is never
  * a cause (INV-146), its paths and error codes are. In place, the live files stay
- * for inspection; an isolated copy is discarded.
+ * for inspection. An isolated copy is kept for inspection only when the run's
+ * final capture refuses (`kept`); a capture that a later one supersedes holds nothing.
  */
-export function directoryCaptureRefusal(error: unknown, inPlace: boolean): CaptureRefusal {
+export function directoryCaptureRefusal(
+  error: unknown,
+  inPlace: boolean,
+  kept?: DirectorySourceHolder,
+): CaptureRefusal {
   const failure = captureFailureEvidence(error instanceof Error ? error : new Error(String(error)));
+  const lead =
+    `Directory output capture failed (containment, read or size): ${captureCause(failure)}.` +
+    `${captureDiagnostic(failure)} No file payload was published.`;
+  if (inPlace || !kept)
+    return {
+      disposition: inPlace ? "manual_cleanup" : "discarded",
+      detail: `${lead} Direct effects require inspection, not a fabricated rollback.`,
+      phase: "artifact_security",
+      failure,
+    };
+  const { retentionFailure, custodyWritten } = holdIsolatedSource(
+    kept.wsm,
+    kept.envelope,
+    kept.holder,
+  );
+  const root = kept.envelope.worktree_path;
   return {
-    disposition: inPlace ? "manual_cleanup" : "discarded",
+    disposition: retentionFailure ? "manual_cleanup" : "retained",
     detail:
-      `Directory output capture failed (containment, read or size): ${captureCause(failure)}.` +
-      `${captureDiagnostic(failure)} No file payload was published. Direct effects require` +
-      " inspection, not a fabricated rollback.",
+      `${lead} Not recorded: an exact result to apply or revert. Kept: the isolated copy at ${root}` +
+      (!retentionFailure
+        ? " (not applied)."
+        : custodyWritten
+          ? ` (not applied), ${ADDRESS_NOT_RECORDED}.`
+          : `, ${PROCESS_ONLY}.`),
     phase: "artifact_security",
+    sourceRoot: root,
     failure,
+    ...(retentionFailure ? { retentionFailure } : {}),
   };
 }
+
+/** The two stages a failed retention setup can stop at, as one wording for
+ * both lanes: the custody record (written first) or only the run's address. */
+const ADDRESS_NOT_RECORDED =
+  "recorded in durable custody; its address in this run could not be written," +
+  " so retention setup is incomplete until crash recovery restores that address";
+const PROCESS_ONLY = "held by this process only (durable retention could not be recorded)";
 
 /** The refusal receipt: what was not recorded, what is kept, and the release's limit. */
 function refusalDetail(input: {
@@ -146,6 +186,7 @@ function refusalDetail(input: {
   root: string;
   failure: WorkspaceCaptureFailure;
   retentionFailed: boolean;
+  custodyWritten: boolean;
   skipped: SkippedVerification;
 }): string {
   const lost = [
@@ -159,9 +200,11 @@ function refusalDetail(input: {
   ];
   const kept = input.inPlace
     ? `the changed files in ${input.root} (already in place, not reviewed)`
-    : input.retentionFailed
-      ? `the isolated source at ${input.root}, held by this process only (durable retention could not be recorded)`
-      : `the retained isolated source at ${input.root} (not applied)`;
+    : !input.retentionFailed
+      ? `the retained isolated source at ${input.root} (not applied)`
+      : input.custodyWritten
+        ? `the retained isolated source at ${input.root} (not applied), ${ADDRESS_NOT_RECORDED}`
+        : `the isolated source at ${input.root}, ${PROCESS_ONLY}`;
   return (
     `The changes could not be captured exactly: ${captureCause(input.failure)}.` +
     `${captureDiagnostic(input.failure)} ` +
@@ -170,8 +213,39 @@ function refusalDetail(input: {
   );
 }
 
-/** Existing custody is the durability owner; only an eligible singleton gets
- * the singular continuation pointer. Other candidates are addressed by attempt. */
+/** Hold an isolated source past disposal. Existing custody is the durability
+ * owner; only an eligible singleton gets the singular continuation pointer,
+ * other sources are addressed by attempt. A failed setup leaves the
+ * process-local hold and is returned with whether the custody record, which
+ * is written before the run's address, was nevertheless recorded. */
+function holdIsolatedSource(
+  wsm: WorkspaceManager,
+  envelope: WorkspaceEnvelope,
+  holder: { runId: string; runDir: string },
+): { retentionFailure?: WorkspaceCaptureFailure; custodyWritten: boolean } {
+  wsm.retainEnvelope(envelope);
+  try {
+    const current = readEnvelopeCustody(envelopeBaseOf(envelope));
+    if (current?.holder_run_id === holder.runId && current.continuation_eligible !== false)
+      retainForContinuation(envelope, holder, null);
+    else retainForInspection(envelope, holder);
+    return { custodyWritten: true };
+  } catch (error) {
+    const custody = readEnvelopeCustody(envelopeBaseOf(envelope));
+    return {
+      retentionFailure: captureFailureEvidence(
+        error instanceof Error ? error : new Error(String(error)),
+      ),
+      custodyWritten:
+        custody?.state === "retained" &&
+        custody.holder_run_id === holder.runId &&
+        custody.envelope.id === envelope.id,
+    };
+  }
+}
+
+/** A Git capture refusal keeps its source: live media in place, an isolated
+ * envelope through `holdIsolatedSource`. */
 export function preserveCaptureSource(input: {
   wsm: WorkspaceManager;
   envelope: WorkspaceEnvelope;
@@ -181,24 +255,11 @@ export function preserveCaptureSource(input: {
   error?: Error;
 }): CaptureRefusal {
   const { wsm, envelope, inPlace, holder } = input;
-  let retentionFailure: WorkspaceCaptureFailure | undefined;
   // Live media may exceed the run's bounded copies: disposal keeps their directory.
   if (inPlace) wsm.keepArtifactDirectory(envelope);
-  else {
-    wsm.retainEnvelope(envelope);
-    try {
-      const current = readEnvelopeCustody(envelopeBaseOf(envelope));
-      if (current?.holder_run_id === holder.runId && current.continuation_eligible !== false)
-        retainForContinuation(envelope, holder, null);
-      else retainForInspection(envelope, holder);
-    } catch (error) {
-      // Preserve the completed answer/accounting even if persistence itself fails.
-      // The process-local hold remains, but durable recovery is explicitly unproven.
-      retentionFailure = captureFailureEvidence(
-        error instanceof Error ? error : new Error(String(error)),
-      );
-    }
-  }
+  const { retentionFailure, custodyWritten } = inPlace
+    ? { retentionFailure: undefined, custodyWritten: false }
+    : holdIsolatedSource(wsm, envelope, holder);
   const failure = captureFailureEvidence(input.error);
   return {
     disposition: inPlace || retentionFailure ? "manual_cleanup" : "retained",
@@ -211,6 +272,7 @@ export function preserveCaptureSource(input: {
       root: envelope.worktree_path,
       failure,
       retentionFailed: retentionFailure !== undefined,
+      custodyWritten,
       skipped: input.skipped,
     }),
   };

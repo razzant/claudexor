@@ -6,8 +6,10 @@ import {
   type AccessProfile,
   type WorkspaceFileState,
   type WorkspaceFileChange,
+  type WorkspacePreparedPayload,
 } from "@claudexor/schema";
 import { nowIso, sha256 } from "@claudexor/util";
+import { envelopeBaseOf } from "./envelope-custody.js";
 import {
   directoryInventory,
   materializeWorkspaceFile,
@@ -100,6 +102,29 @@ export async function prepareDirectoryWorkspace(input: {
     entries: [...entries].map(([path, state]) => ({ path, state })),
   };
   await writeFile(join(envelopeRoot, "directory-baseline.json"), JSON.stringify(baseline) + "\n");
+}
+
+/** What an isolated copy held when it was prepared, read from its own baseline
+ * (never a second source scan); null for live directory work. A selected path
+ * is missing only when no entry of that exact path was recorded: a copied empty
+ * directory or symbolic link is present, and `.` names the source root itself. */
+export async function directoryPreparation(
+  env: WorkspaceEnvelope,
+): Promise<Omit<WorkspacePreparedPayload, "attempt_id"> | null> {
+  if (env.workspace_kind !== "directory" || env.worktree_path === env.repo_root) return null;
+  const baseline = JSON.parse(
+    await readFile(join(envelopeBaseOf(env), "directory-baseline.json"), "utf8"),
+  ) as DirectoryBaseline;
+  if (baseline.isolation !== "envelope") return null;
+  const present = new Set(baseline.entries.map((entry) => entry.path));
+  const count = (kind: WorkspaceFileState["kind"]) =>
+    baseline.entries.filter((entry) => entry.state.kind === kind).length;
+  return {
+    source_root: baseline.sourceRoot,
+    scope_paths: baseline.scopePaths,
+    copied: { files: count("file"), directories: count("directory"), symlinks: count("symlink") },
+    missing_paths: baseline.scopePaths.filter((path) => path !== "." && !present.has(path)),
+  };
 }
 
 export interface CapturedWorkspaceFiles {

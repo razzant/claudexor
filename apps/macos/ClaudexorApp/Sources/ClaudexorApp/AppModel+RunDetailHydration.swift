@@ -215,6 +215,7 @@ extension AppModel {
             // Diff bytes are TAB-DEMAND payload (INV-136): hydration records
             // artifact existence; TaskDetail loads/parses only when Diff opens.
             if !detail.timeline.isEmpty {
+                foldTimelineNotices(id, detail.timeline)
                 task.activity = detail.timeline.map(Self.activityEvent(from:))
                 // A STREAMING run's feed lives in its box (views read the box
                 // overlay): the snapshot timeline is authoritative up to

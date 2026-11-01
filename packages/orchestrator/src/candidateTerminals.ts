@@ -6,6 +6,7 @@ import type { BudgetLedger } from "@claudexor/budget";
 import { makeOutcomeFacts, type ModeKind } from "@claudexor/schema";
 import type { OrchestratorResult } from "./orchestrator.js";
 import {
+  candidateCaptureRefusals,
   hasCandidateChanges,
   partitionCandidates,
   unanimousDeclaredFailure,
@@ -72,7 +73,9 @@ export async function cancelledCandidatesResult(
       taskId,
       attemptId: candidate.attemptId,
       harnessId: candidate.harnessId,
-      facts: makeOutcomeFacts("cancelled", { noChanges: candidate.files.noChanges }),
+      facts: makeOutcomeFacts("cancelled", {
+        noChanges: candidate.continuationRefusal ? null : candidate.files.noChanges,
+      }),
       log,
     });
   if (runs.length === 1 && input.git) {
@@ -148,9 +151,12 @@ export function failAfterCandidates(
   error: unknown,
 ): OrchestratorResult {
   const { log, store, paths, runId, taskId, mode, ledger, runs } = input;
+  const refusals = candidateCaptureRefusals(runs);
   return failTerminally(log, store, paths, runId, taskId, mode, phase, error, ledger.spend(), {
     continuity: runs,
     attempts: input.attempts,
+    captureFailure: refusals[0]?.failure,
+    followUps: refusals.flatMap(secretDiff.captureInspectionActions),
   });
 }
 
@@ -237,6 +243,9 @@ export async function failedCandidatesResult(
 ): Promise<OrchestratorResult> {
   const { store, paths, log, runId, taskId, mode, ledger, runs, writeTelemetry } = input;
   const first = runs[0] as CandidateRun;
+  // Every kept source is named, in attempt order; the first candidate's own
+  // refusal (when it has one) still leads the record below.
+  const refusals = candidateCaptureRefusals(runs);
   // A lease denial, or a budget terminal the ledger settled on a candidate
   // whose capture then failed (stream hard cap, exact overshoot, unverifiable
   // cash), owns the terminal: the shared classifier leads and the capture
@@ -274,17 +283,21 @@ export async function failedCandidatesResult(
     winner: null,
     facts,
     why_winner: rootCause,
-    evidence_facts: runs.map(
-      (r) =>
-        `${r.attemptId} ${r.captureRefusal ? "capture incomplete" : "produced no work"}: ${r.errors[0] ?? "unknown"}`,
-    ),
+    evidence_facts: runs.flatMap((r) => [
+      `${r.attemptId} ${r.captureRefusal ? "capture incomplete" : "produced no work"}: ${r.errors[0] ?? "unknown"}`,
+      ...(r.continuationRefusal
+        ? [
+            `${r.continuationRefusal.attemptId} capture incomplete: ${r.continuationRefusal.refusal.detail}`,
+          ]
+        : []),
+    ]),
     apply_recommendation: "continue",
     budget_summary: decisionBudgetSummary(ledger),
   });
   writeTelemetry();
   store.writeText(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${phase}\n\n${rootCause}\n${captureInventorySummary(first.captureRefusal?.failure)}`,
+    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${phase}\n\n${rootCause}\n${captureInventorySummary(refusals[0]?.failure)}`,
   );
   const existingEventRefs = runs
     .map((r) => `attempts/${r.attemptId}/events.jsonl`)
@@ -312,19 +325,22 @@ export async function failedCandidatesResult(
     requestRefusal: unanimous?.requestRefusal,
     quotaRefusal: unanimous?.quotaRefusal,
     rawContextShortfall: unanimous?.rawContextShortfall,
-    captureFailure: first.captureRefusal?.failure,
+    captureFailure: refusals[0]?.failure,
     // The first candidate speaks (like harnessId/attemptId); a budget terminal speaks for itself.
     vendorFailure: budget ? null : attemptVendorFailure([first], first.attemptId),
-    nextActions: first.captureRefusal
-      ? secretDiff.captureRefusalNextActions(first.captureRefusal)
-      : phase === "workspace"
-        ? ["Check the project folder", "Open diagnostics", "Retry the run"]
-        : harnessFailureNextActions(harnessCategory),
+    nextActions: [
+      ...(first.captureRefusal
+        ? secretDiff.captureRefusalNextActions(first.captureRefusal)
+        : phase === "workspace"
+          ? ["Check the project folder", "Open diagnostics", "Retry the run"]
+          : harnessFailureNextActions(harnessCategory)),
+      ...refusals.flatMap(secretDiff.captureRefusalNextActions),
+    ],
     ...(budget
       ? budgetFailureRecord(budget, {
           eventRefs: existingEventRefs,
           runDir: paths.root,
-          followUps: secretDiff.captureInspectionActions(first.captureRefusal),
+          followUps: refusals.flatMap(secretDiff.captureInspectionActions),
         })
       : {}),
     // After the budget record: every terminal speaks the same message and list.

@@ -8,7 +8,7 @@ import type { AppliedAttemptFacts } from "./delegatedHome.js";
 import type { ProducedOmission } from "./candidateOutputs.js";
 import type { CaptureRefusal } from "./secretDiff.js";
 import { captureRefusedFacts } from "./captureRefusal.js";
-import { toolWarnings } from "./attemptTelemetry.js";
+import { telemetrySummary, toolWarnings } from "./attemptTelemetry.js";
 import { directoryHasOutput, type DirectoryCandidate } from "./directoryCandidate.js";
 import { gatesPassed } from "@claudexor/review";
 
@@ -47,6 +47,10 @@ export interface CandidateRun extends ContinuityTerminalFacts, CandidateObjectFa
   /** The candidate's changes could not be captured at all. Secret-like content
    * is never a refusal; this is the honest name of a failed capture. */
   captureRefusal?: CaptureRefusal;
+  /** The one-shot continuation (its own attempt id) reran in this candidate's
+   * copy and its final capture refused: the copy is kept with this receipt,
+   * while this exhausted attempt still leads, since nothing superseded it. */
+  continuationRefusal?: { attemptId: string; refusal: CaptureRefusal };
   /** Where the exact bytes of an isolated candidate still are when its capture
    * was incomplete (the envelope is kept, not deleted). */
   exactBytesRetainedAt?: string;
@@ -129,6 +133,35 @@ export function isWorkingCandidate(run: CandidateRun): boolean {
   );
 }
 
+/** Every capture refusal the candidates' attempts left, in attempt order: a
+ * candidate's own, then its one-shot continuation's. */
+export function candidateCaptureRefusals(runs: readonly CandidateRun[]): CaptureRefusal[] {
+  return runs.flatMap((run) => [
+    ...(run.captureRefusal ? [run.captureRefusal] : []),
+    ...(run.continuationRefusal ? [run.continuationRefusal.refusal] : []),
+  ]);
+}
+
+/** A candidate attempt's `harness.completed` payload (the first attempt and its
+ * one-shot continuation alike), a refused capture's receipt as its error.
+ * QA-027: never claim `success` over an attempt the operator/deadline cut
+ * short. An abort makes the run non-successful; the top-level status axis must
+ * say `cancelled` (the nested outcome axis already rides in telemetrySummary),
+ * not launder a torn-off stream as clean. */
+export function candidateCompletion(
+  run: CandidateRun,
+  signal: AbortSignal | undefined,
+): Record<string, unknown> {
+  return {
+    harness_id: run.harnessId,
+    attempt_id: run.attemptId,
+    status: signal?.aborted ? "cancelled" : run.errored ? "failed" : "success",
+    cost_usd: run.cost,
+    ...telemetrySummary(run.telemetry),
+    ...(run.captureRefusal ? { error: run.captureRefusal.detail } : {}),
+  };
+}
+
 /**
  * Split the produced candidates into the set the reviewer panel / arbiter may
  * see, plus the terminal to fall back on when that set is EMPTY. When nothing
@@ -151,7 +184,9 @@ export function partitionCandidates(runs: CandidateRun[]): {
   why: string;
 } {
   const working = runs.filter(isWorkingCandidate);
-  const noChanges = runs.some((r) => r.captureRefusal || r.files?.noChanges === null)
+  const noChanges = runs.some(
+    (r) => r.captureRefusal || r.continuationRefusal || r.files?.noChanges === null,
+  )
     ? null
     : runs.every((r) => !hasCandidateChanges(r) && !r.answerText);
   const facts = runs.some((r) => r.outcomeClass === "interrupted")
@@ -165,7 +200,10 @@ export function partitionCandidates(runs: CandidateRun[]): {
         r.outcomeClass === "interrupted"
           ? "context capacity exhausted before the work completed"
           : (r.errors[0] ?? "failed before producing work");
-      return `${r.attemptId}/${r.harnessId}: ${reason}`;
+      const continued = r.continuationRefusal
+        ? `; its continuation ${r.continuationRefusal.attemptId}: ${r.continuationRefusal.refusal.detail}`
+        : "";
+      return `${r.attemptId}/${r.harnessId}: ${reason}${continued}`;
     })
     .join("; ");
   return { working, facts, why };

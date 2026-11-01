@@ -148,10 +148,12 @@ struct TurnCard: View {
                 }
                 // ONE persistent receipt row: the whole row toggles inline activity.
                 TurnReceiptRow(
-                    run: run, runId: runId,
+                    run: run, runId: runId, locationID: target.locationID,
                     expanded: transcriptExpanded ?? run.phase.isActive,
                     onToggle: {
-                        if model.transcriptBlocks(runId).isEmpty { model.openRun(run.id) }
+                        if (model.transcript(runId, at: target.locationID)?.blocks ?? []).isEmpty {
+                            model.openRun(run.id)
+                        }
                         else { transcriptExpanded = !(transcriptExpanded ?? run.phase.isActive) }
                     },
                     onOpenWorkspace: { model.openRun(run.id) }, historyRun: historyRow?.run)
@@ -272,11 +274,12 @@ struct TurnCard: View {
 
     @ViewBuilder
     private func inlineActivity(_ run: TaskRun, runId: String) -> some View {
-        let blocks = model.transcriptBlocks(runId)
+        let transcript = model.transcript(runId, at: target.locationID)
+        let blocks = transcript?.blocks ?? []
         if !blocks.isEmpty, (transcriptExpanded ?? run.phase.isActive) {
             TranscriptView(blocks: blocks,
-                           trimmedOlder: model.transcriptTrimmedCount(runId),
-                           truncatedChars: model.transcriptTruncatedChars(runId),
+                           trimmedOlder: transcript?.trimmed ?? 0,
+                           truncatedChars: transcript?.truncatedChars ?? 0,
                            fileScopeRoots: Self.fileScopeRoots(
                                executionRoot: executionRoot, runDir: run.runDir),
                            remoteFileScope: Self.remoteFileScope(run, executionRoot: executionRoot))
@@ -431,11 +434,13 @@ struct TurnCard: View {
     // MARK: Silent-failure card (honest inline failure)
 
     /// A turn that finished in a genuinely FAILURE-shaped terminal state but
-    /// produced no visible content (no answer, no transcript, no diff).
+    /// produced no visible content (no answer, no executor transcript, no diff).
+    /// An engine notice (e.g. what its copy was prepared with) is not output.
     private func isSilentFailure(_ run: TaskRun) -> Bool {
         guard run.phase.isFailureShaped else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasTranscript = !(turn.runId.map { model.transcriptBlocks($0) } ?? []).isEmpty
+        let hasTranscript = TurnPresentation.hasExecutorActivity(
+            blocks: turn.runId.flatMap { model.transcript($0, at: target.locationID)?.blocks } ?? [])
         return !hasAnswer && !hasTranscript && !run.hasPatchArtifact
     }
 

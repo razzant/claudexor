@@ -32,6 +32,7 @@ extension AppModel {
         remoteTrustEntries.removeValue(forKey: locationID)
         remoteProjects.removeValue(forKey: locationID)
         remoteTasks.removeValue(forKey: locationID)
+        remoteTranscripts = remoteTranscripts.filter { $0.key.locationID != locationID }
         discardCancelledRunMemory(at: locationID)
 
         if selectedExecutionLocation == locationID {

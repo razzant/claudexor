@@ -11,6 +11,12 @@ import {
   SCHEMA_VERSION,
   type WorkspaceFilesManifest,
 } from "@claudexor/schema";
+import {
+  WorkspaceManager,
+  envelopeBaseOf,
+  retainForInspection,
+  retainedSourcesOfRun,
+} from "@claudexor/workspace";
 import { DaemonControlApiServer } from "./daemon-server.js";
 
 const cleanup: Array<() => Promise<unknown>> = [];
@@ -201,6 +207,58 @@ describe("complete files result through the ordinary control API", () => {
     expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
     expect(parse(await readFile(join(f.run, "final/delivery_state.yaml"), "utf8"))).toMatchObject({
       applyState: "discarded",
+    });
+  });
+  // #563: a best-of directory run can hold a refused candidate's kept copy
+  // beside its winner's pending files; one discard gives up both.
+  async function keptCopy(f: Awaited<ReturnType<typeof fixture>>) {
+    const env = await new WorkspaceManager(f.source).create({
+      taskId: "task-files",
+      attemptId: "a02",
+      workspaceKind: "directory",
+      scopePaths: ["document.bin"],
+    });
+    await writeFile(join(env.worktree_path, "authored.txt"), "refused candidate output\n");
+    retainForInspection(env, { runId: "run-files", runDir: f.run });
+    return env;
+  }
+  it("discards a kept refused copy and the pending winner together", async () => {
+    const f = await fixture();
+    const env = await keptCopy(f);
+    expect(await (await f.request("decision", { action: "discard" })).json()).toMatchObject({
+      accepted: true,
+      status: "discarded",
+      message:
+        "Custody of the kept source copies for inspection was released (file cleanup is best-effort); nothing was applied or reverted." +
+        " Pending file application discarded; retained result follows normal retention.",
+    });
+    expect(retainedSourcesOfRun(f.run, "run-files")).toEqual([]);
+    await expect(stat(envelopeBaseOf(env))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(parse(await readFile(join(f.run, "final/delivery_state.yaml"), "utf8"))).toMatchObject({
+      applyState: "discarded",
+    });
+    expect((await f.request("apply", { mode: "apply" }, "after-discard")).status).toBe(409);
+    expect(await readFile(join(f.source, "document.bin"), "utf8")).toBe("baseline\n");
+  });
+  it("releases a kept copy beside an applied winner without touching its applied state", async () => {
+    const f = await fixture();
+    expect(await (await f.request("apply", { mode: "apply" }, "all")).json()).toMatchObject({
+      applied: true,
+    });
+    const env = await keptCopy(f);
+    const answer = (await (await f.request("decision", { action: "discard" }, "d")).json()) as {
+      message: string;
+    };
+    expect(answer).toMatchObject({
+      status: "discarded",
+      message:
+        "Custody of the kept source copies for inspection was released (file cleanup is best-effort); nothing was applied or reverted.",
+    });
+    // An inspection-only copy has no continuation to speak of.
+    expect(answer.message).not.toContain("continuation");
+    await expect(stat(envelopeBaseOf(env))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(parse(await readFile(join(f.run, "final/delivery_state.yaml"), "utf8"))).toMatchObject({
+      applyState: "applied",
     });
   });
   it("refuses discarding direct effects", async () => {
