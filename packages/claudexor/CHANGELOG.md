@@ -1,5 +1,25 @@
 # claudexor
 
+## 5.0.0
+
+### Patch Changes
+
+- 5cb8a13: The macOS packaging boot smoke now starts the bundled daemon in an empty environment with only a scratch `HOME` and a fixed `PATH`, watches for discovery in the root derived from that `HOME`, and stops and reaps the daemon before deleting that root. An exported `CLAUDEXOR_CONFIG_DIR`, socket or control-API override, `NODE_OPTIONS` or provider key in the builder's shell can no longer point the smoke at another root or reach the daemon.
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [0b14e01]
+- Updated dependencies [9a5ef43]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [d807104]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [fe7e2ae]
+- Updated dependencies [28dfe1a]
+  - @claudexor/cli@5.0.0
+
 ## 4.8.2
 
 ### Patch Changes
