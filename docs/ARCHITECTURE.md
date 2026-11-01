@@ -4443,6 +4443,17 @@ by pid and a digest of its token, then preserves that tombstone so a delayed
 contender cannot quarantine a live successor. Acquisition is the only
 quarantine mutator and tombstones have no automatic GC.
 
+Windows daemon leases opt into the kernel birth reader and record FILETIME at
+acquisition, so a reused PID is rejected by exact identity comparison rather
+than treated as a live legacy owner. Core defaults are unchanged. If identity
+cannot be read, the existing conservative legacy behavior remains. Existing
+PID-only records cannot acquire a historical identity retrospectively: file
+timestamps are not process identity (a clock correction can reverse their
+ordering). Their recovery still requires independently established operator
+evidence; neither age nor timestamp ordering authorizes automatic quarantine.
+Legacy inspection does not launch the Windows birth helper. Recorded identities
+use its existing 30-second bound; the canary probe allows two reads plus overhead.
+
 Above the per-socket lease sits a PERSISTENT root authority for the shared
 data root. Before any store or import work the daemon validates/installs a permanent
 barrier at the canonical default writer address: the lease directory carries
