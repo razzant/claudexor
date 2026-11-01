@@ -31,7 +31,7 @@ with a vendor quota source (Antigravity, Claude, and Codex). Cursor's internal
 dashboard supplies dated monetary resources, not an execution-quota verdict.
 Everything runs on your machine, files are the source of truth, and there is no telemetry.
 
-Current status: **v5.0.0**. See "Stability at 2.0" below for what is a stable
+Current status: **v5.0.1**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
 with the new spelling instead of silently aliasing.
 

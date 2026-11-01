@@ -1,5 +1,12 @@
 # claudexor
 
+## 5.0.1
+
+### Patch Changes
+
+- Release verification no longer fails on Git 2.55 and newer when a test lists a repository's object directory right after committing to that repository itself. Since Git 2.55, maintenance that `git commit` starts in the background keeps `objects/maintenance.lock` until it finishes, so the listing could change without any write by Claudexor. The two affected test files now run their own Git commands with `maintenance.autoDetach=false`, which lets that maintenance finish before each command returns, and still compare the complete object directory. 5.0.0 was tagged but its release candidate stopped at one of those tests, so everything listed under 5.0.0 ships in 5.0.1.
+  - @claudexor/cli@5.0.1
+
 ## 5.0.0
 
 ### Patch Changes

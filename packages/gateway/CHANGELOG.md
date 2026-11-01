@@ -1,5 +1,12 @@
 # @claudexor/gateway
 
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/core@5.0.1
+- @claudexor/schema@5.0.1
+
 ## 5.0.0
 
 ### Patch Changes
