@@ -5,8 +5,12 @@ import { setGlobalGenerationInTx } from "../generations.js";
 import { createSqlDaemonServices } from "../sql-daemon-services.js";
 import { builtWorker } from "./resource-fixture.js";
 
-/** Source integration fixture: no dependency on an earlier package build.
- * The existing worker is used only for its unchanged flushing protocol. */
+/** Source integration fixture: the daemon store owners imported here run from
+ * current source. It still needs an earlier build: the flusher runs from the
+ * daemon's built `dist/store/flusher-worker.js`, used only for its flushing
+ * protocol, and the workspace packages these owners import resolve to their
+ * built output. `builtWorker` throws when the worker file is absent and does not
+ * check its age, so rebuild the daemon after changing the worker or its protocol. */
 export async function sourceSqlFixture(root: string) {
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
