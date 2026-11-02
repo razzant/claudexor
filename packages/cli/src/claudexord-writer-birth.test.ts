@@ -9,6 +9,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,6 +62,18 @@ interface Owned {
   stderr(): string;
 }
 
+/** Exact bytes of every file at or below `path`. A failed read is named, never thrown. */
+function filesBelow(path: string): string[] {
+  try {
+    if (!statSync(path).isDirectory()) return [`--- ${path}\n${readFileSync(path, "utf8")}`];
+    const names = readdirSync(path).sort();
+    if (names.length === 0) return [`--- ${path} (empty directory)`];
+    return names.flatMap((name) => filesBelow(join(path, name)));
+  } catch (error) {
+    return [`--- ${path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`];
+  }
+}
+
 function within<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_, fail) => {
@@ -80,6 +93,7 @@ function createFixture() {
   for (const dir of [home, config, temp]) mkdirSync(dir, { mode: 0o700 });
   // The test's own lease and Control reads address this root; vitest.setup restores it.
   process.env.CLAUDEXOR_CONFIG_DIR = config;
+  const anchor = writerLeaseAnchorPath(canonicalDefaultSocketPath());
   const systemRoot = process.env.SystemRoot;
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(
@@ -164,10 +178,12 @@ function createFixture() {
     return { pid: child.pid!, answers };
   };
 
+  /** Taken before any cleanup: active, tombstone and backup owners, and the marker with its floor. */
   const diagnostics = () => {
     const log = join(config, "daemon", "claudexord.log");
     return [
       ...owned.map(({ label, child, stderr }) => `--- ${label} pid ${child.pid}\n${stderr()}`),
+      ...filesBelow(anchor),
       `--- ${log}\n${existsSync(log) ? readFileSync(log, "utf8").slice(-16_384) : "(absent)"}`,
     ].join("\n");
   };
@@ -240,7 +256,9 @@ async function awaitServing(daemon: Owned): Promise<Served> {
   }
 }
 
-it("runs the built daemon's writer lease through its default endpoint and stop paths", async () => {
+it("runs the built daemon's writer lease through its default endpoint and stop paths", async ({
+  task,
+}) => {
   for (const entry of [DAEMON, CLI]) {
     expect(existsSync(entry), `build the CLI before this qualification: ${entry}`).toBe(true);
   }
@@ -414,6 +432,8 @@ it("runs the built daemon's writer lease through its default endpoint and stop p
     await expectWitnessUntouched(birth);
     failed = false;
   } finally {
+    // A failed soft check lets the lifecycle reach `failed = false`; the test is red all the same.
+    failed ||= task.result?.state === "fail";
     if (failed) console.error(fixture.diagnostics());
     const notes = await fixture.dispose();
     if (notes.length > 0) {

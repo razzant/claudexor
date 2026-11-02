@@ -126,7 +126,12 @@ describe("canary cleanup custody", () => {
       expect(vi.mocked(spawnSync).mock.calls[1]).toEqual([
         process.execPath,
         [CLI, "daemon", "stop", "--json"],
-        { env: sb.env, cwd: sb.repo, encoding: "utf8", timeout: 30_000 },
+        {
+          env: sb.env,
+          cwd: sb.repo,
+          encoding: "utf8",
+          timeout: process.platform === "win32" ? 95_000 : 30_000,
+        },
       ]);
       expect(rmSync).toHaveBeenCalledOnce();
       expect(
@@ -160,6 +165,43 @@ describe("canary cleanup custody", () => {
         ...("error" in stop ? { error: { code: "ETIMEDOUT", message: "timed out" } } : {}),
       },
     });
+  });
+
+  // Windows `daemon stop` pins its target with the strict inspection before any shutdown
+  // request, so a slow birth reader spends the allowance first. Durations are simulated
+  // against the timeout the stop receives; nothing sleeps.
+  it.each([
+    ["one capped birth read", 30_000 + 20_000, true],
+    ["two capped reads of a changing record", 2 * 30_000 + 20_000, true],
+    ["a stop that never returns", Number.POSITIVE_INFINITY, false],
+  ])("bounds a slow Windows birth reader before shutdown: %s", (_label, stopMs, completes) => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      const timedOut = Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" });
+      vi.mocked(spawnSync)
+        .mockReturnValueOnce(leaseResult(ACTIVE))
+        .mockImplementationOnce((_command, _args, options) =>
+          (options?.timeout ?? 0) >= stopMs
+            ? processResult()
+            : processResult({ status: null, signal: "SIGTERM", error: timedOut }),
+        )
+        .mockReturnValueOnce(leaseResult(ABSENT));
+      const sb = makeSandbox();
+      if (completes) {
+        sb.dispose();
+        expect(rmSync).toHaveBeenCalledOnce();
+      } else {
+        expect(() => sb.dispose()).toThrow(`Canary cleanup incomplete at ${BASE}`);
+        expect(rmSync).not.toHaveBeenCalled();
+        expect(cleanupReceipt()).toMatchObject({
+          before: ACTIVE,
+          stop: { error: { code: "ETIMEDOUT" } },
+        });
+      }
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 
   it("does not treat a missing-token CLI refusal as proof that the live lease is unused", () => {

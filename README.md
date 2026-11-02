@@ -695,7 +695,9 @@ claudexor daemon stop
 
 If start refuses with `another claudexor daemon owns <path>` while nothing answers,
 read [Legacy PID-only writer records](docs/ARCHITECTURE.md#legacy-pid-only-writer-records)
-before touching that path.
+before touching that path. Its manual steps apply only to a record without
+`identity`; one that carries `identity` stays held until the next start can
+replace it.
 
 ## Artifact Layout
 

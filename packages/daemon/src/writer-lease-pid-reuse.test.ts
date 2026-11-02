@@ -1,6 +1,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -50,6 +59,18 @@ function ownChild(child: ChildProcess): OwnedChild {
     child.once("close", (code) => done(code));
   });
   return { child, closed, stderr: () => stderr };
+}
+
+/** Exact bytes of every file at or below `path`. A failed read is named, never thrown. */
+function filesBelow(path: string): string[] {
+  try {
+    if (!statSync(path).isDirectory()) return [`--- ${path}\n${readFileSync(path, "utf8")}`];
+    const names = readdirSync(path).sort();
+    if (names.length === 0) return [`--- ${path} (empty directory)`];
+    return names.flatMap((name) => filesBelow(join(path, name)));
+  } catch (error) {
+    return [`--- ${path} (${(error as NodeJS.ErrnoException).code ?? String(error)})`];
+  }
 }
 
 const closesWithin = (owned: OwnedChild, ms: number): Promise<boolean> =>
@@ -205,6 +226,7 @@ describe("writer PID reuse", () => {
       const socket = join(root, "daemon.sock");
       const lease = acquireDaemonWriterLease(socket);
       const owned: OwnedChild[] = [];
+      let failed = true;
       try {
         expect(lease.owner.identity).toMatchObject({
           status: "known",
@@ -253,7 +275,10 @@ describe("writer PID reuse", () => {
           replacement.release();
           expect(original).toContain(recorded.startToken);
         }
+        failed = false;
       } finally {
+        // Before release removes the record: a synthetic stale owner shares its pid and token.
+        if (failed) console.error(filesBelow(root).join("\n"));
         lease.release();
         await releaseRoot(root, owned);
       }
@@ -287,6 +312,7 @@ describe("writer PID reuse", () => {
       expect(() => acquireDaemonWriterLease(socket)).toThrow(/another claudexor daemon/);
       expect(readFileSync(join(path, "owner.json"), "utf8")).toBe(bytes);
     };
+    let failed = true;
     try {
       await witness.answers();
       await target.answers();
@@ -366,7 +392,9 @@ describe("writer PID reuse", () => {
         compareProcessBirth(targetBirth, reader.read(exact.pid)),
       );
       await witness.answers();
+      failed = false;
     } finally {
+      if (failed) console.error(filesBelow(root).join("\n"));
       await releaseRoot(root, [witness, target]);
     }
   }, 180_000);

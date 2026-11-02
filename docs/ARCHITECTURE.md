@@ -4544,7 +4544,9 @@ independently established operator evidence described under
 [Legacy PID-only writer records](#legacy-pid-only-writer-records); neither age
 nor timestamp ordering authorizes automatic quarantine. Legacy inspection does
 not launch the Windows birth helper. Recorded identities use its existing
-30-second bound; the canary probe allows two reads plus overhead.
+30-second bound. Canary cleanup allows two such reads plus overhead for its
+lease probe and adds that allowance to its `daemon stop` budget, because the
+stop makes the same inspection before its shutdown request.
 
 Above the per-socket lease sits a PERSISTENT root authority for the shared
 data root. Before any store or import work the daemon validates/installs a permanent
@@ -4997,6 +4999,11 @@ Once the pid no longer exists, the next start proves the owner missing and moves
 the generation to its tombstone, with nothing to do by hand. There is no recovery
 command and no automatic release, because no safe signal distinguishes that writer
 from whatever now holds its pid.
+
+This section covers only records without `identity`. A record that carries one
+and refuses is held, with no manual step: either its process is alive with that
+birth, or the birth cannot be read (`identity_unavailable`). The next start
+replaces it once that pid is free or its holder's different birth can be read.
 
 Hold by default. Move a record aside only when all three of these hold:
 
@@ -5574,17 +5581,21 @@ action is refused. Cancel is asynchronous. Cancel/timeout sends TERM and, after
 five seconds, KILL only when PID + kernel-start identity still matches; an
 unproven identity is never signalled or called cancelled.
 
-On **win32** the same contract holds through platform-shaped mechanisms, and
-this is the ONLY lane that enables them. Kernel-start comes from the process
-creation time (`GetProcessTimes`, read through the absolute System32
-PowerShell), so a recycled PID compares DIFFERENT exactly as it does on POSIX;
-every other consumer keeps the fail-closed default where a win32 identity stays
-unprovable and no signal is sent. Windows has no process group and no
-cooperative TERM, so both escalation steps are one `taskkill /PID <leader> /T
-/F` of the recorded leader's tree, issued only while that identity still owns
-the PID, and emptiness is the LEADER's identity being gone afterwards — a
-leader-death proof, weaker than the POSIX group-ESRCH proof and recorded as
-such. Native executables and standard npm Node entrypoints use one launch
+On **win32** the same contract holds through platform-shaped mechanisms.
+Kernel-start comes from the process creation time (`GetProcessTimes`, read
+through the absolute System32 PowerShell), so a recycled PID compares DIFFERENT
+exactly as it does on POSIX. This lane and the daemon writer lease are the two
+consumers that enable that birth reader. With a recorded daemon birth,
+`claudexor daemon stop` and an admitted runtime-replacement `claudexord --stop`
+may, after the grace window, force-terminate that one daemon process (not its
+tree) while its birth still matches; a birth that cannot be read withholds the
+signal. Every other consumer keeps the fail-closed default, where a win32
+identity stays unprovable and no signal is sent. For this lane, Windows has no
+process group and no cooperative TERM, so both escalation steps are one
+`taskkill /PID <leader> /T /F` of the recorded leader's tree, issued only while
+that identity still owns the PID, and emptiness is the LEADER's identity being
+gone afterwards — a leader-death proof, weaker than the POSIX group-ESRCH proof
+and recorded as such. Native executables and standard npm Node entrypoints use one launch
 description; Node entrypoints preserve the vendor script and its interpreter
 arguments instead of passing prompt text through a command shell. An unknown
 custom batch file is not silently reinterpreted as a standard npm launcher.
