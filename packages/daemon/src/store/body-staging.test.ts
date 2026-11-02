@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DaemonServer, type JobRecord } from "@claudexor/daemon";
-import { ControlRunStartRequest } from "@claudexor/schema";
+import { ControlRunStartRequest, RunProcessScopeOutcome } from "@claudexor/schema";
 import { processTiming } from "@claudexor/util";
+import { settleDeferredPredecessor } from "./test-support/deferred-terminal.js";
 import { sqlFixture } from "./test-support/sql-fixture.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -101,6 +102,52 @@ describe("large bodies are written off the request thread before their synchrono
     const draft = f.bodies().slice(before);
     expect(draft.length).toBeGreaterThan(0);
     expect(draft.filter((write) => write.written)).toEqual([]);
+  });
+
+  it("stages a promoted draft's acceptance before the promotion commits", async () => {
+    const f = await fixture();
+    const commands = f.graph.commands.current();
+    const start = ControlRunStartRequest.parse({ mode: "ask", prompt: "first" });
+    commands.accept({ id: "job-1", params: start, clientId: "test", idempotencyKey: "first" });
+    const runDir = join(f.root, "run-1");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    // The predecessor's settled process custody, which promotion requires.
+    writeFileSync(
+      join(runDir, "final/process_scope.yaml"),
+      JSON.stringify(
+        RunProcessScopeOutcome.parse({
+          marker: "CLAUDEXOR_SCOPE_0123456789abcdef0123456789abcdef",
+          coverage: "marker+capture",
+          census: "ok",
+          settled: true,
+          incomplete: false,
+          survivors: [],
+          unreadable: [],
+          completeness: "not_provable",
+        }),
+      ),
+    );
+    // The fixture's store is the built package's; the helper is typed from source.
+    settleDeferredPredecessor(commands as never, "job-1", runDir);
+    const daemon = f.server({
+      deferredStart: () => ({ capture: async () => start, validate: async () => {} }),
+    });
+    const before = f.bodies().length;
+    // The predecessor is already terminal: creating the draft promotes it at once.
+    const result = (await daemon.dispatch("claudexor.deferredMessage", {
+      request: {
+        action: "create",
+        predecessorId: "job-1",
+        prompt: "p".repeat(80_000),
+        attachments: [],
+      },
+      idempotencyKey: "draft",
+    })) as { draft: { state: string } };
+    expect(result.draft, JSON.stringify(result.draft)).toMatchObject({ state: "dispatched" });
+    // The draft, then the successor's parameters and its acceptance record.
+    const writes = f.bodies().slice(before);
+    expect(writes.length).toBeGreaterThanOrEqual(3);
+    expect(writes.filter((write) => write.written)).toEqual([]);
   });
 
   it("lets the blob GC take a staged body only while nothing owns it; its owner then writes it", async () => {

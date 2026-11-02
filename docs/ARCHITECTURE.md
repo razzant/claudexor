@@ -4959,7 +4959,9 @@ kept only for cold import and an independent frozen copy kept for tests.
   as the owning transaction. Where the bytes are known at an asynchronous
   boundary before that synchronous owner (an enqueued command and its accepted
   event, a returned run result and its updated event, a thread turn prompt, a
-  deferred draft after its capture), the file is first written off the request
+  deferred draft after its capture, and a promoted draft's successor command and
+  its accepted event after validation, under the job id and creation time the
+  promotion then uses), the file is first written off the request
   thread: the same `O_DSYNC` temp on the libuv pool, hard-linked into place only
   while absent, the file itself not registered. Staged writes create no
   directory; before the first one the store creates its body directory on the

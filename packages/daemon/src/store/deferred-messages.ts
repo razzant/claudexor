@@ -20,7 +20,12 @@ import {
 } from "@claudexor/util";
 import { validateCommandKey } from "../command-store.js";
 import type { JobRecord } from "../job-record.js";
-import { assertDeferredOperator, type DeferredMessageOwner } from "../deferred-message-owner.js";
+import {
+  assertDeferredOperator,
+  type DeferredMessageOwner,
+  type PromotionStamp,
+} from "../deferred-message-owner.js";
+import type { AcceptCommand } from "../command-store.js";
 import { recoveredTerminalFacts } from "../terminal-authority.js";
 import type { BlobFiles } from "./blob-files.js";
 import type { SqlCommandStore } from "./commands.js";
@@ -250,6 +255,33 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     });
   }
 
+  /** Off the request thread, after preparation: write the successor's large
+   * parameter and acceptance bodies under the job id and creation time `promote`
+   * then uses. Promotion still rechecks and decides everything synchronously. */
+  async stagePromotion(id: string, expectedRevision: number): Promise<PromotionStamp> {
+    const jobId = newId("job");
+    const input = this.successorAcceptance(id, expectedRevision, this.request(id), jobId);
+    return { jobId, createdAt: await this.commands.stageAcceptance(input) };
+  }
+
+  private successorAcceptance(
+    id: string,
+    expectedRevision: number,
+    request: CapturedRunStart,
+    jobId: string,
+    createdAt?: string,
+  ): AcceptCommand {
+    return {
+      id: jobId,
+      ...(createdAt === undefined ? {} : { createdAt }),
+      params: request,
+      clientId: "deferred-message",
+      operation: "run.create",
+      idempotencyKey: `deferred:${id}`,
+      idempotencyParams: { draftId: id, revision: expectedRevision },
+    };
+  }
+
   /** Async preparation finishes before this call. Rechecks and acceptance plus
    * freeze are ONE synchronous mutation; publish the returned job only after it.
    * A post-COMMIT notification error is deliberately allowed to escape: recovery
@@ -260,6 +292,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     preparedStart: CapturedRunStart,
     fence: () => DeferredMessageHold | null,
     admit: (request: CapturedRunStart, draftId: string) => void,
+    stamp?: PromotionStamp,
   ): { draft: DeferredMessageProjection; record: JobRecord | null; reused: boolean } {
     const row = this.requireRow(id);
     if (row.state === "dispatched") return this.dispatched(row);
@@ -272,14 +305,15 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
         "draft_controls_changed",
         "prepared execution controls differ from the captured draft",
       );
-    const acceptance = this.commands.prepareAcceptance({
-      id: newId("job"),
-      params: request,
-      clientId: "deferred-message",
-      operation: "run.create",
-      idempotencyKey: `deferred:${id}`,
-      idempotencyParams: { draftId: id, revision: expectedRevision },
-    });
+    const acceptance = this.commands.prepareAcceptance(
+      this.successorAcceptance(
+        id,
+        expectedRevision,
+        request,
+        stamp?.jobId ?? newId("job"),
+        stamp?.createdAt,
+      ),
+    );
     const event = this.events.prepare("deferred_message.changed", {
       draftId: id,
       revision: expectedRevision,

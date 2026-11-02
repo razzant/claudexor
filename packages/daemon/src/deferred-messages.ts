@@ -201,6 +201,11 @@ export class DeferredMessages {
         owner.hold(id, admissionHold(error));
       return;
     }
+    // The successor's large bodies are written off the request thread first;
+    // promotion rechecks and decides everything synchronously after this await.
+    const stamp = owner.stagePromotion
+      ? await owner.stagePromotion(id, draft.revision).catch(() => undefined)
+      : undefined;
     try {
       const accepted = owner.promote(
         id,
@@ -210,6 +215,7 @@ export class DeferredMessages {
         (start, draftId) => {
           admitCommandRequest(this.deps.commands, start, undefined, undefined, draftId);
         },
+        stamp,
       );
       if (accepted.record && !accepted.reused) this.deps.publish(accepted.record);
     } catch (error) {
