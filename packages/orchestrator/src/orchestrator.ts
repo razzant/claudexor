@@ -3675,12 +3675,11 @@ export class Orchestrator {
         signal: input.signal,
       });
 
-    // Revert divergence fence for the single-candidate in-place path: the
-    // candidate mutated the LIVE tree during execution above, so the post-turn
-    // snapshot must be taken NOW — before review/synthesis/arbitration, which can
-    // run for a long time during which the user may edit files. Snapshotting after
-    // arbitration (as the race-adoption path does) would fold those user edits
-    // into the revert target and let a later revert clobber them. No change, no fence.
+    // Revert divergence fence for the single-candidate in-place path.
+    // The candidate mutated the LIVE tree above. Snapshot NOW, before slow
+    // review/synthesis/arbitration, or later user edits enter the revert target
+    // and a revert can clobber them. The race-adoption path snapshots later.
+    // No change, no fence.
     let earlyPostTurnSha: string | null = null;
     if (
       mutatingRun &&
