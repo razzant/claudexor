@@ -106,15 +106,16 @@ export class BlobFiles {
   /**
    * Off the request thread, ahead of a synchronous owner: write a large body's
    * content-addressed file so the owner's same-tick `prepareBody` finds it and
-   * only registers the directory. Owns, registers and creates nothing (a
-   * missing directory, as in a fresh store, is left to the owner, which creates
-   * and registers it). Any failure, or a GC of the still-unowned file before the
+   * only registers the directory. It owns and registers no file; the store's
+   * body directory is created (each new level registered) before the first
+   * staged write. Any failure, or a GC of the still-unowned file before the
    * owner commits, leaves the write to that owner: presence is decided by the
    * file at preparation (C3).
    */
   async stageBody(bytes: Uint8Array): Promise<void> {
     if (bytes.byteLength <= INLINE_BODY_MAX_BYTES) return;
     try {
+      if (this.dir === this.store.paths.blobs) this.store.bodyDirectory();
       await stageExternalFile({ dir: this.dir, name: sha256Hex(bytes), bytes });
     } catch {
       /* the synchronous preparation writes it */

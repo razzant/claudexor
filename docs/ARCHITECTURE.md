@@ -4954,10 +4954,14 @@ kept only for cold import and an independent frozen copy kept for tests.
   event, a returned run result and its updated event, a thread turn prompt, a
   deferred draft after its capture), the file is first written off the request
   thread: the same `O_DSYNC` temp on the libuv pool, hard-linked into place only
-  while absent, nothing registered or created. The owner's same-tick preparation
-  then finds it and only registers its directory under that commit's barrier;
-  if the unowned file was garbage-collected meanwhile, or staging failed, the
-  owner writes it as before.
+  while absent, the file itself not registered. Staged writes create no
+  directory; before the first one the store creates its body directory on the
+  request thread and registers each new level with the flusher, as a
+  synchronous owner would, so a fresh store or one whose bodies all stayed
+  inline stages too. The owner's same-tick preparation then finds the file and
+  only registers its directory under that commit's barrier; if the unowned file
+  was garbage-collected meanwhile, or staging failed, the owner writes it as
+  before.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the

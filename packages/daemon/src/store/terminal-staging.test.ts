@@ -23,7 +23,6 @@ import { parse as parseYaml } from "yaml";
 import { BlobFiles } from "./blob-files.js";
 import { SqlCommandPruner } from "./command-prune.js";
 import { SqlCommandStore } from "./commands.js";
-import { ensureDirectory } from "./external-files.js";
 import { MaintenanceController } from "./maintenance.js";
 import { Obligations } from "./obligations.js";
 import { createPartition } from "./partitions.js";
@@ -145,8 +144,6 @@ async function fixture() {
     terminalFiles: files,
     pruner: new SqlCommandPruner(store, blobs),
   });
-  // An established store's body directory (created and registered on the request thread).
-  ensureDirectory(store, blobs.dir);
   commands.accept({
     id: "job",
     params: { mode: "agent", prompt: "fixture" },

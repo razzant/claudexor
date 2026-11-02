@@ -103,15 +103,18 @@ export class SqlTerminalFiles {
   /**
    * Off the request thread, before the synchronous terminal hook: write the
    * receipts (and a needed per-run log rewrite) its file step will publish, as
-   * `O_DSYNC` temps with fresh names in the body directory, which the existing
-   * orphan sweep reclaims if the process dies first. The hook renames a temp
+   * `O_DSYNC` temps with fresh names in the store's body directory (created on
+   * first use), which the existing orphan sweep reclaims if the process dies
+   * first. The hook renames a temp
    * into place, after its SQL commit and in the same synchronous section, only
    * when its bytes equal what it would write; anything else it writes itself.
    */
   async stage(record: JobRecord, event: RunEvent, telemetry: RunTelemetry | null): Promise<void> {
     this.discard(event.run_id);
     const files: TerminalFile[] = [];
+    let staging: string;
     try {
+      staging = this.store.bodyDirectory();
       const { facts, terminalSeq } = recoveredTerminalFacts(record, event);
       const finalDir = join(record.runDir!, "final");
       files.push({
@@ -145,7 +148,7 @@ export class SqlTerminalFiles {
     await Promise.all(
       files.map(async ({ dir, name, bytes }) => {
         try {
-          const temp = await writeStagedTemp(this.store.paths.blobs, name, bytes);
+          const temp = await writeStagedTemp(staging, name, bytes);
           entries.set(join(dir, name), { temp, sha: sha256Hex(bytes) });
         } catch {
           /* the hook writes it */

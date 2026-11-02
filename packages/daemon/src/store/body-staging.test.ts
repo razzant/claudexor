@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DaemonServer, type JobRecord } from "@claudexor/daemon";
 import { ControlRunStartRequest } from "@claudexor/schema";
 import { processTiming } from "@claudexor/util";
-import { ensureDirectory } from "./external-files.js";
 import { sqlFixture } from "./test-support/sql-fixture.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -22,9 +21,6 @@ async function fixture() {
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const f = await sqlFixture(root);
   cleanup.push(() => f.close());
-  // An established store's body directory, created and registered by a synchronous
-  // owner; staging never creates a directory whose parent entry it cannot register.
-  ensureDirectory(f.store, f.graph.blobs.dir);
   vi.spyOn(processTiming, "recordSync").mockReturnValue(true);
   const log = vi.spyOn(f.store, "logSlowWrite");
   /** The synchronous body writes so far: `written` is false when it adopted a staged file. */
