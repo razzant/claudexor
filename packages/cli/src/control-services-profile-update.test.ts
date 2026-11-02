@@ -16,6 +16,7 @@ import { memoryEventLedger } from "./test-support/memory-event-ledger.js";
 import { controlServices } from "./control-services.js";
 import { bustGlobalCredentialStatusCaches } from "./credential-status-invalidation.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
+import { invalidateStatusProjections } from "./status-projection-cache.js";
 
 // One evidence graph for this file, injected the way the daemon injects its store's graph.
 const accounts = createAccountEvidence();
@@ -452,6 +453,9 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
         access_profiles_supported: [],
       },
     };
+    // The catalog is a status projection: a later sweep (window expiry or a
+    // credential mutation) is what observes the changed doctor answer.
+    invalidateStatusProjections();
     const declared = await svc.agentCapabilities();
     expect(declared.harnesses).toHaveLength(1);
     expect(declared.harnesses[0]).toMatchObject({ id: "codex", liveInput: "mid_turn" });

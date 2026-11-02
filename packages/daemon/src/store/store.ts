@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { isBusyFailure, mapStoreError, StoreCorruptError, StoreError } from "./errors.js";
+import { ensureDirectory } from "./external-files.js";
 import { FlusherController, type FlusherFacts } from "./flusher.js";
 import type { FlusherHooks, FlusherPassReport } from "./flusher-protocol.js";
 import { ObservationNotices } from "./observation-notices.js";
@@ -93,6 +94,7 @@ export class EngineStore {
   };
   private integrityState: StoreFacts["integrity"] = "pending";
   private closed = false;
+  private bodyDirectoryReady = false;
   private closing: Promise<void> | null = null;
 
   private constructor(
@@ -248,6 +250,25 @@ export class EngineStore {
         }
       }
     }
+  }
+
+  /** Names a slow external write in the daemon log (`writeExternalFile`). */
+  logSlowWrite(line: string): void {
+    this.options.log?.(line);
+  }
+
+  /**
+   * The body directory, for writes staged off the request thread (which create
+   * no directory): on first use it is created and each new level registered
+   * with the flusher, on the request thread, as a synchronous owner would.
+   */
+  bodyDirectory(): string {
+    if (!this.bodyDirectoryReady) {
+      ensureDirectory(this, this.paths.resourceStore);
+      ensureDirectory(this, this.paths.blobs);
+      this.bodyDirectoryReady = true;
+    }
+    return this.paths.blobs;
   }
 
   /** A `{g, dir}` registration after a rename/link in `dir` (SYNTHESIS_R5 §4.4). */

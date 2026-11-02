@@ -856,7 +856,9 @@ The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`
 with optional `refresh`, `target` and `model`), `claudexor_account_reset`
 (explicit reset with original `idempotency_key`, or receipt lookup by `operation_id`),
 `claudexor_capabilities`
-(the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
+(the derived AgentCapabilityCatalog: per-harness doctor-backed capabilities,
+possibly from a recent composition dated by `generatedAt` per
+[readiness projections](ARCHITECTURE.md#readiness-projections), modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
 `claudexor_accounts` (the server-authored credential-profile/readiness/quota
 view, including freshness and `next_up` state — the default read is the
