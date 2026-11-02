@@ -11,6 +11,8 @@ export interface FindCommand {
 }
 export interface AcceptCommand extends FindCommand {
   id: string;
+  /** Fixed by a caller that stages the acceptance's bodies before accepting. */
+  createdAt?: string;
 }
 
 export function validateCommandRecord(record: Omit<JobRecord, "params">): void {

@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +16,7 @@ import {
   ensureDirectory,
   externalWriteFlags,
   linkExternalFile,
+  stageExternalFile,
   unlinkExternalFile,
   writeExternalFile,
   type ExternalRegistry,
@@ -21,6 +30,28 @@ const sqliteAvailable = await import("node:sqlite").then(
 const describeStore = sqliteAvailable ? describe : describe.skip;
 
 const openSpy = vi.hoisted(() => vi.fn());
+/** The pool-side write: its open flags, and a gate that holds its data write. */
+const pool = vi.hoisted(() => ({
+  flags: [] as number[],
+  hold: null as Promise<void> | null,
+  entered: false,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const open = async (...args: Parameters<typeof actual.open>) => {
+    pool.flags.push(Number(args[1]));
+    const handle = await actual.open(...args);
+    const write = handle.write.bind(handle) as (...input: unknown[]) => Promise<unknown>;
+    return Object.assign(handle, {
+      write: async (...input: unknown[]) => {
+        pool.entered = true;
+        if (pool.hold) await pool.hold;
+        return write(...input);
+      },
+    });
+  };
+  return { ...actual, open, default: { ...actual, open } };
+});
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const openSync = (...args: Parameters<typeof actual.openSync>) => {
@@ -42,6 +73,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-external-"));
   registered = [];
   openSpy.mockClear();
+  Object.assign(pool, { flags: [], hold: null, entered: false });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -197,6 +229,52 @@ describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
     expect(log.mock.calls.map(([line]) => String(line))).toContainEqual(
       expect.stringContaining('"purpose":"terminal_receipt"'),
     );
+  });
+
+  it("stages a body on the pool with the same write-through flags and publishes it once", async () => {
+    const { constants } = await import("node:fs");
+    const dir = join(root, "blobs");
+    mkdirSync(dir);
+    const bytes = Buffer.alloc(70_000, 3);
+    const published = await Promise.all([
+      stageExternalFile({ dir, name: "sha", bytes }),
+      stageExternalFile({ dir, name: "sha", bytes }),
+    ]);
+    expect(published.filter(Boolean)).toHaveLength(1);
+    expect(readFileSync(join(dir, "sha")).equals(bytes)).toBe(true);
+    // An existing content-addressed target is never rewritten, and no temp stays.
+    expect(await stageExternalFile({ dir, name: "sha", bytes: Buffer.from("other") })).toBe(false);
+    expect(readFileSync(join(dir, "sha")).equals(bytes)).toBe(true);
+    expect(readdirSync(dir)).toEqual(["sha"]);
+    const sync = process.platform === "win32" ? 0x04000000 : constants.O_DSYNC;
+    expect(pool.flags.length).toBeGreaterThan(0);
+    for (const flags of pool.flags) expect(flags & sync).toBe(sync);
+    // The request thread opened nothing and nothing was registered.
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(registered).toEqual([]);
+  });
+
+  it("keeps the request thread serving timers while a staged write waits on the drive", async () => {
+    const dir = join(root, "blobs");
+    mkdirSync(dir);
+    let release!: () => void;
+    pool.hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 2);
+    try {
+      const staging = stageExternalFile({ dir, name: "slow", bytes: Buffer.alloc(70_000, 5) });
+      await vi.waitFor(() => expect(pool.entered).toBe(true));
+      const before = ticks;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(ticks - before).toBeGreaterThan(3);
+      expect(existsSync(join(dir, "slow"))).toBe(false);
+      release();
+      expect(await staging).toBe(true);
+    } finally {
+      clearInterval(timer);
+    }
   });
 
   it("ensureDirectory registers only when it created something", () => {

@@ -314,6 +314,11 @@ export class SqlThreadStore {
     return resumeMapFrom(this.sessionsForThread(threadId), threadId, profileId);
   }
 
+  /** Off the request thread, before `createTurn`: write a large prompt body it will own. */
+  async stageTurnPrompt(prompt: string): Promise<void> {
+    await this.blobs.stageBody(Buffer.from(prompt));
+  }
+
   createTurn(threadId: string, prompt: string, input: CreateTurnInput = {}): ThreadTurn {
     const idempotency = turnIdempotency(this.generation.name, threadId, input.idempotency);
     if (idempotency) {

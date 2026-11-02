@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StoreError } from "./errors.js";
-import { linkExternalFile, writeExternalFile } from "./external-files.js";
+import { linkExternalFile, stageExternalFile, writeExternalFile } from "./external-files.js";
 import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 import type { OwnerGenerations, UnlinkOutcome } from "./owner-generations.js";
 import type { EngineStore } from "./store.js";
@@ -55,10 +55,11 @@ export type GcOutcome = UnlinkOutcome;
 
 /**
  * Content-addressed bodies: `resource-store/blobs/<sha256>` for anything above
- * 64 KiB, written synchronously on the request thread in the same tick as the
- * owning transaction (temp `O_DSYNC` + rename, never rewriting an existing
- * file), then the `blob` row plus the owner's reference row commit together.
- * The store owns the shared owner generations the GC is bound to.
+ * 64 KiB, present in the same tick as the owning transaction (temp `O_DSYNC` +
+ * rename, never rewriting an existing file): written there on the request
+ * thread, or found there after `stageBody` wrote it off that thread. Then the
+ * `blob` row plus the owner's reference row commit together. The store owns
+ * the shared owner generations the GC is bound to.
  */
 export class BlobFiles {
   readonly dir: string;
@@ -100,6 +101,24 @@ export class BlobFiles {
       file: receipt.path,
       generation: receipt.generation,
     };
+  }
+
+  /**
+   * Off the request thread, ahead of a synchronous owner: write a large body's
+   * content-addressed file so the owner's same-tick `prepareBody` finds it and
+   * only registers the directory. Owns, registers and creates nothing (a
+   * missing directory, as in a fresh store, is left to the owner, which creates
+   * and registers it). Any failure, or a GC of the still-unowned file before the
+   * owner commits, leaves the write to that owner: presence is decided by the
+   * file at preparation (C3).
+   */
+  async stageBody(bytes: Uint8Array): Promise<void> {
+    if (bytes.byteLength <= INLINE_BODY_MAX_BYTES) return;
+    try {
+      await stageExternalFile({ dir: this.dir, name: sha256Hex(bytes), bytes });
+    } catch {
+      /* the synchronous preparation writes it */
+    }
   }
 
   /** Inside the owning transaction: the `blob` row (idempotent per digest). */

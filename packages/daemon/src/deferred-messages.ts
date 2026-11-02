@@ -76,8 +76,10 @@ export class DeferredMessages {
         throw error;
       }
     }
-    // Replays and revision checks are repeated by the synchronous owner after
-    // async capture. There is no caller-supplied captured payload.
+    // A large draft body is written off the request thread first. Replays and
+    // revision checks are repeated by the synchronous owner after these awaits.
+    // There is no caller-supplied captured payload.
+    await owner.stage?.(request, captured);
     if (this.closing) throw problem("daemon_stopping", "daemon is stopping", 503);
     let receipt: DeferredMessageReceipt;
     try {

@@ -39,6 +39,20 @@ import {
 
 type Content = Pick<DeferredMessageDetail, "prompt" | "attachments" | "capturedStart">;
 
+/** The exact draft body bytes; the mutation and its off-loop staging share them. */
+function draftBody(
+  input: Pick<Content, "prompt" | "attachments">,
+  captured: object | null | undefined,
+): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      prompt: input.prompt,
+      attachments: input.attachments,
+      capturedStart: CapturedRunStart.parse({ ...(captured ?? {}), prompt: "", attachments: [] }),
+    } satisfies Content),
+  );
+}
+
 export function deferredConflict(code: string, message: string, context: object = {}): Error {
   return Object.assign(new Error(message), { code, status: 409, retryable: false, context });
 }
@@ -118,6 +132,23 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     return { appliedRevision: applied.revision, draft: this.project(row) };
   }
 
+  /** Off the request thread, before `mutate`: write the draft body it will own. */
+  async stage(raw: DeferredMessageMutation, capturedStart?: CapturedRunStart): Promise<void> {
+    let bytes: Buffer;
+    try {
+      const input = DeferredMessageMutation.parse(raw);
+      if (input.action === "clear") return;
+      const captured =
+        input.action === "create"
+          ? CapturedRunStart.parse(capturedStart)
+          : this.get(input.draftId)!.capturedStart;
+      bytes = draftBody(input, captured);
+    } catch {
+      return; // mutate decides and reports
+    }
+    await this.blobs.stageBody(bytes);
+  }
+
   mutate(
     raw: DeferredMessageMutation,
     key: string,
@@ -168,21 +199,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     if (!Number.isSafeInteger(revision))
       throw deferredConflict("draft_revision_exhausted", "draft revision is exhausted");
     const body =
-      input.action === "clear"
-        ? null
-        : this.blobs.prepareBody(
-            Buffer.from(
-              JSON.stringify({
-                prompt: input.prompt,
-                attachments: input.attachments,
-                capturedStart: CapturedRunStart.parse({
-                  ...captured,
-                  prompt: "",
-                  attachments: [],
-                }),
-              } satisfies Content),
-            ),
-          );
+      input.action === "clear" ? null : this.blobs.prepareBody(draftBody(input, captured));
     const next: DraftRow = {
       id,
       pid: this.generation.pid,

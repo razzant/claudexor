@@ -22,7 +22,7 @@ import {
   type CommandRow,
 } from "./command-rows.js";
 import { SqlCommandPruner } from "./command-prune.js";
-import { collectReleasedBodies, SqlEventLedger } from "./event-store.js";
+import { collectReleasedBodies, eventBody, SqlEventLedger } from "./event-store.js";
 import { bindIdempotencyInTx, lookupIdempotency } from "./idempotency.js";
 import {
   MutationPostCommitError,
@@ -64,12 +64,7 @@ export class SqlCommandStore implements CommandStorePort {
   /** All body preparation precedes the synchronous acceptance transaction. */
   prepareAcceptance(input: AcceptCommand) {
     const digests = commandDigests(this.generation.name, input);
-    const record: JobRecord = {
-      id: input.id,
-      state: "queued",
-      params: structuredClone(input.params),
-      createdAt: this.store.now().toISOString(),
-    };
+    const record = this.acceptanceRecord(input);
     const prepared = this.prepare(
       record,
       undefined,
@@ -101,6 +96,62 @@ export class SqlCommandStore implements CommandStorePort {
     return { record, reused: false };
   }
 
+  private acceptanceRecord(input: AcceptCommand): JobRecord {
+    return {
+      id: input.id,
+      state: "queued",
+      params: structuredClone(input.params),
+      createdAt: input.createdAt ?? this.store.now().toISOString(),
+    };
+  }
+
+  /**
+   * Off the request thread, before the synchronous `accept`: write the large
+   * bodies it will own (`BlobFiles.stageBody`), so its same-tick preparation
+   * finds them. Best effort; replay, admission and the write stay with `accept`.
+   */
+  async stageAcceptance(input: AcceptCommand): Promise<string> {
+    const record = this.acceptanceRecord(input);
+    const accepted = { record, ...commandDigests(this.generation.name, input) };
+    await this.stageBodies(() => [...this.rowBodies(record), eventBody(accepted)]);
+    return record.createdAt;
+  }
+
+  /** The `update` twin of `stageAcceptance`, for bodies known before the update. */
+  async stageUpdate(id: string, patch: Partial<JobRecord>): Promise<void> {
+    await this.stageBodies(() => {
+      const row = commandRow(this.store, id, this.generation.pid);
+      if (!row) return [];
+      const next = this.nextRecord(row, patch);
+      const { params: _params, ...record } = next;
+      return [...this.rowBodies(next, row), eventBody({ record })];
+    });
+  }
+
+  private async stageBodies(bodies: () => Uint8Array[]): Promise<void> {
+    let staged: Uint8Array[];
+    try {
+      staged = bodies();
+    } catch {
+      return; // the synchronous mutation decides and reports
+    }
+    await Promise.all(staged.map((bytes) => this.blobs.stageBody(bytes)));
+  }
+
+  /** The bodies a row write of `record` prepares, collected instead of written. */
+  private rowBodies(record: JobRecord, previous?: CommandRow): Uint8Array[] {
+    const bodies: Uint8Array[] = [];
+    prepareCommandRow(
+      record,
+      { pid: this.generation.pid, live: true, operation: "stage", clientId: null, previous },
+      (bytes) => {
+        bodies.push(bytes);
+        return { sha256: "", size: bytes.byteLength, inline: null, file: null, generation: null };
+      },
+    );
+    return bodies;
+  }
+
   find(input: FindCommand): JobRecord | null {
     validateCommandKey(input.idempotencyKey);
     const { keyDigest, requestDigest } = commandDigests(this.generation.name, input);
@@ -128,6 +179,12 @@ export class SqlCommandStore implements CommandStorePort {
   update(id: string, patch: Partial<JobRecord>): JobRecord {
     const row = commandRow(this.store, id, this.generation.pid);
     if (!row) throw new Error(`no such job: ${id}`);
+    return this.writeUpdate(row, this.nextRecord(row, patch));
+  }
+
+  /** The record an update writes: the patch over the row, with a durable
+   * terminal's RunFacts outcome winning over the patch. */
+  private nextRecord(row: CommandRow, patch: Partial<JobRecord>): JobRecord {
     const current = hydrateCommand(row, this.blobs);
     let next: JobRecord = {
       ...current,
@@ -151,7 +208,7 @@ export class SqlCommandStore implements CommandStorePort {
         result: { ...extra, ...terminalCommandResult(current, facts) },
       };
     }
-    return this.writeUpdate(row, next);
+    return next;
   }
 
   prune(ids: readonly string[]): void {

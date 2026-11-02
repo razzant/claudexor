@@ -11,6 +11,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { link, open, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { mapStoreError } from "./errors.js";
 
@@ -121,6 +122,69 @@ export function writeExternalFile(
 }
 
 const ms = (value: number): number => Math.round(value * 1_000) / 1_000;
+
+/** An `O_DSYNC` temp file in `dir` holding `bytes`, written on the libuv pool
+ * rather than the request thread. The caller publishes or removes it. */
+export async function writeStagedTemp(
+  dir: string,
+  name: string,
+  bytes: Uint8Array,
+): Promise<string> {
+  const temp = join(dir, `.${name}.${randomUUID()}.tmp`);
+  const handle = await open(
+    temp,
+    externalWriteFlags(constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL),
+    0o600,
+  );
+  let closed = false;
+  try {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const { bytesWritten } = await handle.write(bytes, offset, bytes.byteLength - offset, offset);
+      offset += bytesWritten;
+    }
+    closed = true;
+    await handle.close();
+    return temp;
+  } catch (error) {
+    if (!closed) await handle.close().catch(() => undefined);
+    await unlink(temp).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * The off-loop twin of `writeExternalFile` for a content-addressed body: the
+ * same `O_DSYNC` temp, published under its final name only while that name is
+ * absent (a hard link refuses an existing target, so a concurrent twin never
+ * rewrites it). It creates and registers nothing: the synchronous owner finds
+ * the file in the tick that commits its row and registers the directory then,
+ * under that commit's flusher barrier. Resolves whether this call published.
+ */
+export async function stageExternalFile(input: {
+  dir: string;
+  name: string;
+  bytes: Uint8Array;
+}): Promise<boolean> {
+  const target = join(input.dir, input.name);
+  if (
+    await stat(target).then(
+      () => true,
+      () => false,
+    )
+  )
+    return false;
+  const temp = await writeStagedTemp(input.dir, input.name, input.bytes);
+  try {
+    await link(temp, target);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    await unlink(temp).catch(() => undefined);
+  }
+}
 
 /** Publish by hard link (finalize, SYNTHESIS_R5 §6.4): an existing target wins. */
 export function linkExternalFile(

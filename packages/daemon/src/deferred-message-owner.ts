@@ -39,6 +39,8 @@ export interface DeferredMessageOwner {
     key: string,
     capturedStart?: CapturedRunStart,
   ): DeferredMessageReceipt;
+  /** Off-loop staging of the draft body `mutate` will own (best effort). */
+  stage?(input: DeferredMessageMutation, capturedStart?: CapturedRunStart): Promise<void>;
   request(id: string): CapturedRunStart;
   promote(
     id: string,

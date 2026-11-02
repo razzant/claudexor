@@ -4936,8 +4936,16 @@ kept only for cold import and an independent frozen copy kept for tests.
   Provider generation and native account-reset I/O await `flushed()` before the
   external effect.
   Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
-  content-addressed files under the resource store, written in the same tick
-  as the owning transaction.
+  content-addressed files under the resource store, present in the same tick
+  as the owning transaction. Where the bytes are known at an asynchronous
+  boundary before that synchronous owner (an enqueued command and its accepted
+  event, a returned run result and its updated event, a thread turn prompt, a
+  deferred draft after its capture), the file is first written off the request
+  thread: the same `O_DSYNC` temp on the libuv pool, hard-linked into place only
+  while absent, nothing registered or created. The owner's same-tick preparation
+  then finds it and only registers its directory under that commit's barrier;
+  if the unowned file was garbage-collected meanwhile, or staging failed, the
+  owner writes it as before.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the

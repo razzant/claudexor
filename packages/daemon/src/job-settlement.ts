@@ -5,7 +5,19 @@ import {
   safeProblemRequiredActions,
 } from "@claudexor/util";
 import { commandStoreForId, type CommandAuthority } from "./command-authority.js";
-import type { JobRecord } from "./job-record.js";
+import { resultReason, resultSummary, type JobRecord, type JobState } from "./job-record.js";
+
+/** The settled job record for a runner's returned result. */
+export function settledJobPatch(state: JobState, result: unknown): Partial<JobRecord> {
+  if (state !== "failed" && state !== "interrupted") return { state, result, finishedAt: nowIso() };
+  const reason = resultReason(result);
+  return {
+    state,
+    result,
+    error: resultSummary(result) ?? `run ended ${state}${reason ? ` (${reason})` : ""}`,
+    finishedAt: nowIso(),
+  };
+}
 
 interface JobErrorSettlement {
   thrown: unknown;
