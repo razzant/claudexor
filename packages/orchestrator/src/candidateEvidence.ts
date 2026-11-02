@@ -25,6 +25,25 @@ export function hasCandidateChanges(run: Pick<CandidateRun, "diff" | "result" | 
   return run.diff.trim().length > 0;
 }
 
+/** A Git candidate whose COMPLETE final capture found no change (#502): its
+ * object result's trees agree. A refused or never-taken capture (no result),
+ * a refused continuation and a directory result are unknown, never unchanged. */
+export function capturedNoGitChange(
+  run: Pick<CandidateRun, "result" | "files" | "captureRefusal" | "continuationRefusal">,
+): boolean {
+  if (run.files || run.captureRefusal || run.continuationRefusal || !run.result) return false;
+  return run.result.base_tree === run.result.candidate_tree;
+}
+
+/** Whether a live in-place turn takes its post-turn fence: the revert anchor's
+ * postimage. A refused capture has no anchor; a roster whose complete captures
+ * found no change has no revert target, and every reader of the fence is gated
+ * on a candidate change, so neither takes a snapshot (#502). */
+export function needsPostTurnFence(runs: readonly CandidateRun[]): boolean {
+  if (runs.some((run) => run.captureRefusal)) return false;
+  return !(runs.length > 0 && runs.every(capturedNoGitChange));
+}
+
 export interface CandidateRun extends ContinuityTerminalFacts, CandidateObjectFacts {
   attemptId: string;
   harnessId: string;
