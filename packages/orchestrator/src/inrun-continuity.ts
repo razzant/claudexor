@@ -155,6 +155,7 @@ export class InRunContinuity {
         resetsAt: ev.rate_limit.resets_at ?? null,
         retryDelayMs: ev.rate_limit.retry_delay_ms ?? null,
         constraintId: ev.rate_limit.constraint_id ?? null,
+        reopening: ev.rate_limit.reopening ?? null,
       };
     }
     if (ev.type === "usage" && this.expectedSessionId && this.tryFirstInputTokens === null) {
@@ -373,6 +374,7 @@ export class InRunContinuity {
     if (
       !facts.sawRetryable ||
       !facts.rawDeliverableEmpty ||
+      this.limit?.reopening === "unknown" ||
       facts.nativeTry >= this.deps.retryPolicy.maxRetries
     )
       return { kind: "break" };
@@ -401,25 +403,23 @@ export class InRunContinuity {
     );
     if (this.deps.pinned) {
       this.lastCause = "pinned_limit";
-      this.terminalCode = "subscription_window_exhausted";
-      return {
-        kind: "terminal",
-        error: quotaRefusalWithScope(
-          pinnedTypedLimit(
-            facts.runSpec.credential_profile?.profile_id ?? "default",
-            this.deps.adapter.id,
-            this.limit,
-            true,
-          ),
-          {
-            harness: this.deps.adapter.id,
-            profileId: facts.runSpec.credential_profile?.profile_id ?? null,
-            model: facts.runSpec.model_hint,
-            requestKind: "text",
-            constraintId: this.limit?.constraintId,
-          },
+      const error = quotaRefusalWithScope(
+        pinnedTypedLimit(
+          facts.runSpec.credential_profile?.profile_id ?? "default",
+          this.deps.adapter.id,
+          this.limit,
+          true,
         ),
-      };
+        {
+          harness: this.deps.adapter.id,
+          profileId: facts.runSpec.credential_profile?.profile_id ?? null,
+          model: facts.runSpec.model_hint,
+          requestKind: "text",
+          constraintId: this.limit?.constraintId,
+        },
+      );
+      this.terminalCode = codeOf(error);
+      return { kind: "terminal", error };
     }
     if (effectiveLimitAction(this.deps.policy, route) !== "rotate")
       return this.breakWith("vendor_limit");

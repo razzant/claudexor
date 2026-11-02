@@ -24,6 +24,7 @@ import {
 import {
   cancelledCandidatesResult,
   emptyCandidateResult,
+  erroredWinnerFailure,
   failedCandidatesResult,
   failAfterCandidates,
 } from "./candidateTerminals.js";
@@ -2161,9 +2162,7 @@ export class Orchestrator {
       const checkpoint = ctx.laneCheckpoints.find(
         (c) => c.harness === harnessId && (c.profileId ?? null) === profileId,
       );
-      const headTurnId = ctx.priorTurns.length
-        ? ctx.priorTurns[ctx.priorTurns.length - 1].id
-        : null;
+      const headTurnId = ctx.priorTurns.at(-1)?.id ?? null;
       const priorHeadOwner = headTurnId
         ? ctx.laneCheckpoints.find((c) => c.turnId === headTurnId)
         : undefined;
@@ -3609,7 +3608,7 @@ export class Orchestrator {
           // Keep a TYPED pre-spawn refusal (spent quota window + its reset)
           // alive past this catch; `message` alone would force the terminal to
           // read prose back out.
-          ...(declared.code ? { declaredFailure: declared } : {}),
+          ...(declared.code || declared.quotaRefusal ? { declaredFailure: declared } : {}),
           applied: appliedAttemptFacts(
             harnessHome,
             slot.routed.adapterAccess,
@@ -4442,6 +4441,7 @@ export class Orchestrator {
               ]),
           ...keptSources,
         ],
+        ...(decisionBlock ? {} : erroredWinnerFailure(winnerRun, keptSources)),
       });
       if (!winnerRun) {
         store.writeText(
@@ -5031,7 +5031,7 @@ export class Orchestrator {
             costEstimated: failureCost.estimated,
             errors: [message],
             poolAttempts: tried.snapshot(),
-            ...(declared.code ? { declaredFailure: declared } : {}),
+            ...(declared.code || declared.quotaRefusal ? { declaredFailure: declared } : {}),
             telemetry: createAttemptTelemetry(
               knobs.webPolicy,
               contract.external_context.web_required,

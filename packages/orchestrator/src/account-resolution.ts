@@ -159,17 +159,18 @@ function poolExhaustionCandidates(ctx: AccountResolutionContext, ready: Readonly
         model,
         ctx.requestKind,
       );
-      const block = breach
-        ? null
-        : profileQuotaBlock(
-            snapshots,
-            harnessId,
-            row.profile_id,
-            limitSubjectRoute(row),
-            model,
-            undefined,
-            ctx.requestKind,
-          );
+      // A breach speaks for a dated block, but never hides the row's own refusal
+      // with no reopening time (#558) from the terminal's fold.
+      const observed = profileQuotaBlock(
+        snapshots,
+        harnessId,
+        row.profile_id,
+        limitSubjectRoute(row),
+        model,
+        undefined,
+        ctx.requestKind,
+      );
+      const block = breach && !observed?.reopening ? null : observed;
       const vendor = vendorCredentialObservation(ctx.quota, harnessId, row.profile_id);
       const dead =
         applicableCredentialUnusable(
@@ -475,8 +476,9 @@ export async function resolveAccountForRun(
       if (verdict === "available" && !breach && !block) return bound;
       const reserveOnly = quotaRefusalBasis(breach, block)?.basis === "owner_reserve";
       const resetsAt = quotaRefusalResetsAt(breach, block);
-      boundSwitchReason =
-        breach || block
+      boundSwitchReason = block?.reopening
+        ? "the vendor refused further usage, with no reopening time named"
+        : breach || block
           ? `${reserveOnly ? "saved quota reserve reached" : "quota window exhausted"}${
               resetsAt ? ` (resets ${resetsAt})` : ""
             }`

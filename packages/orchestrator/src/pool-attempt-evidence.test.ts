@@ -51,7 +51,6 @@ const error = (text: string, overrides: Partial<HarnessEvent> = {}): HarnessEven
 });
 const transient = (
   category: TransientFailureObservation["category"],
-  vendorFailure: TransientFailureObservation["vendorFailure"] = null,
 ): TransientFailureObservation => ({
   kind: "unknown",
   category,
@@ -60,7 +59,13 @@ const transient = (
   httpStatus: null,
   signal: null,
   adapterCode: null,
-  vendorFailure,
+});
+/** The try's own completion; an app-server turn carries no OS exit evidence (#414). */
+const completed = (payload: Record<string, unknown>): HarnessEvent => ({
+  type: "completed",
+  session_id: "ses",
+  ts: "2026-10-13T08:00:01.000Z",
+  payload: { harness_reported_error: true, ...payload },
 });
 const failed = (overrides: Record<string, unknown> = {}) => ({
   harnessErrored: true,
@@ -163,17 +168,25 @@ describe("PoolAttemptEvidence (per-try account attribution)", () => {
     evidence.settle(failed({ markers: marks({ sawSessionStart: false }), originalError: secret }));
     dispatched(evidence, spec("a"), 1);
     evidence.observe(error(`token ${secret} rejected`));
+    evidence.observe(
+      completed({ vendor_failure: { code: secret, message: `bad ${secret}`, source: "x" } }),
+    );
     evidence.settle(
       failed({
         markers: marks({ sawAgentProgress: true }),
-        newTransients: [
-          transient("timeout"),
-          transient("auth_failed", { code: secret, message: `bad ${secret}`, source: "x" }),
-          transient("process_crash"),
-        ],
+        newTransients: [transient("timeout"), transient("auth_failed"), transient("process_crash")],
       }),
     );
-    const [first, second] = evidence.snapshot();
+    // A later try's completion speaks only for that try: a signal kill carries none.
+    dispatched(evidence, spec("b"), 2);
+    evidence.observe(
+      completed({
+        exit_signal: "SIGKILL",
+        vendor_failure: { code: "x", message: null, source: "x" },
+      }),
+    );
+    evidence.settle(failed());
+    const [first, second, third] = evidence.snapshot();
     expect(first).toMatchObject({
       profileId: null,
       profileDisplayName: null,
@@ -186,6 +199,8 @@ describe("PoolAttemptEvidence (per-try account attribution)", () => {
     expect(second!.error).toMatch(/^token .* rejected$/);
     expect(JSON.stringify(second)).not.toContain(secret);
     expect(second!.vendorFailure?.source).toBe("x");
+    expect(first!.vendorFailure).toBeNull();
+    expect(third!.vendorFailure).toBeNull();
   });
 
   it("a malformed event time falls back to the settlement clock instead of failing", () => {

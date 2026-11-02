@@ -299,7 +299,7 @@ function rotationExhaustionCandidates(args: {
         headroom: breach,
         cooldown: block,
         unusable: dead ? { code: dead.code, source: dead.source } : null,
-        resets_at: breach?.resets_at ?? block?.resets_at ?? null,
+        resets_at: block?.reopening ? null : (breach?.resets_at ?? block?.resets_at ?? null),
       };
     });
 }
@@ -469,6 +469,7 @@ export async function rotateSpecOnTypedLimit(args: {
     retryDelayMs: number | null;
     resetsAt: string | null;
     constraintId?: string | null;
+    reopening?: "unknown" | null;
   } | null;
   emit: EmitFn;
   newSessionId: () => string;

@@ -646,9 +646,23 @@ receipts without that member use the legacy artifact/failure fallback.
 A failed run's `summary.failure` may carry `vendorFailure`: the vendor's own
 typed failure as `{ code, message, source }` (any of `code`/`message` may be
 null), or `null` — also the meaning of an absent key from an older engine —
-when no vendor-typed evidence exists. Display the code beside the message as a
-fact; never branch on its value or map it to a remedy, so codes a vendor adds
-later flow through with no release on either side.
+when no vendor-typed evidence exists. It is the evidence of the last try of the
+attempt the record speaks for, whether or not that try ended with an OS exit
+code, and each `poolAttempts` row carries its own try's evidence the same way.
+Display the code beside the message as a fact; never branch on its value or map
+it to a remedy, so codes a vendor adds later flow through with no release on
+either side. A pinned account the vendor refused with no reopening time
+(`usage_limit_exceeded` also means a workspace out of credits, which no timer
+reopens) is therefore never `subscription_window_exhausted`, the code that means
+waiting cures it: its record has `code: null`, `category: harness_unavailable`,
+`resetsAt: null` and `quotaRefusal.basis: provider_cooldown`, and an HTTP problem
+or `resumable.limitCode` names `vendor_limit_rejected`. Do not schedule a timed
+retry from it, even when another of the account's windows has a date, since that
+date belongs to that window. `credential_pool_exhausted` with `resetsAt: null`
+likewise promises no time, and one such member leaves the whole pool undated. A
+vendor-dated window with no such refusal beside it keeps
+`subscription_window_exhausted` and its `resetsAt`. A newer successful quota read
+retires the refusal, so the next run may try the account again.
 The failure's `poolAttempts` (on `summary.failure`, the run detail, the run list
 and MCP run results) lists every failed execution try in order, each with its account row,
 requested model, phase, typed category and its own redacted error text, so a
@@ -2290,7 +2304,13 @@ record once after exit and attaches it to the terminal `completed` payload as
 `vendor_failure` (`source: "codex_rollout"`), verbatim and uninterpreted; a
 tagged-object variant yields its variant name. Skipped for an aborted run and
 under `evidence_policy: stream_only`. Pin: `fixtures/rollout/recorded-*.jsonl`
-(session-rollout records, not stream captures).
+(session-rollout records, not stream captures). The one native code the
+adapter translates is the typed usage refusal (`usage_limit_exceeded` here,
+`usageLimitExceeded` on a failed app-server turn or a non-retrying `error`
+frame): it adds a typed `rate_limit` with `reopening: "unknown"` and no reset to
+the same event, once per try, never from the message words. Only root-thread
+frames of the current root turn count, whether they arrive before or after a
+`systemError` settles the run; a sub-agent's refusal never limits the root.
 
 Every rollout reader (observed model, rollout quota, vendor failure, continuity
 locate and move) goes through one boundary in `rollout-file.ts`. `X.jsonl` and

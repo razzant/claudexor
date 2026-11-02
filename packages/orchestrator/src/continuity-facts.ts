@@ -16,10 +16,10 @@ import {
 } from "@claudexor/schema";
 import { readTextSafe } from "@claudexor/util";
 import type { ArtifactStore } from "@claudexor/artifact-store";
-import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import type { HarnessAdapter, ProcessingAdmission } from "@claudexor/core";
 import {
   readThreadSummary,
+  recordedOutput,
   revParse,
   statusPorcelain,
   writeThreadSummary,
@@ -36,28 +36,34 @@ import { summarizeThreadPrefix } from "./continuity-summary.js";
 
 /**
  * An earlier turn's recorded output for the packet (#405): its final answer
- * when the run wrote one. Otherwise the run's existing
- * `final/retained-output.md`, exactly as stored, flagged so it is never shown
- * as an answer: `ended` when the run's terminal facts say it did not succeed,
- * `unknown` when they cannot be read (missing or unparsable), which claims
- * nothing about how it ended. A successful run without `answer.md` (a plan or
- * report turn) keeps its previous rendering.
+ * when the run wrote one. Otherwise the run's recorded output by the rule a
+ * `continueFrom` successor reads it by (`recordedOutput`): its
+ * `final/retained-output.md` exactly as stored, else the same projection of
+ * its event log when its terminal never wrote the file. It is flagged so it is
+ * never shown as an answer: `ended` when the run's terminal facts say it did
+ * not succeed, `unknown` when they cannot be read (missing or unparsable),
+ * which claims nothing about how it ended. A successful run without
+ * `answer.md` (a plan or report turn) keeps its previous rendering. The file
+ * the text came from is named wherever the packet cuts it.
  */
 export function priorTurnOutput(
   runId: string | null,
   store: ArtifactStore,
-): Pick<ContinuityTurn, "outputText" | "noFinalAnswer"> {
+): Pick<ContinuityTurn, "outputText" | "noFinalAnswer" | "outputSource"> {
   if (!runId) return { outputText: "" };
   const { root, finalDir } = store.runPaths(runId);
-  const answer = readTextSafe(join(finalDir, "answer.md")) ?? "";
-  if (answer.trim()) return { outputText: answer };
+  const answerPath = join(finalDir, "answer.md");
+  const answer = readTextSafe(answerPath) ?? "";
+  if (answer.trim()) return { outputText: answer, outputSource: answerPath };
   const raw = store.readYaml<{ outcome?: { lifecycle?: unknown } }>(
     join(finalDir, "run_facts.yaml"),
   );
   const lifecycle = RunOutcomeFacts.shape.lifecycle.safeParse(raw?.outcome?.lifecycle).data;
   if (lifecycle === "succeeded") return { outputText: answer };
+  const recorded = recordedOutput(root);
   return {
-    outputText: readTextSafe(join(root, RETAINED_OUTPUT_PATH)) ?? "",
+    outputText: recorded?.text ?? "",
+    ...(recorded ? { outputSource: recorded.source } : {}),
     noFinalAnswer: lifecycle ? "ended" : "unknown",
   };
 }

@@ -75,6 +75,14 @@ export interface CandidateRun extends ContinuityTerminalFacts, CandidateObjectFa
   applied?: AppliedAttemptFacts;
 }
 
+/** Does a declared failure state a typed cause a terminal may speak with: a
+ * code, a config error, or a provider refusal with no code of its own (#558)? */
+export function declaredFailureSpeaks(
+  declared: DeclaredFailure | null | undefined,
+): declared is DeclaredFailure {
+  return Boolean(declared?.code || declared?.category === "config_error" || declared?.quotaRefusal);
+}
+
 /**
  * The one typed refusal a run may speak with when NO candidate produced work.
  *
@@ -90,7 +98,7 @@ export function unanimousDeclaredFailure(
   runs: readonly Pick<CandidateRun, "declaredFailure">[],
 ): DeclaredFailure | null {
   const first = runs[0]?.declaredFailure;
-  if (!first || (!first.code && first.category !== "config_error")) return null;
+  if (!declaredFailureSpeaks(first)) return null;
   const declared = runs.map((run) => run.declaredFailure);
   const agrees = declared.every((d) => d?.code === first.code && d?.category === first.category);
   if (!agrees) return null;

@@ -828,6 +828,54 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("#558: keeps a typed usage refusal under its own cooldown identity, with no invented usage or reset, only for the bounded default cooldown, and replays it", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-codex-refusal-")));
+    const now = () => new Date("2026-10-29T20:58:25.000Z");
+    const first = new DurableJournal({ rootDir: root, partition: "global" });
+    const registry = new QuotaRegistry(first, [], now);
+    const refusal = {
+      applies_to_request_kinds: ["text"],
+      resets_at: null,
+      retry_delay_ms: null,
+    };
+    for (const [profile, reopening] of [
+      ["pinned", "unknown"],
+      ["plain", undefined],
+    ] as const)
+      registry.ingest("codex", {
+        type: "completed",
+        session_id: `session-${profile}`,
+        ts: "2026-10-29T20:58:25.000Z",
+        credential_route: "vendor_native",
+        credential_profile_id: profile,
+        rate_limit: { ...refusal, ...(reopening ? { reopening } : {}) },
+      });
+    const cooldown = (snapshots: ReturnType<QuotaRegistry["read"]>["snapshots"], id: string) =>
+      snapshots.find((snapshot) => snapshot.subject.subject_id === id)?.constraints[0];
+    expect(cooldown(registry.read().snapshots, "pinned")).toMatchObject({
+      id: "cooldown:reopening_unknown",
+      used_ratio: null,
+      resets_at: null,
+      cooldown_until: "2026-10-29T21:03:25.000Z",
+    });
+    // Control: a reset-less limit without the refusal semantic is unchanged.
+    expect(cooldown(registry.read().snapshots, "plain")).toMatchObject({
+      id: "cooldown",
+      used_ratio: null,
+      resets_at: null,
+      cooldown_until: "2026-10-29T21:03:25.000Z",
+    });
+    await first.close();
+    const replay = new DurableJournal({ rootDir: root, partition: "global" });
+    expect(cooldown(new QuotaRegistry(replay, [], now).read().snapshots, "pinned")).toMatchObject({
+      id: "cooldown:reopening_unknown",
+      used_ratio: null,
+      resets_at: null,
+    });
+    replay.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("writes a v3.2.0-parseable base source for cursor cooldowns while replaying the true source", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-cursor-rollback-")));
     const now = () => new Date("2026-08-17T10:00:00.000Z");

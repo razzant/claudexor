@@ -1727,7 +1727,29 @@ window, which is a provider-spent (100%) window whenever one breaches. Usage
 observed on a different window is omitted rather than attached. Within one
 snapshot a block names the window that owns its earliest release, with that
 window's kind. The release is a recheck instant, not a promise that the whole
-account is ready then. When no
+account is ready then. A typed usage refusal with no reopening time (#558) is
+not known to be a window a timer reopens: Codex's one code also covers a
+workspace out of credits. It enters the existing reactive cooldown under the
+engine-owned identity `cooldown:reopening_unknown` with no measured usage
+(`used_ratio: null`) and no vendor reset (`resets_at: null`), so the row is
+blocked only for that cooldown's own bounded default and its end is a recheck
+instant, never a reset. While active and applicable it decides the account's
+verdict whatever else blocks the account: another window's reset, a vendor retry
+delay or a vendor reset day keeps its meaning for that window alone and promises
+nothing about the account. Like the generic refusal it names no window, so a
+newer recognized primary read retires it under the reconciliation rules below,
+which permits the next attempt. A vendor-dated window with no such refusal
+beside it keeps its existing code and reset. A pinned account refused this way,
+on its own try or at a later preflight, never carries
+`subscription_window_exhausted`, which every reader takes as "waiting cures it"
+even without a reset. Its failure record
+has `code: null`, `category: harness_unavailable`, `resetsAt: null` and
+`quotaRefusal.basis: provider_cooldown`, beside the try's `vendorFailure` when a
+try ran; the thrown refusal, its `ControlProblem.code` and `resumable.limitCode`
+name the existing term `vendor_limit_rejected`, which is deliberately not a
+`RunFailureCode`, since an old strict reader would drop a record with an unknown
+member. In a pool, such a member counts as cause `unavailable` rather than
+`quota` and leaves the pool's reset unknown even beside a dated member. When no
 target survives (all spent/excluded/wrong-kind), the engine emits typed
 `route.profile.rotation_exhausted` with each rejected profile's reason and
 headroom or cooldown evidence (with its earliest known release instant); the
@@ -3619,13 +3641,20 @@ not retry automatically.
   discloses it via a typed `session.continuity` event + a `continuity` field on
   the turn record (INV-137); a plain in-lane turn resumes natively with no
   packet. Each earlier turn carries its `final/answer.md`. A turn that wrote no
-  answer and whose run did not succeed carries its `final/retained-output.md`
-  exactly as stored instead, under a heading that says it ended without a final
-  answer and that the text is not a completion verdict; when its terminal facts
-  (`final/run_facts.yaml`) cannot be read, the heading says only that no final
-  answer is recorded and the outcome is unknown. A successful turn without
-  `answer.md` (a plan or a report) keeps its earlier rendering, with the active
-  plan pointer for a plan. An in-run account hop that MOVED the lane's session (claude, codex)
+  answer and whose run did not succeed carries its recorded output instead, read
+  by the rule a `continueFrom` successor uses: its `final/retained-output.md`
+  exactly as stored, else the same projection of its `events.jsonl` when its
+  terminal never wrote that file (an engine restart interrupted the run). A
+  heading says it ended without a final answer and that the text is not a
+  completion verdict; when its terminal facts (`final/run_facts.yaml`) cannot be
+  read, the heading says only that no final answer is recorded and the outcome
+  is unknown. A successful turn without `answer.md` (a plan or a report) keeps
+  its earlier rendering, with the active plan pointer for a plan. A verbatim
+  turn carries at most 4 KiB of its output: an answer keeps its start, and an
+  unfinished turn keeps its end, where its newest output is. The kept part is
+  whole UTF-8 characters, and the cut's mark, outside that allowance, names the
+  file holding the whole output (`answer.md`, `retained-output.md` or `events.jsonl`).
+  An in-run account hop that MOVED the lane's session (claude, codex)
   is disclosed on the same channel as `native_resume` with `lane_switched_from`
   naming the previous profile — the conversation continued natively on another
   account; the per-try run receipt (`run.continuity`) carries the carrier. Past a byte budget the packet's oldest turns collapse; the engine
@@ -3634,13 +3663,15 @@ not retry automatically.
   bounded read-only ask-mode pass on the lane's own harness + credential route
   (single turn, hard timeout, no job queue) and reused until a new head turn
   advances the boundary. The pass receives at most 2 KiB of each collapsed
-  turn's prompt and of its answer and keeps at most 8 KiB of its summary; each
-  cut ends at a whole UTF-8 character and adds a trailing `…` outside those
-  limits. A summary saved before that rule is reused as saved, with any U+FFFD
+  turn's prompt and of its answer (of an unfinished turn's output, its end) and
+  keeps at most 8 KiB of its summary; each cut keeps whole UTF-8 characters and
+  adds a `…` outside those limits (before a kept end). A summary saved
+  before that rule is reused as saved, with any U+FFFD
   its byte cut left, until the boundary advances; it is neither regenerated nor
   migrated. A timeout or unavailable harness falls back to
   mechanical one-liners of at most 200 UTF-16 code units per field, cut the
-  same way, so the delta is never lost; the disclosure's
+  same way; an unfinished turn's line keeps the end of its output and, when
+  cut, names the file holding it whole, so the delta is never lost; the disclosure's
   `summarized` flag is set either way. A `planRunId` body field implements an approved
   plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
   turn) and delivers it to the executor as a server-owned file reference, so the
@@ -6440,11 +6471,13 @@ primary observation reconciles old reactive constraints at the registry write ow
 its witness and changed reactive snapshots commit in one SQL event transaction, even
 for timestamp-only re-observation. Reversed arrival uses the same witness, so a
 delayed old refusal cannot revive a retired block, and request-start timestamps
-keep an older in-flight poll from erasing a newer refusal. A generic unclassified block
-can yield to a successful response without measured windows (usage stays unknown),
+keep an older in-flight poll from erasing a newer refusal. A generic unclassified block,
+like a usage refusal with no reopening time (`cooldown:reopening_unknown`), can yield to a
+successful response without measured windows (usage stays unknown),
 while independently identified or model-scoped windows need matching measured
 replacement; a Codex refusal's text scope limits what it blocks, not which read
-retires it.
+retires it. The read permits the next attempt without promising the provider accepts it:
+a vendor that refuses again records the refusal again.
 This permits purchased or vendor-granted early resets without waiting for an obsolete
 timer. Malformed Codex responses never become successful empty observations.
 
@@ -6609,14 +6642,32 @@ fail-soft from the run's own `CODEX_HOME` and bound to the turn this process ran
 rollout carries turn markers, and not predate the spawn second; any doubt yields
 nothing — disclosed residual: an earlier turn that failed within the same second
 as a resumed spawn that wrote no turn marker of its own). The orchestrator
-forwards it to the terminal failure record as
-`vendorFailure: { code, message, source }` for the attempt that record speaks
-for (candidate lane: the first candidate; read-only lane: the last attempt;
-budget, plan and deep-scan terminals carry `null`). The code is OPAQUE evidence,
-forwarded verbatim with no mapping table: no Claudexor code path branches on
-its value, it is never an input to retry, rotation, cooldown or credential
-verdicts, and it never changes the record's `category`/`code`. Every other
-harness, and any missing or unreadable record, yields `null`.
+reads it from any completion the harness voiced its error on, with OS exit
+evidence or none (a Codex app-server turn ends with neither an exit code nor a
+signal); a signal kill and a cancelled completion carry none. It belongs to
+that try: the try's `poolAttempts` row carries it, and the terminal failure
+record carries `vendorFailure: { code, message, source }` of the LAST try of
+the attempt it speaks for (candidate lane: the first candidate, including an
+errored winner's arbitration record; read-only and plan lanes: the last
+attempt; budget and deep-scan terminals carry `null`), so a later try that
+ended without evidence, crashed or was cancelled never speaks with an earlier
+try's cause. The forwarded code is OPAQUE evidence with no mapping table: no
+consumer branches on its value, it is never an input to retry, rotation,
+cooldown or credential verdicts, and it never changes the record's
+`category`/`code`. The one translation is the adapter's own, from the native
+record it read: Codex's typed usage refusal (`usage_limit_exceeded` in the
+rollout, `usageLimitExceeded` on the app-server wire, whichever arrives first,
+once per try) also rides that event as a typed `rate_limit` with
+`reopening: unknown` and no reset. The one code covers a spent plan window and
+a workspace out of credits alike, so it never implies a window that a timer
+reopens. Decisions read that typed signal (see "In-run continuation" and the
+quota admission rules), never the forwarded code. The app-server run loop keeps
+that code on arrival for the root turn it belongs to, from a non-retrying `error`
+frame or a failed turn, and a new root turn clears it; the settled terminal error
+takes it once the process stopped, so a durable `systemError` loses it neither
+when the frame came first nor when the stopped process wrote it last, and nothing
+waits for a frame that may never come. A sub-agent thread's frames never limit
+the root. Every other harness, and any missing or unreadable record, yields `null`.
 
 On every terminal path (zero exit, nonzero exit, abort), the shared CLI run
 loop attaches a bounded, adapter-redacted `stderr_tail` to the terminal
@@ -6879,7 +6930,13 @@ also rejects the native carrier; generic execution errors and model prose do
 not. Existing transcripts misplaced outside the correct holder store are not
 migrated automatically: a locate miss retains them and uses the evidence packet.
 A bare backoff frame (`retry_delay_ms`, no reset, no
-constraint) is transport when a session exists to resume. On a native carrier
+constraint) is transport when a session exists to resume. A typed usage
+refusal with no reopening time (`rate_limit.reopening: unknown`) is never a
+same-account retry: after progress it is a typed limit (a pin ends with the
+no-timer record described under the quota admission rules; otherwise the
+resolved `limit_action` hops or stops), and before progress it ends the attempt
+whenever rotation does not move it, instead of replaying the work order on the
+same account. On a native carrier
 the user prompt is one constant notice ("the previous process stopped …
 continue from where it stopped … a cut-off tool call may or may not have taken
 effect … finish with a self-contained final message") — the original prompt

@@ -29,6 +29,27 @@ export function codexReconnectStatus(
   };
 }
 
+/**
+ * Codex's own TYPED usage refusal (#558): `usage_limit_exceeded` in the rollout,
+ * `usageLimitExceeded` on the app-server wire. The one code covers a spent plan
+ * window and a workspace out of credits alike (the recorded rollout fixture is
+ * the latter) and names no reopening time, so the limit carries none and is
+ * never a timed window. Only the typed code is read, never the words; a
+ * tagged-object variant is read by its one variant name, as the rollout reader does.
+ */
+export function codexUsageRefusal(info: unknown): NonNullable<HarnessEvent["rate_limit"]> | null {
+  const variants =
+    info && typeof info === "object" && !Array.isArray(info) ? Object.keys(info) : [];
+  const code = typeof info === "string" ? info : variants.length === 1 ? variants[0] : null;
+  if (code !== "usage_limit_exceeded" && code !== "usageLimitExceeded") return null;
+  return {
+    applies_to_request_kinds: ["text"],
+    resets_at: null,
+    retry_delay_ms: null,
+    reopening: "unknown",
+  };
+}
+
 export function applyCodexRateLimit(event: HarnessEvent, message: string, resetsAt: unknown): void {
   if (!CODEX_RATE_LIMIT_RE.test(message)) return;
   event.rate_limit = {

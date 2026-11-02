@@ -47,16 +47,20 @@ async function initRepo(): Promise<string> {
 }
 
 const PARTIAL = "PARTIAL-ALPHA-FINDING: the retry loop ignores the deadline";
+/** A long unfinished turn: its newest state is its last line, past the 4 KiB output allowance. */
+const STEPS = Array.from({ length: 400 }, (_, i) => `step ${i}: read module ${i}, nothing new.`);
+const LONG_PARTIAL = `${STEPS.join("\n")}\nLATEST-STATE: the deadline check belongs in retry.ts`;
+const PREAMBLE = "Attempts and physical sessions are kept separate.";
 type Ending = "stream_broke" | "turn_cap" | "answered" | "planned";
 
 /** Lane A: speaks, then ends the way the case says. */
-function laneA(ending: Ending): HarnessAdapter {
+function laneA(ending: Ending, speech: string): HarnessAdapter {
   return lane("lane-a", (spec) => {
     const ts = new Date().toISOString();
     const base = { session_id: spec.session_id, ts };
     const events: HarnessEvent[] = [
       { ...base, type: "started", payload: { native_session_id: "native-a" } },
-      { ...base, type: "message", text: PARTIAL },
+      { ...base, type: "message", text: speech },
     ];
     if (ending === "answered" || ending === "planned")
       events.push({ ...base, type: "message", text: "FINAL-ANSWER-ALPHA", final: true });
@@ -107,11 +111,16 @@ function lane(
 }
 
 /** Two turns of one thread; returns the packet lane B's process was pointed at.
- * `forgetFacts` deletes turn 1's terminal facts, as when they cannot be read. */
+ * `forget` deletes turn 1's named final files: its terminal facts, as when they
+ * cannot be read, and its retained output, as when its terminal never wrote it. */
 async function nextLaneInput(
   ending: Ending,
-  forgetFacts = false,
-): Promise<{ prompt: string; packet: string }> {
+  options: {
+    forget?: ReadonlyArray<"run_facts.yaml" | "retained-output.md">;
+    mode?: "ask" | "plan";
+    speech?: string;
+  } = {},
+): Promise<{ prompt: string; packet: string; firstRunDir: string }> {
   const repo = await initRepo();
   const received: string[] = [];
   const laneB = lane("lane-b", (spec) => {
@@ -129,7 +138,7 @@ async function nextLaneInput(
     ];
   });
   const registry = new Map<string, HarnessAdapter>([
-    ["lane-a", laneA(ending)],
+    ["lane-a", laneA(ending, options.speech ?? PARTIAL)],
     ["lane-b", laneB],
   ]);
   // Thread-store stand-in: exactly the rows the daemon projection reads.
@@ -166,14 +175,14 @@ async function nextLaneInput(
     "t1",
     "lane-a",
     "SEED-PROMPT: audit the retry loop",
-    planned ? "plan" : "ask",
+    options.mode ?? (planned ? "plan" : "ask"),
   );
   expect(first.lifecycle === "succeeded").toBe(ending === "answered" || planned);
-  if (forgetFacts) unlinkSync(join(first.runDir, "final", "run_facts.yaml"));
+  for (const name of options.forget ?? []) unlinkSync(join(first.runDir, "final", name));
   await turn("t2", "lane-b", "NEXT-PROMPT: continue the audit", "ask");
   const prompt = received.at(-1) ?? "";
   const path = /context for this thread is at: (.+?) — read it/.exec(prompt)?.[1];
-  return { prompt, packet: path ? readFileSync(path, "utf8") : "" };
+  return { prompt, packet: path ? readFileSync(path, "utf8") : "", firstRunDir: first.runDir };
 }
 
 describe("#405 a turn without a final answer reaches the next lane as unfinished, not lost", () => {
@@ -205,13 +214,62 @@ describe("#405 a turn without a final answer reaches the next lane as unfinished
   });
 
   it("a turn whose outcome cannot be read is carried without a claim about how it ended", async () => {
-    const { packet } = await nextLaneInput("stream_broke", true);
+    const { packet } = await nextLaneInput("stream_broke", { forget: ["run_facts.yaml"] });
     expect(packet).toContain(PARTIAL);
     expect(packet).toContain(
       "No final answer is recorded for this turn, and its outcome could not be read.",
     );
     expect(packet).not.toContain("ended without a final answer");
     expect(packet).not.toContain("**The assistant answered:**");
+  });
+
+  it.each<Ending>(["stream_broke", "turn_cap"])(
+    "%s in a Plan turn: lane B's packet carries it as unfinished, with no plan to point at",
+    async (ending) => {
+      const { packet } = await nextLaneInput(ending, { mode: "plan" });
+      expect(packet).toContain("SEED-PROMPT: audit the retry loop");
+      expect(packet).toContain(PARTIAL);
+      expect(packet).toContain("The turn ended without a final answer.");
+      expect(packet).not.toContain("## Active plan");
+      expect(packet).not.toContain("**The assistant answered:**");
+    },
+  );
+
+  it("a long unfinished turn keeps its newest output within the budget and names its retained file", async () => {
+    const { packet, firstRunDir } = await nextLaneInput("turn_cap", { speech: LONG_PARTIAL });
+    const retained = join(firstRunDir, "final", "retained-output.md");
+    expect(packet).toContain("The turn ended without a final answer.");
+    expect(packet).toContain("LATEST-STATE: the deadline check belongs in retry.ts");
+    expect(packet).toContain("[earlier output truncated; the whole output is ");
+    expect(packet).toContain(`complete in ${retained}]\n…`);
+    // The retained file's fixed preamble and oldest lines are what the cut leaves out.
+    expect(packet).not.toContain(PREAMBLE);
+    expect(packet).not.toContain("step 0: read module 0");
+  });
+
+  // An engine restart leaves events.jsonl but neither terminal facts nor the
+  // retained file; deleting both stands in for a terminal that never ran.
+  it("a turn whose terminal never wrote its retained output is read from its event log, outcome unknown", async () => {
+    const { packet } = await nextLaneInput("stream_broke", {
+      forget: ["run_facts.yaml", "retained-output.md"],
+    });
+    expect(packet).toContain(PARTIAL);
+    expect(packet).toContain(
+      "No final answer is recorded for this turn, and its outcome could not be read.",
+    );
+    expect(packet).not.toContain("_(no recorded output)_");
+    expect(packet).not.toContain("ended without a final answer");
+    expect(packet).not.toContain("**The assistant answered:**");
+  });
+
+  it("a long turn read from its event log names the event log where it is cut", async () => {
+    const { packet, firstRunDir } = await nextLaneInput("stream_broke", {
+      forget: ["run_facts.yaml", "retained-output.md"],
+      speech: LONG_PARTIAL,
+    });
+    expect(packet).toContain("LATEST-STATE: the deadline check belongs in retry.ts");
+    expect(packet).toContain(`complete in ${join(firstRunDir, "events.jsonl")}]\n…`);
+    expect(packet).not.toContain("ended without a final answer");
   });
 });
 

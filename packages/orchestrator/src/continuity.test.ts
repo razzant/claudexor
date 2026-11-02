@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { retainedOutput } from "@claudexor/event-log";
+import type { RunEvent } from "@claudexor/schema";
 import {
   buildContinuation,
   planContinuation,
+  PER_TURN_BUDGET_BYTES,
   TOTAL_BUDGET_BYTES,
   type ContinuityRequest,
   type ContinuityTurn,
@@ -296,5 +299,112 @@ describe("continuity summary plan + injection (INV-137, V9c)", () => {
     expect(r.disclosure.summarized).toBe(false);
     expect(r.packetMarkdown).not.toContain("should not appear");
     expect(r.packetMarkdown).not.toContain("(summary)");
+  });
+});
+
+describe("#405 a turn without a final answer, past the output allowance", () => {
+  const SOURCE = "/runs/run-1/final/retained-output.md";
+  const LATEST = "LATEST-STATE: the deadline check belongs in retry.ts";
+  const STEPS = Array.from({ length: 300 }, (_, i) => `step ${i}: nothing new.`);
+  const LONG = `${STEPS.join("\n")}\n${LATEST}`;
+  const NO_BROKEN_CHAR = /\uFFFD|\p{Surrogate}/u;
+  const row = (seq: number, payload: Record<string, unknown>): RunEvent =>
+    ({ seq, ts: "t", run_id: "r", task_id: "k", type: "harness.event", payload }) as RunEvent;
+  /** The retained file event-log writes for one attempt that said `speech`. */
+  const retainedFile = (speech: string): string => {
+    const meta = { attempt_id: "a01", harness_id: "claude", session_id: "s1" };
+    const events = [
+      row(1, { ...meta, type: "started" }),
+      row(2, { ...meta, type: "message", text: speech }),
+    ];
+    return retainedOutput(events) ?? "";
+  };
+  const unfinished = (outputText: string): ContinuityTurn => ({
+    id: "t1",
+    prompt: "audit the retry loop",
+    outputText,
+    noFinalAnswer: "ended",
+    outputSource: SOURCE,
+  });
+  const big = "x".repeat(6 * 1024);
+  const collapsing = (first: ContinuityTurn): ContinuityTurn[] => [
+    first,
+    ...Array.from({ length: 5 }, (_, i) => turn(`t${i + 2}`, big, big)),
+  ];
+  const packetOf = (priorTurns: ContinuityTurn[]): string =>
+    buildContinuation(req({ priorTurns })).packetMarkdown ?? "";
+  const line1 = (packet: string) => packet.split("\n").find((l) => l.startsWith("- Turn 1 "));
+
+  it("keeps the newest end of its output in a verbatim entry and names the file holding it whole", () => {
+    const whole = retainedFile(LONG).trim();
+    const packet = packetOf([unfinished(retainedFile(LONG))]);
+    const size = Buffer.byteLength(whole, "utf8");
+    const mark = `[earlier output truncated; the whole output is ${size} bytes, complete in ${SOURCE}]\n…`;
+    expect(packet).toContain(mark);
+    const kept = packet.slice(packet.indexOf(mark) + mark.length).trimEnd();
+    expect(whole.endsWith(kept)).toBe(true);
+    expect(Buffer.byteLength(kept, "utf8")).toBeLessThanOrEqual(PER_TURN_BUDGET_BYTES / 2);
+    expect(kept).toContain(LATEST);
+    // The retained file's fixed preamble no longer spends the allowance.
+    expect(packet).not.toContain("Attempts and physical sessions are kept separate.");
+  });
+
+  it("starts the kept end on a whole UTF-8 character", () => {
+    for (const char of ["Ж", "中", "😀"]) {
+      // Trailing ASCII moves where the kept end begins inside the wide characters.
+      for (let pad = 0; pad < 4; pad += 1) {
+        const text = `${char.repeat(3000)}${"a".repeat(pad)}`;
+        const packet = packetOf([unfinished(text)]);
+        const kept = packet.split(`complete in ${SOURCE}]\n…`)[1]!.trimEnd();
+        const keptBytes = Buffer.byteLength(kept, "utf8");
+        expect(text.endsWith(kept)).toBe(true);
+        expect(keptBytes).toBeLessThanOrEqual(PER_TURN_BUDGET_BYTES / 2);
+        expect(keptBytes).toBeGreaterThan(PER_TURN_BUDGET_BYTES / 2 - Buffer.byteLength(char));
+        expect(packet).not.toMatch(NO_BROKEN_CHAR);
+      }
+    }
+  });
+
+  it("an answer keeps its start and names its file where cut; without a file the mark is unchanged", () => {
+    const answer = `ANSWER-HEAD ${"z".repeat(9000)} ANSWER-END`;
+    const file = "/runs/run-2/final/answer.md";
+    const named = packetOf([{ ...turn("t1", "q", answer), outputSource: file }]);
+    const size = Buffer.byteLength(answer, "utf8");
+    expect(named).toContain("**The assistant answered:**\n\nANSWER-HEAD ");
+    expect(named).toContain(
+      `z\n…[truncated; the whole output is ${size} bytes, complete in ${file}]\n`,
+    );
+    expect(named).not.toContain("ANSWER-END");
+    expect(packetOf([turn("t1", "q", answer)])).toContain("z\n…[truncated]\n");
+  });
+
+  it("a collapsed entry keeps the end of its output, not the retained file's preamble, and names the file", () => {
+    const speech = `PARTIAL-SPEECH the retry loop ignores the deadline. ${LATEST}`;
+    const line = line1(packetOf(collapsing(unfinished(retainedFile(speech)))));
+    expect(line).toContain("assistant (ended without a final answer): …");
+    expect(line).toContain(speech);
+    expect(line).not.toContain("# Retained output");
+    expect(line?.endsWith(` (whole output: ${SOURCE})`)).toBe(true);
+    // An unfinished output that fits is shown whole, with no address.
+    expect(line1(packetOf(collapsing(unfinished("short partial"))))).toBe(
+      "- Turn 1 — user: audit the retry loop · assistant (ended without a final answer): short partial",
+    );
+    // An answered line is unchanged: its start, and no address.
+    const answered = {
+      ...turn("t1", "q", "y".repeat(500)),
+      outputSource: "/runs/run-2/final/answer.md",
+    };
+    expect(line1(packetOf(collapsing(answered)))).toBe(
+      `- Turn 1 — user: q · assistant: ${"y".repeat(200)}…`,
+    );
+  });
+
+  it("a collapsed entry's kept end starts on a whole character", () => {
+    const text = `${"😀".repeat(150)}b`; // its last 200 UTF-16 units begin with a low surrogate
+    const packet = packetOf(collapsing(unfinished(text)));
+    expect(line1(packet)).toBe(
+      `- Turn 1 — user: audit the retry loop · assistant (ended without a final answer): …${"😀".repeat(99)}b (whole output: ${SOURCE})`,
+    );
+    expect(packet).not.toMatch(NO_BROKEN_CHAR);
   });
 });

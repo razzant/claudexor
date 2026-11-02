@@ -56,7 +56,7 @@ export function harnessFailureNextActions(category: HarnessFailureCategory | nul
       ];
     case "rate_limited":
       return [
-        "The route was rate-limited; wait for the window to reset or route another account/profile",
+        "The route was rate-limited; route another account/profile, or retry once the limit has cleared (resetsAt names the time when the vendor gave one)",
         "Open diagnostics",
         "Retry the run",
       ];
@@ -76,18 +76,16 @@ export function harnessFailureNextActions(category: HarnessFailureCategory | nul
 
 /**
  * The vendor's own typed failure for the attempt a terminal failure record
- * speaks for: the named attempt, else the last one, and only its LAST
- * observation — an earlier try's evidence (before a profile rotation) must never
- * sit beside a later try's message. null = honestly unknown. Opaque evidence
- * only — nothing here or downstream branches on its `code`.
+ * speaks for: the named attempt, else the last one, and only its LAST try —
+ * an earlier try's evidence (before a profile rotation) must never sit beside
+ * a later try's message (#414: with or without OS exit evidence). null =
+ * honestly unknown. Opaque evidence only — nothing here or downstream branches
+ * on its `code`.
  */
 export function attemptVendorFailure(
-  attempts: {
-    attemptId: string;
-    telemetry: { transientFailures: TransientFailureObservation[] };
-  }[],
+  attempts: { attemptId: string; telemetry: { vendorFailure: VendorFailureEvidence | null } }[],
   attemptId: string | null | undefined,
 ): VendorFailureEvidence | null {
   const owner = attempts.find((a) => a.attemptId === attemptId) ?? attempts.at(-1);
-  return owner?.telemetry.transientFailures.at(-1)?.vendorFailure ?? null;
+  return owner?.telemetry.vendorFailure ?? null;
 }

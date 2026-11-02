@@ -11,6 +11,7 @@ import type {
   RequestRequirementResolution,
   TaskContract,
   ToolKind,
+  VendorFailureEvidence,
   WorkState,
 } from "@claudexor/schema";
 import { commandOutcomeUnconfirmed } from "@claudexor/schema";
@@ -33,6 +34,7 @@ import {
   classifyPermissionDenial,
   classifyStatusError,
   classifyTransientSignal,
+  completionVendorFailure,
 } from "./transientClassify.js";
 
 export { type TransientFailureObservation, classifyAdapterThrow } from "./transientClassify.js";
@@ -122,6 +124,9 @@ export interface AttemptTelemetry
   /** Adapter-declared transients, classified into the GH #31 taxonomy the retry policy gates on. */
   transientFailures: TransientFailureObservation[];
   transientRetries: number; // same-profile transient retries that actually RAN (observed)
+  /** #414: the vendor's own typed failure of this attempt's current try, set by
+   * its completion with or without exit evidence; reset per try (A3). */
+  vendorFailure: VendorFailureEvidence | null;
   /** TYPED vendor rate-limit signals seen this attempt (W5.4): the rotation predicate's input. */
   rateLimits: { retryDelayMs: number | null; resetsAt: string | null }[];
   /** A2: agent-progress / file-change markers for the structural rotation predicate. */
@@ -198,6 +203,7 @@ export function createAttemptTelemetry(
     requestedModel,
     transientFailures: [],
     transientRetries: 0,
+    vendorFailure: null,
     rateLimits: [],
     outputMarkers: marks.newAttemptOutputMarkers(),
     delegationBelt: {
@@ -356,6 +362,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     // non-zero exit, or a spawn failure as TYPED payload fields (never prose).
     const crash = classifyCompletedCrash(ev.payload);
     if (crash) t.transientFailures.push(crash);
+    t.vendorFailure = completionVendorFailure(ev);
     return;
   }
   const tool = ev.tool;

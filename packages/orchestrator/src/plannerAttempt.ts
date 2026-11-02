@@ -268,7 +268,11 @@ export async function runPlannerAttempt(
   let harnessError: string | null = null;
   let processingDenial: BudgetDenial | null = null;
   let declared: DeclaredFailure | undefined;
-  let lastLimit: { resetsAt: string | null; constraintId: string | null } | null = null;
+  let lastLimit: {
+    resetsAt: string | null;
+    constraintId: string | null;
+    reopening: "unknown" | null;
+  } | null = null;
   const budgetSignalState = { quotaPressureDisclosed: false };
   try {
     log.emit("harness.started", {
@@ -312,6 +316,7 @@ export async function runPlannerAttempt(
           lastLimit = {
             resetsAt: ev.rate_limit.resets_at ?? null,
             constraintId: ev.rate_limit.constraint_id ?? null,
+            reopening: ev.rate_limit.reopening ?? null,
           };
         // Agent work after the limit means the vendor's retry recovered, and the
         // vendor's own typed non-quota failure ends the try for its own cause:

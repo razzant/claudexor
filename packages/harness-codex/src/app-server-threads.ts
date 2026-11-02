@@ -4,6 +4,7 @@ import { nowIso } from "@claudexor/util";
 import { asObject, codexAppServerEvents, type JsonObject } from "./app-server-protocol.js";
 import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
+import { codexUsageRefusal } from "./retry-signals.js";
 
 /** The shared completed-event shape for normal, cancelled and failed teardown. */
 export function codexCompletedEvent(
@@ -229,4 +230,44 @@ export function codexTerminalEvents(input: {
     };
   }
   return { events: [], reportedError: null };
+}
+
+/**
+ * Keeps Codex's typed usage refusal (#558) for the root turn it belongs to, on
+ * arrival: the run loop drops a non-retrying `error` frame, and a durable
+ * systemError can settle the run before or after the failed turn is read
+ * (recorded order: systemError, `error`, failed turn). A new root turn clears
+ * it. The loop calls this for root frames only, so a sub-agent's refusal never
+ * limits the root, and only the typed code is read, never the words.
+ */
+export function observeCodexRootError(
+  state: CodexParseState,
+  method: unknown,
+  params: JsonObject | null,
+): void {
+  if (method === "turn/started") state.usageRefusal = undefined;
+  const error =
+    method === "error" && params?.["willRetry"] !== true
+      ? asObject(params?.["error"])
+      : method === "turn/completed"
+        ? asObject(asObject(params?.["turn"])?.["error"])
+        : null;
+  state.usageRefusal = codexUsageRefusal(error?.["codexErrorInfo"]) ?? state.usageRefusal;
+}
+
+/**
+ * The settled terminal's events as yielded once the process stopped, so every
+ * frame it wrote has been observed and nothing waits for one that may never
+ * come: the root turn's typed usage refusal joins the terminal error, replacing
+ * a plain prose-matched limit. A completed turn has no error event to carry it.
+ */
+export function codexSettledTerminal(
+  events: HarnessEvent[],
+  state: CodexParseState,
+): HarnessEvent[] {
+  const refusal = state.usageRefusal;
+  if (!refusal) return events;
+  return events.map((event) =>
+    event.type === "error" ? { ...event, rate_limit: { ...refusal } } : event,
+  );
 }

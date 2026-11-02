@@ -27,8 +27,10 @@ import {
   codexCompletedEvent,
   codexCleanupIsProofLimitation,
   codexHasCompletedAnswer,
+  codexSettledTerminal,
   codexTeardownFailed,
   codexTerminalEvents,
+  observeCodexRootError,
   ownsNotification,
 } from "./app-server-threads.js";
 import { parseCodexStderrFailure, type CodexParseState } from "./parse.js";
@@ -123,6 +125,7 @@ export async function* runCodexAppServer(
     const method = notification["method"];
     const params = asObject(notification["params"]);
     if (!ownsNotification(params, nativeThreadId)) return;
+    observeCodexRootError(parseState, method, params);
     if (method === "turn/started") {
       const turn = asObject(params?.["turn"]);
       if (typeof turn?.["id"] === "string") activeTurnId = turn["id"];
@@ -528,7 +531,7 @@ export async function* runCodexAppServer(
         if (completedAnswer && codexTeardownFailed(notifications, nativeThreadId, failed))
           throw new Error("Codex completion was invalidated during process teardown");
         yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
-        if (!handback) for (const event of terminal.events) yield event;
+        if (!handback) yield* codexSettledTerminal(terminal.events, parseState);
         yield codexCompletedEvent(
           input.spec.session_id,
           terminalPayload({

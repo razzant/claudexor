@@ -7,6 +7,7 @@ import { makeOutcomeFacts, type ModeKind } from "@claudexor/schema";
 import type { OrchestratorResult } from "./orchestrator.js";
 import {
   candidateCaptureRefusals,
+  declaredFailureSpeaks,
   hasCandidateChanges,
   partitionCandidates,
   unanimousDeclaredFailure,
@@ -138,6 +139,35 @@ export async function cancelledCandidatesResult(
     resumableOf(runs, "cancelled"),
     input.attempts ?? runs,
   );
+}
+
+/**
+ * The arbitration failure record of an ERRORED winner (a candidate that changed
+ * files, then its harness failed) speaks for that winner's own facts, as the
+ * no-working-candidate terminal does: its vendor evidence (#414) and, when its
+ * try ended on a typed refusal (a pinned limit, a spent pool, a request
+ * refusal), that refusal's code, reset and basis with the matching remedy
+ * (#558). Without a typed refusal, arbitration's own classification stands.
+ */
+export function erroredWinnerFailure(
+  winner: CandidateRun | undefined,
+  keptSources: readonly string[],
+): Partial<Parameters<typeof writeFailure>[2]> {
+  if (!winner?.errored) return {};
+  const declared = winner.declaredFailure;
+  if (!declaredFailureSpeaks(declared))
+    return { vendorFailure: attemptVendorFailure([winner], winner.attemptId) };
+  const category = dominantHarnessFailureCategory(winner.telemetry.transientFailures);
+  return {
+    ...declared,
+    category: declared.category ?? "harness_error",
+    vendorFailure: attemptVendorFailure([winner], winner.attemptId),
+    nextActions: [
+      ...harnessFailureNextActions(category),
+      "Inspect candidate artifacts",
+      ...keptSources,
+    ],
+  };
 }
 
 /** A review/arbitration failure still owns the completed candidates' continuity

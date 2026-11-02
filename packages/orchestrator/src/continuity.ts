@@ -44,6 +44,9 @@ export interface ContinuityTurn {
    * output, never an answer. `ended`: its run did not succeed; `unknown`: its
    * outcome could not be read, so nothing is claimed about how it ended. */
   noFinalAnswer?: "ended" | "unknown";
+  /** The file `outputText` is read exactly from, or rendered from (its run's
+   * event log). Where the packet cuts the output, it names this file. */
+  outputSource?: string;
 }
 
 const NO_FINAL_ANSWER = {
@@ -145,8 +148,8 @@ function bytes(text: string): number {
   return Buffer.byteLength(text, "utf8");
 }
 
-/** Truncate to at most `maxBytes` UTF-8 bytes on a safe char boundary. */
-function boundBytes(text: string, maxBytes: number): string {
+/** Truncate to at most `maxBytes` UTF-8 bytes on a safe char boundary; a cut ends with `mark`. */
+function boundBytes(text: string, maxBytes: number, mark = "\n…[truncated]"): string {
   if (bytes(text) <= maxBytes) return text;
   // Buffer slice can split a multi-byte scalar; back off a few bytes until valid.
   const buf = Buffer.from(text, "utf8").subarray(0, maxBytes);
@@ -155,21 +158,54 @@ function boundBytes(text: string, maxBytes: number): string {
       const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
         trim === 0 ? buf : buf.subarray(0, buf.length - trim),
       );
-      return `${decoded}\n…[truncated]`;
+      return `${decoded}${mark}`;
     } catch {
       /* prefix ended inside a scalar; back off */
     }
   }
-  return `${buf.toString("utf8")}\n…[truncated]`;
+  return `${buf.toString("utf8")}${mark}`;
 }
 
-function oneLine(text: string): string {
+/** The longest end of `text` within `maxBytes` UTF-8 bytes, starting on a whole character. */
+export function tailBytes(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  let start = Math.max(0, buf.length - maxBytes);
+  // A continuation byte (10xxxxxx) lies inside a character: start after it.
+  while (start < buf.length && (buf[start]! & 0xc0) === 0x80) start += 1;
+  return buf.subarray(start).toString("utf8");
+}
+
+/**
+ * A verbatim entry's output within `maxBytes` (#405). An answer keeps its
+ * start. A turn without a final answer keeps its end, where its newest
+ * recorded output is (its retained file opens with a fixed preamble). The cut
+ * mark sits outside the allowance and names the file holding the whole output.
+ */
+function boundOutput(turn: ContinuityTurn, maxBytes: number): string {
+  const text = turn.outputText.trim();
+  const whole = turn.outputSource
+    ? `; the whole output is ${bytes(text)} bytes, complete in ${turn.outputSource}`
+    : "";
+  if (!turn.noFinalAnswer) return boundBytes(text, maxBytes, `\n…[truncated${whole}]`);
+  if (bytes(text) <= maxBytes) return text;
+  return `[earlier output truncated${whole}]\n…${tailBytes(text, maxBytes)}`;
+}
+
+/** One line of at most COLLAPSE_PREFIX_CHARS UTF-16 units: the start of `text`,
+ * or its end when `keepEnd`. A cut is marked "…" outside the allowance and
+ * names `source`, the file holding the whole text, when given. */
+function oneLine(text: string, keepEnd = false, source?: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= COLLAPSE_PREFIX_CHARS) return flat;
+  const whole = source ? ` (whole output: ${source})` : "";
   // A cut between a surrogate pair's halves would leave a lone surrogate, which
   // becomes U+FFFD in THREAD.md; drop that character whole instead (#577).
+  if (keepEnd) {
+    const tail = flat.slice(-COLLAPSE_PREFIX_CHARS);
+    return `…${/^\p{Surrogate}/u.test(tail) ? tail.slice(1) : tail}${whole}`;
+  }
   const head = flat.slice(0, COLLAPSE_PREFIX_CHARS);
-  return `${/\p{Surrogate}$/u.test(head) ? head.slice(0, -1) : head}…`;
+  return `${/\p{Surrogate}$/u.test(head) ? head.slice(0, -1) : head}…${whole}`;
 }
 
 /** Delta turns for this lane: everything AFTER the checkpoint (all prior when
@@ -187,7 +223,7 @@ function deltaTurns(req: ContinuityRequest): ContinuityTurn[] {
 function verbatimEntry(turn: ContinuityTurn, index: number): string {
   const prompt = boundBytes(turn.prompt.trim(), PER_TURN_BUDGET_BYTES / 2);
   const output = turn.outputText.trim()
-    ? boundBytes(turn.outputText.trim(), PER_TURN_BUDGET_BYTES / 2)
+    ? boundOutput(turn, PER_TURN_BUDGET_BYTES / 2)
     : "_(no recorded output)_";
   const missing = noFinalAnswerText(turn);
   const said = missing
@@ -198,8 +234,11 @@ function verbatimEntry(turn: ContinuityTurn, index: number): string {
 
 function collapsedEntry(turn: ContinuityTurn, index: number): string {
   const prompt = oneLine(turn.prompt) || "(empty)";
-  const output = turn.outputText.trim() ? oneLine(turn.outputText) : "(no recorded output)";
   const missing = noFinalAnswerText(turn);
+  // An unfinished turn's line keeps the end of its output and names the file (#405).
+  const output = turn.outputText.trim()
+    ? oneLine(turn.outputText, missing !== null, missing ? turn.outputSource : undefined)
+    : "(no recorded output)";
   const speaker = missing ? `assistant (${missing.note})` : "assistant";
   return `- Turn ${index + 1} — user: ${prompt} · ${speaker}: ${output}`;
 }
