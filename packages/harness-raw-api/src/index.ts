@@ -37,7 +37,11 @@ export {
   type KeyCredential,
 } from "./key-allowance.js";
 import { parseChatCompletion } from "./parse.js";
-import { isTerminalProviderCompletion, providerCompletionErrorEvent } from "./providerError.js";
+import {
+  isTerminalProviderCompletion,
+  providerCompletionErrorEvent,
+  redactAndBound,
+} from "./providerError.js";
 import {
   estimateMessageTokens,
   finalWindowRefusal,
@@ -385,9 +389,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
                 }
               : {}),
             payload:
-              res.status === 429
-                ? { resets_at: resetsAt }
-                : { body: redactSecrets(body.slice(0, 500)) },
+              res.status === 429 ? { resets_at: resetsAt } : { body: redactAndBound(body).value },
           };
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
           return;
