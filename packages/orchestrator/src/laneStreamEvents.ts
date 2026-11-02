@@ -92,7 +92,8 @@ export function emitTransientRetryPlan(
  * zero included, into the attempt's running cost and disclose it as a
  * `budget.observation`. An event without an amount reports nothing. The attempt's
  * telemetry has already classified the event, so `amount_kind` is the meaning the
- * ledger will settle (the live budget projection reads a zero row by it). */
+ * ledger will settle it as. The row is evidence of that amount only: the live
+ * budget projection totals nonzero rows as an estimate until the ledger settles. */
 export function observeUsageSpend(
   ev: { type: string; usage?: { cost_usd?: number | null; estimated?: boolean | null } | null },
   emit: (type: "budget.observation", payload: Record<string, unknown>) => void,

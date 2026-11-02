@@ -73,8 +73,13 @@ function repo(): string {
   return dir;
 }
 
+/** Frames for every dispatch, or for each dispatch by its 1-based order (a real
+ * retry or another attempt is the next dispatch). */
+type Script = readonly Frame[] | ((dispatch: number) => readonly Frame[]);
+
 /** Every lane reads the same frames; only an implementing attempt also writes. */
-function scripted(id: string, frames: readonly Frame[], onRun?: () => void): HarnessAdapter {
+function scripted(id: string, script: Script, onRun?: () => void): HarnessAdapter {
+  let dispatches = 0;
   return {
     id,
     async discover() {
@@ -102,7 +107,9 @@ function scripted(id: string, frames: readonly Frame[], onRun?: () => void): Har
     },
     async *run(spec) {
       onRun?.();
+      dispatches += 1;
       if (spec.intent === "implement") writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
+      const frames = typeof script === "function" ? script(dispatches) : script;
       for (const frame of frames)
         yield { ...frame, session_id: spec.session_id, ts: new Date().toISOString() } as never;
     },
@@ -143,7 +150,7 @@ const RUN_TIMEOUT_MS = 180_000;
 async function run(
   lane: Lane,
   id: string,
-  frames: readonly Frame[],
+  frames: Script,
   options: {
     paidBudget?: PaidBudget;
     reviewers?: ReviewerSpec[];
@@ -186,17 +193,21 @@ async function run(
     params: { paidBudget },
   };
   const firstCash = events.findIndex((event) => event.type === "budget.cash");
-  const beforeSettlement = events.slice(0, firstCash === -1 ? events.length : firstCash);
+  /** The live control-API reading once the run had written its first `count` events. */
+  const at = (count: number) =>
+    budgetSnapshot(record, null, events.slice(0, count) as never, COMPLETE_INTEGRITY);
   return {
     result,
     dispatched,
+    events,
+    at,
+    /** Events written before the first settlement (all of them if none settled). */
+    beforeSettlement: firstCash === -1 ? events.length : firstCash,
     /** Settlements the real lane handed to the real ledger. */
     settlements: settle.mock.calls.map((call) => call[1]),
-    spendRows: events
-      .filter((event) => event.type === "budget.observation" && event.payload["kind"] === "spend")
-      .map((event) => event.payload),
+    spendRows: events.filter(isSpendRow).map((event) => event.payload),
     /** The control-API reading the moment before the first settlement. */
-    live: budgetSnapshot(record, null, beforeSettlement as never, COMPLETE_INTEGRITY),
+    live: at(firstCash === -1 ? events.length : firstCash),
     /** The control-API reading of the finished run, through the real event fold. */
     terminal: budgetSnapshot(record, decision),
     metric: loadHarnessMetrics(configDir)[id]?.avg_cost_usd,
@@ -208,6 +219,52 @@ async function run(
         join(result.runDir, "attempts", attemptId, "attempt.yaml"),
       ),
   };
+}
+
+type Outcome = Awaited<ReturnType<typeof run>>;
+
+const isSpendRow = (event: RawEvent) =>
+  event.type === "budget.observation" && event.payload["kind"] === "spend";
+const isHarness = (type: string) => (event: RawEvent) =>
+  event.type === "harness.event" && event.payload["type"] === type;
+
+/** Index of the `nth` (1-based) event matching `match`, or -1. */
+function nth(events: readonly RawEvent[], match: (event: RawEvent) => boolean, n = 1): number {
+  let seen = 0;
+  return events.findIndex((event) => match(event) && ++seen === n);
+}
+
+/** Before any settlement the live reading is an estimate: it never states an
+ * exact total, a known valuation from a zero, or the ledger's certainty, at any
+ * event the run wrote, whatever reported zeros arrived. */
+function expectEstimatesBeforeSettlement(outcome: Outcome): void {
+  for (let count = 1; count <= outcome.beforeSettlement; count++) {
+    const reading = outcome.at(count);
+    const where = `after event ${count} (${outcome.events[count - 1]!.type})`;
+    expect(reading.cashKnowledge, where).toBeUndefined();
+    if (reading.spendUsd !== null) expect(reading.estimated, where).toBe(true);
+    expect(reading.valuationKnowledge, where).not.toBe("exact");
+    if (reading.valuationUsd !== null) expect(reading.valuationUsd, where).toBeGreaterThan(0);
+  }
+}
+
+/** From the first settlement on, the reading after every event is exactly the
+ * latest settlement's cumulative ledger disclosure, as before #171: a clean zero
+ * is exact there, an unpriced try unknown, and a later row changes nothing. */
+function expectEachSettlementReadsItsLedger(outcome: Outcome): void {
+  let latest: Record<string, unknown> | null = null;
+  outcome.events.forEach((event, index) => {
+    if (event.type === "budget.cash") latest = event.payload;
+    if (!latest) return;
+    const cash: Record<string, unknown> = latest;
+    expect(outcome.at(index + 1), `after event ${index + 1} (${event.type})`).toMatchObject({
+      cashKnowledge: cash["cash_knowledge"],
+      spendUsd: cash["cash_knowledge"] === "unknown" ? null : cash["cash_spend_usd"],
+      estimated: cash["cash_knowledge"] !== "exact",
+      valuationKnowledge: cash["valuation_knowledge"],
+      valuationUsd: cash["valuation_knowledge"] === "unknown" ? null : cash["valuation_usd"],
+    });
+  });
 }
 
 const withoutProvenance = ({ provenance: _provenance, ...rest }: BudgetSettlement) => rest;
@@ -233,6 +290,7 @@ interface Scenario {
   /** The attempt's one spend row; null when the event reported no amount. */
   row: { usd: number; estimated: boolean; amount_kind: "cash" | "valuation" | "unknown" } | null;
   settlement: Omit<BudgetSettlement, "provenance">;
+  /** The reading just before the first settlement: an estimate, never exact. */
   live: {
     spendUsd: number | null;
     estimated: boolean;
@@ -279,7 +337,7 @@ const CASH_ZERO: Scenario = {
   usage: { ...TOKENS_ONLY, cost_usd: 0 },
   row: { usd: 0, estimated: false, amount_kind: "cash" },
   settlement: { knowledge: "exact", cashKnowledge: "exact", source: BY_ROUTE, cashUsd: 0 },
-  live: { spendUsd: 0, estimated: false, ...NO_VALUATION },
+  live: { spendUsd: 0, estimated: true, ...NO_VALUATION },
   terminal: {
     spendUsd: 0,
     controllableSpendUsd: 0,
@@ -325,7 +383,7 @@ const VALUATION_ZERO: Scenario = {
     cashUsd: 0,
     valuationUsd: 0,
   },
-  live: { spendUsd: 0, estimated: true, valuationUsd: 0, valuationKnowledge: "exact" },
+  live: { spendUsd: 0, estimated: true, ...NO_VALUATION },
   terminal: {
     spendUsd: 0,
     controllableSpendUsd: 0,
@@ -351,7 +409,7 @@ const ESTIMATED_VALUATION_ZERO: Scenario = {
     cashUsd: 0,
     valuationUsd: 0,
   },
-  live: { spendUsd: 0, estimated: true, valuationUsd: 0, valuationKnowledge: "estimated" },
+  live: { spendUsd: 0, estimated: true, ...NO_VALUATION },
   terminal: {
     spendUsd: 0,
     controllableSpendUsd: 0,
@@ -403,7 +461,7 @@ const INCLUDED_VALUATION_ZERO: Scenario = {
     cashUsd: 0,
     valuationUsd: 0,
   },
-  live: { spendUsd: 0, estimated: true, valuationUsd: 0, valuationKnowledge: "exact" },
+  live: { spendUsd: 0, estimated: true, ...NO_VALUATION },
   terminal: {
     spendUsd: null,
     controllableSpendUsd: 0,
@@ -499,6 +557,8 @@ const CASES: { lane: Lane; scenario: Scenario }[] = [
   ...(["plan", "deep scan"] as const).flatMap((lane) =>
     [ESTIMATED_CASH_ZERO, ABSENT].map((scenario) => ({ lane, scenario })),
   ),
+  // Three trackers' clean exact zeros: an estimate until each settles exact.
+  { lane: "deep scan", scenario: CASH_ZERO },
   ...[CASH_ZERO, ESTIMATED_VALUATION_ZERO, ABSENT].map((scenario) => ({
     lane: "agent" as const,
     scenario,
@@ -523,7 +583,9 @@ describe("an observed zero keeps its meaning through every lane (#171)", () => {
           ? Array.from({ length: attempts }, () => expect.objectContaining(scenario.row!))
           : [],
       );
+      expectEstimatesBeforeSettlement(outcome);
       expect(outcome.live).toMatchObject(scenario.live);
+      expectEachSettlementReadsItsLedger(outcome);
       expect(outcome.terminal).toMatchObject(scenario.terminal);
       if (lane !== "agent") {
         // Only a candidate attempt is a routing sample.
@@ -549,34 +611,191 @@ describe("an observed zero keeps its meaning through every lane (#171)", () => {
 });
 
 describe("an observed zero certifies nothing beyond itself (#171)", () => {
+  const API = { credential_route: "managed_api_key" as const };
+  /** A try the lane retries: a typed transient failure before any deliverable. */
+  const failedTry = (...frames: Frame[]): Frame[] => [
+    { ...API, type: "started" },
+    ...frames,
+    {
+      ...API,
+      type: "error",
+      error: "connection reset",
+      transient: { kind: "network", retry_delay_ms: 0 },
+    },
+    { ...API, type: "completed" },
+  ];
+  /** A delivering try that reports no amount: its paid cash stays unknown. */
+  const unpricedTry: Frame[] = [
+    { ...API, type: "started" },
+    { ...API, type: "message", text: "# Report\n\nDone.", final: true },
+    { ...API, type: "completed" },
+  ];
+  const ESTIMATE = { spendUsd: 0, estimated: true, cashKnowledge: undefined, ...NO_VALUATION };
+  const NOTHING_PRICED = { spendUsd: null, cashKnowledge: undefined, ...NO_VALUATION };
+  const UNVERIFIABLE = {
+    spendUsd: null,
+    controllableSpendUsd: null,
+    remainingUsd: null,
+    estimated: true,
+    cashKnowledge: "unknown",
+  };
+
   it(
-    "a later zero receipt leaves an earlier unpriced paid interval unverifiable",
+    "an exact zero receipt, then an unpriced retry: an estimate at every boundary, unknown once settled",
     async () => {
-      const route = { credential_route: "managed_api_key" as const };
       const outcome = await run(
         "ask",
-        "unpriced-then-zero",
-        [
-          { ...route, type: "started" },
-          { ...route, type: "completed" },
-          ...interval("managed_api_key", { cost_usd: 0 }),
-        ],
+        "zero-then-unpriced-retry",
+        (dispatch) =>
+          dispatch === 1
+            ? failedTry({ ...API, type: "usage", usage: { cost_usd: 0 } })
+            : unpricedTry,
         { paidBudget: { kind: "finite", maxUsd: 1 } },
       );
+      expect(outcome.dispatched).toBe(2);
+      expect(outcome.settlements.map(withoutProvenance)).toEqual([
+        { knowledge: "unknown", cashKnowledge: "unknown", source: BY_ROUTE, cashUsd: 0 },
+      ]);
+      // The receipt itself survives as evidence of its own amount.
+      expect(outcome.spendRows).toEqual([
+        expect.objectContaining({ usd: 0, estimated: false, amount_kind: "cash" }),
+      ]);
+      const { events } = outcome;
+      const receipt = nth(events, isSpendRow);
+      const retryStarted = nth(events, isHarness("started"), 2);
+      const retryEnded = nth(events, isHarness("completed"), 2);
+      expect([receipt, retryStarted, retryEnded].every((index) => index >= 0)).toBe(true);
+      expect(receipt < retryStarted && retryEnded < outcome.beforeSettlement).toBe(true);
+      // The receipt, the retry's start, its end without an amount, and the
+      // moment before settlement all read the same estimate with its cap headroom
+      // as an estimate too; never an exact $0.
+      for (const count of [receipt + 1, retryStarted + 1, retryEnded + 1, outcome.beforeSettlement])
+        expect(outcome.at(count), `after event ${count}`).toMatchObject({
+          ...ESTIMATE,
+          remainingUsd: 1,
+        });
+      expectEstimatesBeforeSettlement(outcome);
+      expect(outcome.at(outcome.beforeSettlement + 1)).toMatchObject(UNVERIFIABLE);
+      expectEachSettlementReadsItsLedger(outcome);
+      expect(outcome.terminal).toMatchObject(UNVERIFIABLE);
+      expect(outcome.result.facts.reason).toBe("cost_unverifiable");
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "an unpriced try, then an exact zero retry: nothing priced, then an estimate, unknown once settled",
+    async () => {
+      const outcome = await run(
+        "ask",
+        "unpriced-then-zero-retry",
+        (dispatch) => (dispatch === 1 ? failedTry() : interval("managed_api_key", { cost_usd: 0 })),
+        { paidBudget: { kind: "finite", maxUsd: 1 } },
+      );
+      expect(outcome.dispatched).toBe(2);
       expect(outcome.settlements.map(withoutProvenance)).toEqual([
         { knowledge: "unknown", cashKnowledge: "unknown", source: BY_ROUTE, cashUsd: 0 },
       ]);
       expect(outcome.spendRows).toEqual([
         expect.objectContaining({ usd: 0, estimated: false, amount_kind: "cash" }),
       ]);
+      const { events } = outcome;
+      const firstStarted = nth(events, isHarness("started"));
+      const firstEnded = nth(events, isHarness("completed"));
+      const retryStarted = nth(events, isHarness("started"), 2);
+      const receipt = nth(events, isSpendRow);
+      expect(firstEnded < retryStarted && retryStarted < receipt).toBe(true);
+      for (const count of [firstStarted + 1, firstEnded + 1, retryStarted + 1])
+        expect(outcome.at(count), `after event ${count}`).toMatchObject(NOTHING_PRICED);
+      for (const count of [receipt + 1, outcome.beforeSettlement])
+        expect(outcome.at(count), `after event ${count}`).toMatchObject(ESTIMATE);
+      expectEstimatesBeforeSettlement(outcome);
+      expect(outcome.at(outcome.beforeSettlement + 1)).toMatchObject(UNVERIFIABLE);
+      expectEachSettlementReadsItsLedger(outcome);
+      expect(outcome.terminal).toMatchObject(UNVERIFIABLE);
+      expect(outcome.result.facts.reason).toBe("cost_unverifiable");
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it(
+    "concurrent scouts, one clean and one with a later unpriced try: estimates, then each settlement's ledger",
+    async () => {
+      const zero = interval("managed_api_key", { cost_usd: 0 });
+      // Dispatches 1 and 2 are the two scouts in either attempt order; 3 is the synth.
+      const outcome = await run("deep scan", "mixed-scouts", (dispatch) =>
+        dispatch === 2
+          ? [...zero, { ...API, type: "started" }, { ...API, type: "completed" }]
+          : zero,
+      );
+      expect(outcome.result.lifecycle, JSON.stringify(outcome.result.facts)).toBe("succeeded");
+      expect(outcome.dispatched).toBe(3);
+      expect(outcome.settlements.map((settlement) => settlement.cashKnowledge).sort()).toEqual([
+        "exact",
+        "exact",
+        "unknown",
+      ]);
+      expect(outcome.spendRows).toEqual(
+        Array.from({ length: 3 }, () =>
+          expect.objectContaining({ usd: 0, estimated: false, amount_kind: "cash" }),
+        ),
+      );
+      expectEstimatesBeforeSettlement(outcome);
+      expectEachSettlementReadsItsLedger(outcome);
+      expect(outcome.terminal).toMatchObject({ spendUsd: null, cashKnowledge: "unknown" });
+    },
+    RUN_TIMEOUT_MS,
+  );
+
+  it.each([
+    ["the unknown zero first", ["unknown", "valuation"]],
+    ["the valuation zero first", ["valuation", "unknown"]],
+  ] as const)(
+    "a paid zero of unknown meaning beside a zero valuation, %s: never a known valuation",
+    async (_order, kinds) => {
+      const native = { credential_route: "vendor_native" as const };
+      const zeroOf = (kind: "unknown" | "valuation", last: boolean): Frame[] => {
+        const common =
+          kind === "unknown" ? { ...native, processing_cost_basis: PAID_CREDITS } : native;
+        const usage =
+          kind === "unknown"
+            ? { cost_usd: 0, cost_basis: { kind: "unknown" as const, source: "fixture" } }
+            : { cost_usd: 0 };
+        return [
+          { ...common, type: "started" },
+          ...(last ? [{ ...common, type: "message" as const, text: "# Report", final: true }] : []),
+          { ...common, type: "usage", usage },
+          { ...common, type: "completed" },
+        ];
+      };
+      const outcome = await run("ask", `unknown-and-valuation-${kinds[0]}`, [
+        ...zeroOf(kinds[0], false),
+        ...zeroOf(kinds[1], true),
+      ]);
+      expect(outcome.result.lifecycle, JSON.stringify(outcome.result.facts)).toBe("succeeded");
+      expect(outcome.spendRows).toEqual(
+        kinds.map((kind) => expect.objectContaining({ usd: 0, amount_kind: kind })),
+      );
+      expect(outcome.settlements.map(withoutProvenance)).toEqual([
+        {
+          knowledge: "unknown",
+          cashKnowledge: "unknown",
+          valuationKnowledge: "unknown",
+          source: BY_ROUTE,
+          cashUsd: 0,
+          valuationUsd: 0,
+        },
+      ]);
+      const { events } = outcome;
+      for (const count of [nth(events, isSpendRow) + 1, nth(events, isSpendRow, 2) + 1])
+        expect(outcome.at(count), `after event ${count}`).toMatchObject(ESTIMATE);
+      expectEstimatesBeforeSettlement(outcome);
+      expectEachSettlementReadsItsLedger(outcome);
       expect(outcome.terminal).toMatchObject({
         spendUsd: null,
-        controllableSpendUsd: null,
-        remainingUsd: null,
-        estimated: true,
         cashKnowledge: "unknown",
+        ...NO_VALUATION,
       });
-      expect(outcome.result.facts.reason).toBe("cost_unverifiable");
     },
     RUN_TIMEOUT_MS,
   );

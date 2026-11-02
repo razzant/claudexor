@@ -23,10 +23,6 @@ export interface BudgetEventFold {
   /** Summed nonzero `budget.observation` spend, the legacy cash and valuation fallback. */
   observationUsd: number;
   sawObservation: boolean;
-  /** A zero spend row named its amount as cash, before any settlement says so. */
-  cashZeroObserved: boolean;
-  /** Certainty of the zero spend rows that named their amount as valuation. */
-  valuationZeroKnowledge?: Knowledge;
   /** An estimated observation or harness usage report. */
   observationEstimated: boolean;
   usageCostUsd: number;
@@ -42,7 +38,6 @@ export function emptyBudgetFold(): BudgetEventFold {
     componentAware: false,
     observationUsd: 0,
     sawObservation: false,
-    cashZeroObserved: false,
     observationEstimated: false,
     usageCostUsd: 0,
     sawCost: false,
@@ -76,18 +71,12 @@ export function addBudgetEvent(fold: BudgetEventFold, ev: Record<string, unknown
   }
   if (ev["type"] === "budget.observation" && payload["kind"] === "spend") {
     const usd = payload["usd"];
-    if (typeof usd === "number" && Number.isFinite(usd)) {
-      if (usd !== 0) {
-        fold.observationUsd += usd;
-        fold.sawObservation = true;
-      } else if (payload["amount_kind"] === "cash") {
-        fold.cashZeroObserved = true;
-      } else if (payload["amount_kind"] === "valuation") {
-        // Zero alone proves no valuation, like a legacy budget.cash zero; only
-        // a row naming its meaning does.
-        fold.valuationZeroKnowledge =
-          payload["estimated"] === true ? "estimated" : (fold.valuationZeroKnowledge ?? "exact");
-      }
+    // A reported zero is evidence of that amount alone. Before settlement it
+    // adds no total, certainty or valuation: another try of its attempt may be
+    // unpriced, and only the ledger's budget.cash states an exact $0.
+    if (typeof usd === "number" && Number.isFinite(usd) && usd !== 0) {
+      fold.observationUsd += usd;
+      fold.sawObservation = true;
     }
     if (payload["estimated"] === true) fold.observationEstimated = true;
     return;
@@ -117,8 +106,7 @@ export function foldBudgetEvents(events: readonly Record<string, unknown>[]): Bu
  * (last-wins, cumulative). An UNKNOWN valuation (no usage ever reported — e.g.
  * a Cursor draft) stays NULL and is never coerced to a fake $0. Before the first
  * settlement, and for runs predating budget.cash, the fallback is the summed
- * nonzero `budget.observation` spend, then a zero row naming itself valuation; a
- * cash zero is no valuation at all.
+ * nonzero `budget.observation` spend; a zero row proves no valuation.
  */
 export function budgetValuation(fold: BudgetEventFold): {
   valuationUsd: number | null;
@@ -131,8 +119,6 @@ export function budgetValuation(fold: BudgetEventFold): {
     };
   if (fold.sawObservation)
     return { valuationUsd: fold.observationUsd, valuationKnowledge: "estimated" };
-  if (fold.valuationZeroKnowledge)
-    return { valuationUsd: 0, valuationKnowledge: fold.valuationZeroKnowledge };
   return { valuationUsd: null, valuationKnowledge: "unknown" };
 }
 

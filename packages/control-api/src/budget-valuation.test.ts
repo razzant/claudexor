@@ -82,15 +82,15 @@ describe("budgetValuationFromEvents (QA-023c)", () => {
     [false, "exact"],
     [true, "estimated"],
   ] as const)(
-    "keeps a reported valuation zero (estimated=%s) before and after settlement",
+    "knows a reported valuation zero (estimated=%s) only once its settlement states it",
     (estimated, knowledge) => {
       const row = {
         type: "budget.observation",
         payload: { kind: "spend", usd: 0, estimated, amount_kind: "valuation" },
       };
       expect(budgetValuationFromEvents([row])).toEqual({
-        valuationUsd: 0,
-        valuationKnowledge: knowledge,
+        valuationUsd: null,
+        valuationKnowledge: "unknown",
       });
       expect(
         budgetValuationFromEvents([
@@ -109,8 +109,8 @@ describe("budgetValuationFromEvents (QA-023c)", () => {
     },
   );
 
-  it.each(["cash", "unknown", undefined])(
-    "never reads a %s zero spend row as an estimated valuation",
+  it.each(["cash", "valuation", "unknown", undefined])(
+    "never reads a %s zero spend row as a valuation",
     (amount_kind) => {
       expect(
         budgetValuationFromEvents([

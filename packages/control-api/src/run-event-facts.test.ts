@@ -337,58 +337,138 @@ describe("folded run event facts at the detail job", () => {
     expect((await bothLanes(r.record)).budget.spendUsd).toBe(6);
   });
 
-  it("reads a reported cash zero the same across appends, before and after its settlement (#171)", async () => {
-    const r = run("zero");
-    const usage = r.line("harness.event", {
-      harness_id: "raw-api",
-      attempt_id: "a01",
-      type: "usage",
-      usage: { cost_usd: 0 },
-    });
-    writeFileSync(r.path, usage);
-    // Before any spend row the legacy reading of the usage event stays an estimate.
-    let detail = await bothLanes(r.record);
-    expect(detail.budget).toMatchObject({ spendUsd: 0, estimated: true, valuationUsd: null });
-
-    appendFileSync(
-      r.path,
+  describe("a reported zero is evidence, never an exact total before settlement (#171)", () => {
+    type Fixture = ReturnType<typeof run>;
+    /** One lane spend row for a reported zero of the given meaning. */
+    const zeroRow = (r: Fixture, attempt: string, amountKind: string, estimated = false) =>
       r.line("budget.observation", {
         harness_id: "raw-api",
-        attempt_id: "a01",
+        attempt_id: attempt,
         kind: "spend",
         usd: 0,
-        estimated: false,
-        amount_kind: "cash",
-      }),
-    );
-    detail = await bothLanes(r.record);
-    expect(detail.budget).toMatchObject({
-      spendUsd: 0,
-      estimated: false,
-      valuationUsd: null,
-      valuationKnowledge: "unknown",
-      remainingUsd: 10,
-    });
-
-    appendFileSync(
-      r.path,
+        estimated,
+        amount_kind: amountKind,
+      });
+    /** The usage event the row discloses, journaled just before it. */
+    const usageZero = (r: Fixture, attempt: string) =>
+      r.line("harness.event", {
+        harness_id: "raw-api",
+        attempt_id: attempt,
+        type: "usage",
+        usage: { cost_usd: 0 },
+      });
+    const settle = (r: Fixture, cash: "exact" | "unknown", valuation: "exact" | "unknown") =>
       r.line("budget.cash", {
         cash_spend_usd: 0,
         valuation_usd: 0,
-        estimated: false,
-        valuation_knowledge: "unknown",
-        cash_knowledge: "exact",
-        controllable_cash_knowledge: "exact",
-      }),
-    );
-    detail = await bothLanes(r.record);
-    expect(detail.budget).toMatchObject({
-      cashKnowledge: "exact",
+        estimated: cash !== "exact",
+        valuation_knowledge: valuation,
+        cash_knowledge: cash,
+        controllable_cash_knowledge: cash,
+      });
+    /** The pre-#171 reading of a zero usage report: an estimate with its derived headroom. */
+    const ESTIMATE = {
       spendUsd: 0,
-      estimated: false,
+      estimated: true,
+      remainingUsd: 10,
       valuationUsd: null,
       valuationKnowledge: "unknown",
-      remainingUsd: 10,
+    };
+
+    it.each([
+      ["a cash zero", [["a01", "cash"]]],
+      ["a valuation zero", [["a01", "valuation"]]],
+      [
+        "an unknown zero, then a valuation zero",
+        [
+          ["a01", "unknown"],
+          ["a01", "valuation"],
+        ],
+      ],
+      [
+        "a valuation zero, then an unknown zero",
+        [
+          ["a01", "valuation"],
+          ["a01", "unknown"],
+        ],
+      ],
+      [
+        "two attempts' zeros",
+        [
+          ["a01", "cash"],
+          ["a02", "valuation"],
+        ],
+      ],
+    ] as const)("%s reads as the usage estimate after every append", async (name, rows) => {
+      const r = run(`estimate-${name.replace(/[^a-z0-9]+/g, "-")}`);
+      writeFileSync(r.path, "");
+      for (const [attempt, kind] of rows) {
+        appendFileSync(r.path, usageZero(r, attempt) + zeroRow(r, attempt, kind));
+        const detail = await bothLanes(r.record);
+        expect(detail.budget).toMatchObject(ESTIMATE);
+        expect(detail.budget.cashKnowledge).toBeUndefined();
+      }
+    });
+
+    it("then reads a clean settlement's exact $0 cash and valuation, which a later zero leaves alone", async () => {
+      const r = run("clean-zero");
+      writeFileSync(r.path, usageZero(r, "a01") + zeroRow(r, "a01", "valuation"));
+      expect((await bothLanes(r.record)).budget).toMatchObject(ESTIMATE);
+
+      appendFileSync(r.path, settle(r, "exact", "exact"));
+      const settled = {
+        cashKnowledge: "exact",
+        spendUsd: 0,
+        estimated: false,
+        remainingUsd: 10,
+        valuationUsd: 0,
+        valuationKnowledge: "exact",
+      };
+      expect((await bothLanes(r.record)).budget).toMatchObject(settled);
+
+      // After a settlement the ledger's latest disclosure governs, as before #171.
+      appendFileSync(r.path, usageZero(r, "a02") + zeroRow(r, "a02", "cash"));
+      expect((await bothLanes(r.record)).budget).toMatchObject(settled);
+    });
+
+    it("then reads a settlement that found an unpriced try as unknown", async () => {
+      const r = run("unknown-zero");
+      writeFileSync(r.path, usageZero(r, "a01") + zeroRow(r, "a01", "cash"));
+      expect((await bothLanes(r.record)).budget).toMatchObject(ESTIMATE);
+
+      appendFileSync(r.path, settle(r, "unknown", "unknown"));
+      expect((await bothLanes(r.record)).budget).toMatchObject({
+        cashKnowledge: "unknown",
+        spendUsd: null,
+        estimated: true,
+        remainingUsd: null,
+        valuationUsd: null,
+        valuationKnowledge: "unknown",
+      });
+    });
+
+    it("leaves a positive amount's legacy estimate untouched beside zero rows", async () => {
+      const r = run("positive-beside-zero");
+      writeFileSync(
+        r.path,
+        zeroRow(r, "a01", "cash") +
+          r.line("budget.observation", {
+            harness_id: "raw-api",
+            attempt_id: "a02",
+            kind: "spend",
+            usd: 0.25,
+            estimated: false,
+            amount_kind: "cash",
+          }) +
+          zeroRow(r, "a03", "valuation"),
+      );
+      expect((await bothLanes(r.record)).budget).toMatchObject({
+        spendUsd: 0.25,
+        estimated: true,
+        remainingUsd: 9.75,
+        valuationUsd: 0.25,
+        valuationKnowledge: "estimated",
+      });
     });
   });
 
