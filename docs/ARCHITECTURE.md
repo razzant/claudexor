@@ -2451,7 +2451,16 @@ workspace work; they are never ignored or silently redirected.
 
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
-the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
+the harness `cwd` is the envelope worktree. That worktree is a complete checkout of
+its base commit or the run does not start: when no object directory holds the
+content of some of its files (what a partial clone never fetched, or a sparse
+checkout of one left out), or Git cannot copy a shallow source because its branches
+reach such content, the run fails in its workspace phase naming what is missing and
+the two ways forward, a complete copy of that content or an in-place run, and
+Claudexor fetches nothing. Such an envelope never started, so the call that made its
+directory removes it before refusing; a removal that fails keeps the refusal, adds what
+was left to its message and notes the fault beside it, and a directory that already
+existed is never removed. Proven work product is the git diff in that worktree, a
 declared run artifact, or the text answer. Capture reads only the physical execution root, whatever
 its spelling: a project under `/tmp` is captured normally, while a write outside
 the root, such as an absolute `/tmp/...` host path, does not enter the project
@@ -8113,9 +8122,27 @@ code touching one of these areas must honor it or change it explicitly here.
   patterns is still skipped by `add -A`, so a snapshot and an in-place turn's
   capture miss that edit, as before. Such a timeout fails that capture or snapshot,
   except that the render's only leaves its view out (`render_failed`) and the
-  inventory pass only leaves its inventory out. Claudexor's own isolated clones list the store as
-  a second alternate, and a dirty isolated base enters the store before the
-  clone, so it resolves after the user's prune.
+  inventory pass only leaves its inventory out. Claudexor's own isolated clones (an
+  envelope, a delivery's fresh verify) read the source repository's object directory
+  as their first alternate. `git clone --shared` writes it only when Git clones the
+  path locally; a shallow source Git silently clones through its transport instead,
+  so Claudexor writes that alternate itself, and a dirty snapshot or a composed tree
+  that only a shallow target holds still checks out in the verify clone. A shallow
+  source Git copies locally (a linked worktree of a shallow repository) brings its
+  refs but not its shallow boundary, so the clone also gets the source's own
+  `shallow` file, located by `git rev-parse --git-path shallow`; history reads there
+  stop at that boundary instead of failing on parents the clone does not hold. These
+  clones list the store as a second alternate, and a dirty isolated base enters the
+  store before the clone, so it resolves after the user's prune. A clone whose
+  checkout leaves files absent because none of its object directories holds their
+  content is refused, never used: an envelope before its run, a verify before any
+  write. Git's transport copy of a shallow source must read everything HEAD, the
+  branches and the tags reach down to the boundary, and fails on what a partial clone
+  never fetched. A failed clone of a shallow source therefore keeps Git's full report
+  first and, when a `rev-list --missing=print` walk that fetches nothing finds such
+  content, adds it (the base commit's files, else a count) as an observation that does
+  not prove the cause: the same clone can fail first on an occupied or unwritable
+  destination. Any other clone failure keeps Git's report alone.
   Delivery, adoption and revert of these results, with their typed refusals,
   are described under [Live-tree mutation paths](#live-tree-mutation-paths)
   (items 1, 3 and 6). Retention prunes the store by reachability

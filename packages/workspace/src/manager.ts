@@ -11,6 +11,7 @@ import type {
   WorkspaceKind,
 } from "@claudexor/schema";
 import { captureObjectFacts as objectFacts } from "./git-transient-capture.js";
+import { discardUnstartedEnvelope } from "./cleanup-fault.js";
 import { isolatedBaseCustody } from "./capture-objects.js";
 import { repositoryObjectFormat } from "./git-result.js";
 import { assertProjectObjectFormat } from "./object-store.js";
@@ -170,6 +171,7 @@ export class WorkspaceManager {
     const base = this.envelopeBase(opts.taskId, opts.attemptId);
     const envelopeId = newId("env");
     const workspaceMode = opts.inPlace ? "in_place" : "isolated";
+    const madeHere = !existsSync(base); // only an envelope this call made is removed on refusal
     ensureDir(base);
     const homeDir = join(base, "home");
     const harnessConfigDirs = ensureHarnessHome(homeDir);
@@ -272,7 +274,9 @@ export class WorkspaceManager {
       baseSha,
       [base, ...(opts.custody ? [opts.custody.runDir] : [])],
     );
-    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects);
+    await isolatedCloneAdd(this.repoRoot, path, branch, baseSha, storeObjects).catch((error) => {
+      throw madeHere ? discardUnstartedEnvelope(base, error) : error;
+    });
     writeFileSync(join(base, "private-clone-v1"), "private Git authority\n");
 
     // AGENTS.md bridge (INV-113): the checkout omits the untracked project-root bridge,
