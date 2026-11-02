@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -124,13 +124,27 @@ function fixture(options: { runDir?: boolean; notices?: boolean } = {}) {
   const notice = (ids?: string[]) => {
     for (const listener of noticeListeners) listener(ids ? new Set(ids) : undefined);
   };
+  /** A bus event for a run, as another appender for it publishes one. */
+  const push = (runId: string) => {
+    for (const listener of busListeners) listener({ run_id: runId });
+  };
   const setLifecycle = (state: string) => {
     lifecycle = state;
     record.state = state;
   };
   const open = (lastEventId = 0) =>
     streamRunEvents(ctx, "job-x", lastEventId, req as never, res as never);
-  return { runDir, path, record, ctx, res, counts, writer, notice, setLifecycle, open };
+  return { runDir, path, record, ctx, res, counts, writer, notice, push, setLifecycle, open };
+}
+
+/** Put valid run events back at `path` (a late mirror, or a restore by hand). */
+function restoreLog(path: string, ...texts: string[]) {
+  const scratch = mkdtempSync(join(tmpdir(), "claudexor-sse-restore-"));
+  dirs.push(scratch);
+  const source = new EventLog(join(scratch, "events.jsonl"), "run-x", "task-x");
+  for (const text of texts) source.emit("harness.event", { text });
+  source.dispose();
+  copyFileSync(join(scratch, "events.jsonl"), path);
 }
 
 describe("quiet run event stream", () => {
@@ -320,6 +334,48 @@ describe("quiet run event stream", () => {
     expect(f.res.body).toContain('"code":"run_event_not_found"');
     expect(f.res.body).toContain('"retryable":true');
     expect(f.res.body).not.toContain("event: end\n");
+  });
+
+  it("reads a log that reappears without a live writer after a notice, not per tick", async () => {
+    const tick = manualPollTimer();
+    const f = fixture();
+    await f.open();
+    expect(f.counts.replays).toBe(1);
+    restoreLog(f.path, "a question");
+    await tick(20);
+    expect(f.counts.replays).toBe(1);
+    expect(seqs(f.res.body)).toEqual([]);
+    f.notice(["job-x"]);
+    await vi.waitFor(() => expect(seqs(f.res.body)).toEqual([1]));
+    expect(f.res.ended).toBe(false);
+  });
+
+  it("reads a missing log again after a bus push for its run", async () => {
+    const tick = manualPollTimer();
+    const f = fixture({ notices: false });
+    await f.open();
+    restoreLog(f.path, "progress");
+    f.push("run-other");
+    await tick(20);
+    expect(f.counts.replays).toBe(1);
+    f.push("run-x");
+    await vi.waitFor(() => expect(seqs(f.res.body)).toEqual([1]));
+  });
+
+  it("re-reads a log missing under its live writer only once the writer moves", async () => {
+    const tick = manualPollTimer();
+    const f = fixture();
+    // The registered writer without a bus: only its in-memory seq can move.
+    const log = new EventLog(f.path, "run-x", "task-x");
+    logs.push(log);
+    log.emit("run.created");
+    rmSync(f.path);
+    await f.open();
+    await tick(20);
+    expect(f.counts.replays).toBe(1);
+    log.emit("harness.event", { text: "after the removal" });
+    await tick(1);
+    expect(seqs(f.res.body)).toEqual([2]);
   });
 
   it("names retention when a reclaimed run's stream cannot deliver its terminal", async () => {

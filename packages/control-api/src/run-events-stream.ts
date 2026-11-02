@@ -65,8 +65,11 @@ export async function streamRunEvents(
   let closed = false;
   let terminalSeen = false;
   // A bound run's log exists from `run.created` on: one found missing was
-  // removed (retention, or by hand) and is read again only on a change.
+  // removed (retention, or by hand). It is read again only after a change: its
+  // live writer moved past the seq it held at the miss, or a bus push or notice
+  // for this run arrived.
   let logMissing = false;
+  let missedAt = 0;
   // The highest seq this client holds: its resume cursor, then every frame sent.
   let sent = lastEventId;
   const lifetime = new AbortController();
@@ -198,16 +201,14 @@ export async function streamRunEvents(
         // anything past what this client already has. A batch already read, a
         // terminal in view, or a present log without a live writer reads the file.
         const live = liveRunEventSeq(eventsPath);
+        const due = logMissing ? live !== null && live > missedAt : live === null || live > sent;
         let batch: EventReplayResult | undefined;
-        if (
-          nextBatch !== undefined ||
-          terminalSeen ||
-          (live === null ? !logMissing : live > sent)
-        ) {
+        if (nextBatch !== undefined || terminalSeen || due) {
           batch = nextBatch ?? (await readBatch());
           nextBatch = undefined;
           if (closed || res.writableEnded || res.destroyed) return cleanup();
           logMissing = batch.missing === true;
+          if (logMissing) missedAt = live ?? 0;
         }
         if (batch && !logMissing) {
           cursor = batch.cursor;
@@ -291,17 +292,22 @@ export async function streamRunEvents(
       draining = false;
     }
   };
-  // Push: a bus event for this run pokes the tailer immediately; the file
-  // remains the single ordered source so push and poll can never disagree.
+  // Push: a bus event for this run pokes the tailer immediately (and lets it
+  // look for a missing log again); the file remains the single ordered source
+  // so push and poll can never disagree.
   unsubscribe = ctx.opts.bus?.subscribe((event) => {
-    if (!closed && event.run_id === (runId ?? rec.id)) void writeAvailable();
+    if (closed || event.run_id !== (runId ?? rec.id)) return;
+    logMissing = false;
+    void writeAvailable();
   });
-  // A committed change of this job's rows marks its lifecycle for one re-read.
+  // A committed change of this job's rows marks its lifecycle, and a missing
+  // log, for one re-read.
   // The wake leaves the committing mutation's notification first.
   unobserve = notices?.((changed) => {
     if (closed) return;
     if (changed && !changed.has(rec.id) && !(runId && changed.has(runId))) return;
     lifecycleDirty = true;
+    logMissing = false;
     queueMicrotask(() => void writeAvailable());
   });
   timer = setInterval(() => void writeAvailable(), ctx.opts.pollMs ?? 250);

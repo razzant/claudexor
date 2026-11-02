@@ -4303,11 +4303,13 @@ status only when no observation answers) after a post-commit observation notice
 for the job, on every pass when the host publishes no notices, and while a
 terminal waits for its file obligation; a read that no source answered is asked
 again on the next pass. A bound run's log exists from `run.created` on, so one
-found missing (reclaimed by retention, or removed) is read again only on a
-change, and once its job is terminal the stream ends with the retryable
-`event: error` (`run_expired_by_retention` when a tombstone names retention,
-else `run_event_not_found`) rather than `end`, because no terminal frame can be
-delivered. `output.ready` is guaranteed to precede the terminal
+found missing (reclaimed by retention, or removed) is not polled: it is read
+again only after a change, when its live writer has moved past the seq it held
+at the miss or a bus push or post-commit notice for the run arrives, so a log
+restored under a live run is delivered on that change. Once its job is terminal
+the stream ends with the retryable `event: error` (`run_expired_by_retention`
+when a tombstone names retention, else `run_event_not_found`) rather than `end`,
+because no terminal frame can be delivered. `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
 has applied the terminal event provably has the output. The EventLog's
 once-only terminal-preparation hook also builds and validates the immutable
