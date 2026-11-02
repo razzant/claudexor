@@ -6032,7 +6032,8 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    mutates the project tree. Fences (the same
    machinery for Git-backed turns): a pre-turn snapshot is taken at turn/run start and a
    post-turn snapshot at turn end (the per-turn diff base, so prior dirty state
-   is never attributed to the turn), and the server-owned `revert_run` decision
+   is never attributed to the turn; a turn whose complete final capture found no
+   change has no revert target and takes none), and the server-owned `revert_run` decision
    uses an external content-addressed pre/post anchor (overlapping later user
    edits are refused, below). Explicit directory execution records its selected
    footprint and observed effects instead; it does not promise a whole-tree
