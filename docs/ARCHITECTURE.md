@@ -4322,7 +4322,11 @@ line before best-effort live publication. Before that synchronous commit, a held
 or fallback terminal is prepared once (canonical type, receipt and outcome frozen)
 and its durable bytes are staged off the request thread: large command and
 journal bodies as content-addressed files, the receipts and any needed per-run
-log rewrite as fresh `O_DSYNC` temps in the body directory. Right after its SQL
+log rewrite as fresh `O_DSYNC` temps in the body directory. The stage reads only
+the log's tail; the usual log, ending in a canonical line before the terminal,
+gets the terminal appended by the commit, and only another tail makes the stage
+read the whole log and stage its rewrite. The commit reuses the command the stage
+hydrated while its row is unchanged. Right after its SQL
 commit, in the same synchronous section, the file owner renames each staged file
 whose bytes still match into place and writes anything else itself. While staging
 awaits, ordinary events (control audits, live-message receipts) append before the

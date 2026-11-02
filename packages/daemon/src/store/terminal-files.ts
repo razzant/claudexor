@@ -1,5 +1,5 @@
 import { readFileSync, unlinkSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   RunTelemetry,
@@ -14,6 +14,7 @@ import {
   lstatOrNull,
   normalizedTerminalEvents,
   recoveredTerminalFacts,
+  tailExpectsAppend,
 } from "../terminal-authority.js";
 import { sha256Hex } from "./blob-files.js";
 import { commandSummary } from "./command-rows.js";
@@ -35,6 +36,35 @@ interface TerminalFile {
 }
 
 const receipt = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+
+/** How much of a per-run log's end the stage reads to judge a plain append. */
+const LOG_TAIL_BYTES = 64 * 1024;
+
+/** The last bytes of a file, on the libuv pool; a missing file reads as empty. */
+async function readTail(path: string): Promise<{ tail: Buffer; whole: boolean }> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return { tail: Buffer.alloc(0), whole: true };
+    throw error;
+  }
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, LOG_TAIL_BYTES);
+    const tail = Buffer.alloc(length);
+    let read = 0;
+    while (read < length) {
+      const { bytesRead } = await handle.read(tail, read, length - read, size - length + read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    return { tail: tail.subarray(0, read), whole: read === size };
+  } finally {
+    await handle.close();
+  }
+}
 
 /** The telemetry receipt for a terminal's RunFacts; a mismatch is refused. */
 function telemetryReceipt(telemetry: unknown, facts: RunFacts): Buffer | null {
@@ -131,15 +161,21 @@ export class SqlTerminalFiles {
           bytes: telemetryBytes,
           purpose: "terminal_receipt",
         });
-      const log = await readFile(join(record.runDir!, "events.jsonl")).catch(() => Buffer.alloc(0));
-      const repair = eventsRepair(log, event, terminalSeq);
-      if (repair instanceof Buffer)
-        files.push({
-          dir: record.runDir!,
-          name: "events.jsonl",
-          bytes: repair,
-          purpose: "terminal_log",
-        });
+      // The usual log needs only the terminal appended, which the commit does;
+      // only a log whose tail says otherwise is read whole and a rewrite staged.
+      const eventsPath = join(record.runDir!, "events.jsonl");
+      const end = await readTail(eventsPath).catch(() => null);
+      if (!end || !tailExpectsAppend(end.tail, end.whole, event, terminalSeq)) {
+        const log = await readFile(eventsPath).catch(() => Buffer.alloc(0));
+        const repair = eventsRepair(log, event, terminalSeq);
+        if (repair instanceof Buffer)
+          files.push({
+            dir: record.runDir!,
+            name: "events.jsonl",
+            bytes: repair,
+            purpose: "terminal_log",
+          });
+      }
     } catch {
       return; // the hook decides and writes
     }

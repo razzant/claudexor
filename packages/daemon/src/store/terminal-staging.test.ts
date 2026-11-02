@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { BlobFiles } from "./blob-files.js";
 import { SqlCommandPruner } from "./command-prune.js";
+import { commandRow } from "./command-rows.js";
 import { SqlCommandStore } from "./commands.js";
 import { MaintenanceController } from "./maintenance.js";
 import { Obligations } from "./obligations.js";
@@ -30,10 +31,19 @@ import { storedTerminal } from "./run-events.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
 
-/** The pool-side writes: the paths they opened, and a gate that holds their data. */
-const pool = vi.hoisted(() => ({ hold: null as Promise<void> | null, held: [] as string[] }));
+/** The pool-side writes (the paths they opened, and a gate that holds their
+ * data) and the whole-file reads. */
+const pool = vi.hoisted(() => ({
+  hold: null as Promise<void> | null,
+  held: [] as string[],
+  wholeReads: [] as string[],
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const readFile = (async (...args: Parameters<typeof actual.readFile>) => {
+    pool.wholeReads.push(String(args[0]));
+    return actual.readFile(...args);
+  }) as typeof actual.readFile;
   const open = async (...args: Parameters<typeof actual.open>) => {
     const handle = await actual.open(...args);
     const write = handle.write.bind(handle) as (...input: unknown[]) => Promise<unknown>;
@@ -47,7 +57,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       },
     });
   };
-  return { ...actual, open, default: { ...actual, open } };
+  return { ...actual, open, readFile, default: { ...actual, open, readFile } };
 });
 
 const TIME = "2026-11-02T00:00:00.000Z";
@@ -55,7 +65,7 @@ const dist = (file: string) => resolve(import.meta.dirname, "../../dist/store", 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  Object.assign(pool, { hold: null, held: [] });
+  Object.assign(pool, { hold: null, held: [], wholeReads: [] });
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
@@ -168,6 +178,8 @@ describe("terminal receipts and bodies are written off the request thread before
     await f.commands.stageTerminal("job", terminal(), telemetry());
     expect(f.temps()).toHaveLength(2);
     expect(existsSync(join(f.runDir, "final", "run_facts.yaml"))).toBe(false);
+    // Its log ends with a canonical line before the terminal: only its tail was read.
+    expect(pool.wholeReads.filter((path) => path.endsWith("events.jsonl"))).toEqual([]);
 
     expect(f.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
       state: "materialized",
@@ -231,6 +243,48 @@ describe("terminal receipts and bodies are written off the request thread before
       expect.objectContaining({ staged: true }),
       expect.objectContaining({ staged: true }),
     ]);
+  });
+
+  it("stages the rewrite of a log whose tail is torn, and the commit adopts it", async () => {
+    const f = await fixture();
+    const created = readFileSync(join(f.runDir, "events.jsonl"), "utf8");
+    // A crash left a prefix of the terminal line without its newline.
+    const line = JSON.stringify(terminal());
+    writeFileSync(join(f.runDir, "events.jsonl"), created + line.slice(0, 80));
+    await f.commands.stageTerminal("job", terminal(), telemetry());
+    expect(f.temps()).toHaveLength(3);
+    expect(f.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
+      state: "materialized",
+    });
+    expect(f.writes().filter((write) => write.purpose === "terminal_log")).toEqual([
+      expect.objectContaining({ staged: true, written: true }),
+    ]);
+    expect(readFileSync(join(f.runDir, "events.jsonl"), "utf8")).toBe(`${created}${line}\n`);
+    expect(f.temps()).toEqual([]);
+  });
+
+  it("commits with the command its stage hydrated, unless the row changed meanwhile", async () => {
+    const f = await fixture();
+    const params = commandRow(f.store, "job")!.params_sha;
+    const reads = vi.spyOn(f.blobs, "read");
+    const paramReads = () => reads.mock.calls.filter(([sha]) => sha === params).length;
+    await f.commands.stageTerminal("job", terminal(), telemetry());
+    expect(paramReads()).toBe(1);
+    expect(f.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
+      state: "materialized",
+    });
+    expect(paramReads()).toBe(1);
+
+    const g = await fixture();
+    await g.commands.stageTerminal("job", terminal(), telemetry());
+    g.commands.update("job", { startedAt: "2026-11-02T00:00:00.500Z" });
+    expect(g.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
+      state: "materialized",
+    });
+    expect(g.commands.get("job")).toMatchObject({
+      state: "failed",
+      startedAt: "2026-11-02T00:00:00.500Z",
+    });
   });
 
   it("writes on the request thread what changed after staging and drops the stale temp", async () => {
