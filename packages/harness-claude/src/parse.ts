@@ -12,6 +12,7 @@ import { summarizeToolResultContent } from "./tool-output.js";
 import { claudeApiRetryEvents, claudeEntitlementEvents } from "./retry-signals.js";
 import {
   claudeCompletion,
+  claudeJoinedRun,
   claudeStreamEvents,
   closeClaudeSpeech,
   createClaudeSpeechState,
@@ -238,8 +239,10 @@ function parseClaudeEventStateful(
     // changes); only its assistant TEXT/thinking is suppressed.
     const isSubagent = obj.parent_tool_use_id != null;
     const content: Json[] = obj.message?.content ?? [];
-    // The exact completion of the one open keyed text block, when proven.
+    // The exact completion of the one open keyed text block, when proven; a
+    // joined incarnation's frame instead names the keyed run it joins.
     const completion = isSubagent ? undefined : claudeCompletion(obj, speech);
+    const joined = isSubagent ? undefined : claudeJoinedRun(obj, speech);
     const out: HarnessEvent[] = [];
     for (const block of content) {
       if (block?.type === "text" && block.text) {
@@ -250,6 +253,7 @@ function parseClaudeEventStateful(
           ts,
           text: String(block.text),
           ...(completion ? { speech: completion } : {}),
+          ...(joined ? { payload: { joined_speech_keys: joined } } : {}),
         });
       } else if (
         block?.type === "thinking" &&

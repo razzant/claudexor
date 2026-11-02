@@ -22,7 +22,7 @@ import {
 } from "@claudexor/core";
 import { defaultNativeCodexHome } from "./auth.js";
 import { canonicalCodexProfileHome } from "./profile.js";
-import { codexRolloutParts, copyCodexRolloutPart } from "./rollout-file.js";
+import { codexRolloutParts, copyCodexRolloutPart, rolloutLogicalPart } from "./rollout-file.js";
 
 /** The vendor's own code for a rejected carried reasoning item (its CLI sniffs the same token). */
 const CARRIED_STATE_REJECTIONS = ["invalid_encrypted_content", "Request blocked."];
@@ -38,7 +38,10 @@ export const codexContinuity: HarnessContinuityCapability = {
   async locate(ref, env) {
     const parts = codexRolloutParts(codexStoreHome(env), ref.nativeSessionId).map((p) => p.path);
     if (parts.length === 0) return { found: false };
-    const file = parts.find((part) => part.endsWith(".jsonl")) ?? parts[0]!;
+    // The holder is the newest logical part, as its `.jsonl` sibling when it has
+    // one; every part, compressed history included, is still a sidecar to move.
+    const newest = rolloutLogicalPart(parts[0]!);
+    const file = parts.includes(newest) ? newest : parts[0]!;
     return {
       found: true,
       file,

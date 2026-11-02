@@ -60,14 +60,35 @@ export function codexRolloutParts(home: string, threadId: string): CodexRolloutP
   return [...rolloutParts(home, threadId)];
 }
 
-/** The rollout a transcript reader reads: the newest plain `.jsonl` part; older days stay unread. */
+/** `X.jsonl` and `X.jsonl.zst` are representations of ONE logical part, named by its plain path. */
+export function rolloutLogicalPart(path: string): string {
+  return path.endsWith(".jsonl.zst") ? path.slice(0, -".zst".length) : path;
+}
+
+/**
+ * The rollout a transcript reader reads: the plain `.jsonl` representation of
+ * the thread's NEWEST logical part. When that part has none (it exists only as
+ * `.jsonl.zst`, or only as a link or below one) the answer is null and its
+ * facts stay unknown: an older part never stands in for the current one. Both
+ * representations share a directory. Discovery stops after the first day with
+ * a matching part, visits no older days and remembers nothing between calls.
+ */
 export function findCodexRollout(home: string, threadId: string): string | null {
-  for (const part of rolloutParts(home, threadId))
-    if (part.plain && part.path.endsWith(".jsonl")) return part.path;
+  let newest: string | undefined;
+  for (const part of rolloutParts(home, threadId, true)) {
+    const logical = rolloutLogicalPart(part.path);
+    newest ??= logical;
+    if (logical !== newest) return null;
+    if (part.plain && part.path === logical) return part.path;
+  }
   return null;
 }
 
-function* rolloutParts(home: string, threadId: string): Generator<CodexRolloutPart> {
+function* rolloutParts(
+  home: string,
+  threadId: string,
+  newestDayOnly = false,
+): Generator<CodexRolloutPart> {
   let sessions: string;
   let sessionsLinked: boolean;
   try {
@@ -76,25 +97,32 @@ function* rolloutParts(home: string, threadId: string): Generator<CodexRolloutPa
   } catch {
     return;
   }
-  yield* walk(sessions, 3, sessionsLinked, threadId);
+  yield* walk(sessions, 3, sessionsLinked, threadId, newestDayOnly ? { found: false } : null);
 }
 
-/** Date directories down to the day (`depth` levels), each read only when the walk reaches it. */
+/**
+ * Date directories down to the day (`depth` levels), each read only when the
+ * walk reaches it. With `newestDay`, the walk ends with the first day that
+ * holds a part of the thread.
+ */
 function* walk(
   dir: string,
   depth: number,
   linked: boolean,
   threadId: string,
+  newestDay: { found: boolean } | null,
 ): Generator<CodexRolloutPart> {
   for (const entry of entriesNewestFirst(dir)) {
     const path = join(dir, entry.name);
     if (depth > 0) {
+      if (newestDay?.found) return;
       if (entry.isDirectory() || (entry.isSymbolicLink() && isDirectory(path)))
-        yield* walk(path, depth - 1, linked || entry.isSymbolicLink(), threadId);
+        yield* walk(path, depth - 1, linked || entry.isSymbolicLink(), threadId, newestDay);
     } else if (
       entry.name.includes(threadId) &&
       (entry.name.endsWith(".jsonl") || entry.name.endsWith(".jsonl.zst"))
     ) {
+      if (newestDay) newestDay.found = true;
       yield { path, plain: !linked && entry.isFile() };
     }
   }

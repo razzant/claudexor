@@ -32,9 +32,13 @@ import { admitCurrentProfileDispatch, type ModelGovernedRoute } from "./modelGov
 
 /** Default wall-clock ceiling for one inline summary pass. */
 export const SUMMARY_TIMEOUT_MS = 60_000;
-/** Bytes of each collapsed turn fed to the summariser (prompt + output halves). */
+/**
+ * UTF-8 bytes of each collapsed turn fed to the summariser (prompt + output
+ * halves). Like the summary allowance below, it counts retained text only: a
+ * cut adds its "…" mark outside the allowance (`boundBytes`).
+ */
 const PER_TURN_INPUT_BYTES = 4 * 1024;
-/** Bytes retained from the summary answer. */
+/** UTF-8 bytes retained from the summary answer. */
 const MAX_SUMMARY_BYTES = 8 * 1024;
 
 export interface SummaryRunParams {
@@ -69,10 +73,16 @@ export interface SummaryRunParams {
   credentialObserverFactory?: CredentialExecutionObserverFactory;
 }
 
+/**
+ * The longest prefix of `text` that fits `maxBytes` UTF-8 bytes without
+ * splitting a character, followed by "…" when anything was cut. Text that fits
+ * is returned unchanged; the "…" is not counted in `maxBytes` (#577).
+ */
 function boundBytes(text: string, maxBytes: number): string {
-  const buf = Buffer.from(text, "utf8");
-  if (buf.length <= maxBytes) return text;
-  return `${buf.subarray(0, maxBytes).toString("utf8")}…`;
+  // encodeInto writes whole characters only and reports the UTF-16 code units
+  // it consumed, so `read` ends an exact, unsplit prefix of the source text.
+  const { read } = new TextEncoder().encodeInto(text, new Uint8Array(maxBytes));
+  return read === text.length ? text : `${text.slice(0, read)}…`;
 }
 
 /** Render the collapsed prefix as the summariser's input transcript. */

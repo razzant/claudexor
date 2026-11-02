@@ -3485,8 +3485,9 @@ not retry automatically.
   attempts (a checkpoint carries only the exhausted try's last typed final as
   its report, so a checkpoint continuation's index keeps every other output
   recorded in this run once: earlier tries of the exhausted attempt and that
-  try's other narration and earlier native-turn finals, never the report or a
-  block repeating it), and its
+  try's other narration and earlier native-turn finals, whatever their words,
+  never the report's own block with its keyed fragments and exact adjacent
+  forms), and its
   receipt names the attempt of this run that carries its
   latest work, else the planned predecessor. An attempt's own model (a fallback model or budget
   downgrade) is never replaced by an inherited one; synthesis and repair never
@@ -3521,9 +3522,12 @@ not retry automatically.
   then the recorded output it does not represent (other attempts, the winning
   attempt's earlier native tries and the winning try's own other narration,
   an earlier native turn's final included), each block once under
-  its attempt and try (process session), never the answer, the try's last
-  typed final (the one carried) or a block repeating them; a try without a
-  typed final is represented whole, since its joined narration is the answer.
+  its attempt and try (process session), never the try's last typed final
+  (the one carried), whose block includes its keyed fragments and exact
+  adjacent streamed forms; a try without a typed final is represented whole,
+  since its joined narration is the answer. Identity decides, never words:
+  equal or contained text of another attempt, try or turn stays, as does every
+  block when the represented try is unknown.
   The tool rows of a source with several attempts name their attempt.
   Workspace: an
   explicit `execution.workspaceRoot` or live isolation wins; otherwise a
@@ -3587,8 +3591,14 @@ not retry automatically.
   collapse-boundary turn) under the thread's lane dir — computed once by a
   bounded read-only ask-mode pass on the lane's own harness + credential route
   (single turn, hard timeout, no job queue) and reused until a new head turn
-  advances the boundary. A timeout or unavailable harness falls back to
-  mechanical one-liners, so the delta is never lost; the disclosure's
+  advances the boundary. The pass receives at most 2 KiB of each collapsed
+  turn's prompt and of its answer and keeps at most 8 KiB of its summary; each
+  cut ends at a whole UTF-8 character and adds a trailing `…` outside those
+  limits. A summary saved before that rule is reused as saved, with any U+FFFD
+  its byte cut left, until the boundary advances; it is neither regenerated nor
+  migrated. A timeout or unavailable harness falls back to
+  mechanical one-liners of at most 200 UTF-16 code units per field, cut the
+  same way, so the delta is never lost; the disclosure's
   `summarized` flag is set either way. A `planRunId` body field implements an approved
   plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
   turn) and delivers it to the executor as a server-owned file reference, so the
@@ -6533,8 +6543,17 @@ writes are not optional observer callbacks. Cursor buffered snapshots are tagged
 as evidence and do not enter accepted-answer or retry predicates. The event-log
 package projects this ordered stream into `final/retained-output.md`, separating
 attempts and physical `session_id` values while retaining explicit delta bytes.
-It excludes reasoning, tool output and status prose, and collapses only exact
-adjacent delta/flush/final repetitions. A missing WorkReport still means an
+It excludes reasoning, tool output and status prose. Text carrying an
+adapter-issued `speech` key is one block per key: its fragments extend the block
+until the harness's complete text replaces them, and another key is another
+block even for equal words. A frame whose adapter names the keyed run it joins
+(Claude's `text_runs_joined` frame, `payload.joined_speech_keys`) makes those
+blocks one block only when they are the try's last blocks in that order, none
+complete or final, and the frame's text is exactly theirs joined; otherwise
+every block stays as recorded. Other unkeyed text collapses only exact adjacent
+delta/flush/final repetitions of the try's last text block (so Claude's unkeyed
+`result` is the final form of the block it repeats), and a block holding a
+typed final is closed, so the next native turn's text stays its own block. A missing WorkReport still means an
 unverified work state (a contract failure on the native channels, a disclosed
 `unverified` on the instructed fence); no additional generation is performed to
 repair the format.

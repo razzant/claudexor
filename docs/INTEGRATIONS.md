@@ -2148,10 +2148,17 @@ one text block, carries the incarnation's own `message.id`, and arrives while
 that keyed block is the single open block (2.1.311 emits each block's complete
 frame just before its stop). It is never linked in a `text_runs_joined`
 incarnation, which defers frames past their stops, or after a duplicate start of
-the index. Disagreeing ids, missing ids, `aborted` partials and non-streaming
-frames stay unkeyed. A frame whose own `api_message_id` names another response
-is never authoritative: such a `message_start` keys nothing in its incarnation,
-such a `content_block_stop` drops that block's key without closing it, and such
+the index. Such an incarnation instead defers each run of adjacent text blocks
+into one frame after the run's last stop (recorded on 2.1.311); that frame names
+the run's keys in `payload.joined_speech_keys`, completing none of them, only
+when it holds one non-empty text block with the incarnation's own id (and no
+`api_message_id` naming another response), is not an `aborted` partial, arrives
+with no block open, and every block of the run is keyed and uncompleted. Any
+other text frame ends the run unnamed. Disagreeing ids, missing ids, `aborted`
+partials and non-streaming frames stay unkeyed. A frame whose own
+`api_message_id` names another response is never authoritative: such a
+`message_start` keys nothing in its incarnation, such a `content_block_stop`
+drops that block's key without closing it, and such
 a `message_stop` drops every key of the incarnation without ending it or
 stating abandonment. A replay that reuses a message id is a new incarnation
 with new keys. Only the CLI's own `message_stop.abandoned_blocks` adds an
@@ -2271,8 +2278,16 @@ under `evidence_policy: stream_only`. Pin: `fixtures/rollout/recorded-*.jsonl`
 (session-rollout records, not stream captures).
 
 Every rollout reader (observed model, rollout quota, vendor failure, continuity
-locate and move) goes through one boundary in `rollout-file.ts`. The run's
-selected `CODEX_HOME` is canonicalized first, so a home that is a link or sits
+locate and move) goes through one boundary in `rollout-file.ts`. `X.jsonl` and
+`X.jsonl.zst` are two representations of one logical part. The transcript
+readers read the thread's newest part through its plain `.jsonl`; when that part
+exists only compressed, or only as or below a link, the model, quota and vendor
+failure stay unknown and no older part is read in its place. Each lookup stops
+after the first day with a matching part, visits no older days and remembers no
+absence, so a plain copy written later is read by the next lookup. Nothing is decompressed. Locate names that
+newest part as the holder, and a move copies every part, compressed history
+included. The run's selected `CODEX_HOME` is canonicalized first, so a home
+that is a link or sits
 under one stays usable. Below it nothing is read through a link: a part that is
 a link, or lies below a linked `sessions` or date directory, is never read or
 copied, and a part is opened without following a link and must still name the
@@ -2442,8 +2457,15 @@ Known traps (class → CURRENT rule → pin):
   Rule: identity is only the adapter-issued `speech.key` of one observed text
   block lifecycle; equal words or equal native ids under different or absent
   keys stay separate, and a final carries a key only when its link is proven.
+  Retained output and continuation evidence group keyed text by that key and
+  never drop a block because carried text contains its words; their unkeyed
+  merges are an exact adjacent delta, flush or final repetition of the same
+  try's last text block and a joined frame whose text is exactly the keyed run
+  its adapter names (ARCHITECTURE, retained output).
   Pins: `packages/harness-claude/src/speech.test.ts`;
-  `run-timeline-text.test.ts`.
+  `run-timeline-text.test.ts`; `packages/event-log/src/retained-output.test.ts`;
+  `packages/orchestrator/src/continuation-identity.integration.test.ts`;
+  `packages/orchestrator/src/continuation-live-finals.test.ts`.
 - Rate limit read from prose: retry/limit conditions scraped from message
   text. Rule: adapters attach the typed `rate_limit`/`transient` fields (or a
   typed `status` event for a harness-owned `api_retry`); consumers never regex

@@ -90,7 +90,7 @@ export function openLaterAttempt(
     steering: [],
     retainedOutput:
       (first.later === "checkpoint"
-        ? unrepresentedOutput(earlierEvents, facts, exhaustedAttempt(events), first.spec.prompt)
+        ? unrepresentedOutput(earlierEvents, facts, exhaustedAttempt(events))
         : retainedOutput(earlierEvents)?.trim()) ?? "",
     diffStat: null,
   };
