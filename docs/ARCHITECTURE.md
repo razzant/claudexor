@@ -2475,7 +2475,16 @@ workspace work; they are never ignored or silently redirected.
 
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
-the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
+the harness `cwd` is the envelope worktree. That worktree is a complete checkout of
+its base commit or the run does not start: when no object directory holds the
+content of some of its files (what a partial clone never fetched, or a sparse
+checkout of one left out), or Git cannot copy a shallow source because its branches
+reach such content, the run fails in its workspace phase naming what is missing and
+the two ways forward, a complete copy of that content or an in-place run, and
+Claudexor fetches nothing. Such an envelope never started, so the call that made its
+directory removes it before refusing; a removal that fails keeps the refusal, adds what
+was left to its message and notes the fault beside it, and a directory that already
+existed is never removed. Proven work product is the git diff in that worktree, a
 declared run artifact, or the text answer. Capture reads only the physical execution root, whatever
 its spelling: a project under `/tmp` is captured normally, while a write outside
 the root, such as an absolute `/tmp/...` host path, does not enter the project
@@ -4584,7 +4593,13 @@ first acquires that authority and binds/proves the real socket and
 Control API with product admission closed. Health, handshake, status, shutdown
 and recovery remain reachable in `recovery_only`; product operations receive
 `daemon_recovery_only`. Only then may the storage owner open or import SQL and
-complete recovery/admission duties. The current global generation must be ready;
+complete recovery/admission duties. A Stop that arrives while startup is still
+binding or proving those transports ends startup as an ordinary clean stop.
+Only that Stop's own cancellation counts: the typed `daemon_stopping` refusal
+of a listener it stopped, or the startup abort it raises before closing the
+transports a proof is dialing. A proof that already decided, such as another
+runtime's identity or serving mode, and every other startup failure still exit
+nonzero. The current global generation must be ready;
 a logically damaged project generation stays isolated while healthy projects
 serve. Physical corruption closes product admission for the whole store.
 Recovery access overrides `CLAUDEXOR_NO_CONTROL_API=1` when needed. A successful
@@ -4641,6 +4656,10 @@ SNAPSHOT, disclosed as such in the receipt (`activeRunCheck: "snapshot"`): the
 active-run root set is read once through the in-process command activity
 projection and consumed by the synchronous removal in the same event-loop turn.
 There is no await where enqueue could interleave between check and mutation.
+A run references the project root its accepted request recorded. A run with no
+project, including one whose request omitted the scope, references none, and a
+started, unfinished run whose recorded scope cannot be resolved refuses every
+project removal (`409 active_run_scope_unresolved`).
 The exact opt-in `?trashedThreads=purge` (CLI `claudexor project remove <id>
 --purge-trashed-threads`) removes the project together with the threads already
 in its trash. Any other thread, active or closed, still refuses it
@@ -6279,10 +6298,37 @@ independent: vendor list prices are valuation, while unknown cash or credit
 consumption stays unknown. Current native transports expose no authoritative
 paid-credit debit amount, and the engine never invents one from token prices or a
 session-level Fast setting.
+A usage event's reported amount is evidence apart from its size. A reported
+`cost_usd` of 0 keeps its cash, valuation or unknown meaning and its exact or
+estimated status through the spend row, settlement, ledger and settled budget
+projection, in every lane and review panel. An event with no amount reports
+nothing, and known controllable cash or a stated cost knowledge is not a receipt:
+included work without an amount settles as usage missing, and a zero receipt
+leaves an unpriced try of the same attempt, earlier or later, unknown. Each
+lane's `budget.observation` spend row reports one usage amount and names its
+meaning in `amount_kind`; a review panel writes one aggregate row after its
+settlement, with separate cash, valuation and unknown totals and no
+`amount_kind`. A zero row is evidence of that amount only. Before the first
+settlement the budget projection reads as it did before zero rows existed: spend
+is the sum of nonzero spend rows, or else of reported usage costs, and is always
+estimated, with `remainingUsd` derived from that estimate; valuation is the
+estimated sum of nonzero rows; `cashKnowledge` is absent. A zero row adds no
+total, certainty or valuation there, because the attempt's other tries may still
+be unpriced. An exact total, an exact `$0` included, comes only from the ledger's
+`budget.cash` and the decision record. From the first settlement on, the reading
+is the latest settlement's cumulative disclosure, as before: an attempt still
+running when another settles shows at its own settlement, and that now includes
+a settled zero valuation.
 Persisted routing cost averages carry a cost-evidence generation in the existing
 metrics file. Older unclassified costs are read as unknown while duration,
 sample counts and auth routing survive. A new explicitly unpriced attempt
 clears the cost average; auth-only updates preserve compatible observations.
+The only zero sample is a reported cash receipt whose total is known, exact or
+estimated: a zero valuation, included work without a receipt and an attempt with
+an earlier unpriced interval clear the average as unpriced. The average is per
+harness, not per model, and a receipt covers only the charge it reports: a free
+model's zero lowers the figure for that harness's paid models, and an upstream
+bill outside the receipt is not counted.
 Mixed review panels classify
 each observed amount separately from its prospective billing basis;
 their aggregate is never blindly charged as cash. Panel admission keeps
@@ -8222,9 +8268,27 @@ code touching one of these areas must honor it or change it explicitly here.
   patterns is still skipped by `add -A`, so a snapshot and an in-place turn's
   capture miss that edit, as before. Such a timeout fails that capture or snapshot,
   except that the render's only leaves its view out (`render_failed`) and the
-  inventory pass only leaves its inventory out. Claudexor's own isolated clones list the store as
-  a second alternate, and a dirty isolated base enters the store before the
-  clone, so it resolves after the user's prune.
+  inventory pass only leaves its inventory out. Claudexor's own isolated clones (an
+  envelope, a delivery's fresh verify) read the source repository's object directory
+  as their first alternate. `git clone --shared` writes it only when Git clones the
+  path locally; a shallow source Git silently clones through its transport instead,
+  so Claudexor writes that alternate itself, and a dirty snapshot or a composed tree
+  that only a shallow target holds still checks out in the verify clone. A shallow
+  source Git copies locally (a linked worktree of a shallow repository) brings its
+  refs but not its shallow boundary, so the clone also gets the source's own
+  `shallow` file, located by `git rev-parse --git-path shallow`; history reads there
+  stop at that boundary instead of failing on parents the clone does not hold. These
+  clones list the store as a second alternate, and a dirty isolated base enters the
+  store before the clone, so it resolves after the user's prune. A clone whose
+  checkout leaves files absent because none of its object directories holds their
+  content is refused, never used: an envelope before its run, a verify before any
+  write. Git's transport copy of a shallow source must read everything HEAD, the
+  branches and the tags reach down to the boundary, and fails on what a partial clone
+  never fetched. A failed clone of a shallow source therefore keeps Git's full report
+  first and, when a `rev-list --missing=print` walk that fetches nothing finds such
+  content, adds it (the base commit's files, else a count) as an observation that does
+  not prove the cause: the same clone can fail first on an occupied or unwritable
+  destination. Any other clone failure keeps Git's report alone.
   Delivery, adoption and revert of these results, with their typed refusals,
   are described under [Live-tree mutation paths](#live-tree-mutation-paths)
   (items 1, 3 and 6). Retention prunes the store by reachability

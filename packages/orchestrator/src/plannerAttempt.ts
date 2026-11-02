@@ -47,6 +47,7 @@ import {
   type AttemptTelemetry,
 } from "./attemptTelemetry.js";
 import { settleGrantedAttemptLease } from "./attemptUsageCost.js";
+import { observeUsageSpend } from "./laneStreamEvents.js";
 import { observeNativeSessionEvent } from "./credential-profiles.js";
 import type { BudgetDenial } from "./budgetFailure.js";
 import { declaredFailure, type DeclaredFailure } from "./runTerminalResults.js";
@@ -331,17 +332,15 @@ export async function runPlannerAttempt(
         }
         observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
         deps.quotaEventSink?.(adapter.id, ev);
-        if (ev.type === "usage" && ev.usage?.cost_usd) {
-          cost += ev.usage.cost_usd;
-          if (ev.usage.estimated) costEstimated = true;
-          log.emit("budget.observation", {
-            harness_id: adapter.id,
-            attempt_id: attemptId,
-            kind: "spend",
-            usd: ev.usage.cost_usd,
-            estimated: ev.usage.estimated === true,
-          });
-        }
+        const spend = observeUsageSpend(
+          ev,
+          (type, payload) => log.emit(type, payload),
+          adapter.id,
+          attemptId,
+          telemetry.usageCost,
+        );
+        cost += spend.costUsd;
+        costEstimated ||= spend.estimated;
         const streamDenial = updateProcessingStreamHold(
           spec,
           telemetry.usageCost,

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { reviewUsageCostSettlement } from "@claudexor/budget";
 import { credentialProfileUnpinned, type HarnessAdapter } from "@claudexor/core";
 import type { CredentialProfile, ProviderFamily } from "@claudexor/schema";
 import {
@@ -1778,6 +1779,105 @@ describe("reviewEngine", () => {
       reviewCashUsd: 0,
       reviewCashKnowledge: "exact",
     });
+
+    // #171: a reported zero survives the reviewer's later failure as evidence.
+    const zeroThenThrow = noUsageReviewer("native-zero-then-throw", "vendor_native");
+    zeroThenThrow.adapter.run = async function* (spec) {
+      const common = {
+        session_id: spec.session_id,
+        ts: new Date().toISOString(),
+        credential_route: "vendor_native" as const,
+      };
+      yield { ...common, type: "started" as const };
+      yield { ...common, type: "usage" as const, usage: { cost_usd: 0, estimated: true } };
+      throw new Error("native reviewer crashed after its usage");
+    };
+    await expect(run(zeroThenThrow)).resolves.toMatchObject({
+      reviewCashKnowledge: "exact",
+      reviewValuationUsd: 0,
+      reviewValuationKnowledge: "estimated",
+      reviewSpendEstimated: true,
+      reviewObservedAmounts: { cash: false, valuation: true, unknown: false },
+    });
+  });
+
+  it.each([
+    [
+      "an exact panel zero",
+      { cost_usd: 0 },
+      {
+        knowledge: "exact",
+        cashKnowledge: "exact",
+        valuationKnowledge: "exact",
+        source: "review-usage",
+        cashUsd: 0,
+        valuationUsd: 0,
+      },
+    ],
+    [
+      "an estimated panel zero",
+      { cost_usd: 0, estimated: true },
+      {
+        knowledge: "estimated",
+        cashKnowledge: "estimated",
+        valuationKnowledge: "estimated",
+        source: "review-usage",
+        cashUsd: 0,
+        valuationUsd: 0,
+      },
+    ],
+    [
+      "a panel with no reported amount",
+      { input_tokens: 1 },
+      {
+        knowledge: "unknown",
+        cashKnowledge: "unknown",
+        source: "review-usage-missing",
+        cashUsd: 0,
+      },
+    ],
+  ])("settles %s through the engine's own summary (#171)", async (_label, usage, expected) => {
+    const reviewerWith = (
+      id: string,
+      family: ProviderFamily,
+      route: "vendor_native" | "managed_api_key",
+    ): ReviewerSpec => {
+      const reviewer = makeReviewer(id, family, []);
+      reviewer.adapter.run = async function* (spec) {
+        const common = {
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          credential_route: route,
+        };
+        yield { ...common, type: "started" as const };
+        yield { ...common, type: "usage" as const, usage };
+        yield { ...common, type: "message" as const, text: "```json\n[]\n```" };
+        yield { ...common, type: "completed" as const };
+      };
+      return reviewer;
+    };
+    const result = await reviewCandidate({
+      candidateLabel: "Candidate",
+      diff: "diff --git a/a b/a\n",
+      ...makeReviewWorkspace(),
+      reviewers: [
+        reviewerWith("api", "openai", "managed_api_key"),
+        reviewerWith("native", "anthropic", "vendor_native"),
+      ],
+    });
+    const { provenance: _provenance, ...settlement } = reviewUsageCostSettlement(
+      result.reviewCashUsd,
+      result.reviewValuationUsd,
+      {
+        cash: result.reviewCashKnowledge,
+        allowanceDebitUnobserved: result.reviewAllowanceDebitUnobserved,
+        valuation: result.reviewValuationKnowledge,
+        observedAmounts: result.reviewObservedAmounts,
+      },
+      ["review:panel"],
+      result.reviewUnknownUsd,
+    );
+    expect(settlement).toEqual(expected);
   });
 
   it("classifies each reviewer retry usage by that try's credential route", async () => {

@@ -273,9 +273,7 @@ async function recoveryQuery(
   if (!conn) return absentDaemonRecovery(mode, context.beltContext);
   const { addr } = conn;
   const get = async (path: string, runDetail = false): Promise<Record<string, unknown>> => {
-    const res = await controlApiFetch(addr, path, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
+    const res = await controlApiFetch(addr, path);
     if (res.ok) {
       return runDetail
         ? readRunDetailResponse(res)
@@ -354,7 +352,7 @@ async function recoveryQuery(
   if (mode === "__run_cancel") {
     const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
       method: "POST",
-      headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         control: {
           kind: "cancel",
@@ -385,7 +383,7 @@ async function recoveryQuery(
   // __apply_check: the server-side dry gate + patch check (no mutation).
   const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/apply/check`, {
     method: "POST",
-    headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -443,7 +441,7 @@ export function makeCancelBridge(
     try {
       const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           control: {
             kind: "cancel",
@@ -495,7 +493,6 @@ export function makeInteractionBridge(
     }> = [];
     try {
       const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-        headers: { Authorization: `Bearer ${addr.token}` },
         signal: AbortSignal.timeout(2_000),
       });
       if (!res.ok) return;
@@ -528,7 +525,6 @@ export function makeInteractionBridge(
             {
               method: "POST",
               headers: {
-                Authorization: `Bearer ${addr.token}`,
                 "Content-Type": "application/json",
               },
               body: JSON.stringify({

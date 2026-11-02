@@ -978,6 +978,29 @@ describe("router", () => {
     expect(obs?.kind).toBe("rate_limited");
     expect(obs?.cooldown_until).toBeTruthy();
   });
+
+  it("projects a reported zero as spend and an absent amount as nothing (#171)", () => {
+    const ts = new Date().toISOString();
+    const usage = (fields: Record<string, unknown>) =>
+      observationsFromEvent("x", {
+        type: "usage",
+        session_id: "s",
+        ts,
+        usage: fields,
+      });
+    expect(usage({ input_tokens: 1 })).toEqual([]);
+    expect(usage({ cost_usd: 0 })).toMatchObject([{ kind: "spend", usd: 0, quality: "exact" }]);
+    expect(usage({ cost_usd: 0, estimated: true })).toMatchObject([
+      { kind: "spend", usd: 0, quality: "observed" },
+    ]);
+    expect(usage({ cost_usd: Number.NaN })).toEqual([]);
+    expect(usage({ cost_usd: -1 })).toEqual([]);
+    // A spend signal is never a cooldown or a pace.
+    const ledger = new BudgetLedger();
+    for (const observation of usage({ cost_usd: 0 })) ledger.observe(observation);
+    expect(ledger.cooldownActive("x")).toBe(false);
+    expect(ledger.bindingPaceSlack("x")).toBeNull();
+  });
 });
 
 describe("wave guard (estimate holds)", () => {

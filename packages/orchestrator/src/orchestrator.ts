@@ -249,7 +249,7 @@ import {
   dropDeltaPastBudget,
   emitPlanProgress,
   emitTransientExhausted,
-  observeReadonlySpend,
+  observeUsageSpend,
   recordAdapterThrow,
 } from "./laneStreamEvents.js";
 import {
@@ -2864,6 +2864,7 @@ export class Orchestrator {
     const attemptDir = join(paths.attemptsDir, attemptId);
     recordCleanAttemptMetrics(globalConfigDir(), adapter.id, {
       costUsd: cost,
+      usageCost: telemetry.usageCost,
       streamMs: attemptStreamEndedMs - attemptStartedMs,
       errored,
       aborted: signal?.aborted === true,
@@ -6807,11 +6808,12 @@ export class Orchestrator {
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
               this.deps.quotaEventSink?.(adapter.id, ev);
-              const spend = observeReadonlySpend(
+              const spend = observeUsageSpend(
                 ev,
                 (t, p) => log.emit(t, p),
                 adapter.id,
                 attemptId,
+                telemetry.usageCost,
               );
               cost += spend.costUsd;
               costEstimated ||= spend.estimated;

@@ -52,7 +52,6 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
     const response = await controlApiFetch(addr, "/quota", {
       method: refresh ? "POST" : "GET",
       headers: {
-        Authorization: `Bearer ${addr.token}`,
         ...(refresh ? { "Content-Type": "application/json" } : {}),
       },
       ...(refresh

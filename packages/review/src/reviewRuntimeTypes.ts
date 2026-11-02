@@ -1,3 +1,4 @@
+import type { ObservedUsageAmounts } from "@claudexor/budget";
 import type {
   HarnessAdapter,
   ModelCatalogObservation,
@@ -77,6 +78,8 @@ export interface ReviewerOutput {
   valuationKnowledge: CostKnowledge;
   /** Included reviewer route reported no actual debit (reported cash unknown). */
   allowanceDebitUnobserved?: boolean;
+  /** Meanings this reviewer's usage events reported an amount for, zero included. */
+  observedAmounts?: ObservedUsageAmounts;
 }
 
 export interface ReviewerArtifactContext {
@@ -165,6 +168,7 @@ export interface ReviewCandidateResult {
   reviewValuationKnowledge: CostKnowledge;
   reviewUnknownUsd: number;
   reviewAllowanceDebitUnobserved?: boolean;
+  reviewObservedAmounts?: ObservedUsageAmounts;
   /** Candidate files some reviewer workspace could not inspect (absent when none). */
   uninspectableFiles?: UninspectableReviewerFile[];
 }
@@ -178,6 +182,7 @@ export function summarizeReviewerSpend(
   cashKnowledge: readonly CostKnowledge[],
   valuationKnowledge: readonly CostKnowledge[],
   allowanceDebitUnobserved: readonly boolean[] = [],
+  observedAmounts: readonly (ObservedUsageAmounts | undefined)[] = [],
 ): {
   reviewSpendUsd: number;
   reviewSpendEstimated: boolean;
@@ -187,9 +192,14 @@ export function summarizeReviewerSpend(
   reviewValuationKnowledge: CostKnowledge;
   reviewUnknownUsd: number;
   reviewAllowanceDebitUnobserved: boolean;
+  reviewObservedAmounts: ObservedUsageAmounts;
 } {
   const relevantValuationKnowledge = valuationKnowledge.filter(
-    (_, index) => (valuation[index] ?? 0) > 0 || (unknown[index] ?? 0) > 0,
+    (_, index) =>
+      (valuation[index] ?? 0) > 0 ||
+      (unknown[index] ?? 0) > 0 ||
+      observedAmounts[index]?.valuation === true ||
+      observedAmounts[index]?.unknown === true,
   );
   return {
     reviewSpendUsd: spend.reduce((sum, value) => sum + value, 0),
@@ -200,6 +210,11 @@ export function summarizeReviewerSpend(
     reviewValuationKnowledge: mergeKnowledge(relevantValuationKnowledge),
     reviewUnknownUsd: unknown.reduce((sum, value) => sum + value, 0),
     reviewAllowanceDebitUnobserved: allowanceDebitUnobserved.some(Boolean),
+    reviewObservedAmounts: {
+      cash: observedAmounts.some((observed) => observed?.cash === true),
+      valuation: observedAmounts.some((observed) => observed?.valuation === true),
+      unknown: observedAmounts.some((observed) => observed?.unknown === true),
+    },
   };
 }
 

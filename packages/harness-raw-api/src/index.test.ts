@@ -16,6 +16,7 @@ vi.mock("@claudexor/secrets", async (importOriginal) => ({
 
 import { appendHarnessEvent } from "@claudexor/core";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { redactSecrets } from "@claudexor/util";
 import { createRawApiAdapter } from "./index.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -1409,5 +1410,175 @@ describe("raw-api failed completion keeps the model's partial output exact", () 
     });
     expect(stored.some((event) => event.type === "message")).toBe(false);
     expect(readFileSync(journal, "utf8")).not.toContain(vendor);
+  });
+});
+
+/**
+ * #172: a raw-API diagnostic is masked whole and only then cut to its bound,
+ * and no bound separates the two halves of a surrogate pair. Cutting first can
+ * leave a head of a credential too short for the redactor to recognize; a cut
+ * inside an astral character leaves a lone surrogate. The model's partial text
+ * is cut the same way and never masked (INV-146). Each case runs the real
+ * adapter against a local HTTP endpoint and journals its events through the
+ * shared writer.
+ */
+describe("raw-api diagnostics are masked whole, then bounded without splitting a character (#172)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  const token = `ghp_${"a".repeat(36)}`;
+  const x = (count: number) => "x".repeat(count);
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    server = undefined;
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  async function runAgainst(status: number, body: string, headers: Record<string, string> = {}) {
+    server = createServer((_req, res) => {
+      res.writeHead(status, headers);
+      res.end(body);
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("no port");
+    process.env.CLAUDEXOR_TEST_RAWAPI_KEY = "fixture-key";
+    const adapter = createRawApiAdapter({
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      keyEnv: "CLAUDEXOR_TEST_RAWAPI_KEY",
+    });
+    const live = await collect(
+      adapter.run(
+        HarnessRunSpec.parse({
+          session_id: "raw-diagnostic",
+          intent: "review",
+          prompt: "x",
+          cwd: process.cwd(),
+          access: "readonly",
+          external_context_policy: "auto",
+          tool_permission_policy: { web: "auto", allow: [], deny: [] },
+        }),
+      ),
+    );
+    const journal = join(reapMk(join(tmpdir(), "raw-api-diagnostic-")), "events.jsonl");
+    for (const event of live) appendHarnessEvent(journal, event);
+    const text = readFileSync(journal, "utf8");
+    const stored = text
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as HarnessEvent);
+    return { live, stored, text };
+  }
+
+  it("uses a token the redactor masks whole and no longer recognizes once cut", () => {
+    const body = `${x(479)} ${token} after`;
+    expect(redactSecrets(body)).toBe(`${x(479)} [redacted] after`);
+    // Cutting first keeps 20 units of the token, a head no rule matches.
+    expect(redactSecrets(body.slice(0, 500))).toBe(body.slice(0, 500));
+  });
+
+  const httpCases: Array<{
+    name: string;
+    status: number;
+    body: string;
+    expected: string;
+    transient?: HarnessEvent["transient"];
+  }> = [
+    {
+      name: "a token straddling the cut",
+      status: 400,
+      body: `${x(479)} ${token} after`,
+      expected: `${x(479)} [redacted] after`,
+    },
+    {
+      name: "a token straddling the cut, typed transient",
+      status: 503,
+      body: `${x(479)} ${token} after`,
+      expected: `${x(479)} [redacted] after`,
+      transient: { kind: "service_unavailable", retry_delay_ms: null },
+    },
+    {
+      name: "an astral character across the cut",
+      status: 400,
+      body: `${x(499)}😀tail`,
+      expected: x(499),
+    },
+    {
+      name: "an astral character ending at the cut",
+      status: 400,
+      body: `${x(498)}😀tail`,
+      expected: `${x(498)}😀`,
+    },
+    { name: "ASCII below the bound", status: 400, body: x(499), expected: x(499) },
+    { name: "ASCII at the bound", status: 400, body: x(500), expected: x(500) },
+    { name: "ASCII above the bound", status: 400, body: x(501), expected: x(500) },
+  ];
+
+  it.each(httpCases)(
+    "keeps an HTTP $status body masked and bounded: $name",
+    async ({ status, body, expected, transient }) => {
+      const { live, stored, text } = await runAgainst(status, body);
+      expect(live.map((event) => event.type)).toEqual(["started", "error", "completed"]);
+      for (const events of [live, stored]) {
+        const error = events.find((event) => event.type === "error")!;
+        expect(error.error).toBe(`raw-api HTTP ${status}`);
+        expect(error.payload).toEqual({ body: expected });
+        expect(error.transient).toEqual(transient);
+        expect(error).not.toHaveProperty("rate_limit");
+      }
+      expect(text).not.toContain("ghp_");
+    },
+  );
+
+  it("keeps a 429 a typed rate limit whose payload carries no body", async () => {
+    const { live, stored, text } = await runAgainst(429, `${x(479)} ${token} after`, {
+      "retry-after": "7",
+    });
+    expect(live.map((event) => event.type)).toEqual(["started", "error", "completed"]);
+    for (const events of [live, stored]) {
+      const error = events.find((event) => event.type === "error")!;
+      const resetsAt = error.rate_limit?.resets_at;
+      expect(resetsAt).toEqual(expect.any(String));
+      expect(error.payload).toEqual({ resets_at: resetsAt });
+      expect(error.rate_limit).toEqual({ resets_at: resetsAt, retry_delay_ms: 7000 });
+      expect(error.transient).toEqual({ kind: "service_unavailable", retry_delay_ms: 7000 });
+    }
+    expect(text).not.toContain(x(479));
+  });
+
+  it("cuts a failed completion's report and partial text before a split character; the partial text stays exact", async () => {
+    // 55 units, then 444 more: the astral character starts at unit 499.
+    const kept = `Working text: ${token} ${"p".repeat(444)}`;
+    const { live, stored } = await runAgainst(
+      200,
+      JSON.stringify({
+        model: "provider-model",
+        choices: [
+          {
+            message: { role: "assistant", content: `${kept}😀tail` },
+            finish_reason: "error",
+            error: {
+              code: 502,
+              message: `${x(499)}😀tail`,
+              metadata: { error_type: "provider_unavailable" },
+            },
+          },
+        ],
+        usage: { prompt_tokens: 7, completion_tokens: 3 },
+      }),
+      { "content-type": "application/json" },
+    );
+    expect(live.map((event) => event.type)).toEqual(["started", "error", "usage", "completed"]);
+    for (const events of [live, stored]) {
+      const error = events.find((event) => event.type === "error")!;
+      expect(error.payload).toEqual({
+        finish_reason: "error",
+        provider_error: { code: 502, message: x(499), error_type: "provider_unavailable" },
+        // Working content: the secret-shaped token is kept, never masked.
+        partial_output: kept,
+        partial_output_truncated: true,
+      });
+      expect(error.transient).toEqual({ kind: "service_unavailable", retry_delay_ms: null });
+    }
   });
 });

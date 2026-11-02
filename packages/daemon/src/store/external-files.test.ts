@@ -261,19 +261,18 @@ describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
     pool.hold = new Promise((resolve) => {
       release = resolve;
     });
-    let ticks = 0;
-    const timer = setInterval(() => ticks++, 2);
+    const staging = stageExternalFile({ dir, name: "slow", bytes: Buffer.alloc(70_000, 5) });
     try {
-      const staging = stageExternalFile({ dir, name: "slow", bytes: Buffer.alloc(70_000, 5) });
       await vi.waitFor(() => expect(pool.entered).toBe(true));
-      const before = ticks;
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      expect(ticks - before).toBeGreaterThan(3);
+      // A real timer must run while the write is held. Its throughput is not
+      // the contract: Windows and loaded hosts need not fit four ticks in 60 ms.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(existsSync(join(dir, "slow"))).toBe(false);
       release();
       expect(await staging).toBe(true);
     } finally {
-      clearInterval(timer);
+      release();
+      await staging;
     }
   });
 

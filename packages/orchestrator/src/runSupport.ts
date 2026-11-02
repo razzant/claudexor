@@ -26,6 +26,7 @@ import { isBlocking, quotaConstraintAppliesToRequestKind } from "@claudexor/sche
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import { redactSecrets } from "@claudexor/util";
 import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
+import { attemptRoutingCostSample, type AttemptUsageCost } from "./attemptUsageCost.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { blockedDecisionOverride } from "@claudexor/delivery";
 
@@ -544,6 +545,7 @@ export function recordCleanAttemptMetrics(
   harnessId: string,
   sample: {
     costUsd: number;
+    usageCost: AttemptUsageCost;
     streamMs: number;
     errored: boolean;
     aborted: boolean;
@@ -555,7 +557,7 @@ export function recordCleanAttemptMetrics(
     return;
   }
   recordHarnessMetric(configDir, harnessId, {
-    costUsd: sample.costUsd > 0 ? sample.costUsd : null,
+    costUsd: attemptRoutingCostSample(sample.costUsd, sample.usageCost),
     durationMs: sample.streamMs,
     authMode: sample.authMode ?? null,
   });
