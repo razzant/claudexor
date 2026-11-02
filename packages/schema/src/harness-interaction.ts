@@ -92,3 +92,47 @@ export const InteractionAnswerSet = z
   })
   .describe("Typed answers delivered back into a live interactive harness session.");
 export type InteractionAnswerSet = z.infer<typeof InteractionAnswerSet>;
+
+/**
+ * What one answer row says: its selected labels and its free text, each kept
+ * byte-exact and counted only when it has a non-whitespace character. Null
+ * when the row carries neither, so it answers nothing.
+ */
+export function interactionAnswerContent(
+  answer: InteractionAnswer,
+): { labels: string[]; freeText: string | null } | null {
+  const labels = answer.selected_labels.filter((label) => label.trim().length > 0);
+  const freeText =
+    answer.free_text !== null && answer.free_text.trim().length > 0 ? answer.free_text : null;
+  return labels.length > 0 || freeText !== null ? { labels, freeText } : null;
+}
+
+/**
+ * Why an answer set cannot answer this request, or null when it can: every row
+ * names a distinct question of the request and carries an answer. Answering a
+ * subset of the questions is valid, and an empty set is the caller's explicit
+ * decline, which adapters turn into their benign decline. Selected labels are
+ * not checked against the options or counted: each harness gives them meaning
+ * (Codex approves only one exact approval label and declines anything else).
+ * The daemon refuses a violating set before it consumes the pending question;
+ * adapters never translate one.
+ */
+export function interactionAnswerSetViolation(
+  request: Pick<InteractionRequest, "interaction_id" | "questions">,
+  answers: InteractionAnswerSet,
+): string | null {
+  if (answers.interaction_id !== request.interaction_id)
+    return `the answers name interaction '${answers.interaction_id}', not '${request.interaction_id}'`;
+  const known = new Set(request.questions.map((question) => question.id));
+  const answered = new Set<string>();
+  for (const answer of answers.answers) {
+    if (!known.has(answer.question_id))
+      return `question '${answer.question_id}' is not part of this interaction`;
+    if (answered.has(answer.question_id))
+      return `question '${answer.question_id}' is answered more than once`;
+    answered.add(answer.question_id);
+    if (!interactionAnswerContent(answer))
+      return `question '${answer.question_id}' has neither a selected label nor free text`;
+  }
+  return null;
+}

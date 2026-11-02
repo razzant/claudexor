@@ -106,13 +106,14 @@ export async function collectInteractionAnswers(
             ? "numbers separated by commas, or free text"
             : "a number, or free text"
           : "free text";
-      const raw = (
-        signal
-          ? await reader.question(`   answer (${hint}): `, { signal })
-          : await reader.question(`   answer (${hint}): `)
-      ).trim();
-      if (!raw) continue;
-      const picks = parseChoiceIndexes(raw, q.options.length, q.multi_select);
+      // One terminal line. Blank input answers nothing and the choice grammar
+      // reads the trimmed text; prose goes out exactly as typed.
+      const typed = signal
+        ? await reader.question(`   answer (${hint}): `, { signal })
+        : await reader.question(`   answer (${hint}): `);
+      const trimmed = typed.trim();
+      if (!trimmed) continue;
+      const picks = parseChoiceIndexes(trimmed, q.options.length, q.multi_select);
       if (picks) {
         answers.push({
           question_id: q.id,
@@ -120,7 +121,7 @@ export async function collectInteractionAnswers(
           free_text: null,
         });
       } else {
-        answers.push({ question_id: q.id, selected_labels: [], free_text: raw });
+        answers.push({ question_id: q.id, selected_labels: [], free_text: typed });
       }
     }
     return answers.length > 0 ? { interaction_id: interactionId, answers } : null;

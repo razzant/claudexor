@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import type { ChildStdin } from "@claudexor/core";
-import type { HarnessEvent } from "@claudexor/schema";
+import type { HarnessEvent, InteractionRequest } from "@claudexor/schema";
 import {
   DECLINE_MESSAGE,
   allowResponseFrame,
@@ -57,6 +60,28 @@ const NATIVE_ASK = {
     },
   },
 };
+
+/** Native AskUserQuestion input longer than every former display bound
+ * (question 2000, header 100, label 500, description 1000 characters). */
+function longNativeAsk() {
+  const question = `Which rollout keeps the 🚀 release safe? ${"Подробности ".repeat(260)}END`;
+  return {
+    questions: [
+      {
+        question,
+        header: `Rollout ${"h".repeat(150)}`,
+        options: [
+          { label: `Canary ${"a".repeat(700)}`, description: `First ${"d".repeat(1300)}` },
+          { label: `Blue-green ${"b".repeat(700)}`, description: `Second ${"e".repeat(1300)}` },
+        ],
+        multiSelect: false,
+      },
+      { question: `Anything else? ${"x".repeat(2100)}`, options: [], multiSelect: false },
+    ],
+  };
+}
+
+const MULTILINE_FREE_TEXT = "\n  indented first line\nsecond line with trailing spaces  \n\n";
 
 describe("claude interactive control protocol", () => {
   it("recognizes control_request and result frames", () => {
@@ -129,7 +154,7 @@ describe("claude interactive control protocol", () => {
       allowResponseFrame("req-1", NATIVE_ASK.request.input, req, {
         interaction_id: "req-1",
         answers: [{ question_id: "q1", selected_labels: ["Summary"], free_text: null }],
-      }),
+      })!,
     ) as Record<string, any>;
     expect(frame["type"]).toBe("control_response");
     expect(frame["response"]["subtype"]).toBe("success");
@@ -147,7 +172,7 @@ describe("claude interactive control protocol", () => {
       allowResponseFrame("req-1", NATIVE_ASK.request.input, req, {
         interaction_id: "req-1",
         answers: [{ question_id: "q1", selected_labels: ["Summary", "Detailed"], free_text: null }],
-      }),
+      })!,
     ) as Record<string, any>;
     expect(multi["response"]["response"]["updatedInput"]["answers"]).toEqual({
       "How should I format the output?": "Summary, Detailed",
@@ -156,7 +181,7 @@ describe("claude interactive control protocol", () => {
       allowResponseFrame("req-1", NATIVE_ASK.request.input, req, {
         interaction_id: "req-1",
         answers: [{ question_id: "q1", selected_labels: [], free_text: "Use markdown tables" }],
-      }),
+      })!,
     ) as Record<string, any>;
     expect(free["response"]["response"]["updatedInput"]["answers"]).toEqual({
       "How should I format the output?": "Use markdown tables",
@@ -241,6 +266,137 @@ describe("claude interactive control protocol", () => {
       events.push(ev);
     expect(events).toHaveLength(0);
     expect(JSON.parse(written[0] ?? "{}")["response"]["subtype"]).toBe("error");
+  });
+
+  it("surfaces every native question, header, label and description exactly, however long", () => {
+    const native = longNativeAsk();
+    const req = interactionRequestFromNative("req-long", native);
+    expect(req.questions).toEqual([
+      {
+        id: "q1",
+        question: native.questions[0]!.question,
+        header: native.questions[0]!.header,
+        options: native.questions[0]!.options,
+        multi_select: false,
+      },
+      {
+        id: "q2",
+        question: native.questions[1]!.question,
+        header: null,
+        options: [],
+        multi_select: false,
+      },
+    ]);
+  });
+
+  it("answers a long question with its exact label and multi-line free text verbatim", () => {
+    const native = longNativeAsk();
+    const req = interactionRequestFromNative("req-long", native);
+    const frame = JSON.parse(
+      allowResponseFrame("req-long", native, req, {
+        interaction_id: "req-long",
+        answers: [
+          {
+            question_id: "q1",
+            selected_labels: [req.questions[0]!.options[1]!.label],
+            free_text: null,
+          },
+          { question_id: "q2", selected_labels: [], free_text: MULTILINE_FREE_TEXT },
+        ],
+      })!,
+    ) as Record<string, any>;
+    const inner = frame["response"]["response"];
+    expect(inner["updatedInput"]["questions"]).toEqual(native.questions);
+    expect(inner["updatedInput"]["answers"]).toEqual({
+      [native.questions[0]!.question]: native.questions[0]!.options[1]!.label,
+      [native.questions[1]!.question]: MULTILINE_FREE_TEXT,
+    });
+    // Old-mapping replay: neither the bounded display prefix of the question
+    // nor of the label may stand in for the native text.
+    const keys = Object.keys(inner["updatedInput"]["answers"]);
+    expect(keys).not.toContain(native.questions[0]!.question.slice(0, 2000));
+    expect(Object.values(inner["updatedInput"]["answers"])).not.toContain(
+      native.questions[0]!.options[1]!.label.slice(0, 500),
+    );
+  });
+
+  it("never sends an allow frame that answers nothing: such a set is the benign decline", async () => {
+    const req = interactionRequestFromNative("req-1", NATIVE_ASK.request.input);
+    for (const answers of [
+      // An empty set is the caller's explicit decline.
+      [],
+      [{ question_id: "q9", selected_labels: ["Summary"], free_text: null }],
+      [{ question_id: "q1", selected_labels: [], free_text: null }],
+      [{ question_id: "q1", selected_labels: ["  "], free_text: " \n\t" }],
+    ]) {
+      expect(
+        allowResponseFrame("req-1", NATIVE_ASK.request.input, req, {
+          interaction_id: "req-1",
+          answers,
+        }),
+      ).toBeNull();
+      const { io, written } = fakeIo();
+      const events: HarnessEvent[] = [];
+      for await (const ev of handleControlRequestFrame(NATIVE_ASK, io, "ses-1", {
+        request: async () => ({ interaction_id: "req-1", answers }),
+      }))
+        events.push(ev);
+      expect(events.map((ev) => ev.type)).toEqual(["interaction_requested"]);
+      expect(written).toHaveLength(1);
+      expect(JSON.parse(written[0]!)["response"]["response"]).toEqual({
+        behavior: "deny",
+        message: DECLINE_MESSAGE,
+        interrupt: false,
+      });
+    }
+  });
+
+  it("passes a label that is not one of the options through as the answer text", () => {
+    const req = interactionRequestFromNative("req-1", NATIVE_ASK.request.input);
+    const frame = JSON.parse(
+      allowResponseFrame("req-1", NATIVE_ASK.request.input, req, {
+        interaction_id: "req-1",
+        answers: [{ question_id: "q1", selected_labels: ["Plain text"], free_text: null }],
+      })!,
+    ) as Record<string, any>;
+    expect(frame["response"]["response"]["updatedInput"]["answers"]).toEqual({
+      "How should I format the output?": "Plain text",
+    });
+  });
+
+  it("writes the recorded native selected-label answer frame (control-handshake.jsonl)", async () => {
+    const records = readFileSync(
+      join(
+        fileURLToPath(new URL("../fixtures", import.meta.url)),
+        "protocol/control-handshake.jsonl",
+      ),
+      "utf8",
+    )
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { direction: string; frame: Record<string, any> });
+    const request = records.find(
+      (r) => r.direction === "cli->client" && r.frame["type"] === "control_request",
+    )!.frame;
+    const recordedAnswer = records.find(
+      (r) => r.direction === "client->cli" && r.frame["type"] === "control_response",
+    )!.frame;
+    const { io, written } = fakeIo();
+    let asked: InteractionRequest | undefined;
+    const events: HarnessEvent[] = [];
+    for await (const ev of handleControlRequestFrame(request, io, "ses-1", {
+      request: async (interaction) => {
+        asked = interaction;
+        return {
+          interaction_id: interaction.interaction_id,
+          answers: [{ question_id: "q1", selected_labels: ["Blue"], free_text: null }],
+        };
+      },
+    }))
+      events.push(ev);
+    expect(events.map((ev) => ev.type)).toEqual(["interaction_requested"]);
+    expect(asked?.questions[0]?.options.map((o) => o.label)).toEqual(["Red", "Blue"]);
+    expect(written.map((line) => JSON.parse(line))).toEqual([recordedAnswer]);
   });
 
   it("deny frame shape matches the control protocol", () => {

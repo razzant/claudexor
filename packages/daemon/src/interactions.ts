@@ -11,6 +11,7 @@ import type {
 import {
   ControlPendingInteraction as PendingInteractionSchema,
   InteractionAnswerSet as InteractionAnswerSetSchema,
+  interactionAnswerSetViolation,
 } from "@claudexor/schema";
 
 /** Structural twin of the orchestrator's PendingInteractionContext. */
@@ -49,6 +50,8 @@ export function digestPendingIdentities(keys: Iterable<string>): PendingIdentity
 
 interface LiveEntry {
   store: InteractionStorePort;
+  /** The request this waiter asked; answers are checked against it. */
+  request: InteractionRequest;
   resolve: (result: InteractionAnswerSet | InteractionHandlerRelease) => void;
   expiresAtMs: number | null;
   signal?: AbortSignal;
@@ -81,6 +84,7 @@ export class InteractionRegistry {
       const key = interactionKey(ctx.runId, ctx.request.interaction_id);
       const entry: LiveEntry = {
         store,
+        request: ctx.request,
         resolve,
         expiresAtMs,
         signal: ctx.signal,
@@ -110,10 +114,27 @@ export class InteractionRegistry {
     if (!parsed.success) {
       return { status: "rejected", message: parsed.error.issues[0]?.message ?? "invalid answers" };
     }
-    const store = this.storesForRun(runId).find(
-      (candidate) => candidate.status(runId, interactionId) !== "missing",
-    );
-    if (!store) return { status: "not_found", message: missingMessage(runId, interactionId) };
+    const found = this.storesForRun(runId)
+      .map((store) => ({ store, state: store.status(runId, interactionId) }))
+      .find((candidate) => candidate.state !== "missing");
+    if (!found) return { status: "not_found", message: missingMessage(runId, interactionId) };
+    if (found.state !== "pending") return { status: "already_resolved" };
+    const { store } = found;
+    const key = interactionKey(runId, interactionId);
+    const entry = this.live.get(key);
+    if (!entry) {
+      // No session in this daemon waits for it, so nothing could receive an
+      // answer. Release it as restart recovery would, never as answered.
+      store.resolve(runId, interactionId, "interrupted");
+      return {
+        status: "not_found",
+        message: `no live session is waiting for interaction '${interactionId}' of run '${runId}'; it was released as interrupted`,
+      };
+    }
+    // Check the answers against the question before anything is committed: a
+    // refused answer leaves the question pending and answerable.
+    const violation = interactionAnswerSetViolation(entry.request, parsed.data);
+    if (violation) return { status: "rejected", message: violation };
     const status = store.resolve(runId, interactionId, "answered");
     if (status !== "resolved") {
       return {
@@ -121,11 +142,11 @@ export class InteractionRegistry {
         message: status === "not_found" ? missingMessage(runId, interactionId) : undefined,
       };
     }
-    const key = interactionKey(runId, interactionId);
-    const entry = this.live.get(key);
     this.live.delete(key);
-    if (entry?.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
-    entry?.resolve(parsed.data);
+    if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
+    // `delivered` = committed and handed to the run's live waiter. Whether the
+    // harness process then reads it is the adapter's concern, not proven here.
+    entry.resolve(parsed.data);
     return { status: "delivered" };
   }
 

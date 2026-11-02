@@ -8,6 +8,7 @@ import type {
   InteractionQuestion,
   InteractionRequest,
 } from "@claudexor/schema";
+import { interactionAnswerContent, interactionAnswerSetViolation } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 
 type Json = any;
@@ -133,16 +134,19 @@ export function initialSessionFrames(
   return initialize + "\n" + initialUserMessageFrame(prompt, attachments);
 }
 
-/** Map the native AskUserQuestion input into the typed InteractionRequest. */
+/** Map the native AskUserQuestion input into the typed InteractionRequest.
+ * Question, header, option label and description are the native text exactly,
+ * whatever their length: every answering surface shows what the model asked
+ * and a selected label goes back byte-identical (INV-146). */
 export function interactionRequestFromNative(requestId: string, input: Json): InteractionRequest {
   const rawQuestions: Json[] = Array.isArray(input?.questions) ? input.questions : [];
   const questions: InteractionQuestion[] = rawQuestions.map((q, idx) => ({
     id: `q${idx + 1}`,
-    question: String(q?.question ?? "").slice(0, 2000),
-    header: typeof q?.header === "string" ? q.header.slice(0, 100) : null,
+    question: String(q?.question ?? ""),
+    header: typeof q?.header === "string" ? q.header : null,
     options: (Array.isArray(q?.options) ? q.options : []).map((o: Json) => ({
-      label: String(o?.label ?? "").slice(0, 500),
-      description: typeof o?.description === "string" ? o.description.slice(0, 1000) : null,
+      label: String(o?.label ?? ""),
+      description: typeof o?.description === "string" ? o.description : null,
     })),
     multi_select: q?.multiSelect === true,
   }));
@@ -150,18 +154,21 @@ export function interactionRequestFromNative(requestId: string, input: Json): In
 }
 
 /**
- * Build the allow control_response carrying the user's answers.
+ * Build the allow control_response carrying the user's answers, or null when
+ * the set answers nothing: an explicit decline (no rows) or a set this request
+ * cannot accept (`interactionAnswerSetViolation`) is never sent as an allow.
  * Per the documented contract, `answers` maps the QUESTION TEXT to the
  * selected label, multi-select labels joined with ", ", free text passed
- * through verbatim. The key is the native question text, never the bounded
- * display copy, so a long question still matches its answer.
+ * through verbatim. The key is the native question text, so a long question
+ * still matches its answer.
  */
 export function allowResponseFrame(
   requestId: string,
   nativeInput: Json,
   request: InteractionRequest,
   answers: InteractionAnswerSet,
-): string {
+): string | null {
+  if (answers.answers.length === 0 || interactionAnswerSetViolation(request, answers)) return null;
   const byId = new Map(answers.answers.map((a) => [a.question_id, a]));
   const answerMap: Record<string, string> = {};
   const nativeQuestions: Json[] = Array.isArray(nativeInput?.questions)
@@ -169,12 +176,11 @@ export function allowResponseFrame(
     : [];
   for (const [index, q] of request.questions.entries()) {
     const a = byId.get(q.id);
-    if (!a) continue;
-    const labels = a.selected_labels.filter((l) => l.trim().length > 0);
-    const value =
-      a.free_text && a.free_text.trim().length > 0 ? a.free_text.trim() : labels.join(", ");
+    const content = a ? interactionAnswerContent(a) : null;
+    if (!content) continue;
     const native = nativeQuestions[index]?.question;
-    if (value) answerMap[typeof native === "string" ? native : q.question] = value;
+    answerMap[typeof native === "string" ? native : q.question] =
+      content.freeText ?? content.labels.join(", ");
   }
   return (
     JSON.stringify({
@@ -283,10 +289,8 @@ export async function* handleControlRequestFrame(
   // already-queued exit and terminal cleanup release the durable question.
   if (result.kind === "closed") return;
   const answers = result.answers;
-
-  if (answers && answers.answers.length > 0) {
-    io.write(allowResponseFrame(requestId, request?.input ?? {}, interaction, answers));
-  } else {
-    io.write(denyResponseFrame(requestId, DECLINE_MESSAGE));
-  }
+  const allow = answers
+    ? allowResponseFrame(requestId, request?.input ?? {}, interaction, answers)
+    : null;
+  io.write(allow ?? denyResponseFrame(requestId, DECLINE_MESSAGE));
 }

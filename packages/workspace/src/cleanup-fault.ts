@@ -44,3 +44,24 @@ export async function withDisposableScratch<T>(
     }
   }
 }
+
+/**
+ * An envelope whose creation failed before it was returned never started: no harness
+ * ran in it, and no caller holds it to dispose of. Its creator, which made `base` in
+ * this same call, removes it whole (#501); the orphan sweeper keeps a directory whose
+ * creating process is alive, so nothing else would. A removal that fails leaves it,
+ * keeps `refusal` as the outcome and says so: the fault is noted beside it and named
+ * after its message. Returns what to throw.
+ */
+export function discardUnstartedEnvelope(base: string, refusal: unknown): unknown {
+  try {
+    rmSync(base, { recursive: true, force: true });
+  } catch (fault) {
+    noteCleanupFault(refusal, fault);
+    if (refusal instanceof Error) {
+      const why = fault instanceof Error ? fault.message : String(fault);
+      refusal.message = `${refusal.message}; its never-started envelope ${base} could not be removed: ${why}`;
+    }
+  }
+  return refusal;
+}
