@@ -295,6 +295,27 @@ describe("summary pass byte bounds keep whole UTF-8 characters (INV-137, #577)",
     }
   });
 
+  it("gives the summariser the end of an unfinished turn's output, where its newest text is (#405)", async () => {
+    const latest = "LATEST-STATE: the deadline check belongs in retry.ts";
+    for (const char of WIDE_CHARS) {
+      const output = `${"step: nothing new.\n".repeat(200)}${char.repeat(700)}${latest}`;
+      const prompts: string[] = [];
+      await summarizeThreadPrefix(
+        params(answeringLane("lane-a", "S", prompts), {
+          turns: [{ id: "t1", prompt: "p", outputText: output, noFinalAnswer: "ended" }],
+        }),
+      );
+      const said = "Assistant (ended without a final answer): …";
+      const kept = prompts[0]!.slice(prompts[0]!.indexOf(said) + said.length);
+      expect(prompts[0]).toContain(said);
+      expect(output.endsWith(kept)).toBe(true);
+      expect(kept).toContain(latest);
+      expect(utf8Bytes(kept)).toBeLessThanOrEqual(2048);
+      expect(utf8Bytes(kept)).toBeGreaterThan(2048 - utf8Bytes(char));
+      expect(kept).not.toMatch(/\p{Surrogate}/u);
+    }
+  });
+
   it("leaves exactly fitting fields and summary unchanged and marks a one-byte cut", async () => {
     for (const char of WIDE_CHARS) {
       const fits = cutInside(char, 2048, 0).kept;

@@ -10,7 +10,7 @@ changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, thread, runs-wait, task-group-runs, next-message, next-message-read, retry, run-again, apply, decision, review), attachment ingress (store-identity, upload-import, upload-create, upload-import-local, upload-status, upload-finalize, upload-cancel), ops (project, models, harness, doctor, quota, account-reset, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). `runs-wait` observes existing handles read-only through `--targets-json` and optional `--wait-ms`, with `--json` or `--json-stream` output. `task-group-runs` reads one bounded retained group page. `next-message` creates, replaces or clears an authorized one-shot draft; `next-message-read` reads its bounded content and editing handles. | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, thread, runs-wait, task-group-runs, next-message, next-message-read, retry, run-again, apply, decision, review), attachment ingress (store-identity, upload-import, upload-create, upload-import-local, upload-status, upload-finalize, upload-cancel), ops (project, models, harness, scanner, doctor, quota, account-reset, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). `runs-wait` observes existing handles read-only through `--targets-json` and optional `--wait-ms`, with `--json` or `--json-stream` output. `task-group-runs` reads one bounded retained group page. `next-message` creates, replaces or clears an authorized one-shot draft; `next-message-read` reads its bounded content and editing handles. | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, Agent runs, caller-owned model and image operations, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. `claudexor_runs_wait` projects the same read-only observation with `targets: [{runId, seen?}]` and optional `waitMs`. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
@@ -256,7 +256,7 @@ decision record, work product, and artifact paths. Terminal daemon state, live
 budget, and event streams come from the daemon/control API, not from
 `inspect`. A failed lookup returns the standard failure envelope. Recognized
 outcomes carry a typed `code`, and only `run_not_found` means the running daemon has
-no such run; an error answer that is not a control problem (for example a
+no such run, in the store its `context.storeId` names when known; an error answer that is not a control problem (for example a
 non-daemon 404 page) has no `code` and names only its HTTP status. The lookup
 validates only the run-detail fields it uses, so additive same-major fields
 elsewhere are tolerated; a run state this CLI build does not know is reported as
@@ -646,9 +646,23 @@ receipts without that member use the legacy artifact/failure fallback.
 A failed run's `summary.failure` may carry `vendorFailure`: the vendor's own
 typed failure as `{ code, message, source }` (any of `code`/`message` may be
 null), or `null` — also the meaning of an absent key from an older engine —
-when no vendor-typed evidence exists. Display the code beside the message as a
-fact; never branch on its value or map it to a remedy, so codes a vendor adds
-later flow through with no release on either side.
+when no vendor-typed evidence exists. It is the evidence of the last try of the
+attempt the record speaks for, whether or not that try ended with an OS exit
+code, and each `poolAttempts` row carries its own try's evidence the same way.
+Display the code beside the message as a fact; never branch on its value or map
+it to a remedy, so codes a vendor adds later flow through with no release on
+either side. A pinned account the vendor refused with no reopening time
+(`usage_limit_exceeded` also means a workspace out of credits, which no timer
+reopens) is therefore never `subscription_window_exhausted`, the code that means
+waiting cures it: its record has `code: null`, `category: harness_unavailable`,
+`resetsAt: null` and `quotaRefusal.basis: provider_cooldown`, and an HTTP problem
+or `resumable.limitCode` names `vendor_limit_rejected`. Do not schedule a timed
+retry from it, even when another of the account's windows has a date, since that
+date belongs to that window. `credential_pool_exhausted` with `resetsAt: null`
+likewise promises no time, and one such member leaves the whole pool undated. A
+vendor-dated window with no such refusal beside it keeps
+`subscription_window_exhausted` and its `resetsAt`. A newer successful quota read
+retires the refusal, so the next run may try the account again.
 The failure's `poolAttempts` (on `summary.failure`, the run detail, the run list
 and MCP run results) lists every failed execution try in order, each with its account row,
 requested model, phase, typed category and its own redacted error text, so a
@@ -1140,6 +1154,12 @@ Recovery assumes the same registered project root is still available at that
 path. A missing, moved or unmounted root is refused (`project_root_missing`)
 before the replay lookup, so nothing is replayed or started; `claudexor_runs`
 still lists the earlier run.
+
+**Telling absence from another store.** A `no such run` answer speaks for one
+engine store, so it never proves on its own that a run did not start. An MCP or
+CLI launch result names the store that accepted the run as `storeId`: keep it and
+compare it with the store that answered; see
+[the store identity contract](ARCHITECTURE.md#engine-store-identity).
 
 **Recovering a retained task group.** On supporting daemons, public one-shot
 launches accept an optional caller-generated UUID `taskGroupId` (CLI
@@ -2146,9 +2166,11 @@ and Task tools also carry plan progress); `user` tool_result blocks →
 `stream_event` text deltas → `payload.delta === true` messages. Finality: the
 terminal `result` is the typed final answer — `final: true` is stamped ONLY on
 a success result (`structured_output` verbatim when present, else the result
-text); error subtypes never claim finality, and `error_max_turns` /
-structured-output-retries-exhausted are benign turn-control outcomes, not run
-failures. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
+text); error subtypes never claim finality. `error_max_turns` is one typed
+`error` carrying `turn_limit` (the run ends `interrupted / turn_limit_reached`
+and is never resumed under the same cap; ARCHITECTURE, context signals), and
+structured-output retries exhausted stay a benign conformance outcome, not a
+run failure. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
 frames surface (flagged `delta`); subagent frames (`parent_tool_use_id`) and
 block/lifecycle frames never do. A complete message follows only a block the
 CLI completes: a stream cut short leaves its fragments without one.
@@ -2288,7 +2310,13 @@ record once after exit and attaches it to the terminal `completed` payload as
 `vendor_failure` (`source: "codex_rollout"`), verbatim and uninterpreted; a
 tagged-object variant yields its variant name. Skipped for an aborted run and
 under `evidence_policy: stream_only`. Pin: `fixtures/rollout/recorded-*.jsonl`
-(session-rollout records, not stream captures).
+(session-rollout records, not stream captures). The one native code the
+adapter translates is the typed usage refusal (`usage_limit_exceeded` here,
+`usageLimitExceeded` on a failed app-server turn or a non-retrying `error`
+frame): it adds a typed `rate_limit` with `reopening: "unknown"` and no reset to
+the same event, once per try, never from the message words. Only root-thread
+frames of the current root turn count, whether they arrive before or after a
+`systemError` settles the run; a sub-agent's refusal never limits the root.
 
 Every rollout reader (observed model, rollout quota, vendor failure, continuity
 locate and move) goes through one boundary in `rollout-file.ts`. `X.jsonl` and
@@ -2627,7 +2655,7 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_DAEMON_OWNER` | CLI | Explicit `standalone` (default) or `external` lifecycle; external requires an absolute root. See [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_HOST_BINDING_VERSION` | plugins / mcp-server | Declared dynamic binding format, independently of the manifest's generator version; see [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_BUILD_SHA` | util | Build-time stamp of the engine's git commit SHA (packaging sets it); without it a dev checkout reads `git rev-parse HEAD` and packaged builds report `unknown`. Reported in the handshake build identity. |
-| `CLAUDEXOR_BETTERLEAKS_PATH` | delivery | Explicit path to the publication scanner used by `pr` delivery and the repository CI scan; when set it is the only candidate and must match the pinned Betterleaks 1.9.0 binary digest. Without it, the copy bundled with the macOS app, update closure or SSH runtime is used, then the provisioned copy; npm installs bundle none (see [ARCHITECTURE.md](ARCHITECTURE.md#publication-scanner)). |
+| `CLAUDEXOR_BETTERLEAKS_PATH` | delivery | Explicit path to the publication scanner used by `pr` delivery and the repository CI scan; when set it is the only candidate and must match the pinned Betterleaks 1.9.0 binary digest. Without it, the copy bundled with the macOS app, update closure or SSH runtime is used, then the copy `claudexor scanner prepare` provisions; npm installs bundle none (see [ARCHITECTURE.md](ARCHITECTURE.md#publication-scanner)). |
 | `CLAUDEXOR_DISABLE_STORED_SECRETS` | secrets | Ignore v2 file-stored secret refs entirely (hermetic runs; native sessions still work). |
 | `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` / `CLAUDEXOR_AGY_BIN` / `CLAUDEXOR_COPILOT_BIN` / `CLAUDEXOR_GROK_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
 | `CLAUDEXOR_CODEX_API_KEY` / `CLAUDEXOR_ANTHROPIC_API_KEY` / `CLAUDEXOR_CURSOR_API_KEY` | adapters | Claudexor-scoped API-key overrides (take precedence over provider env names). |

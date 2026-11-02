@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { McpRunToolResult } from "@claudexor/schema";
+import { McpRunToolResult, taskGroupReceiptMetadata } from "@claudexor/schema";
 import { keyedLaunchNeedsProject, projectLaunchHandle } from "./mcp-launch-handle.js";
 import { enqueueAndAwait } from "./daemon-run.js";
 import { acceptedPreRunFailure } from "./run-start-acceptance.js";
@@ -41,20 +41,29 @@ describe("MCP launch handles", () => {
     for (const flags of Object.values(RUN_FLAGS_BY_MODE)) expect(flags).toContain("task-group-id");
   });
 
-  it.each(["queued", "running", "failed"] as const)(
-    "projects accepted %s metadata through the real enqueue and handle owners",
-    async (status) => {
+  it.each([
+    ["queued", true],
+    ["running", true],
+    ["failed", true],
+    ["queued", false],
+    ["running", false],
+    ["failed", false],
+  ] as const)(
+    "projects accepted %s metadata (task group: %s) through the real enqueue and handle owners",
+    async (status, grouped) => {
+      // An ordinary receipt names its accepting store alone.
+      const receipt = grouped ? { taskGroupId, storeId } : { storeId };
       const serverReceipt =
         status === "failed"
           ? {
               code: "fixture_pre_run_failure",
               message: "pre-run failure",
               retryable: false,
-              context: { jobId: "job-g", state: "failed", taskGroupId, storeId },
+              context: { jobId: "job-g", state: "failed", ...receipt },
             }
           : status === "queued"
-            ? { jobId: "job-g", state: "queued", taskGroupId, storeId }
-            : { jobId: "job-g", runId: "actual-run", runDir: "/fixture/run", taskGroupId, storeId };
+            ? { jobId: "job-g", state: "queued", ...receipt }
+            : { jobId: "job-g", runId: "actual-run", runDir: "/fixture/run", ...receipt };
       vi.mocked(controlApiFetch).mockResolvedValueOnce(
         Response.json(serverReceipt, {
           status: status === "failed" ? 403 : status === "queued" ? 202 : 200,
@@ -64,19 +73,21 @@ describe("MCP launch handles", () => {
       const accepted = await enqueueAndAwait(
         client as never,
         addr,
-        { prompt: "work", taskGroupId },
+        { prompt: "work", ...(grouped ? { taskGroupId } : {}) },
         { waitForTerminal: false, acceptUnbound: true },
       );
       expect(accepted).toMatchObject({ jobId: "job-g" });
       vi.mocked(controlApiFetch).mockResolvedValue(Response.json({}, { status: 404 }));
       const handle = await projectLaunchHandle(addr, accepted, { deferred: true });
-      expect(handle).toMatchObject({ jobId: "job-g", taskGroupId, storeId });
+      expect(handle).toMatchObject({ jobId: "job-g", ...receipt });
+      if (!grouped) {
+        expect(handle).not.toHaveProperty("taskGroupId");
+        // The pair-only copy this handle used before #163 drops a lone store.
+        expect(taskGroupReceiptMetadata(accepted)).toEqual({});
+      }
       expect(handle.runId).toBe(status === "running" ? "actual-run" : "");
       const { structuredRunResult } = await import("../../mcp-server/src/run-result-format.js");
-      expect(McpRunToolResult.parse(structuredRunResult(handle))).toMatchObject({
-        taskGroupId,
-        storeId,
-      });
+      expect(McpRunToolResult.parse(structuredRunResult(handle))).toMatchObject(receipt);
     },
   );
 

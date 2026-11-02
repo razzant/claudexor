@@ -492,6 +492,7 @@
                             "input_required",
                             "work_incomplete",
                             "context_capacity_exhausted",
+                            "turn_limit_reached",
                             "work_report_contract"
                           ],
                           "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
@@ -1563,7 +1564,7 @@
                     "threshold"
                   ],
                   "additionalProperties": false,
-                  "description": "Present when quota admission refused the account (code subscription_window_exhausted): separates the owner's saved reserve from provider exhaustion. Absent on other failures and on records written before this field existed."
+                  "description": "Present when quota admission or a typed provider limit refused the account: with code subscription_window_exhausted it separates the owner's saved reserve from provider exhaustion; with a null code the provider refused usage and no reopening time is known, so no timer is implied. Absent on other failures and on records written before this field existed."
                 },
                 "vendorFailure": {
                   "anyOf": [
@@ -2113,13 +2114,14 @@
                     "transport",
                     "permission_denied",
                     "context_exhausted",
+                    "turn_limit",
                     "wall_clock",
                     "cancelled",
                     "host_restart",
                     "input_required",
                     "other"
                   ],
-                  "description": "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, a transport death (crash, timeout, watchdog), a confirmed native tool permission refusal, context exhaustion, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause."
+                  "description": "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, a transport death (crash, timeout, watchdog), a confirmed native tool permission refusal, context exhaustion, the run's max-turns cap, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause."
                 },
                 "resetsAt": {
                   "type": [

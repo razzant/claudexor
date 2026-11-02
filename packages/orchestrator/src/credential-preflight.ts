@@ -123,7 +123,7 @@ export function preflightDefaultSubject(args: {
     reason: "profile_headroom_preflight",
     constraint_id: breach?.constraint_id ?? block?.constraint_id ?? null,
     used_ratio: breach?.used_ratio ?? null,
-    resets_at: breach?.resets_at ?? block?.resets_at ?? null,
+    resets_at: block?.reopening ? null : (breach?.resets_at ?? block?.resets_at ?? null),
   });
   return next;
 }

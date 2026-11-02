@@ -202,6 +202,7 @@ function writePointer(port: number): void {
 async function startRealDaemon(
   records: DaemonRunRecord[],
   servingMode: "normal" | "recovery_only" = "normal",
+  storeId?: () => string | undefined,
 ): Promise<void> {
   await startDaemonSocket();
   const find = (id: string) => records.filter((r) => r.id === id || r.runId === id);
@@ -228,6 +229,7 @@ async function startRealDaemon(
     pollMs: 1,
     daemon,
     servingMode: () => servingMode,
+    ...(storeId ? { storeId } : {}),
   });
   const { port } = await server.start();
   closers.push(() => server.stop());
@@ -404,6 +406,50 @@ describe("claudexor inspect lookup outcomes (built CLI, #235)", () => {
     });
     expect(requests).toEqual(["list run-missing", "list run-missing"]);
     expectNoDaemonStarted();
+  });
+
+  it("names the store that answered, so a saved receipt can tell another store from absence", async () => {
+    const store = "22222222-2222-4222-8222-222222222222";
+    await startRealDaemon([], "normal", () => store);
+    const message = `no such run run-missing in engine store ${store}`;
+    const json = await inspect(["run-missing", "--json"]);
+    expect(json).toMatchObject({ status: 1, stderr: "" });
+    expect(JSON.parse(json.stdout)).toEqual(
+      failure("run-missing", 1, message, {
+        code: "run_not_found",
+        retryable: false,
+        context: { storeId: store },
+      }),
+    );
+    expect(await inspect(["run-missing"])).toEqual({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: `${message}\n`,
+    });
+  });
+
+  it("claims no store when the daemon names none, or names an invalid one", async () => {
+    const bodies: Record<string, object> = {
+      "run-unnamed": {},
+      "run-empty": { context: { storeId: "" } },
+      "run-number": { context: { storeId: 42 } },
+    };
+    await startStubDaemon((req, res) =>
+      send(
+        res,
+        404,
+        problem("http_404", "no such run", false, bodies[String(req.url).split("/").pop()!]),
+        "application/problem+json",
+      ),
+    );
+    for (const name of Object.keys(bodies)) {
+      const answer = await inspect([name, "--json"]);
+      expect(answer, name).toMatchObject({ status: 1, stderr: "" });
+      expect(JSON.parse(answer.stdout), name).toEqual(
+        failure(name, 1, `no such run ${name}`, { code: "run_not_found", retryable: false }),
+      );
+    }
   });
 
   it("inspects another project's run through the daemon by run id and by job id", async () => {

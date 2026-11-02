@@ -16,7 +16,7 @@ import { trackRequest } from "./request-timing.js";
 import { serveRunDetail } from "./run-detail-route.js";
 import { handleDeferredMessageRoute } from "./deferred-message-routes.js";
 import { handleAccountResourceRoute, type ResourceRead } from "./account-resource-routes.js";
-import { CONTROL_STORE_IDENTITY_HEADER, ControlAccountResetRequest } from "@claudexor/schema";
+import { ControlAccountResetRequest } from "@claudexor/schema";
 import { recordedExecutionRoot } from "./run-delivery-state.js";
 import * as objectDelivery from "./run-object-delivery.js";
 import { readRawTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
@@ -126,7 +126,6 @@ import {
   isTerminalControlSetupJobState,
   ControlSetupJobListFilter,
   ControlSetupJobListResponse,
-  ControlRunStartInfo,
   type ControlRunStartRequest,
   ControlRunSummary,
   ControlSettingsSnapshot,
@@ -711,7 +710,7 @@ export class DaemonControlApiServer {
         readBody: () => this.readBody(req),
         servingMode: this.opts.servingMode?.() ?? "normal",
         storeId: this.opts.storeId,
-        wantsStoreId: req.headers[CONTROL_STORE_IDENTITY_HEADER] === "1",
+        wantsStoreId: runStart.wantsStoreIdentity(req),
       });
     } catch (error) {
       return this.requestError(res, error);
@@ -774,7 +773,7 @@ export class DaemonControlApiServer {
           readBody: (request) => this.readBody(request),
           requestError: (response, error, fallback) => this.requestError(response, error, fallback),
           json: (response, status, body) => this.json(response, status, body),
-          respondToAcceptedJob: (response, jobId) => this.respondToAcceptedJob(response, jobId),
+          waitForRunStart: (id) => this.waitForRunStart(id),
           storeId: this.opts.storeId,
           validateResources: this.opts.services?.validateResources,
           preflightRunRequirements: this.opts.services?.preflightRunRequirements,
@@ -806,6 +805,7 @@ export class DaemonControlApiServer {
           findRun: (id) => this.findRun(id),
           waitForRunStart: (id) => this.waitForRunStart(id),
           storeId: this.opts.storeId,
+          wantsStoreId: runStart.wantsStoreIdentity(req),
           serializeThreadMutation: (threadId, work) =>
             chainThreadMutation(this.threadTurnChains, threadId, work),
           json: (response, status, body) => this.json(response, status, body),
@@ -859,6 +859,7 @@ export class DaemonControlApiServer {
       return serveRunDetail(
         {
           findRun: (id) => this.findRun(id),
+          storeId: this.opts.storeId,
           deferred: this.opts.daemon.deferredMessageProjection?.bind(this.opts.daemon),
           children: (id) => this.opts.daemon.list({ delegatedFromRunId: id }),
           cursor: async (rec, signal) => {
@@ -1061,7 +1062,13 @@ export class DaemonControlApiServer {
       } catch (err) {
         return this.requestError(res, err);
       }
-      return handleThreadTurnCreate(this.threadTurnRouteCtx(), res, threadId, body, idempotencyKey);
+      return handleThreadTurnCreate(
+        this.threadTurnRouteCtx(req),
+        res,
+        threadId,
+        body,
+        idempotencyKey,
+      );
     }
 
     const turnRetryMatch = /^\/threads\/([^/]+)\/turns\/([^/]+)\/retry$/.exec(path);
@@ -1070,7 +1077,7 @@ export class DaemonControlApiServer {
         return this.json(res, 501, { error: "threads are not supported by this engine build" });
       try {
         return handleThreadTurnRetry(
-          this.threadTurnRouteCtx(),
+          this.threadTurnRouteCtx(req),
           res,
           decodeURIComponent(turnRetryMatch[1] as string),
           decodeURIComponent(turnRetryMatch[2] as string),
@@ -1341,6 +1348,7 @@ export class DaemonControlApiServer {
               chainThreadMutation(this.threadTurnChains, threadId, work),
             waitForRunStart: (id) => this.waitForRunStart(id),
             storeId: this.opts.storeId,
+            wantsStoreId: runStart.wantsStoreIdentity(req),
             appendAudit: (record, payload) =>
               appendRunAuditEvent(record, "control.applied", payload),
             json: (response, status, responseBody) => this.json(response, status, responseBody),
@@ -1966,31 +1974,6 @@ export class DaemonControlApiServer {
     }
   }
 
-  private async respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void> {
-    const rec = await this.waitForRunStart(jobId);
-    const metadata = runStart.acceptedTaskGroupReceipt(rec, this.opts.storeId);
-    if (rec.runId && rec.runDir) {
-      return this.json(
-        res,
-        200,
-        ControlRunStartInfo.parse({
-          ...metadata,
-          jobId: rec.id,
-          runId: rec.runId,
-          taskId: rec.taskId,
-          runDir: rec.runDir,
-        }),
-      );
-    }
-    const { status, body } = runStart.unboundRunStartResponse(
-      rec,
-      TERMINAL_STATES.has(rec.state),
-      {},
-      metadata,
-    );
-    return this.json(res, status, body);
-  }
-
   /** One addressed run by job id or run id, or null when it is not retained.
    * The daemon selects that record before projecting it, so a status poll costs
    * a reference scan instead of every retained run's redacted params. The exact
@@ -2081,10 +2064,12 @@ export class DaemonControlApiServer {
     return chainIdleRunMutation(this.threadTurnChains, this.opts.daemon, rec, work);
   }
 
-  private threadTurnRouteCtx(): ThreadTurnRouteCtx {
+  private threadTurnRouteCtx(req?: IncomingMessage): ThreadTurnRouteCtx {
     const services = this.opts.services ?? {};
     return {
       json: (res, status, body) => this.json(res, status, body),
+      storeId: this.opts.storeId,
+      wantsStoreId: req ? runStart.wantsStoreIdentity(req) : false,
       waitForRunStart: (jobId) => this.waitForRunStart(jobId),
       readRunArtifactText: (runId, rel) => this.readRunArtifactText(runId, rel),
       resolveRunArtifactPath: async (runId, rel) => this.resolveRunArtifactPath(runId, rel),

@@ -11,6 +11,7 @@ import type {
   RequestRequirementResolution,
   TaskContract,
   ToolKind,
+  VendorFailureEvidence,
   WorkState,
 } from "@claudexor/schema";
 import { commandOutcomeUnconfirmed } from "@claudexor/schema";
@@ -33,6 +34,7 @@ import {
   classifyPermissionDenial,
   classifyStatusError,
   classifyTransientSignal,
+  completionVendorFailure,
 } from "./transientClassify.js";
 
 export { type TransientFailureObservation, classifyAdapterThrow } from "./transientClassify.js";
@@ -122,6 +124,9 @@ export interface AttemptTelemetry
   /** Adapter-declared transients, classified into the GH #31 taxonomy the retry policy gates on. */
   transientFailures: TransientFailureObservation[];
   transientRetries: number; // same-profile transient retries that actually RAN (observed)
+  /** #414: the vendor's own typed failure of this attempt's current try, set by
+   * its completion with or without exit evidence; reset per try (A3). */
+  vendorFailure: VendorFailureEvidence | null;
   /** TYPED vendor rate-limit signals seen this attempt (W5.4): the rotation predicate's input. */
   rateLimits: { retryDelayMs: number | null; resetsAt: string | null }[];
   /** A2: agent-progress / file-change markers for the structural rotation predicate. */
@@ -138,6 +143,8 @@ export interface AttemptTelemetry
    * `repeated_refill` (claude's rapid-refill breaker), never on `prompt_too_long`
    * (an irreducible packet). */
   contextExhaustedCause: NonNullable<HarnessEvent["context"]>["cause"] | null;
+  /** #299: the vendor ended a native turn at the max-turns cap (typed `turn_limit`). */
+  turnLimitReached: boolean;
   /** D-16c: the raw `{work_report}` payload a `side_tool` route surfaced on its
    * final message (claude StructuredOutput tool), or null. The unwrap validates
    * it while the markdown answer stays the deliverable. */
@@ -196,6 +203,7 @@ export function createAttemptTelemetry(
     requestedModel,
     transientFailures: [],
     transientRetries: 0,
+    vendorFailure: null,
     rateLimits: [],
     outputMarkers: marks.newAttemptOutputMarkers(),
     delegationBelt: {
@@ -214,6 +222,7 @@ export function createAttemptTelemetry(
     },
     contextExhausted: false,
     contextExhaustedCause: null,
+    turnLimitReached: false,
     sideToolWorkReport: null,
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
@@ -327,6 +336,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     t.contextExhausted = true;
     t.contextExhaustedCause = ev.context.cause ?? null;
   }
+  if (ev.turn_limit) t.turnLimitReached = true;
   // D-16c side_tool: capture the raw work_report the StructuredOutput tool
   // surfaced on the final message (last-wins). The unwrap validates it.
   const sideTool = ev.payload?.["work_report_side_tool"];
@@ -352,6 +362,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     // non-zero exit, or a spawn failure as TYPED payload fields (never prose).
     const crash = classifyCompletedCrash(ev.payload);
     if (crash) t.transientFailures.push(crash);
+    t.vendorFailure = completionVendorFailure(ev);
     return;
   }
   const tool = ev.tool;

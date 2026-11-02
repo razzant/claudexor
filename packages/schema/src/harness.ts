@@ -944,6 +944,18 @@ export const HarnessEvent = z
       .describe(
         "Typed context-management signal (compaction boundary / capacity exhaustion) set by the adapter; orthogonal to the transient-retry taxonomy.",
       ),
+    /** #299: set on the error event of a native turn the vendor ended at the
+     * run's max-turns cap (claude/grok `error_max_turns`). The finalizer maps it
+     * to `interrupted / turn_limit_reached`; it is never retried or resumed. */
+    turn_limit: z
+      .object({
+        native_code: z.string().describe("The vendor's own terminal subtype, verbatim."),
+        num_turns: z.number().int().nonnegative().nullable().describe("Turns the vendor counted."),
+      })
+      .optional()
+      .describe(
+        "Typed max-turns stop set by the adapter on the error event that ends a capped native turn; orthogonal to the transient-retry taxonomy.",
+      ),
     error: z.string().optional().describe("Error text for error events."),
     aborted: z
       .boolean()

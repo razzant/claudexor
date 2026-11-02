@@ -40,6 +40,9 @@ export interface CodexParseState {
    * unchanged.
    */
   envelopeActive?: boolean;
+  /** The current root turn's typed usage refusal (#558), kept on arrival by the
+   * run loop's root-only `observeCodexRootError`. */
+  usageRefusal?: NonNullable<HarnessEvent["rate_limit"]>;
 }
 
 /**

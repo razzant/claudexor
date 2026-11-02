@@ -794,6 +794,8 @@ async function collectReviewerOutput(
     currentIter = iter;
     let text = "";
     let sawTransient = false;
+    // #558: a typed refusal naming no reopening time is never replayed on the same account.
+    let refusedAccount = false;
     let sawError = false;
     let lastError: string | null = null;
     let attemptObservedModel: string | undefined;
@@ -814,6 +816,7 @@ async function collectReviewerOutput(
       if (ev.effort_resolution)
         updateReviewerMetadata(artifact, { effort_resolution: ev.effort_resolution });
       if (ev.transient) sawTransient = true;
+      if (ev.rate_limit?.reopening === "unknown") refusedAccount = true;
       if (ev.type === "error") {
         sawError = true;
         lastError = redactSecrets(ev.error ?? ev.text ?? "reviewer emitted an error event");
@@ -923,6 +926,7 @@ async function collectReviewerOutput(
     }
     if (
       sawTransient &&
+      !refusedAccount &&
       text.trim() === "" &&
       nativeTry < transientRetryPolicy.maxRetries &&
       !timedOut &&

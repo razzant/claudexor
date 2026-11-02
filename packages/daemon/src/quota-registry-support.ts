@@ -7,6 +7,7 @@
 import {
   QUOTA_FRESHNESS_TTL_MS,
   REACTIVE_COOLDOWN_SOURCE,
+  REOPENING_UNKNOWN_COOLDOWN_ID,
   legacyV320QuotaSource,
   quotaWindowFreshness,
   quotaSourceTraits,
@@ -56,9 +57,14 @@ export function reactiveCooldownSnapshot(
     reset ??
     vendorResetDayCooldownEnd(event.payload) ??
     new Date(now.getTime() + (typeof delay === "number" ? delay : 5 * 60_000)).toISOString();
-  const constraintId = event.rate_limit?.constraint_id
-    ? `cooldown:${event.rate_limit.constraint_id}`
-    : "cooldown";
+  // #558: a usage refusal with no reopening time keeps its provenance in the
+  // cooldown's own engine-owned identity: no usage or reset is invented for it.
+  const constraintId =
+    event.rate_limit?.reopening === "unknown"
+      ? REOPENING_UNKNOWN_COOLDOWN_ID
+      : event.rate_limit?.constraint_id
+        ? `cooldown:${event.rate_limit.constraint_id}`
+        : "cooldown";
   return {
     subject: existing?.subject ?? {
       harness,
@@ -180,12 +186,13 @@ export function withoutSupersededQuotaConstraints(
     return existing;
   }
   const constraints = existing.constraints.filter((constraint) => {
-    // A generic refusal retained no window identity. A successful recognized
-    // read permits the next requested attempt, including unknown/empty quota;
-    // it does not promise that the provider will accept that attempt. Its
-    // request-kind scope narrows what it blocks, not which read retires it.
+    // A generic refusal retained no window identity, nor does a usage refusal
+    // with no reopening time (#558). A successful recognized read permits the
+    // next requested attempt, including unknown/empty quota; it does not
+    // promise that the provider will accept that attempt. Its request-kind
+    // scope narrows what it blocks, not which read retires it.
     if (
-      constraint.id === "cooldown" &&
+      (constraint.id === "cooldown" || constraint.id === REOPENING_UNKNOWN_COOLDOWN_ID) &&
       !constraint.applies_to_models?.length &&
       !constraint.applies_to_model_prefixes?.length
     ) {

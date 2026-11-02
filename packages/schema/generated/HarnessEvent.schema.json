@@ -1384,6 +1384,13 @@
               ],
               "default": null,
               "description": "Suggested retry delay in milliseconds, when reported."
+            },
+            "reopening": {
+              "type": "string",
+              "enum": [
+                "unknown"
+              ],
+              "description": "unknown: the vendor's own typed code refused further usage on this account and named no reopening time, and the refusal is not known to be a timed window (Codex usage_limit_exceeded also covers a workspace out of credits). No reset is derived from it and the same account is never retried for it. Absent: resets_at, retry_delay_ms and the vendor's window say when to come back, as before."
             }
           },
           "additionalProperties": false,
@@ -1537,6 +1544,33 @@
           ],
           "additionalProperties": false,
           "description": "Typed context-management signal (compaction boundary / capacity exhaustion) set by the adapter; orthogonal to the transient-retry taxonomy."
+        },
+        "turn_limit": {
+          "type": "object",
+          "properties": {
+            "native_code": {
+              "type": "string",
+              "description": "The vendor's own terminal subtype, verbatim."
+            },
+            "num_turns": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Turns the vendor counted."
+            }
+          },
+          "required": [
+            "native_code",
+            "num_turns"
+          ],
+          "additionalProperties": false,
+          "description": "Typed max-turns stop set by the adapter on the error event that ends a capped native turn; orthogonal to the transient-retry taxonomy."
         },
         "error": {
           "type": "string",

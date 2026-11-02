@@ -1744,7 +1744,32 @@ window, which is a provider-spent (100%) window whenever one breaches. Usage
 observed on a different window is omitted rather than attached. Within one
 snapshot a block names the window that owns its earliest release, with that
 window's kind. The release is a recheck instant, not a promise that the whole
-account is ready then. When no
+account is ready then. A typed usage refusal with no reopening time (#558) is
+not known to be a window a timer reopens: Codex's one code also covers a
+workspace out of credits. It enters the existing reactive cooldown under the
+engine-owned identity `cooldown:reopening_unknown` with no measured usage
+(`used_ratio: null`) and no vendor reset (`resets_at: null`), so the row is
+blocked only for that cooldown's own bounded default and its end is a recheck
+instant, never a reset. While active and applicable it decides the account's
+verdict whatever else blocks the account: another window's reset, a vendor retry
+delay or a vendor reset day keeps its meaning for that window alone and promises
+nothing about the account. Like the generic refusal it names no window, so a
+newer recognized primary read retires it under the reconciliation rules below,
+which permits the next attempt. No transport retry replays the refused account,
+a reviewer seat's included, even when the refusal's words also read as a broken
+stream. A vendor-dated window with no such refusal
+beside it keeps its existing code and reset. A pinned account refused this way,
+on its own try or at a later preflight, never carries
+`subscription_window_exhausted`, which every reader takes as "waiting cures it"
+even without a reset. Its failure record
+has `code: null`, `category: harness_unavailable`, `resetsAt: null` and
+`quotaRefusal.basis: provider_cooldown`, beside the try's `vendorFailure` when a
+try ran; the thrown refusal, its `ControlProblem.code` and `resumable.limitCode`
+name the existing term `vendor_limit_rejected`, which is deliberately not a
+`RunFailureCode`, since an old strict reader would drop a record with an unknown
+member. In a pool, such a member counts as cause `unavailable` rather than
+`quota` and leaves the pool's reset unknown even beside a dated member, and the
+Accounts `next_up` text for that pool promises no reset. When no
 target survives (all spent/excluded/wrong-kind), the engine emits typed
 `route.profile.rotation_exhausted` with each rejected profile's reason and
 headroom or cooldown evidence (with its earliest known release instant); the
@@ -2101,7 +2126,8 @@ open-source scanner Betterleaks 1.9.0 (MIT). The pin
 (`packages/delivery/src/publication-scanner-pin.ts`, which also locates the
 executable) lists, per platform
 (darwin, linux, win32 × arm64, x64), the official release archive digest and
-the extracted binary digest. Runtime never downloads. The executable is, in
+the extracted binary digest. Delivery never downloads; only the explicit
+preparation step below does. The executable is, in
 order: the file named by `CLAUDEXOR_BETTERLEAKS_PATH` (the only candidate when
 set), the copy bundled beside the engine bundle under
 `native/betterleaks/<platform>/`, or the provisioned copy at
@@ -2114,9 +2140,14 @@ the engine code, so it catches a wrong or altered staging, not someone who can
 already rewrite the engine bundle. A present bundled copy that does not match
 is refused, never skipped in favour of another candidate.
 
-Distribution. `scripts/lib/betterleaks-stage.mjs` is the one staging step: it
-checks the official archive and the binary against the pin and the MIT license,
-then writes `betterleaks`, `LICENSE` and `provenance.json`. The engine-resource
+Distribution. `packages/delivery/src/publication-scanner-provision.ts` is the
+one owner of proving an official archive: it copies the archive into private
+staging while hashing those bytes, extracts exactly the binary and `LICENSE` from
+that copy and checks the binary pin and the MIT license. Its module runs from
+source with Node's type stripping as well as from the shipped package, so CI, the
+release build and an installed CLI execute the same proof. `scripts/lib/betterleaks-stage.mjs`
+is the one staging step on top of it: it writes `betterleaks`, `LICENSE` and
+`provenance.json` into a distribution's `native/` tree. The engine-resource
 build stages darwin-arm64 and darwin-x64 for the universal macOS app and its
 update closure; release builds sign them in place with the other native helpers
 and then record the signed digests. The closure builder accepts only those two
@@ -2125,14 +2156,54 @@ both. Each per-target SSH runtime archive carries only its own target's build
 under `lib/native/betterleaks/<target>/`, which `verify-remote-runtime-archive.mjs`
 checks. The release and remote-runtime SBOMs list every bundled scanner with
 its upstream source and digest. The npm packages have no per-platform payload
-and carry no scanner: an npm-installed CLI uses `CLAUDEXOR_BETTERLEAKS_PATH`
-or the provisioned copy. `scripts/provision-betterleaks.mjs` is the explicit
-setup/CI step for that copy (it downloads or takes `--from-archive`, checks
-both digests and installs the binary with its license); from an npm install,
-the binary extracted from the official v1.9.0 archive for the platform works
-the same way through `CLAUDEXOR_BETTERLEAKS_PATH`. With no matching scanner
-`pr` refuses `publication_scan_unavailable`; local apply, branch and commit
-are unaffected.
+and carry no scanner: an npm-installed CLI prepares the provisioned copy once with
+`claudexor scanner prepare`, or uses `CLAUDEXOR_BETTERLEAKS_PATH`. With no matching
+scanner `pr` refuses `publication_scan_unavailable`, naming that command; local
+apply, branch and commit are unaffected.
+
+`claudexor scanner prepare [--from-archive <file>]` is that step: it downloads
+the pin's official asset, or, with `--from-archive` and no network, takes an
+official archive the user already has. It is
+local: it writes only `<config root>/tools/betterleaks/1.9.0/<platform>/`, never
+installed package files, and contacts no daemon. An engine with the same config
+root and no explicit path finds the copy through its own resolver at its next
+`pr`, with no restart or environment change; the receipt's `resolution` states
+what this environment's lookup order would run, an explicit path or bundled copy
+included. It prepares nothing on another machine: an SSH runtime bundles its own
+build. `scripts/provision-betterleaks.mjs` runs the same code from a source
+checkout, for CI before its dependencies are installed.
+
+The proof runs in a unique sibling staging directory (`.<platform>.staging-*`)
+before anything becomes visible: both digests, a regular executable file, the
+license and, for this host's own platform, the offline `version` probe. A local
+archive is copied there and never extracted where it lies, so a browser's
+quarantine mark on the user's file does not reach the binary: the pin, not the
+download route, vouches for those bytes. The complete payload then appears in one
+directory rename. A verified complete payload already there is reused without
+rewriting it (no download and no archive read, `already_prepared`). Anything else there, a binary without its
+license included, is left untouched and refused `scanner_install_conflict`, whose
+remedy is to remove it and run the command again. A preparation that loses the
+rename to a concurrent one verifies the winner and reuses it, or reports the
+conflict. The source script's `--dest <file>` keeps its explicit contract instead:
+after the same proof it replaces the binary at that path and the `LICENSE` beside
+it, whatever is there, and a refusal or an interruption before the replacement
+leaves the old files. Each name is renamed into place from a unique sibling
+staging directory, the license first, so the pair is not one atomic step and a
+concurrent writer of the same path is not fenced.
+
+SIGINT, SIGTERM and SIGHUP cancel the download or file copy and end the owned
+`tar` or probe child (SIGTERM, then SIGKILL after five seconds), whose exit is
+awaited before staging is removed. The last cancellation check and the rename are
+one synchronous block: a cancellation accepted before it never activates
+(`scanner_prepare_cancelled`), and one arriving after it finds the activation done
+and reported as prepared. Other typed failures are `scanner_download_failed`,
+`scanner_archive_unreadable`, `scanner_archive_mismatch`,
+`scanner_extract_failed`, `scanner_payload_invalid`, `scanner_install_failed` and
+`scanner_platform_unsupported`. Limits: a SIGKILL or a crash can leave a staging
+directory, which the resolver never reads and nothing collects, so delete it by
+hand; nothing is synced to disk, so a copy torn by a power loss fails its digest at
+the next resolve or preparation instead of being trusted. A reused payload gets
+the same checks except the archive digest, since no archive is at hand.
 
 For `pr`, `deliverUnlocked` materializes the exact candidate tree, creates the
 commit object it will publish (unreferenced until adopted) and calls
@@ -3330,7 +3401,11 @@ it; an older engine answers 404, which `claudexor doctor` prints as
 unavailable while it prints the summary line and the routes with failures of
 a current engine (`route_health` in `doctor --json`).
 
+#### Engine store identity
+
 `POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
+
+A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup can speak for a store's absence.
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
@@ -3668,7 +3743,21 @@ not retry automatically.
   with a bounded continuation packet delivered as `context/THREAD.md` and
   discloses it via a typed `session.continuity` event + a `continuity` field on
   the turn record (INV-137); a plain in-lane turn resumes natively with no
-  packet. An in-run account hop that MOVED the lane's session (claude, codex)
+  packet. Each earlier turn carries its `final/answer.md`. A turn that wrote no
+  answer and whose run did not succeed carries its recorded output instead, read
+  by the rule a `continueFrom` successor uses: its `final/retained-output.md`
+  exactly as stored, else the same projection of its `events.jsonl` when its
+  terminal never wrote that file (an engine restart interrupted the run). A
+  heading says it ended without a final answer and that the text is not a
+  completion verdict; when its terminal facts (`final/run_facts.yaml`) cannot be
+  read, the heading says only that no final answer is recorded and the outcome
+  is unknown. A successful turn without `answer.md` (a plan or a report) keeps
+  its earlier rendering, with the active plan pointer for a plan. A verbatim
+  turn carries at most 4 KiB of its output: an answer keeps its start, and an
+  unfinished turn keeps its end, where its newest output is. The kept part is
+  whole UTF-8 characters, and the cut's mark, outside that allowance, names the
+  file holding the whole output (`answer.md`, `retained-output.md` or `events.jsonl`).
+  An in-run account hop that MOVED the lane's session (claude, codex)
   is disclosed on the same channel as `native_resume` with `lane_switched_from`
   naming the previous profile — the conversation continued natively on another
   account; the per-try run receipt (`run.continuity`) carries the carrier. Past a byte budget the packet's oldest turns collapse; the engine
@@ -3677,14 +3766,19 @@ not retry automatically.
   bounded read-only ask-mode pass on the lane's own harness + credential route
   (single turn, hard timeout, no job queue) and reused until a new head turn
   advances the boundary. The pass receives at most 2 KiB of each collapsed
-  turn's prompt and of its answer and keeps at most 8 KiB of its summary; each
-  cut ends at a whole UTF-8 character and adds a trailing `…` outside those
-  limits. A summary saved before that rule is reused as saved, with any U+FFFD
+  turn's prompt and of its answer (of an unfinished turn's output, its end) and
+  keeps at most 8 KiB of its summary; each cut keeps whole UTF-8 characters and
+  adds a `…` outside those limits (before a kept end). A summary saved
+  before that rule is reused as saved, with any U+FFFD
   its byte cut left, until the boundary advances; it is neither regenerated nor
   migrated. A timeout or unavailable harness falls back to
   mechanical one-liners of at most 200 UTF-16 code units per field, cut the
-  same way, so the delta is never lost; the disclosure's
-  `summarized` flag is set either way. A `planRunId` body field implements an approved
+  same way; an unfinished turn's line keeps the end of its output and, when
+  cut, names the file holding it whole, so the delta is never lost. That line
+  also follows a summary that covers the turn, since generated or cached prose
+  may omit the output and never names its file; the disclosure's
+  `summarized` flag is set either way. A prior turn's output is read only for
+  the turns the packet carries. A `planRunId` body field implements an approved
   plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
   turn) and delivers it to the executor as a server-owned file reference, so the
   agent runs against the frozen plan rather than a bare prompt. `POST /v2/threads/:id/apply` delivers an isolated thread's accumulated
@@ -5653,7 +5747,8 @@ so a typo'd id cannot launch one; `apply` is server-owned delivery and starts it
 like the acting paths (`agent`/`best-of`/`create`, `decision`). A local retained run
 is shown while the daemon is down, and its files say nothing about whether it is
 still running. Only the run registry's own 404 from a running daemon (the
-run-detail route's `http_404` problem) reports `no such run` (`run_not_found`).
+run-detail route's `http_404` problem) reports `no such run` (`run_not_found`), naming
+the store that answered when it has an identity ([engine store identity](#engine-store-identity)).
 Other recognized outcomes keep typed codes: `invalid_argument` for a malformed id;
 `daemon_unavailable` when no daemon is reachable (runs from other projects were not
 checked) or the connection drops before the whole answer arrives; the daemon's own
@@ -6520,11 +6615,13 @@ primary observation reconciles old reactive constraints at the registry write ow
 its witness and changed reactive snapshots commit in one SQL event transaction, even
 for timestamp-only re-observation. Reversed arrival uses the same witness, so a
 delayed old refusal cannot revive a retired block, and request-start timestamps
-keep an older in-flight poll from erasing a newer refusal. A generic unclassified block
-can yield to a successful response without measured windows (usage stays unknown),
+keep an older in-flight poll from erasing a newer refusal. A generic unclassified block,
+like a usage refusal with no reopening time (`cooldown:reopening_unknown`), can yield to a
+successful response without measured windows (usage stays unknown),
 while independently identified or model-scoped windows need matching measured
 replacement; a Codex refusal's text scope limits what it blocks, not which read
-retires it.
+retires it. The read permits the next attempt without promising the provider accepts it:
+a vendor that refuses again records the refusal again.
 This permits purchased or vendor-granted early resets without waiting for an obsolete
 timer. Malformed Codex responses never become successful empty observations.
 
@@ -6689,14 +6786,32 @@ fail-soft from the run's own `CODEX_HOME` and bound to the turn this process ran
 rollout carries turn markers, and not predate the spawn second; any doubt yields
 nothing — disclosed residual: an earlier turn that failed within the same second
 as a resumed spawn that wrote no turn marker of its own). The orchestrator
-forwards it to the terminal failure record as
-`vendorFailure: { code, message, source }` for the attempt that record speaks
-for (candidate lane: the first candidate; read-only lane: the last attempt;
-budget, plan and deep-scan terminals carry `null`). The code is OPAQUE evidence,
-forwarded verbatim with no mapping table: no Claudexor code path branches on
-its value, it is never an input to retry, rotation, cooldown or credential
-verdicts, and it never changes the record's `category`/`code`. Every other
-harness, and any missing or unreadable record, yields `null`.
+reads it from any completion the harness voiced its error on, with OS exit
+evidence or none (a Codex app-server turn ends with neither an exit code nor a
+signal); a signal kill and a cancelled completion carry none. It belongs to
+that try: the try's `poolAttempts` row carries it, and the terminal failure
+record carries `vendorFailure: { code, message, source }` of the LAST try of
+the attempt it speaks for (candidate lane: the first candidate, including an
+errored winner's arbitration record; read-only and plan lanes: the last
+attempt; budget and deep-scan terminals carry `null`), so a later try that
+ended without evidence, crashed or was cancelled never speaks with an earlier
+try's cause. The forwarded code is OPAQUE evidence with no mapping table: no
+consumer branches on its value, it is never an input to retry, rotation,
+cooldown or credential verdicts, and it never changes the record's
+`category`/`code`. The one translation is the adapter's own, from the native
+record it read: Codex's typed usage refusal (`usage_limit_exceeded` in the
+rollout, `usageLimitExceeded` on the app-server wire, whichever arrives first,
+once per try) also rides that event as a typed `rate_limit` with
+`reopening: unknown` and no reset. The one code covers a spent plan window and
+a workspace out of credits alike, so it never implies a window that a timer
+reopens. Decisions read that typed signal (see "In-run continuation" and the
+quota admission rules), never the forwarded code. The app-server run loop keeps
+that code on arrival for the root turn it belongs to, from a non-retrying `error`
+frame or a failed turn, and a new root turn clears it; the settled terminal error
+takes it once the process stopped, so a durable `systemError` loses it neither
+when the frame came first nor when the stopped process wrote it last, and nothing
+waits for a frame that may never come. A sub-agent thread's frames never limit
+the root. Every other harness, and any missing or unreadable record, yields `null`.
 
 On every terminal path (zero exit, nonzero exit, abort), the shared CLI run
 loop attaches a bounded, adapter-redacted `stderr_tail` to the terminal
@@ -6873,6 +6988,30 @@ remain unbudgeted; no predictive native refusal or guessed model window is added
 The native input cap excludes separate instructions and is not token capacity. A terminal `capacity_exhausted` with no completed
 WorkReport maps to `interrupted / context_capacity_exhausted`.
 
+The max-turns cap (#299) is a sibling typed stop: the cap ends the run and the
+caller chooses what happens next. Claude Code reports a capped turn as an
+`error_max_turns` result (`is_error`) and then exits 1 (read from the 2.1.316
+binary); the Grok parser maps a result of the same shape the same way, which is
+tested on synthetic frames only (no capped Grok run has been recorded). The
+adapter emits one `error` event carrying the typed `turn_limit` field
+(`turnLimitError` in core), whatever the exit code, so the run loop records a
+following non-zero exit as the harness's own report rather than a crash, and a
+consumer that only reads errors (the thread summary pass, the auth capability
+smoke, the reviewer engine) never takes the partial narration for an answer.
+With no completed WorkReport the finalizer maps it to `interrupted /
+turn_limit_reached` (label "Turn limit reached", ACP stop `max_turn_requests`)
+in every lane: Agent candidates are never reviewed or adopted, an Ask chain and
+an all-capped deep scan end interrupted, and the Plan pipeline's failure
+terminal names the same reason. Nothing re-runs the work implicitly: the
+attempt is never resumed, rotated or replayed under the same cap, the Ask
+`fallback_model` replay and the solo Plan fallback to the next harness are
+skipped, and an Ask chain never falls through to its next harness after it.
+The partial stays in `final/retained-output.md` and the attempt's evidence, an
+unfinished Agent tree stays under custody where the run keeps stopped work, and
+Agent and Ask terminals carry `resumable.cause: turn_limit` for an explicit
+`continueFrom`; Plan has no in-run continuation facts, and its next step is a
+later thread turn. The D-16d one-shot continuation stays context-only.
+
 One-shot continuation (D-16d): when an eligible terminal `capacity_exhausted`
 (cause `repeated_refill` only — `prompt_too_long` may be an irreducible packet)
 leaves no completed WorkReport, `continuation_count == 0`, and the run is
@@ -6901,8 +7040,8 @@ resume keeps the id; codex compares the `thread/resume` reply before
 session) and the adapter's typed rejection of carried state. "Acted" is a
 sticky fact of the attempt (an accepted answer, agent progress, a file change
 or a diff in any try). An attempt that did not act keeps the rotation and
-transient rules above, except typed context exhaustion and native permission
-refusal end the attempt rather than replaying the same limitation. AGY's adapter
+transient rules above, except typed context exhaustion, the max-turns cap and
+native permission refusal end the attempt rather than replaying the same limitation. AGY's adapter
 recognizes exact native-stderr auto-denial, not empty output or model prose.
 Only a nonempty typed final keeps an answer with that warning; narration
 cannot make the refusal successful. `permission_denial` records
@@ -6935,7 +7074,13 @@ also rejects the native carrier; generic execution errors and model prose do
 not. Existing transcripts misplaced outside the correct holder store are not
 migrated automatically: a locate miss retains them and uses the evidence packet.
 A bare backoff frame (`retry_delay_ms`, no reset, no
-constraint) is transport when a session exists to resume. On a native carrier
+constraint) is transport when a session exists to resume. A typed usage
+refusal with no reopening time (`rate_limit.reopening: unknown`) is never a
+same-account retry: after progress it is a typed limit (a pin ends with the
+no-timer record described under the quota admission rules; otherwise the
+resolved `limit_action` hops or stops), and before progress it ends the attempt
+whenever rotation does not move it, instead of replaying the work order on the
+same account. On a native carrier
 the user prompt is one constant notice ("the previous process stopped …
 continue from where it stopped … a cut-off tool call may or may not have taken
 effect … finish with a self-contained final message") — the original prompt
@@ -7995,10 +8140,12 @@ code touching one of these areas must honor it or change it explicitly here.
   Some subcommands and pre/post-run paths retain purpose-built one-object
   schemas; their exact bounded residue is tracked as D-7 in `docs/BACKLOG.md`.
   A projector-owned run-scoped failure
-  (inspect/apply/decision) may add a
+  (inspect/apply/decision, or a run verb after admission) may add a
   per-command identifying field such as `runId` alongside those canonical
-  fields, but the projector-owned fields always win over a same-named extra, so
-  the failure shape cannot be forged. Redaction runs BEFORE the bounded-context
+  fields; after a bound launch receipt has returned, a machine-mode run verb
+  also keeps that receipt's `jobId` and `storeId` (or task-group pair) if a later
+  detail read fails. An error while awaiting admission is outside this case. The projector-owned fields always win
+  over a same-named extra, so the failure shape cannot be forged. Redaction runs BEFORE the bounded-context
   truncation, so a secret token straddling the truncation boundary is masked on
   the full string and can never leak as a surviving head fragment. A central category → exit-code table owns the codes: usage /
   validation = 2, operational failure = 1. Typed domain codes and structured

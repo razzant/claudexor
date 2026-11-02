@@ -58,6 +58,7 @@ import {
 import { controlApiFetch } from "./live.js";
 import { streamDurableLogin } from "./setup-login-inline.js";
 import { terminalLoginFallback } from "./setup-login-fallback.js";
+import { scannerCommand } from "./scanner-command.js";
 import { readDaemonDiagnosticTail } from "./startup-diagnostics.js";
 import {
   assertOperatorDaemonLifecycle,
@@ -89,6 +90,8 @@ export function dispatchOpsCommand(
       return profilesCommand(args, json);
     case "accounts":
       return accountsCommand(args, json);
+    case "scanner":
+      return scannerCommand(args, json);
     default:
       return undefined;
   }

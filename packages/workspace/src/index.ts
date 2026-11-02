@@ -23,6 +23,7 @@ export {
   ownsContinuationSource,
   readContinuationEvidence,
   readSessionCapsule,
+  recordedOutput,
   runFilesExpired,
   unrepresentedOutput,
 } from "./continuation-evidence.js";

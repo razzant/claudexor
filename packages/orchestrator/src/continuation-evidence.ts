@@ -136,6 +136,7 @@ const CAUSE_LINE: Record<ResumableCause, string> = {
   transport: "a process death",
   permission_denied: "a native tool permission refusal",
   context_exhausted: "context exhaustion",
+  turn_limit: "the max-turns limit",
   wall_clock: "the wall-clock deadline",
   cancelled: "a cancel",
   host_restart: "a host restart",

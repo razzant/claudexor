@@ -260,17 +260,33 @@ describe("harness-reported terminal error (exit evidence)", () => {
     expect(t.transientFailures[0]?.category).toBe("unknown_harness_error");
     expect(t.transientFailures[0]?.retryable).toBe(false);
     expect(t.transientFailures[0]?.adapterCode).toBe("exit_1");
-    expect(t.transientFailures[0]?.vendorFailure).toBeNull();
+    expect(t.vendorFailure).toBeNull();
   });
 
-  it("carries the adapter-attached vendor failure on the observation, verbatim", () => {
+  it("carries the adapter-attached vendor failure as the try's evidence, verbatim", () => {
     const t = completed({
       exit_code: 1,
       harness_reported_error: true,
       vendor_failure: vendorFailure,
     });
-    expect(t.transientFailures[0]?.vendorFailure).toEqual(vendorFailure);
+    expect(t.vendorFailure).toEqual(vendorFailure);
     expect(t.transientFailures[0]?.category).toBe("unknown_harness_error");
+  });
+
+  it("#414: keeps the vendor failure of a voiced completion with NO exit evidence, deciding nothing", () => {
+    const t = completed({ harness_reported_error: true, vendor_failure: vendorFailure });
+    expect(t.vendorFailure).toEqual(vendorFailure);
+    expect(t.transientFailures).toHaveLength(0);
+    expect(t.rateLimits).toHaveLength(0);
+  });
+
+  it("#414: a signal kill, a cancel or an unvoiced completion carries no vendor evidence", () => {
+    for (const payload of [
+      { exit_signal: "SIGKILL", harness_reported_error: true, vendor_failure: vendorFailure },
+      { aborted: true, harness_reported_error: true, vendor_failure: vendorFailure },
+      { exit_code: 1, vendor_failure: vendorFailure },
+    ])
+      expect(completed(payload).vendorFailure, JSON.stringify(payload)).toBeNull();
   });
 
   it("keeps a SILENT non-zero exit a process_crash (unchanged)", () => {
@@ -306,7 +322,7 @@ describe("harness-reported terminal error (exit evidence)", () => {
       expect(t.transientFailures).toHaveLength(1);
       expect(t.transientFailures[0]?.category).toBe("unknown_harness_error");
       expect(t.transientFailures[0]?.retryable).toBe(false);
-      expect(t.transientFailures[0]?.vendorFailure).toBeNull();
+      expect(t.vendorFailure).toBeNull();
     }
   });
 

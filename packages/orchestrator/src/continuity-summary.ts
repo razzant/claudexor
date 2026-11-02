@@ -27,7 +27,7 @@ import {
   type HarnessAdapter,
   type ProcessingAdmission,
 } from "@claudexor/core";
-import type { ContinuityTurn } from "./continuity.js";
+import { noFinalAnswerText, tailBytes, type ContinuityTurn } from "./continuity.js";
 import { admitCurrentProfileDispatch, type ModelGovernedRoute } from "./modelGovernance.js";
 
 /** Default wall-clock ceiling for one inline summary pass. */
@@ -35,7 +35,8 @@ export const SUMMARY_TIMEOUT_MS = 60_000;
 /**
  * UTF-8 bytes of each collapsed turn fed to the summariser (prompt + output
  * halves). Like the summary allowance below, it counts retained text only: a
- * cut adds its "…" mark outside the allowance (`boundBytes`).
+ * cut adds its "…" mark outside the allowance (`boundBytes`; before the kept
+ * end of an unfinished turn's output).
  */
 const PER_TURN_INPUT_BYTES = 4 * 1024;
 /** UTF-8 bytes retained from the summary answer. */
@@ -90,13 +91,20 @@ function boundBytes(text: string, maxBytes: number): string {
 
 /** Render the collapsed prefix as the summariser's input transcript. */
 function transcript(turns: ContinuityTurn[]): string {
+  const half = PER_TURN_INPUT_BYTES / 2;
   return turns
     .map((t, i) => {
-      const prompt = boundBytes(t.prompt.trim(), PER_TURN_INPUT_BYTES / 2);
-      const output = t.outputText.trim()
-        ? boundBytes(t.outputText.trim(), PER_TURN_INPUT_BYTES / 2)
-        : "(no recorded answer)";
-      return `Turn ${i + 1}\nUser: ${prompt}\nAssistant: ${output}`;
+      const prompt = boundBytes(t.prompt.trim(), half);
+      const missing = noFinalAnswerText(t);
+      const text = t.outputText.trim();
+      // A turn without a final answer keeps the end of its output, where its newest text is (#405).
+      const output = !text
+        ? "(no recorded answer)"
+        : missing && Buffer.byteLength(text, "utf8") > half
+          ? `…${tailBytes(text, half)}`
+          : boundBytes(text, half);
+      const said = missing ? `Assistant (${missing.note})` : "Assistant";
+      return `Turn ${i + 1}\nUser: ${prompt}\n${said}: ${output}`;
     })
     .join("\n\n");
 }

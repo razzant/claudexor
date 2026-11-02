@@ -5,9 +5,11 @@ import {
 } from "@claudexor/schema";
 import type { DaemonRunRecord } from "./run-record.js";
 import { requestGone } from "./request-liveness.js";
+import { servingStore } from "./run-start-receipt.js";
 
 interface RunDetailContext {
   findRun(id: string): Promise<DaemonRunRecord | null>;
+  storeId?: () => string | undefined;
   deferred?(id: string): Promise<DeferredMessageProjection | null>;
   children(parent: string): Promise<DaemonRunRecord[]>;
   cursor(record: DaemonRunRecord, signal: AbortSignal): Promise<number>;
@@ -36,7 +38,10 @@ export async function serveRunDetail(
   try {
     const rec = await ctx.findRun(id);
     if (requestGone(req, res)) return;
-    if (!rec) return ctx.json(res, 404, { error: "no such run" });
+    // `context.storeId` scopes this absence to the store just read: a caller compares it with the
+    // store that accepted the run. Even a match is no proof that the run never started.
+    if (!rec)
+      return ctx.json(res, 404, { error: "no such run", context: servingStore(ctx.storeId) });
     // Fence FIRST, before pending interactions or projection bytes. The worker
     // also owns legacy/oversized-line fallback scans. Later bytes may replay;
     // a later cursor must never be stamped onto earlier pending state.

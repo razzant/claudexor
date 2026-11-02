@@ -10,9 +10,11 @@ import {
 } from "./publication-scan.js";
 import { locateScanner } from "./publication-scanner-pin.js";
 
-// The publication boundary's public surface: the scan and the scanner pin.
+// The publication boundary's public surface: the scan, the scanner pin and the
+// explicit preparation step.
 export * from "./publication-scan.js";
 export * from "./publication-scanner-pin.js";
+export * from "./publication-scanner-provision.js";
 
 /** Why `pr` was not published (the wire shape is the schema's
  * PublicationRefusal). `findings` is an ordinary refusal; the other two say
@@ -60,7 +62,7 @@ export async function gatePublication(input: {
   if (!scanner.ok)
     return refuse(
       "publication_scan_unavailable",
-      `refusing 'pr' delivery: the publication scanner is unavailable (${scanner.reason}). ${LOCAL_CHOICES}, or provision the pinned scanner and re-run.`,
+      `refusing 'pr' delivery: the publication scanner is unavailable (${scanner.reason}). ${LOCAL_CHOICES}, or run \`claudexor scanner prepare\` on the machine running this engine and re-run.`,
     );
   const commit = await git(input.repoRoot, [
     "-c",

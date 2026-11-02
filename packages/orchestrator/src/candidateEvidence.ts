@@ -1,7 +1,8 @@
 import { makeOutcomeFacts } from "@claudexor/schema";
 import type { GateResult, ReviewFinding, RunOutcomeFacts, TaskContract } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import type { AttemptOutcomeClass } from "./attemptFinalize.js";
+import { attemptInterruption, INTERRUPTION_DETAIL } from "./attemptFinalize.js";
+import type { AttemptInterruption, AttemptOutcomeClass } from "./attemptFinalize.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import type { DeclaredFailure } from "./runTerminalResults.js";
 import type { AppliedAttemptFacts } from "./delegatedHome.js";
@@ -93,6 +94,14 @@ export interface CandidateRun extends ContinuityTerminalFacts, CandidateObjectFa
   applied?: AppliedAttemptFacts;
 }
 
+/** Does a declared failure state a typed cause a terminal may speak with: a
+ * code, a config error, or a provider refusal with no code of its own (#558)? */
+export function declaredFailureSpeaks(
+  declared: DeclaredFailure | null | undefined,
+): declared is DeclaredFailure {
+  return Boolean(declared?.code || declared?.category === "config_error" || declared?.quotaRefusal);
+}
+
 /**
  * The one typed refusal a run may speak with when NO candidate produced work.
  *
@@ -108,7 +117,7 @@ export function unanimousDeclaredFailure(
   runs: readonly Pick<CandidateRun, "declaredFailure">[],
 ): DeclaredFailure | null {
   const first = runs[0]?.declaredFailure;
-  if (!first || (!first.code && first.category !== "config_error")) return null;
+  if (!declaredFailureSpeaks(first)) return null;
   const declared = runs.map((run) => run.declaredFailure);
   const agrees = declared.every((d) => d?.code === first.code && d?.category === first.category);
   if (!agrees) return null;
@@ -208,8 +217,9 @@ export function partitionCandidates(runs: CandidateRun[]): {
   )
     ? null
     : runs.every((r) => !hasCandidateChanges(r) && !r.answerText);
-  const facts = runs.some((r) => r.outcomeClass === "interrupted")
-    ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted", noChanges })
+  const interrupted = runs.find((r) => r.outcomeClass === "interrupted");
+  const facts = interrupted
+    ? makeOutcomeFacts("interrupted", { reason: interruptionOf(interrupted), noChanges })
     : runs.length > 0 && runs.every((r) => r.captureRefusal)
       ? captureRefusedFacts()
       : makeOutcomeFacts("failed", { reason: "harness_failed", noChanges });
@@ -217,7 +227,7 @@ export function partitionCandidates(runs: CandidateRun[]): {
     .map((r) => {
       const reason =
         r.outcomeClass === "interrupted"
-          ? "context capacity exhausted before the work completed"
+          ? INTERRUPTION_DETAIL[interruptionOf(r)]
           : (r.errors[0] ?? "failed before producing work");
       const continued = r.continuationRefusal
         ? `; its continuation ${r.continuationRefusal.attemptId}: ${r.continuationRefusal.refusal.detail}`
@@ -226,6 +236,11 @@ export function partitionCandidates(runs: CandidateRun[]): {
     })
     .join("; ");
   return { working, facts, why };
+}
+
+/** The typed limit an interrupted candidate stopped on (#299); context when unrecorded. */
+export function interruptionOf(run: Pick<CandidateRun, "telemetry">): AttemptInterruption {
+  return attemptInterruption(run.telemetry) ?? "context_capacity_exhausted";
 }
 
 /** The telemetry-roster shape ({attemptId, harnessId, telemetry}) that
@@ -316,12 +331,12 @@ export function toCandidateEvidence(
 }
 
 /** Convergence-loop terminal facts, ONE precedence owner (D-16 r8):
- * converged > interrupted (context exhausted, never arbitrated) >
+ * converged > interrupted (context exhausted or the max-turns cap, never arbitrated) >
  * stuck_no_progress > operator cancel > budget_exhausted > not_converged. */
 export function convergenceOutcomeFacts(
   state: {
     converged: boolean;
-    interrupted: boolean;
+    interrupted: AttemptInterruption | null;
     stuckNoProgress: boolean;
     aborted: boolean;
     exhausted: boolean;
@@ -329,9 +344,7 @@ export function convergenceOutcomeFacts(
   cancelFacts: () => RunOutcomeFacts,
 ): RunOutcomeFacts {
   if (state.converged) return makeOutcomeFacts("succeeded");
-  if (state.interrupted) {
-    return makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" });
-  }
+  if (state.interrupted) return makeOutcomeFacts("interrupted", { reason: state.interrupted });
   if (state.stuckNoProgress) return makeOutcomeFacts("failed", { reason: "stuck_no_progress" });
   if (state.aborted) return cancelFacts();
   if (state.exhausted) return makeOutcomeFacts("failed", { reason: "budget_exhausted" });

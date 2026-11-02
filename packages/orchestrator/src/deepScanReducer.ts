@@ -25,7 +25,7 @@ import type { EventLog } from "@claudexor/event-log";
 import { buildDeepScanReducerPrompt } from "@claudexor/synthesis";
 import { type BudgetDenial, classifyBudgetFailure } from "./budgetFailure.js";
 import type { RoutedAdapter } from "./orchestrator.js";
-import { finalizeAttempt } from "./attemptFinalize.js";
+import { attemptInterruption, finalizeAttempt } from "./attemptFinalize.js";
 import { unwrapWorkReportEnvelope, type WorkReportEnvelopeMode } from "./workReportEnvelope.js";
 import { harnessEventPayload, observeBudgetSignals, safeErrorMessage } from "./runSupport.js";
 import {
@@ -431,7 +431,7 @@ export async function runDeepScanReducer(
     workReportSource: unwrapped.source,
     workReportViolation: unwrapped.contractViolation,
     workReportUnverified: unwrapped.unverified ?? null,
-    contextTerminalExhausted: telemetry.contextExhausted,
+    interruption: attemptInterruption(telemetry),
   });
   if (stoppedDuringRun === "timeout")
     harnessError = `deep-scan reducer timed out after ${deps.hardTimeoutMs}ms`;

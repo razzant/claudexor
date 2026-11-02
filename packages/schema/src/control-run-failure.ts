@@ -79,8 +79,11 @@ export const RunFailureCode = z
 export type RunFailureCode = z.infer<typeof RunFailureCode>;
 
 /** A vendor's OWN typed failure, forwarded as evidence. `code` is opaque: no
- * Claudexor code path may branch on its value; retry, rotation, cooldown and
- * credential verdicts never read it. `source` is an open vocabulary rather than
+ * consumer of this evidence may branch on its value; retry, rotation, cooldown
+ * and credential verdicts never read it. Only the adapter that read the native
+ * record may also translate a native code it knows into a typed signal on the
+ * same event (Codex `usage_limit_exceeded` → `rate_limit.reopening: unknown`),
+ * and decisions read that signal. `source` is an open vocabulary rather than
  * an enum because every surface projects the whole `RunFailure` parse-or-null:
  * a closed member list would make an older client drop the entire failure
  * record the day a second producer appears. */
@@ -275,7 +278,7 @@ export const RunFailure = z
         "When the refused window reopens (a spent subscription quota window), or null when the failure has no such time. Callers schedule a retry off this field, never off safeMessage.",
       ),
     quotaRefusal: QuotaRefusal.optional().describe(
-      "Present when quota admission refused the account (code subscription_window_exhausted): separates the owner's saved reserve from provider exhaustion. Absent on other failures and on records written before this field existed.",
+      "Present when quota admission or a typed provider limit refused the account: with code subscription_window_exhausted it separates the owner's saved reserve from provider exhaustion; with a null code the provider refused usage and no reopening time is known, so no timer is implied. Absent on other failures and on records written before this field existed.",
     ),
     vendorFailure: VendorFailureEvidence.nullable()
       .default(null)

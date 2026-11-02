@@ -24,6 +24,19 @@ describe("launch handle mirrors", () => {
     expect(McpRunToolResult.parse(structured)).toMatchObject({ taskGroupId, storeId });
   });
 
+  it("mirrors an ordinary handle's accepting store in both channels", () => {
+    const storeId = "22222222-2222-4222-8222-222222222222";
+    const handle = { summary: "accepted", jobId: "job-q", runId: "", status: "queued", storeId };
+    expect(formatRunResult(handle)).toContain(`storeId: ${storeId}`);
+    expect(structuredRunResult(handle)).toMatchObject({ storeId });
+    expect(McpRunToolResult.parse(structuredRunResult(handle)).storeId).toBe(storeId);
+    for (const invalid of ["", 42]) {
+      const stale = { ...handle, storeId: invalid };
+      expect(formatRunResult(stale)).not.toContain("storeId");
+      expect(structuredRunResult(stale)).not.toHaveProperty("storeId");
+    }
+  });
+
   it("carries a queued job id in text and structured content", () => {
     const queued = {
       summary: "accepted as job job-q",

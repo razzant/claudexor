@@ -29,14 +29,15 @@ import {
   assertAuxiliaryWritableRootSpelling,
   auxiliaryWritableRootDirectory,
 } from "@claudexor/workspace";
-import type { DaemonFacadeClient } from "./daemon-server.js";
+import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 import { assertContinuationAdmissible, resolveContinuationBody } from "./run-continuation-start.js";
 import { prepareRunStart } from "./run-start-preparation.js";
-import { requireTaskGroupStoreIdentity } from "./run-start-receipt.js";
+import { requireTaskGroupStoreIdentity, respondToAcceptedJob } from "./run-start-receipt.js";
 export {
-  acceptedTaskGroupReceipt,
+  acceptedRunReceipt,
   requireTaskGroupStoreIdentity,
   unboundRunStartResponse,
+  wantsStoreIdentity,
 } from "./run-start-receipt.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
@@ -313,7 +314,7 @@ export interface RunCreateRouteContext {
   readBody(req: IncomingMessage): Promise<unknown>;
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
   json(res: ServerResponse, status: number, body: unknown): void;
-  respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void>;
+  waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
   storeId?: () => string | undefined;
   validateResources?: (refs: NonNullable<ControlRunStartRequest["attachments"]>) => Promise<void>;
   preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
@@ -428,7 +429,7 @@ export async function handleRunCreate(
         params = await prepareRunStart(recorded, ctx);
       },
     );
-    if (prior) return ctx.respondToAcceptedJob(res, prior.id);
+    if (prior) return respondToAcceptedJob(ctx, req, res, prior.id);
   } catch (error) {
     return ctx.requestError(res, error);
   }
@@ -493,7 +494,7 @@ export async function handleRunCreate(
     return ctx.requestError(res, projectNotRegisteredError(error) ?? error, 500);
   }
   try {
-    return await ctx.respondToAcceptedJob(res, job.id);
+    return await respondToAcceptedJob(ctx, req, res, job.id);
   } catch (error) {
     if (
       error &&

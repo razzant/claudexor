@@ -213,7 +213,9 @@ entries; do not invent an `@profile` mini-grammar.
   Claudexor itself uses belong in `claudexor secrets set`. Only `pr` delivery
   checks content: the pinned Betterleaks scanner reads what would be pushed,
   and a finding (`publication_scan_findings`), an unavailable scanner or a
-  failed scan refuses before anything is published.
+  failed scan refuses before anything is published. An install that does not
+  bundle the scanner prepares it with the explicit `claudexor scanner prepare`;
+  it is a machine-setup step, so ask before running it for someone else.
 
 ## After a mutating run
 

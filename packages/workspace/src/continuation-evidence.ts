@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as yamlParse } from "yaml";
 import { RunResumable, RunTelemetry, SessionCapsule, type RunEvent } from "@claudexor/schema";
-import { readRunEvents, retainedOutput } from "@claudexor/event-log";
+import { RETAINED_OUTPUT_PATH, readRunEvents, retainedOutput } from "@claudexor/event-log";
 import { readTextSafe } from "@claudexor/util";
 import {
   carryingAttempt,
@@ -141,6 +141,27 @@ export function ownsContinuationSource(evidence: {
   return evidence.resumable !== undefined || evidence.held !== null || evidence.hasEvidence;
 }
 
+/**
+ * A run's recorded assistant output, by one rule for every reader that carries
+ * it forward (a `continueFrom` successor, a thread's next lane): its
+ * `final/retained-output.md` exactly as stored, else the same projection of its
+ * event log, for a run whose terminal never wrote that file (an engine restart
+ * interrupted it, or the write failed). `source` is the file the text is read
+ * or rendered from; null when neither holds any output.
+ */
+export function recordedOutput(
+  runDir: string,
+  log: () => { events: RunEvent[]; malformed: number } = () =>
+    readRunEvents(join(runDir, "events.jsonl")),
+): { text: string; source: string } | null {
+  const stored = join(runDir, RETAINED_OUTPUT_PATH);
+  const text = readTextSafe(stored);
+  if (text?.trim()) return { text, source: stored };
+  const { events, malformed } = log();
+  const rendered = retainedOutput(events, malformed);
+  return rendered ? { text: rendered, source: join(runDir, "events.jsonl") } : null;
+}
+
 /** A run's own work outside its events: the source attempt's patch, its final answer and retained output. */
 function sourceFiles(runDir: string, attemptId: string) {
   const finalDir = join(runDir, "final");
@@ -223,7 +244,7 @@ export function readContinuationEvidence(runDir: string) {
     ? unrepresented
       ? `Final answer (final/answer.md${winner ? `, attempt ${winner}` : ""}):\n\n${answer}\n\n${unrepresented}`
       : answer
-    : retained || retainedOutput(events.events, events.malformed) || "";
+    : retained || recordedOutput(runDir, () => events)?.text || "";
   return {
     resumable,
     held,

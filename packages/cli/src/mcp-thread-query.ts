@@ -1,4 +1,5 @@
 import {
+  CONTROL_STORE_IDENTITY_HEADER,
   ControlThread,
   ControlThreadDetail,
   ControlThreadTurnResponse,
@@ -87,6 +88,8 @@ export async function threadQuery(
     method: "POST",
     headers: {
       "content-type": "application/json",
+      // The strict queued turn handle carries the accepting store only for this opt-in.
+      ...(creating ? {} : { [CONTROL_STORE_IDENTITY_HEADER]: "1" }),
       ...(typeof input["idempotencyKey"] === "string"
         ? { "Idempotency-Key": input["idempotencyKey"] }
         : {}),

@@ -216,6 +216,7 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", "ControlRunStartResponse", {
     completion: "durable_handle",
     idempotency: "key_required",
+    parameters: [STORE_IDENTITY_HEADER],
   }),
   j("POST", "/v2/runs/wait-many", "read_only", "RunWaitManyInput", "RunWaitManyResult"),
   j("GET", "/v2/runs/:id", "read_only", null, "ControlRunDetail"),
@@ -224,6 +225,7 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/runs/:id/retry", "mutating", null, "ControlRunRetryResponse", {
     completion: "durable_handle",
     idempotency: "key_required",
+    parameters: [STORE_IDENTITY_HEADER],
   }),
   j("GET", "/v2/runs/:id/run-again", "read_only", null, "ControlRunAgainDraft"),
   j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest", "ControlDeliveryResponse", {
@@ -263,6 +265,7 @@ const operations: ControlOperationDescriptor[] = [
     "ControlRunDecisionResponse",
     {
       idempotency: "key_required",
+      parameters: [STORE_IDENTITY_HEADER],
     },
   ),
   j("GET", "/v2/runs/:id/events", "read_only", null, null, {
@@ -339,10 +342,12 @@ const operations: ControlOperationDescriptor[] = [
     "ControlThreadTurnResponse",
     {
       idempotency: "key_required",
+      parameters: [STORE_IDENTITY_HEADER],
     },
   ),
   j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
+    parameters: [STORE_IDENTITY_HEADER],
   }),
   j("GET", "/v2/trust", "read_only", null, "ControlTrustListResponse", {
     parameters: [

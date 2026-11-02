@@ -75,7 +75,7 @@ function singleExtractedRoot(directory) {
   return root;
 }
 
-function main() {
+async function main() {
   const options = parseArgs(process.argv.slice(2));
   for (const key of [
     "target",
@@ -148,7 +148,7 @@ function main() {
     // One platform's scanner per runtime: drop any copy the shared resources
     // carry for the app, then stage exactly this target's verified build.
     rmSync(join(root, "lib", "native", "betterleaks"), { recursive: true, force: true });
-    stagePlatform(
+    await stagePlatform(
       options.target,
       resolve(options["betterleaks-archive"]),
       join(root, "lib", "native"),
@@ -223,9 +223,7 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   process.stderr.write(`build-remote-runtime failed: ${String(error)}\n`);
   process.exit(1);
-}
+});

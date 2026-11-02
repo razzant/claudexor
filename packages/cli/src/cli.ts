@@ -35,7 +35,8 @@ import {
   CaptureChangeInventory,
   captureInventoryLines,
   runOutcomeLabel,
-  taskGroupReceiptMetadata,
+  acceptedReceiptMetadata,
+  CONTROL_STORE_IDENTITY_HEADER,
 } from "@claudexor/schema";
 import { projectObjectResultDisclosure } from "./mcp-run-projections.js";
 import {
@@ -89,6 +90,7 @@ import {
   projectOutcomeBanner,
   projectRunOutcomeFacts,
   mergeDaemonRunOutcome,
+  type DaemonRunOutcome,
 } from "./daemon-run.js";
 import {
   inspectDelegationLines,
@@ -509,6 +511,11 @@ interface DaemonRunParams {
   forced: { deepScan?: boolean; create?: boolean; race?: boolean };
 }
 
+/** The accepted job and receipt store (or group pair) a machine failure after admission keeps. */
+function acceptedRunFacts(out: DaemonRunOutcome): Record<string, unknown> {
+  return { ...(out.jobId ? { jobId: out.jobId } : {}), ...acceptedReceiptMetadata(out) };
+}
+
 /**
  * All five product modes enter through the managed daemon and control API.
  * `--json` prints one stable `{ runId, runDir, status }` machine envelope.
@@ -636,6 +643,9 @@ async function daemonRun(
   // a per-command extra: a run that DID start (or finish) must keep its handle
   // even when a post-terminal read raises (e.g. 500 run_facts_invalid).
   let terminalRunId = "";
+  // The same run's accepted job and receipt store (or group pair), kept beside
+  // it for the machine envelope: a failed later read must not lose them either.
+  let acceptedRun: Record<string, unknown> = {};
   try {
     if (jsonStream) {
       // NDJSON machine surface (W13): an EARLY runId frame first, every run
@@ -649,9 +659,10 @@ async function daemonRun(
         return exitCodeForState(started.status);
       }
       terminalRunId = started.runId;
+      acceptedRun = acceptedRunFacts(started);
       printJsonLine({
         frame: "run.started",
-        ...taskGroupReceiptMetadata(started),
+        ...acceptedReceiptMetadata(started),
         runId: started.runId,
         runDir: started.runDir,
         jobId: started.jobId,
@@ -678,6 +689,7 @@ async function daemonRun(
       // Pure machine surface: await the terminal outcome and print one JSON object.
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
       terminalRunId = out.runId;
+      acceptedRun = acceptedRunFacts(out);
       // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
       // apply-gate verdict, so machine callers act on truth instead of
       // re-implying eligibility from status. ONE GET /runs/:id feeds all three
@@ -771,7 +783,7 @@ async function daemonRun(
     return renderCliFailure(json || jsonStream, err, {
       messagePrefix: "claudexor:",
       stream: jsonStream,
-      ...(terminalRunId ? { extras: { runId: terminalRunId } } : {}),
+      ...(terminalRunId ? { extras: { runId: terminalRunId, ...acceptedRun } } : {}),
     });
   }
 }
@@ -800,7 +812,10 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
     const { addr } = await ensureDaemon();
     const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/decision`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        [CONTROL_STORE_IDENTITY_HEADER]: "1",
+      },
       body: JSON.stringify(body),
     });
     const text = await res.text();

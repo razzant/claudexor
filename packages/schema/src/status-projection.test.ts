@@ -43,7 +43,17 @@ describe("ACP stop-reason projection", () => {
   it("preserves failed/interrupted refusal and successful end-turn buckets", () => {
     expect(acpStopReason("failed", null)).toBe("refusal");
     expect(acpStopReason("interrupted", null)).toBe("refusal");
+    expect(acpStopReason("interrupted", "context_capacity_exhausted")).toBe("refusal");
     expect(acpStopReason("succeeded", null)).toBe("end_turn");
+  });
+
+  it("names a max-turns stop as ACP's own max_turn_requests, with its own label (#299)", () => {
+    expect(acpStopReason("interrupted", "turn_limit_reached")).toBe("max_turn_requests");
+    const capped = makeOutcomeFacts("interrupted", { reason: "turn_limit_reached" });
+    expect(runOutcomeLabel(capped)).toBe("Turn limit reached");
+    expect(
+      runOutcomeLabel(makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" })),
+    ).toBe("Interrupted");
   });
 });
 
