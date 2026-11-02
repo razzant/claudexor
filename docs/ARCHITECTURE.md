@@ -4542,7 +4542,13 @@ first acquires that authority and binds/proves the real socket and
 Control API with product admission closed. Health, handshake, status, shutdown
 and recovery remain reachable in `recovery_only`; product operations receive
 `daemon_recovery_only`. Only then may the storage owner open or import SQL and
-complete recovery/admission duties. The current global generation must be ready;
+complete recovery/admission duties. A Stop that arrives while startup is still
+binding or proving those transports ends startup as an ordinary clean stop.
+Only that Stop's own cancellation counts: the typed `daemon_stopping` refusal
+of a listener it stopped, or the startup abort it raises before closing the
+transports a proof is dialing. A proof that already decided, such as another
+runtime's identity or serving mode, and every other startup failure still exit
+nonzero. The current global generation must be ready;
 a logically damaged project generation stays isolated while healthy projects
 serve. Physical corruption closes product admission for the whole store.
 Recovery access overrides `CLAUDEXOR_NO_CONTROL_API=1` when needed. A successful
@@ -4599,6 +4605,10 @@ SNAPSHOT, disclosed as such in the receipt (`activeRunCheck: "snapshot"`): the
 active-run root set is read once through the in-process command activity
 projection and consumed by the synchronous removal in the same event-loop turn.
 There is no await where enqueue could interleave between check and mutation.
+A run references the project root its accepted request recorded. A run with no
+project, including one whose request omitted the scope, references none, and a
+started, unfinished run whose recorded scope cannot be resolved refuses every
+project removal (`409 active_run_scope_unresolved`).
 The exact opt-in `?trashedThreads=purge` (CLI `claudexor project remove <id>
 --purge-trashed-threads`) removes the project together with the threads already
 in its trash. Any other thread, active or closed, still refuses it

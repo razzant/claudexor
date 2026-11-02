@@ -55,7 +55,7 @@ export async function answerInteraction(
     `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
     {
       method: "POST",
-      headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ answers: input["answers"] }),
     },
   );

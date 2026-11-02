@@ -272,9 +272,7 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
 
 export async function daemonGet(path: string): Promise<unknown> {
   const { addr } = await ensureDaemon();
-  const response = await controlApiFetch(addr, path, {
-    headers: { Authorization: `Bearer ${addr.token}` },
-  });
+  const response = await controlApiFetch(addr, path);
   if (!response.ok) {
     // The status stays typed so an additive read can tell an older daemon (404).
     throw Object.assign(
@@ -471,7 +469,6 @@ export async function authCommand(
     const response = await controlApiFetch(addr, "/setup/jobs", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${addr.token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({

@@ -252,7 +252,9 @@ export function createRunEventLineFormatter(): (ev: Record<string, unknown>) => 
 import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
 export { CONTROL_PROTOCOL_MAJOR };
 
-/** One control-plane transport boundary for CLI, MCP and ACP projections. */
+/** One control-plane transport boundary for CLI, MCP and ACP projections.
+ * It owns the Authorization bearer: a caller-supplied value is overwritten, so
+ * callers pass only their own headers. Standalone fetches set their own. */
 export function controlApiFetch(
   addr: ControlApiAddress,
   path: string,
@@ -435,7 +437,6 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     try {
       res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/events`, {
         headers: {
-          Authorization: `Bearer ${addr.token}`,
           Accept: "text/event-stream",
           ...(lastSeq > 0 ? { "Last-Event-ID": String(lastSeq) } : {}),
         },
@@ -522,7 +523,6 @@ async function answerInteractionFromTty(
   // through — the expired-deadline guard in promptQuestionsOnTty still holds.
   try {
     const detailRes = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { Authorization: `Bearer ${addr.token}` },
       signal,
     });
     if (detailRes.ok) {
@@ -560,7 +560,7 @@ async function answerInteractionFromTty(
     `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
     {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
       signal,
     },
