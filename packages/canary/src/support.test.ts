@@ -90,19 +90,27 @@ describe("canary candidate and endpoint ownership", () => {
 });
 
 describe("canary cleanup custody", () => {
-  it.each(["win32", "linux", "darwin"])(
-    "gives %s hooks time for the actual disposal subprocess budgets",
-    async (platformName) => {
+  it.each([
+    ["win32", 1],
+    ["win32", 2], // mcp-task-groups disposes its source and target in one hook.
+    ["linux", 1],
+    ["darwin", 1],
+  ] as const)(
+    "gives %s hooks time for %i actual disposal subprocess budgets",
+    async (platformName, sandboxCount) => {
       const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
       Object.defineProperty(process, "platform", { ...platform, value: platformName });
       try {
         vi.resetModules();
         const { default: config } = await import("../../../../vitest.canary.config.js");
-        vi.mocked(spawnSync)
-          .mockReturnValueOnce(leaseResult(ACTIVE))
-          .mockReturnValueOnce(processResult())
-          .mockReturnValueOnce(leaseResult(ABSENT));
-        makeSandbox().dispose();
+        for (let i = 0; i < sandboxCount; i++) {
+          vi.mocked(spawnSync)
+            .mockReturnValueOnce(leaseResult(ACTIVE))
+            .mockReturnValueOnce(processResult())
+            .mockReturnValueOnce(leaseResult(ABSENT));
+          makeSandbox().dispose();
+        }
+        expect(spawnSync).toHaveBeenCalledTimes(3 * sandboxCount);
         const subprocessBudget = vi
           .mocked(spawnSync)
           .mock.calls.reduce((total, [, , options]) => total + (options?.timeout ?? 0), 0);
