@@ -14,12 +14,13 @@ import { daemonStoreLine } from "./daemon-status-report.js";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
 import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
+import { sqlControlReadSources } from "./sql-daemon-queries.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) await close();
 });
-async function fixture() {
+async function fixture(options: { observe?: boolean } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sql-http-")));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
@@ -55,12 +56,23 @@ async function fixture() {
   cleanups.push(() => runtime.stop());
   const client = runtime.client;
   const pending = vi.fn(runtime.terminalFilesPending);
+  // The daemon's composition: body-free observations and their post-commit notices.
+  const reads = sqlControlReadSources(
+    () => graph,
+    () => store.storeId,
+  );
   const control = new DaemonControlApiServer({
     token: "fixture",
     daemon: client,
     bus,
     pollMs: 5,
     terminalFilesPending: pending,
+    ...(options.observe
+      ? {
+          runObservations: reads.runObservations,
+          runObservationChanges: reads.runObservationChanges,
+        }
+      : {}),
     services: {
       journalEvents: async (partition, request) => graph.journalEvents(partition, request),
     },
@@ -68,7 +80,17 @@ async function fixture() {
   const { host, port } = await control.start();
   cleanups.push(() => control.stop());
   const headers = { authorization: "Bearer fixture", "X-Claudexor-Protocol-Major": "3" };
-  return { root, store, graph, bus, pending, executed, url: `http://${host}:${port}`, headers };
+  return {
+    root,
+    store,
+    graph,
+    bus,
+    client,
+    pending,
+    executed,
+    url: `http://${host}:${port}`,
+    headers,
+  };
 }
 
 async function stream(
@@ -233,6 +255,40 @@ describe("SQL state through real control HTTP and SSE", () => {
     });
     await vi.waitFor(() => expect(resumed.state.text).toContain('"revision":3'));
     expect(resumed.state.text).not.toContain('"revision":2');
+  });
+
+  it("re-reads a quiet stream's lifecycle from committed SQL notices, never the hydrated command", async () => {
+    const f = await fixture({ observe: true });
+    const runDir = join(f.root, "run");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const created = {
+      seq: 1,
+      ts: new Date().toISOString(),
+      run_id: "run",
+      task_id: "task",
+      type: "run.created" as const,
+      payload: {},
+    };
+    writeFileSync(join(runDir, "events.jsonl"), JSON.stringify(created) + "\n");
+    const commands = f.graph.commands.current();
+    commands.accept({
+      id: "job",
+      params: { mode: "agent" },
+      clientId: "fixture",
+      idempotencyKey: "job",
+    });
+    commands.update("job", { state: "running", runId: "run", runDir, taskId: "task" });
+    const status = vi.spyOn(f.client, "status");
+    const s = await stream(f, "/v2/runs/job/events");
+    expect(s.response.status).toBe(200);
+    await vi.waitFor(() => expect(s.state.text).toContain("event: run.created"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(s.state.done).toBe(false);
+    // Cancelled with no new output: the committed row's notice ends the stream.
+    commands.update("job", { state: "cancelled", finishedAt: new Date().toISOString() });
+    await vi.waitFor(() => expect(s.state.text).toContain("event: end"));
+    await vi.waitFor(() => expect(s.state.done).toBe(true));
+    expect(status).not.toHaveBeenCalled();
   });
 
   it("does not end a terminal file stream until the SQL obligation is materialized", async () => {
