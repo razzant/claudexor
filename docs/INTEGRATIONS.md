@@ -704,7 +704,7 @@ semantics are defined once in
 [ARCHITECTURE](ARCHITECTURE.md#7-control-api).
 
 Terminal state may include diagnostic non-success states such as
-`stuck_no_progress` (the same result repeated while a required gate still failed).
+`stuck_no_progress` (the same accepted result repeated while a required gate still failed).
 A run's code result is exact Git objects of any size (`work_product.meta.git_result`,
 digest v1). When it is too large to render as one patch (judged by an estimate
 computed from the changed files' blob sizes, so a small edit of a very large file counts too,

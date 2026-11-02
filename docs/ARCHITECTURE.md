@@ -2518,7 +2518,14 @@ stays the attempt's evidence. Codes the model's own patch caused
 `raw_patch_binary_unsupported`, `raw_patch_truncated`; category `harness_error`)
 reach the next round through the ordinary revise prompt; the isolation, evidence,
 digest and base codes (category `internal`) end convergence, as an over-window
-refusal does. The project's
+refusal does. A round refused with a correctable code applied nothing, so it has
+no result of its own (INV-047): the identical-result check behind
+`stuck_no_progress` skips it without resetting the accepted results' history,
+and the repeated-failure stall counts it under its typed code, never as a repeat
+of the kept result's gate verdict. It still spends one of the run's rounds, so
+`--attempts`, configured round caps, time, money and cancellation bound
+correction exactly as they bound any round, and the same code twice is a
+repeated failure like any other. The project's
 `context` config binds it:
 `mandatory_files` are delivered complete, exempt from the ordinary 256 KiB
 per-file and budget omissions, and a mandatory path that is missing, unreadable
@@ -7198,8 +7205,9 @@ authority. Readers also bind the receipt's run/task identity (and terminal
 lifecycle where available) to the requested daemon record; copying a valid
 receipt from another run cannot make it authoritative.
 
-Convergence can also finish as `stuck_no_progress`: the same candidate result was
-produced repeatedly while a required deterministic gate still failed. That state
+Convergence can also finish as `stuck_no_progress`: the same accepted candidate
+result was produced repeatedly while a required deterministic gate still failed
+(a refused raw patch is no result, see [Git execution](#git-execution)). That state
 is terminal, non-applyable, and diagnostic; it tells the operator to inspect the
 stable result and gate output rather than burning more identical repair attempts.
 

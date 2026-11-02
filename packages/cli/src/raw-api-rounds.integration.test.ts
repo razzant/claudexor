@@ -584,6 +584,113 @@ describe("a refused patch is the attempt's typed failure with its usage kept (#5
       expect(summary.failure?.attemptId).toBe("a02");
       expect(summary.outcomeFacts?.lifecycle).toBe("failed");
       expect(summary.outcomeFacts?.checks).toBe("failed");
+      // The run ended on its attempts: a refused patch repeated no result.
+      expect(summary.outcomeFacts?.reason).toBe("not_converged");
+    });
+
+    describe("only accepted results count toward no progress (INV-047)", () => {
+      const UNAPPLICABLE = { patch: edit("README.md", "not the content", "x"), cost: 0.2 };
+      const NOT_A_PATCH = { text: "I would rather explain it", cost: 0.2 };
+      const FINAL = (cost: number) => ({ patch: edit("README.md", "# draft", "# final"), cost });
+      /** The accepted change re-emitted against the tree that holds it: it applies, and
+       * the result stays what it was. */
+      const SAME_AGAIN = (cost: number) => ({
+        patch: edit("README.md", "# draft", "# draft"),
+        cost,
+      });
+      const promptOf = (post: { body: any } | undefined) =>
+        post!.body.messages.at(-1).content as string;
+
+      it.each([
+        ["raw_patch_apply_failed", UNAPPLICABLE, "error: README.md: patch does not apply"],
+        ["raw_patch_truncated", NOT_A_PATCH, "was not a complete Git patch proposal JSON object"],
+      ])(
+        "%s after an accepted round: the next ordinary round corrects it",
+        async (_code, refused, error) => {
+          const repo = committed();
+          const base = git(repo, "rev-parse", "HEAD");
+          provider.answers = [FIRST, refused, FINAL(0.3)];
+          const result = await rounds(openrouter(), repo, 3, needsSecondRound);
+          expect(result.lifecycle, result.summary).toBe("succeeded");
+          // Three paid requests, all in the run's spend, the refused one on its own attempt.
+          expect(provider.posts).toHaveLength(3);
+          expect(result.spendUsd).toBeCloseTo(0.6);
+          const refusedAttempt = attemptRecord(result.runDir, "a02");
+          expect(refusedAttempt).toContain("cost_usd: 0.2");
+          expect(refusedAttempt).toContain("errored: true");
+          // The third request hears that refusal's own error through the revise prompt...
+          const third = promptOf(provider.posts[2]);
+          expect(third).toContain("Runtime errors from the previous attempt");
+          expect(third).toContain(error);
+          expect(promptOf(provider.posts[1])).not.toContain("Runtime errors");
+          // ...and reads the accepted round's tree, which the refused round left as it was.
+          const [second, last] = [sentPacket(provider.posts[1]), sentPacket(provider.posts[2])];
+          expect(last.base_commit_sha).toBe(base);
+          expect(last.base_tree_sha).toBe(second.base_tree_sha);
+          const readme = last.readable_files.find((file) => file.path === "README.md");
+          expect(readme?.content).toBe("# draft\n");
+          deliverFromBase(repo, base, result.runDir, { "README.md": "# final\n" });
+          expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
+        },
+      );
+
+      it("a refused round spends one of the --attempts like any other round", async () => {
+        const repo = committed();
+        const base = git(repo, "rev-parse", "HEAD");
+        provider.answers = [FIRST, UNAPPLICABLE, { ...NOT_A_PATCH, cost: 0.3 }, FINAL(0.4)];
+        const result = await rounds(openrouter(), repo, 3, needsSecondRound);
+        // The fourth answer is ready, and never asked for.
+        expect(provider.posts).toHaveLength(3);
+        expect(result.lifecycle).toBe("failed");
+        expect(result.spendUsd).toBeCloseTo(0.6);
+        const summary = keepsTheAcceptedRound(repo, base, result);
+        expect(summary.failure?.code).toBe("raw_patch_truncated");
+        expect(summary.failure?.attemptId).toBe("a03");
+        expect(summary.outcomeFacts?.reason).toBe("not_converged");
+      });
+
+      it("the same refusal twice stops on the existing repeated-failure rule, attempts left", async () => {
+        const repo = committed();
+        const base = git(repo, "rev-parse", "HEAD");
+        provider.answers = [FIRST, UNAPPLICABLE, { ...UNAPPLICABLE, cost: 0.3 }, FINAL(0.4)];
+        const result = await rounds(openrouter(), repo, 4, needsSecondRound);
+        expect(provider.posts).toHaveLength(3);
+        expect(result.lifecycle).toBe("failed");
+        expect(result.spendUsd).toBeCloseTo(0.6);
+        const summary = keepsTheAcceptedRound(repo, base, result);
+        expect(summary.failure?.code).toBe("raw_patch_apply_failed");
+        expect(summary.failure?.attemptId).toBe("a03");
+        expect(summary.outcomeFacts?.reason).toBe("not_converged");
+      });
+
+      it("the same accepted result twice against the failing gate is stuck_no_progress", async () => {
+        const repo = committed();
+        const base = git(repo, "rev-parse", "HEAD");
+        provider.answers = [FIRST, SAME_AGAIN(0.2), FINAL(0.3)];
+        const result = await rounds(openrouter(), repo, 3, needsSecondRound);
+        expect(provider.posts).toHaveLength(2);
+        expect(result.lifecycle).toBe("failed");
+        expect(result.facts.reason).toBe("stuck_no_progress");
+        expect(result.spendUsd).toBeCloseTo(0.3);
+        const summary = keepsTheAcceptedRound(repo, base, result);
+        expect(summary.outcomeFacts?.reason).toBe("stuck_no_progress");
+        expect(summary.failure?.safeMessage).toContain("same candidate result");
+      });
+
+      it("a refused round between two identical accepted results resets none of their history", async () => {
+        const repo = committed();
+        const base = git(repo, "rev-parse", "HEAD");
+        provider.answers = [FIRST, UNAPPLICABLE, SAME_AGAIN(0.3), FINAL(0.4)];
+        const result = await rounds(openrouter(), repo, 4, needsSecondRound);
+        expect(provider.posts).toHaveLength(3);
+        expect(result.lifecycle).toBe("failed");
+        expect(result.facts.reason).toBe("stuck_no_progress");
+        expect(result.spendUsd).toBeCloseTo(0.6);
+        const summary = keepsTheAcceptedRound(repo, base, result);
+        expect(summary.outcomeFacts?.reason).toBe("stuck_no_progress");
+        expect(summary.failure?.attemptId).toBe("a03");
+        expect(summary.failure?.safeMessage).toContain("same candidate result");
+      });
     });
   });
 

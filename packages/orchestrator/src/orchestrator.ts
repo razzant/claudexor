@@ -332,7 +332,7 @@ import { savedForSynthesis } from "./savedCandidate.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import type { EventLog, TerminalPersistenceHook, TerminalStagingHook } from "@claudexor/event-log";
 import { buildContextPack, writeEvidencePacket } from "@claudexor/context";
-import { RawPatchLane, endsConvergence } from "./rawPatchLane.js";
+import { RawPatchLane, correctableRefusal, endsConvergence } from "./rawPatchLane.js";
 import {
   WorkspaceManager,
   snapshotTree,
@@ -5235,7 +5235,8 @@ export class Orchestrator {
           break;
         }
 
-        const requiredGateFailing = run.gates.length > 0 && !gatesPassed(run.gates);
+        const refusal = correctableRefusal(run); // INV-047: a refused patch has no result
+        const requiredGateFailing = !refusal && run.gates.length > 0 && !gatesPassed(run.gates);
         const diffHash = run.files
           ? run.files.manifestSha256
           : input.workspaceKind === "directory"
@@ -5243,7 +5244,7 @@ export class Orchestrator {
             : secretDiff.captureIdentity(run);
         if (requiredGateFailing && diffHash !== null && diffHash === lastFailingGateDiffHash) {
           sameFailingGateDiffs += 1;
-        } else {
+        } else if (!refusal) {
           sameFailingGateDiffs = requiredGateFailing ? 1 : 0;
           lastFailingGateDiffHash = requiredGateFailing ? (diffHash ?? "") : "";
         }
@@ -5262,11 +5263,9 @@ export class Orchestrator {
           break;
         }
 
-        const sig = failureSignature([
-          ...conv.reasons,
-          ...(run.files ? [`files_manifest:${run.files.manifestSha256}`] : []),
-        ]);
-        readiness.recordRound(sig, conv.reasons.join("; "));
+        const manifest = run.files ? [`files_manifest:${run.files.manifestSha256}`] : [];
+        const sig = refusal ?? failureSignature([...conv.reasons, ...manifest]);
+        readiness.recordRound(sig, refusal ?? conv.reasons.join("; "));
         if (sig !== lastSig) {
           triedSinceProgress = new Set();
           lastSig = sig;

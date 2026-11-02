@@ -87,6 +87,15 @@ export class RawPatchLane {
   }
 }
 
+/** The typed code of a round whose patch the engine refused for a reason the model
+ * can correct, else null. That patch was not applied, so the round has no result of
+ * its own: the candidate still holds an earlier round's result, and this round's
+ * failure is the refusal, never a repeat of that result (INV-047). */
+export function correctableRefusal(run: CandidateRun): RawPatchRefusalCode | null {
+  const code = RawPatchRefusalCode.safeParse(run.declaredFailure?.code);
+  return code.success && rawPatchRefusalIsModelCorrectable(code.data) ? code.data : null;
+}
+
 /** Failures another convergence round cannot repair: a refused request, a rejected
  * effort, and a raw refusal the model's next patch cannot correct. Every other
  * failure, a correctable refusal included, goes back through the revise prompt. */
