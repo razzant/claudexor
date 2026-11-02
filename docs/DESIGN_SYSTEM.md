@@ -76,10 +76,14 @@ Four owner-locked rules every surface obeys:
    plus a whole-chip `.fixedSize()`); chips that render their own label
    (`HarnessChip`, `FilterChip`, `HarnessAccountChip`'s harness segment, the
    receipt identity capsule and attention chip) apply the two modifiers on the
-   label `Text` directly. The ONE documented exception is
-   `HarnessAccountChip`'s account segment: a credential display name (often a
-   long email) is intentionally capped (`maxWidth` + `.truncationMode(.tail)`),
-   which still never wraps — it truncates.
+   label `Text` directly. Two documented exceptions: `HarnessAccountChip`'s
+   account segment, where a credential display name (often a long email) is
+   intentionally capped (`maxWidth` + `.truncationMode(.tail)`) and still never
+   wraps — it truncates; and the option and header chips of the live
+   `InteractionCard`, whose text is harness-authored and of any length: the
+   option row is a `FlowLayout(wrapsWideSubviews: true)`, so a label wider than
+   the card wraps, and the header chip wraps inside the width it is given; both
+   use a chip-radius rectangle instead of a capsule and are never cut.
 
 ---
 
@@ -1365,6 +1369,16 @@ views in the shared design-system files; screens compose them.
   already-submitted answer as a read-only receipt from the durable answer-turn
   relation. Implement is a separate Agent action: its row names the effective
   write scope before the click and the request is bound to that disclosed scope.
+- **Live question card (`InteractionCard`).** A harness's mid-run questions
+  render in their own card, which keeps its header row and Send action fixed
+  around the same max-height middle as plan question cards. Questions, header
+  chips and option labels appear in full, exactly as asked: a long option label
+  wraps inside its chip, a long header chip wraps too, a header that does not fit
+  beside its question sits above it, long content scrolls, and a short question
+  keeps a compact card. Option descriptions show on hover. Each question takes
+  its chips or one line of the operator's own words, and Send is enabled once any
+  question has an answer: unlike the plan card there is no all-required gate, so
+  questions left empty are sent as a partial answer.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the receipt row.
