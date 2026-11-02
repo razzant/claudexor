@@ -74,17 +74,79 @@ import ClaudexorKit
         #expect(payloads.first?.freeText == nil)
     }
 
-    /// A free-text-only answer is a valid payload (no option picked); a
-    /// whitespace-only entry is not an answer.
+    /// A free-text-only answer is a valid payload (no option picked) and keeps
+    /// exactly what was typed; a whitespace-only entry is not an answer.
     @Test func freeTextOnlyComposesPayloadAndWhitespaceDoesNot() {
         let interaction = pending([question("q1")])
         let payloads = InteractionAnswerComposer.payloads(
             interaction, selections: [:], freeText: ["q1": "  Neither — use a flat file  "])
         #expect(payloads.count == 1)
         #expect(payloads.first?.selectedLabels.isEmpty == true)
-        #expect(payloads.first?.freeText == "Neither — use a flat file")
+        #expect(payloads.first?.freeText == "  Neither — use a flat file  ")
 
-        #expect(!InteractionAnswerComposer.hasAnyAnswer(
-            interaction, selections: [:], freeText: ["q1": "   "]))
+        for blank in ["   ", "\n", " \t\n "] {
+            #expect(!InteractionAnswerComposer.hasAnyAnswer(
+                interaction, selections: [:], freeText: ["q1": blank]))
+            #expect(InteractionAnswerComposer.payloads(
+                interaction, selections: [:], freeText: ["q1": blank]).isEmpty)
+        }
     }
+
+    /// The typed text reaches the answer request body unchanged: the card's
+    /// composer feeds `GatewayClient.answerInteraction`, whose JSON is what the
+    /// daemon hands to the harness bridge.
+    @Test func typedAnswerReachesTheRequestBodyExactly() async throws {
+        defer { AnswerBodyURLProtocol.captured = nil }
+        let interaction = pending([question("q1")])
+        let payloads = InteractionAnswerComposer.payloads(
+            interaction, selections: [:], freeText: ["q1": "  keep both spaces  "])
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AnswerBodyURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1")!, token: "test",
+            session: URLSession(configuration: config))
+        let response = try await client.answerInteraction(
+            runId: "r1", interactionId: "i1", answers: payloads)
+        #expect(response.status == "delivered")
+        let body = try #require(AnswerBodyURLProtocol.captured)
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let answers = try #require(json["answers"] as? [[String: Any]])
+        #expect(answers.count == 1)
+        #expect(answers.first?["questionId"] as? String == "q1")
+        #expect(answers.first?["freeText"] as? String == "  keep both spaces  ")
+    }
+}
+
+/// Captures the answer request body. Private to this file so it cannot race
+/// the shared history URL protocol used by other suites.
+private final class AnswerBodyURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var captured: Data?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.captured = answerRequestBody(request)
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"accepted":true,"status":"delivered"}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+/// URLSession moves a request body into `httpBodyStream`.
+func answerRequestBody(_ request: URLRequest) -> Data? {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return nil }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 { return nil }
+        if count == 0 { break }
+        data.append(buffer, count: count)
+    }
+    return data
 }

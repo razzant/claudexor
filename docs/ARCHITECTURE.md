@@ -1914,8 +1914,10 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
   the partial output of any other non-success result stay exact; the Codex
   adapter masks the text and native fields of an in-turn retry notice and of a
   native warning where it creates them. Claude
-  `AskUserQuestion` text and options are shown exactly, and answers are keyed
-  by the native question text. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
+  `AskUserQuestion` questions, headers, option labels and descriptions reach
+  every answering surface exactly, whatever their length (ACP shows headers and
+  descriptions as permission prompt content); answers are keyed by the native
+  question text, and free text reaches the CLI byte-identical. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
   tool results keep unmasked summaries of their output (`content_summary`, and
   a failed tool's own `error_summary`) within each adapter's existing bound and
   whitespace normalization: for a completed tool that summary is the only copy
@@ -5307,6 +5309,28 @@ event in the run's global or `project:<id>` partition generation before exposing
 `GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
 arrive via `POST /v2/runs/:id/interactions/:id/answer` and are delivered into the
 live session only after the resolution is committed (`interaction.answered`).
+Before committing anything, the daemon checks the answers against the pending
+question (one schema owner, `interactionAnswerSetViolation`): a row for a
+question the interaction does not have, two rows for one question, or a row
+with neither a non-blank selected label nor non-blank free text is `rejected`,
+and the question stays pending and answerable. Answering only some of the
+questions remains valid, and an empty answer set remains the caller's explicit
+decline: it is committed and handed over like an answer, records no
+`interaction.answered`, and the harness receives its benign decline. Selected
+labels are passed on as given, neither matched against the options nor counted;
+the harness gives them meaning (the Codex relay approves only one exact approval
+label and declines anything else, and Claude receives the labels joined as its
+answer text), while `claudexor follow`, the macOS card and ACP offer only the
+listed options and one of them for a single-choice question. `delivered` means
+the resolution was committed and handed to the run's live interaction waiter; it
+does not prove that the harness process read it. If that process closes at the
+same moment, the stored resolution stays `answered` while nothing reaches the
+CLI. A pending row that no live waiter in this daemon holds is released as
+`interrupted` and answered `not_found`. The Claude adapter writes the native
+answer only for a set with rows that passes the same check; any other set gets
+the benign decline. `claudexor follow` and the macOS card take one line of text
+per question and send it as typed when it is not blank; multi-line free text
+needs the HTTP answer or `claudexor_answer_interaction`.
 TTY delivery uses the same exact choice grammar as plan questions; it never
 coerces a numeric prose prefix or multiple picks for a single-choice question.
 After daemon restart an unresolved question becomes interrupted rather than

@@ -459,12 +459,21 @@ export function makeCancelBridge(
   };
 }
 
+/** The answer route's typed refusal of this exact answer (`context.status`). */
+async function definitelyRejected(response: Response): Promise<boolean> {
+  const problem = ControlProblem.safeParse(await response.json().catch(() => null));
+  return problem.success && problem.data.context["status"] === "rejected";
+}
+
 /**
  * Poll-tick bridge: watch the run's pendingInteractions on the control API and
  * forward each NEW interaction to the caller's hook exactly once; answers go
  * back through the typed answer endpoint. A stale answer (engine already
  * timed out and declined) is the endpoint's problem to refuse — the bridge
- * never fakes delivery.
+ * never fakes delivery. A failed post is retried with the same answer, except
+ * a definite `rejected` refusal: the daemon committed nothing and would refuse
+ * the same body again, so the bridge stops there and the question stays
+ * pending for another surface or its expiry.
  */
 export function makeInteractionBridge(
   addr: ControlApiAddress,
@@ -527,7 +536,7 @@ export function makeInteractionBridge(
               }),
             },
           ).catch(() => null);
-          if (response?.ok) {
+          if (response?.ok || (response && (await definitelyRejected(response)))) {
             delivered.add(id);
             answerCache.delete(id);
           }
