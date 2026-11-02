@@ -1322,7 +1322,12 @@ log; an absent or invalid event is refused (`run_event_not_found`,
 `claudexor_answer_interaction`, using the ids and option labels from
 `claudexor_run_interactions` (its text content is the complete JSON). A refusal
 keeps its typed status as the failure code: `not_found`, `already_resolved` or
-`rejected`. Answers carry no replay key, and `already_resolved` never proves
+`rejected`. A `rejected` answer (a question id the interaction does not list,
+one question answered twice, or a row with neither a selected label nor
+non-blank free text) commits nothing, so the question stays pending for a
+corrected answer. Selected labels are passed to the harness as given.
+`delivered` means the daemon committed the answer and handed it to the run's
+live session; whether the harness then read it is not reported. Answers carry no replay key, and `already_resolved` never proves
 that this answer was the one delivered. `claudexor_run_message` sends an
 independent message `{runId, text, idempotencyKey, expectedAttemptId?}` through
 the [live-input channel](ARCHITECTURE.md#live-messages-into-a-running-run); its

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import {
+  capturedNoGitChange,
   convergenceOutcomeFacts,
   isWorkingCandidate,
+  needsPostTurnFence,
   partitionCandidates,
 } from "./candidateEvidence.js";
 import type { CandidateRun } from "./candidateEvidence.js";
@@ -71,6 +73,58 @@ describe("partitionCandidates (D-16 veto owner)", () => {
     });
     expect(isWorkingCandidate(flagged)).toBe(true);
     expect(partitionCandidates([flagged]).working).toEqual([flagged]);
+  });
+});
+
+describe("capturedNoGitChange (#502: the post-turn fence's only skip)", () => {
+  const result = (base: string, candidate: string) =>
+    ({ base_tree: base, candidate_tree: candidate }) as CandidateRun["result"];
+  const refusal = { disposition: "discarded", detail: "fixture" } as CandidateRun["captureRefusal"];
+
+  it("is true only for a complete Git capture whose trees agree", () => {
+    expect(capturedNoGitChange(candidate({ result: result("t1", "t1") }))).toBe(true);
+    expect(capturedNoGitChange(candidate({ result: result("t1", "t2") }))).toBe(false);
+  });
+
+  it("an unknown capture is never unchanged: no result, a refusal, a refused continuation, files", () => {
+    // The per-slot failure shape: an empty patch text and no capture at all.
+    expect(capturedNoGitChange(candidate({ diff: "", errored: true }))).toBe(false);
+    expect(
+      capturedNoGitChange(candidate({ result: result("t1", "t1"), captureRefusal: refusal })),
+    ).toBe(false);
+    expect(
+      capturedNoGitChange(
+        candidate({
+          result: result("t1", "t1"),
+          continuationRefusal: { attemptId: "a2", refusal: refusal! },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      capturedNoGitChange(
+        candidate({
+          result: result("t1", "t1"),
+          files: { noChanges: true } as CandidateRun["files"],
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("needsPostTurnFence (#502)", () => {
+  const result = (base: string, candidate: string) =>
+    ({ base_tree: base, candidate_tree: candidate }) as CandidateRun["result"];
+  const refusal = { disposition: "discarded", detail: "fixture" } as CandidateRun["captureRefusal"];
+
+  it("fences a changed or never-captured turn, and an empty roster as before", () => {
+    expect(needsPostTurnFence([candidate({ result: result("t1", "t2") })])).toBe(true);
+    expect(needsPostTurnFence([candidate({ diff: "", errored: true })])).toBe(true);
+    expect(needsPostTurnFence([])).toBe(true);
+  });
+
+  it("takes no fence for a refused capture or a complete unchanged one", () => {
+    expect(needsPostTurnFence([candidate({ captureRefusal: refusal })])).toBe(false);
+    expect(needsPostTurnFence([candidate({ result: result("t1", "t1") })])).toBe(false);
   });
 });
 

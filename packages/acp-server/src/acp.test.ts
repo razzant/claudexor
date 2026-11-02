@@ -28,6 +28,12 @@ async function withClient<T>(
   runner: RunnerFn,
   op: (agent: acp.ClientContext, updates: acp.SessionNotification[]) => Promise<T>,
   options: Pick<ConstructorParameters<typeof AcpServer>[0], "terminalAuthMethods"> = {},
+  /** Which permission option the editor picks (the first one by default);
+   * `null` dismisses the prompt. Sees the whole permission request. */
+  choose: (
+    options: Array<{ optionId: string }>,
+    request: acp.RequestPermissionRequest,
+  ) => string | null = (options) => options[0]?.optionId ?? "",
 ): Promise<T> {
   const clientToAgent = new PassThrough();
   const agentToClient = new PassThrough();
@@ -44,9 +50,15 @@ async function withClient<T>(
     .onNotification(acp.methods.client.session.update, ({ params }) => {
       updates.push(params);
     })
-    .onRequest(acp.methods.client.session.requestPermission, ({ params }) => ({
-      outcome: { outcome: "selected", optionId: params.options[0]?.optionId ?? "" },
-    }));
+    .onRequest(acp.methods.client.session.requestPermission, ({ params }) => {
+      const optionId = choose(params.options, params);
+      return {
+        outcome:
+          optionId === null
+            ? { outcome: "cancelled" as const }
+            : { outcome: "selected" as const, optionId },
+      };
+    });
   const stream = acp.ndJsonStream(
     Writable.toWeb(clientToAgent) as globalThis.WritableStream<Uint8Array>,
     Readable.toWeb(agentToClient) as globalThis.ReadableStream<Uint8Array>,
@@ -436,6 +448,7 @@ describe("AcpServer official SDK projection", () => {
 
   it("presents an option-less (free-text) mid-run question as turn text, NEVER silently skipping it (D14/B5)", async () => {
     const cwd = project();
+    const header = `Ticket context ${"detail ".repeat(40)}END`;
     let captured: unknown = "unset";
     await withClient(
       async (params, hooks) => {
@@ -445,7 +458,7 @@ describe("AcpServer official SDK projection", () => {
           run_id: "run-ft-1",
           request: {
             interaction_id: "int-1",
-            questions: [{ id: "q1", question: "What ticket does this fix?", options: [] }],
+            questions: [{ id: "q1", header, question: "What ticket does this fix?", options: [] }],
           },
         });
         return { runId: "run-ft-1", status: "succeeded", summary: "done", applyEligibility: null };
@@ -462,6 +475,7 @@ describe("AcpServer official SDK projection", () => {
         // The question is disclosed as turn text naming the documented remedy.
         const text = JSON.stringify(updates);
         expect(text).toContain("What ticket does this fix?");
+        expect(text).toContain(header);
         expect(text).toContain("claudexor follow run-ft-1");
       },
     );
@@ -501,6 +515,159 @@ describe("AcpServer official SDK projection", () => {
         expect(captured?.answers?.[0]?.selected_labels).toEqual(["macOS", "linux", "windows"]);
       },
     );
+  });
+
+  /** Runs one ACP prompt whose run raises `request`; returns the hook's answer and the turn text. */
+  async function answerThroughAcp(
+    request: Record<string, unknown>,
+    choose: Parameters<typeof withClient>[3],
+    extra: Record<string, unknown> = {},
+  ) {
+    const cwd = project();
+    let captured: unknown = "unset";
+    let text = "";
+    await withClient(
+      async (params, hooks) => {
+        if (params.mode === "__acp_session_new") return { sessionId: "thread-q", cwd };
+        captured = await hooks!.onInteraction!({ run_id: "run-q-1", request, ...extra });
+        return { runId: "run-q-1", status: "succeeded", summary: "done", applyEligibility: null };
+      },
+      async (agent, updates) => {
+        const session = await agent.request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "go" }],
+          _meta: { claudexor: { mode: "agent" } },
+        });
+        text = updates
+          .map((note) => note.update)
+          .filter((update) => update.sessionUpdate === "agent_message_chunk")
+          .map((update) => (update as { content: { text?: string } }).content.text ?? "")
+          .join("\n");
+      },
+      {},
+      choose,
+    );
+    return { captured, text };
+  }
+
+  const skipEveryInclude: Parameters<typeof withClient>[3] = (options) =>
+    options.find((option) => option.optionId === "skip")?.optionId ?? options[0]!.optionId;
+
+  it("proposes the answered questions as a partial answer and names the skipped one it would close", async () => {
+    const { captured, text } = await answerThroughAcp(
+      {
+        interaction_id: "int-skip",
+        questions: [
+          {
+            id: "q1",
+            question: "Which platforms?",
+            multi_select: true,
+            options: [{ label: "macOS" }, { label: "linux" }],
+          },
+          { id: "q2", question: "Which shell?", options: [{ label: "zsh" }] },
+        ],
+      },
+      skipEveryInclude,
+    );
+    // No row for the skipped question: an empty row would be refused before it
+    // could consume the pending interaction, so the answered one goes alone.
+    // The message precedes the submission, so it states the closing effect only
+    // conditionally: the answer may still fail or be refused.
+    expect(captured).toEqual({
+      interaction_id: "int-skip",
+      answers: [{ question_id: "q2", selected_labels: ["zsh"], free_text: null }],
+    });
+    expect(text).toContain("The chosen answers will now be submitted as a partial answer.");
+    expect(text).toContain("Once it is accepted, it closes this question set");
+    expect(text).toContain("1. Which platforms? (every option skipped)");
+    expect(text).toContain("can no longer be answered in this run");
+    expect(text).toContain(
+      "Until then the set stays pending and can be answered with `claudexor follow run-q-1`",
+    );
+    expect(text).not.toContain("were sent");
+    expect(text).not.toContain("No answer was sent");
+  });
+
+  it("sends nothing when nothing is chosen and says the run stays paused, with its expiry", async () => {
+    const { captured, text } = await answerThroughAcp(
+      {
+        interaction_id: "int-none",
+        questions: [
+          {
+            id: "q1",
+            question: "Which platforms?",
+            multi_select: true,
+            options: [{ label: "macOS" }, { label: "linux" }],
+          },
+          { id: "q2", question: "Which shell?", options: [{ label: "zsh" }] },
+        ],
+      },
+      // Skip every include round and dismiss the single choice.
+      (options) => (options.some((option) => option.optionId === "skip") ? "skip" : null),
+      { timeoutAt: "2026-11-02T12:00:00.000Z" },
+    );
+    expect(captured).toBeNull();
+    expect(text).toContain("No answer was sent, so this run stays paused");
+    expect(text).toContain("1. Which platforms? (every option skipped)");
+    expect(text).toContain("2. Which shell? (dismissed without a choice)");
+    expect(text).toContain("`claudexor follow run-q-1`");
+    expect(text).toContain(
+      "If nobody answers by 2026-11-02T12:00:00.000Z, it is declined automatically",
+    );
+  });
+
+  it("shows each question's header and option descriptions as permission prompt content", async () => {
+    const prompts: acp.RequestPermissionRequest[] = [];
+    const { captured } = await answerThroughAcp(
+      {
+        interaction_id: "int-content",
+        questions: [
+          {
+            id: "q1",
+            header: "Rollout",
+            question: "Which rollout should I use?",
+            options: [
+              { label: "Canary", description: "Gradual traffic shift" },
+              { label: "Blue-green", description: "Switch all traffic at once" },
+            ],
+          },
+          {
+            id: "q2",
+            header: "Targets",
+            question: "Which platforms?",
+            multi_select: true,
+            options: [{ label: "macOS", description: "Apple silicon only" }],
+          },
+        ],
+      },
+      (options, request) => {
+        prompts.push(request);
+        return options[0]!.optionId;
+      },
+    );
+    const texts = prompts.map((request) =>
+      (request.toolCall.content ?? []).map((item) =>
+        item.type === "content" && item.content.type === "text" ? item.content.text : "",
+      ),
+    );
+    expect(texts).toEqual([
+      [
+        "Rollout\n\nWhich rollout should I use?\n\n- Canary: Gradual traffic shift\n- Blue-green: Switch all traffic at once",
+      ],
+      ["Targets\n\nWhich platforms?\n\n- macOS: Apple silicon only"],
+    ]);
+    expect(prompts.map((request) => request.toolCall.title)).toEqual([
+      "Which rollout should I use?",
+      'Which platforms? — include "macOS"?',
+    ]);
+    expect(captured).toEqual({
+      interaction_id: "int-content",
+      answers: [
+        { question_id: "q1", selected_labels: ["Canary"], free_text: null },
+        { question_id: "q2", selected_labels: ["macOS"], free_text: null },
+      ],
+    });
   });
 
   it("maps a FAILED daemon lifecycle to refusal instead of a false normal end_turn", async () => {

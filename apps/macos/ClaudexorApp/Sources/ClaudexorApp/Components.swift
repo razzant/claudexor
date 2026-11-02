@@ -315,11 +315,16 @@ struct FilterChip: View {
 
 struct FlowLayout: Layout {
     var spacing: CGFloat = 8
+    /// Measure a subview wider than the row again at the row width, so its text
+    /// wraps inside the row. Off by default: chips keep their one-line rule
+    /// (DESIGN_SYSTEM §1 rule 5); the live question card turns it on for its
+    /// model-authored option labels.
+    var wrapsWideSubviews = false
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let maxWidth = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
         for sub in subviews {
-            let size = sub.sizeThatFits(.unspecified)
+            let size = itemSize(sub, within: maxWidth)
             if x + size.width > maxWidth { x = 0; y += rowHeight + spacing; rowHeight = 0 }
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
@@ -329,11 +334,17 @@ struct FlowLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
         for sub in subviews {
-            let size = sub.sizeThatFits(.unspecified)
+            let size = itemSize(sub, within: bounds.width)
             if x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
             sub.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
+    }
+
+    private func itemSize(_ sub: LayoutSubview, within width: CGFloat) -> CGSize {
+        let ideal = sub.sizeThatFits(.unspecified)
+        guard wrapsWideSubviews, width.isFinite, ideal.width > width else { return ideal }
+        return sub.sizeThatFits(ProposedViewSize(width: width, height: nil))
     }
 }

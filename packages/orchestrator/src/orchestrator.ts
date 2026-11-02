@@ -95,6 +95,7 @@ import {
   candidateStatuses,
   convergenceOutcomeFacts,
   isWorkingCandidate,
+  needsPostTurnFence,
   partitionCandidates,
   toCandidateEvidence,
 } from "./candidateEvidence.js";
@@ -247,7 +248,7 @@ import {
   dropDeltaPastBudget,
   emitPlanProgress,
   emitTransientExhausted,
-  observeReadonlySpend,
+  observeUsageSpend,
   recordAdapterThrow,
 } from "./laneStreamEvents.js";
 import {
@@ -2864,6 +2865,7 @@ export class Orchestrator {
     const attemptDir = join(paths.attemptsDir, attemptId);
     recordCleanAttemptMetrics(globalConfigDir(), adapter.id, {
       costUsd: cost,
+      usageCost: telemetry.usageCost,
       streamMs: attemptStreamEndedMs - attemptStartedMs,
       errored,
       aborted: signal?.aborted === true,
@@ -3678,14 +3680,14 @@ export class Orchestrator {
     // snapshot must be taken NOW — before review/synthesis/arbitration, which can
     // run for a long time during which the user may edit files. Snapshotting after
     // arbitration (as the race-adoption path does) would fold those user edits
-    // into the revert target and let a later revert clobber them.
+    // into the revert target and let a later revert clobber them. No change, no fence.
     let earlyPostTurnSha: string | null = null;
     if (
       mutatingRun &&
       input.workspaceKind !== "directory" &&
       input.inPlace &&
       requestedSingleCandidate &&
-      runs.every((run) => !run.captureRefusal)
+      needsPostTurnFence(runs)
     ) {
       try {
         earlyPostTurnSha = await snapshotTree(execRoot);
@@ -5058,8 +5060,8 @@ export class Orchestrator {
         lastPostTurnSha = null;
         // Post-mutation fence for in-place: snapshot the live tree NOW (after the
         // harness mutated it, before this attempt's review). The last attempt's
-        // value is the revert target persisted into work_product.yaml.
-        if (input.inPlace === true && input.workspaceKind !== "directory" && !run.captureRefusal) {
+        // value is the revert target persisted into work_product.yaml (an unchanged one has none).
+        if (input.inPlace && input.workspaceKind !== "directory" && needsPostTurnFence([run])) {
           try {
             lastPostTurnSha = await snapshotTree(execRoot);
           } catch {
@@ -6805,11 +6807,12 @@ export class Orchestrator {
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
               this.deps.quotaEventSink?.(adapter.id, ev);
-              const spend = observeReadonlySpend(
+              const spend = observeUsageSpend(
                 ev,
                 (t, p) => log.emit(t, p),
                 adapter.id,
                 attemptId,
+                telemetry.usageCost,
               );
               cost += spend.costUsd;
               costEstimated ||= spend.estimated;

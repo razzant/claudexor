@@ -1,5 +1,6 @@
 import type { HarnessEvent } from "@claudexor/schema";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
+import { observeUsageSpend } from "./laneStreamEvents.js";
 
 /** One owner for streamed usage accumulation + mid-flight cash-cap behavior. */
 export function processAttemptUsage(input: {
@@ -13,23 +14,20 @@ export function processAttemptUsage(input: {
   budgetGuard?: (streamedUsd: number) => boolean;
   cancel: () => void;
 }): { cost: number; costEstimated: boolean; hardCapReached: boolean } {
-  const usage = input.event.usage;
-  if (!usage?.cost_usd) {
-    return { cost: input.cost, costEstimated: input.costEstimated, hardCapReached: false };
-  }
-  const cost = input.cost + usage.cost_usd;
-  const costEstimated = input.costEstimated || usage.estimated === true;
-  input.emit?.("budget.observation", {
-    harness_id: input.harnessId,
-    attempt_id: input.attemptId,
-    kind: "spend",
-    usd: usage.cost_usd,
-    estimated: usage.estimated === true,
-  });
+  const spend = observeUsageSpend(
+    input.event,
+    (type, payload) => input.emit?.(type, payload),
+    input.harnessId,
+    input.attemptId,
+    input.telemetry.usageCost,
+  );
+  const cost = input.cost + spend.costUsd;
+  const costEstimated = input.costEstimated || spend.estimated;
   const paidOrUnknown =
     input.telemetry.usageCost.cashUsd +
     (input.telemetry.usageCost.unknownPaidUsd ?? input.telemetry.usageCost.unknownUsd);
-  if (paidOrUnknown > 0 && input.budgetGuard?.(paidOrUnknown)) {
+  // A reported zero adds no spend, so it cannot reach the cap.
+  if (spend.costUsd > 0 && paidOrUnknown > 0 && input.budgetGuard?.(paidOrUnknown)) {
     input.emit?.("budget.observation", {
       harness_id: input.harnessId,
       attempt_id: input.attemptId,

@@ -1914,8 +1914,10 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
   the partial output of any other non-success result stay exact; the Codex
   adapter masks the text and native fields of an in-turn retry notice and of a
   native warning where it creates them. Claude
-  `AskUserQuestion` text and options are shown exactly, and answers are keyed
-  by the native question text. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
+  `AskUserQuestion` questions, headers, option labels and descriptions reach
+  every answering surface exactly, whatever their length (ACP shows headers and
+  descriptions as permission prompt content); answers are keyed by the native
+  question text, and free text reaches the CLI byte-identical. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
   tool results keep unmasked summaries of their output (`content_summary`, and
   a failed tool's own `error_summary`) within each adapter's existing bound and
   whitespace normalization: for a completed tool that summary is the only copy
@@ -2497,7 +2499,16 @@ workspace work; they are never ignored or silently redirected.
 
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
-the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
+the harness `cwd` is the envelope worktree. That worktree is a complete checkout of
+its base commit or the run does not start: when no object directory holds the
+content of some of its files (what a partial clone never fetched, or a sparse
+checkout of one left out), or Git cannot copy a shallow source because its branches
+reach such content, the run fails in its workspace phase naming what is missing and
+the two ways forward, a complete copy of that content or an in-place run, and
+Claudexor fetches nothing. Such an envelope never started, so the call that made its
+directory removes it before refusing; a removal that fails keeps the refusal, adds what
+was left to its message and notes the fault beside it, and a directory that already
+existed is never removed. Proven work product is the git diff in that worktree, a
 declared run artifact, or the text answer. Capture reads only the physical execution root, whatever
 its spelling: a project under `/tmp` is captured normally, while a write outside
 the root, such as an absolute `/tmp/...` host path, does not enter the project
@@ -5344,6 +5355,28 @@ event in the run's global or `project:<id>` partition generation before exposing
 `GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
 arrive via `POST /v2/runs/:id/interactions/:id/answer` and are delivered into the
 live session only after the resolution is committed (`interaction.answered`).
+Before committing anything, the daemon checks the answers against the pending
+question (one schema owner, `interactionAnswerSetViolation`): a row for a
+question the interaction does not have, two rows for one question, or a row
+with neither a non-blank selected label nor non-blank free text is `rejected`,
+and the question stays pending and answerable. Answering only some of the
+questions remains valid, and an empty answer set remains the caller's explicit
+decline: it is committed and handed over like an answer, records no
+`interaction.answered`, and the harness receives its benign decline. Selected
+labels are passed on as given, neither matched against the options nor counted;
+the harness gives them meaning (the Codex relay approves only one exact approval
+label and declines anything else, and Claude receives the labels joined as its
+answer text), while `claudexor follow`, the macOS card and ACP offer only the
+listed options and one of them for a single-choice question. `delivered` means
+the resolution was committed and handed to the run's live interaction waiter; it
+does not prove that the harness process read it. If that process closes at the
+same moment, the stored resolution stays `answered` while nothing reaches the
+CLI. A pending row that no live waiter in this daemon holds is released as
+`interrupted` and answered `not_found`. The Claude adapter writes the native
+answer only for a set with rows that passes the same check; any other set gets
+the benign decline. `claudexor follow` and the macOS card take one line of text
+per question and send it as typed when it is not blank; multi-line free text
+needs the HTTP answer or `claudexor_answer_interaction`.
 TTY delivery uses the same exact choice grammar as plan questions; it never
 coerces a numeric prose prefix or multiple picks for a single-choice question.
 After daemon restart an unresolved question becomes interrupted rather than
@@ -6045,7 +6078,8 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    mutates the project tree. Fences (the same
    machinery for Git-backed turns): a pre-turn snapshot is taken at turn/run start and a
    post-turn snapshot at turn end (the per-turn diff base, so prior dirty state
-   is never attributed to the turn), and the server-owned `revert_run` decision
+   is never attributed to the turn; a turn whose complete final capture found no
+   change has no revert target and takes none), and the server-owned `revert_run` decision
    uses an external content-addressed pre/post anchor (overlapping later user
    edits are refused, below). Explicit directory execution records its selected
    footprint and observed effects instead; it does not promise a whole-tree
@@ -6268,10 +6302,37 @@ independent: vendor list prices are valuation, while unknown cash or credit
 consumption stays unknown. Current native transports expose no authoritative
 paid-credit debit amount, and the engine never invents one from token prices or a
 session-level Fast setting.
+A usage event's reported amount is evidence apart from its size. A reported
+`cost_usd` of 0 keeps its cash, valuation or unknown meaning and its exact or
+estimated status through the spend row, settlement, ledger and settled budget
+projection, in every lane and review panel. An event with no amount reports
+nothing, and known controllable cash or a stated cost knowledge is not a receipt:
+included work without an amount settles as usage missing, and a zero receipt
+leaves an unpriced try of the same attempt, earlier or later, unknown. Each
+lane's `budget.observation` spend row reports one usage amount and names its
+meaning in `amount_kind`; a review panel writes one aggregate row after its
+settlement, with separate cash, valuation and unknown totals and no
+`amount_kind`. A zero row is evidence of that amount only. Before the first
+settlement the budget projection reads as it did before zero rows existed: spend
+is the sum of nonzero spend rows, or else of reported usage costs, and is always
+estimated, with `remainingUsd` derived from that estimate; valuation is the
+estimated sum of nonzero rows; `cashKnowledge` is absent. A zero row adds no
+total, certainty or valuation there, because the attempt's other tries may still
+be unpriced. An exact total, an exact `$0` included, comes only from the ledger's
+`budget.cash` and the decision record. From the first settlement on, the reading
+is the latest settlement's cumulative disclosure, as before: an attempt still
+running when another settles shows at its own settlement, and that now includes
+a settled zero valuation.
 Persisted routing cost averages carry a cost-evidence generation in the existing
 metrics file. Older unclassified costs are read as unknown while duration,
 sample counts and auth routing survive. A new explicitly unpriced attempt
 clears the cost average; auth-only updates preserve compatible observations.
+The only zero sample is a reported cash receipt whose total is known, exact or
+estimated: a zero valuation, included work without a receipt and an attempt with
+an earlier unpriced interval clear the average as unpriced. The average is per
+harness, not per model, and a receipt covers only the charge it reports: a free
+model's zero lowers the figure for that harness's paid models, and an upstream
+bill outside the receipt is not counted.
 Mixed review panels classify
 each observed amount separately from its prospective billing basis;
 their aggregate is never blindly charged as cash. Panel admission keeps
@@ -8159,9 +8220,27 @@ code touching one of these areas must honor it or change it explicitly here.
   patterns is still skipped by `add -A`, so a snapshot and an in-place turn's
   capture miss that edit, as before. Such a timeout fails that capture or snapshot,
   except that the render's only leaves its view out (`render_failed`) and the
-  inventory pass only leaves its inventory out. Claudexor's own isolated clones list the store as
-  a second alternate, and a dirty isolated base enters the store before the
-  clone, so it resolves after the user's prune.
+  inventory pass only leaves its inventory out. Claudexor's own isolated clones (an
+  envelope, a delivery's fresh verify) read the source repository's object directory
+  as their first alternate. `git clone --shared` writes it only when Git clones the
+  path locally; a shallow source Git silently clones through its transport instead,
+  so Claudexor writes that alternate itself, and a dirty snapshot or a composed tree
+  that only a shallow target holds still checks out in the verify clone. A shallow
+  source Git copies locally (a linked worktree of a shallow repository) brings its
+  refs but not its shallow boundary, so the clone also gets the source's own
+  `shallow` file, located by `git rev-parse --git-path shallow`; history reads there
+  stop at that boundary instead of failing on parents the clone does not hold. These
+  clones list the store as a second alternate, and a dirty isolated base enters the
+  store before the clone, so it resolves after the user's prune. A clone whose
+  checkout leaves files absent because none of its object directories holds their
+  content is refused, never used: an envelope before its run, a verify before any
+  write. Git's transport copy of a shallow source must read everything HEAD, the
+  branches and the tags reach down to the boundary, and fails on what a partial clone
+  never fetched. A failed clone of a shallow source therefore keeps Git's full report
+  first and, when a `rev-list --missing=print` walk that fetches nothing finds such
+  content, adds it (the base commit's files, else a count) as an observation that does
+  not prove the cause: the same clone can fail first on an occupied or unwritable
+  destination. Any other clone failure keeps Git's report alone.
   Delivery, adoption and revert of these results, with their typed refusals,
   are described under [Live-tree mutation paths](#live-tree-mutation-paths)
   (items 1, 3 and 6). Retention prunes the store by reachability

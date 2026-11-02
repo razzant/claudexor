@@ -457,6 +457,31 @@ describe("interactive TTY prompt lifetime", () => {
     ]);
   });
 
+  it("sends prose exactly as typed while blank lines answer nothing and padded numbers still pick", async () => {
+    const inputs = ["  keep both spaces  ", " 2 ", " \t "];
+    let index = 0;
+    const question = (id: string) => ({
+      id,
+      question: `${id}?`,
+      header: null,
+      options: [
+        { label: "A", description: null },
+        { label: "B", description: null },
+      ],
+      multi_select: false,
+    });
+    const result = await collectInteractionAnswers(
+      "int-exact-text",
+      [question("q-prose"), question("q-pick"), question("q-blank")] as never,
+      { reader: { question: async () => inputs[index++] ?? "", close: () => {} } },
+    );
+
+    expect(result?.answers).toEqual([
+      { question_id: "q-prose", selected_labels: [], free_text: "  keep both spaces  " },
+      { question_id: "q-pick", selected_labels: ["B"], free_text: null },
+    ]);
+  });
+
   it("is abortable without a deadline when the run terminates", async () => {
     const controller = new AbortController();
     let closed = false;

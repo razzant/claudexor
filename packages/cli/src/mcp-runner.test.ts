@@ -155,6 +155,96 @@ describe("makeInteractionBridge (MCP daemon-run interaction plumbing)", () => {
     expect(asks).toBe(1);
     expect(posts).toBe(2);
   });
+
+  /** Each POST answers with the next scripted outcome; the detail keeps listing the question. */
+  function scriptedPosts(outcomes: Array<"throw" | { status: number; body: unknown }>) {
+    const posted: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          posted.push(JSON.parse(init.body ?? "{}"));
+          const outcome = outcomes.shift() ?? { status: 200, body: {} };
+          if (outcome === "throw") throw new TypeError("fetch failed");
+          return {
+            ok: outcome.status < 300,
+            status: outcome.status,
+            json: async () => outcome.body,
+          } as never;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            pendingInteractions: [{ interactionId: "int-r", questions: [], timeoutAt: null }],
+          }),
+        } as never;
+      }),
+    );
+    return posted;
+  }
+
+  async function ticks(bridge: (info: { runId: string }) => Promise<void>, count: number) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let tick = 0; tick < count; tick++) {
+        await bridge({ runId: "run-r" });
+        vi.setSystemTime(Date.now() + 1_100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("stops re-posting an answer the daemon definitely refused, without asking again", async () => {
+    // The answer route's problem for a refused answer: nothing committed, the
+    // question still pending, and the same body would be refused again.
+    const posted = scriptedPosts([
+      {
+        status: 409,
+        body: {
+          code: "conflict",
+          message: "question 'q' has neither a selected label nor free text",
+          retryable: false,
+          context: { accepted: false, status: "rejected" },
+        },
+      },
+    ]);
+    let asks = 0;
+    const bridge = makeInteractionBridge(addr, async () => {
+      asks += 1;
+      return { answers: [{ question_id: "q", selected_labels: [""], free_text: null }] };
+    });
+    await ticks(bridge, 4);
+    expect(asks).toBe(1);
+    expect(posted).toHaveLength(1);
+  });
+
+  it("keeps re-posting the same answer after a transport failure or a refusal that is not definite", async () => {
+    const posted = scriptedPosts([
+      "throw",
+      {
+        status: 503,
+        body: {
+          code: "daemon_stopping",
+          message: "daemon is stopping",
+          retryable: true,
+          context: {},
+        },
+      },
+      { status: 200, body: { accepted: true, status: "delivered" } },
+    ]);
+    let asks = 0;
+    const bridge = makeInteractionBridge(addr, async () => {
+      asks += 1;
+      return { answers: [{ question_id: "q", selected_labels: ["A"], free_text: null }] };
+    });
+    await ticks(bridge, 5);
+    expect(asks).toBe(1);
+    // Three attempts with the same body, then delivered: nothing more is posted.
+    expect(posted).toEqual(
+      Array(3).fill({ answers: [{ questionId: "q", selectedLabels: ["A"] }] }),
+    );
+  });
 });
 
 describe("makeCancelBridge (host cancel -> typed daemon cancel)", () => {

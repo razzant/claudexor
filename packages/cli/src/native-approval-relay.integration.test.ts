@@ -1,29 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import { PassThrough } from "node:stream";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { spawnProcess } from "@claudexor/core";
-import {
-  createPartition,
-  createSqlDaemonServices,
-  DaemonClient,
-  DaemonServer,
-  EngineStore,
-  setGlobalGenerationInTx,
-  type RunnerFn,
-} from "@claudexor/daemon";
-import { DaemonControlApiServer } from "@claudexor/control-api";
-import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
-// The built module: the orchestrator channel types its log against @claudexor/event-log.
-import { EventLog } from "../../event-log/dist/index.js";
 import { runCodexAppServer } from "../../harness-codex/src/app-server-run.js";
-import { interactionChannelFor } from "../../orchestrator/src/interaction.js";
-import * as daemonRun from "./daemon-run.js";
-import { mcpSurfaceRunner } from "./mcp-runner.js";
-import { createRunTimeLimit } from "./run-time-limit.js";
+import { mcpWire, startInteractionDaemon } from "./test-support/interaction-daemon.js";
 
 type Frame = Record<string, unknown>;
 
@@ -162,57 +143,22 @@ function codexPeer(cwd: string) {
 }
 
 async function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-nar-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-  const workspace = join(root, "workspace");
-  mkdirSync(workspace);
-  const store = await EngineStore.open({
-    daemonDir: root,
-    workerEntry: resolve(import.meta.dirname, "../../daemon/dist/store/flusher-worker.js"),
-  });
-  cleanups.push(() => store.close());
-  store.transaction(() => {
-    const global = createPartition(store, "global");
-    setGlobalGenerationInTx(store, global.pid);
-  });
-  const graph = createSqlDaemonServices(store, { purgeFiles: async () => [] });
-  cleanups.push(() => graph.close());
-  const peer = codexPeer(workspace);
+  let peer!: ReturnType<typeof codexPeer>;
   const harnessEvents: HarnessEvent[] = [];
-  const abortReasons: unknown[] = [];
-  const runner: RunnerFn = async (params, ctx) => {
-    const runId = `run-${ctx.jobId}`;
-    const taskId = `task-${ctx.jobId}`;
-    const runDir = join(root, runId);
-    mkdirSync(runDir);
-    // The production run-owned clock: one stable signal for the whole run.
-    const limit = createRunTimeLimit(params as { maxSeconds?: number }, ctx);
-    ctx.onRunStart({ runId, taskId, runDir });
-    limit.started({ runId, taskId, runDir });
-    // The orchestrator's own channel, bound to the daemon's durable registry.
-    const channel = interactionChannelFor(
-      {
-        onInteraction: (pending) => graph.interactions.register(pending, params),
-        interactionTimeoutMs: null,
-        signal: limit.signal,
-      },
-      new EventLog(join(runDir, "events.jsonl"), runId, taskId),
-      runId,
-      taskId,
-      "a01",
-      "codex",
-      true,
-    );
-    const spec = HarnessRunSpec.parse({
-      session_id: runId,
-      intent: "implement",
-      prompt: "Make the change and verify it",
-      cwd: workspace,
-      access: "workspace_write",
-    });
-    spec.extra["interactionChannel"] = channel;
-    spec.extra["abortSignal"] = limit.signal;
-    try {
+  const daemon = await startInteractionDaemon({
+    cleanups,
+    harnessId: "codex",
+    prompt: "native relay fixture",
+    execute: async ({ runId, signal, channel }, workspace) => {
+      const spec = HarnessRunSpec.parse({
+        session_id: runId,
+        intent: "implement",
+        prompt: "Make the change and verify it",
+        cwd: workspace,
+        access: "workspace_write",
+      });
+      spec.extra["interactionChannel"] = channel;
+      spec.extra["abortSignal"] = signal;
       for await (const event of runCodexAppServer({
         bin: "codex",
         args: [],
@@ -222,132 +168,11 @@ async function fixture() {
         pollIntervalMs: 5,
       }))
         harnessEvents.push(event);
-    } finally {
-      if (limit.signal.aborted) abortReasons.push(limit.signal.reason);
-      limit.dispose();
-    }
-    // Fixture-only lifecycle reduction; the orchestrator owns real outcome facts.
-    const aborted = limit.signal.aborted || harnessEvents.at(-1)?.aborted === true;
-    const failed = harnessEvents.some((event) => event.type === "error");
-    return {
-      lifecycle: aborted ? "cancelled" : failed ? "failed" : "succeeded",
-      summary: "native relay fixture",
-    };
-  };
-  const socketPath = join(root, "d.sock");
-  const daemon = new DaemonServer({
-    socketPath,
-    token: "fixture",
-    commands: graph.commands,
-    runner,
-    onRunTerminal: (runId) => graph.interactions.dropForRun(runId),
-  });
-  await daemon.start();
-  cleanups.push(() => daemon.stop());
-  const client = new DaemonClient(socketPath, "fixture");
-  const control = new DaemonControlApiServer({
-    token: "fixture",
-    daemon: client,
-    services: {
-      pendingInteractions: (runId) => graph.interactions.pendingForRun(runId),
-      answerInteraction: (runId, interactionId, answers) =>
-        graph.interactions.answer(runId, interactionId, answers),
+      return harnessEvents;
     },
-  } as ConstructorParameters<typeof DaemonControlApiServer>[0]);
-  const { host, port } = await control.start();
-  cleanups.push(() => control.stop());
-  const baseUrl = `http://${host}:${port}`;
-  const headers = { authorization: "Bearer fixture", "X-Claudexor-Protocol-Major": "3" };
-  const http = async (method: "GET" | "POST", path: string, body?: unknown) => {
-    const response = await fetch(`${baseUrl}/v2${path}`, {
-      method,
-      headers: {
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    return { status: response.status, body: (await response.json()) as Record<string, any> };
-  };
-  // The real MCP surface runner, pointed at this daemon's control API.
-  vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
-    client: client as never,
-    addr: { baseUrl, token: "fixture" },
-    engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" } as never,
   });
-  const started = async (extra: Record<string, unknown> = {}) => {
-    const accepted = await client.enqueue({ prompt: "native relay fixture", ...extra });
-    const record = await vi.waitFor(
-      async () => {
-        const current = await client.status(accepted.id);
-        expect(current).toMatchObject({ state: "running", runId: `run-${accepted.id}` });
-        return current;
-      },
-      { timeout: 5_000, interval: 10 },
-    );
-    return { id: accepted.id, runId: record.runId!, runDir: record.runDir! };
-  };
-  const terminal = (id: string) =>
-    vi.waitFor(
-      async () => {
-        const record = await client.status(id);
-        expect(["succeeded", "failed", "cancelled"]).toContain(record.state);
-        return record;
-      },
-      { timeout: 5_000, interval: 10 },
-    );
-  const pending = (runId: string, count: number) =>
-    vi.waitFor(
-      async () => {
-        const detail = await http("GET", `/runs/${encodeURIComponent(runId)}`);
-        expect(detail.status).toBe(200);
-        expect(detail.body.pendingInteractions).toHaveLength(count);
-        return detail.body.pendingInteractions as Array<Record<string, any>>;
-      },
-      { timeout: 5_000, interval: 10 },
-    );
-  return { peer, http, started, terminal, pending, harnessEvents, abortReasons };
-}
-
-function mcpWire() {
-  const c2s = new PassThrough();
-  const s2c = new PassThrough();
-  const handle = serveClaudexorMcp({
-    version: "0.0.0-test",
-    tools: defaultClaudexorTools(mcpSurfaceRunner()),
-    transport: { read: c2s, write: s2c },
-  });
-  const lines = createInterface({ input: s2c });
-  const replies = new Map<number, (reply: any) => void>();
-  lines.on("line", (line) => {
-    const reply = JSON.parse(line);
-    if (typeof reply.id === "number") replies.get(reply.id)?.(reply);
-  });
-  let nextId = 0;
-  const call = (method: string, params: unknown): Promise<any> =>
-    new Promise((done) => {
-      const id = ++nextId;
-      replies.set(id, done);
-      c2s.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    });
-  cleanups.push(async () => {
-    await handle.close();
-    lines.close();
-    c2s.destroy();
-    s2c.destroy();
-  });
-  return {
-    async start() {
-      await call("initialize", {
-        protocolVersion: "2025-06-18",
-        capabilities: {},
-        clientInfo: { name: "relay-fixture", version: "1.0" },
-      });
-      c2s.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-    },
-    tool: (name: string, args: Record<string, unknown>) =>
-      call("tools/call", { name, arguments: args }),
-  };
+  peer = codexPeer(daemon.workspace);
+  return { ...daemon, peer, harnessEvents };
 }
 
 const answerBody = (questionId: string, label: string) => ({
@@ -437,7 +262,7 @@ describe("native Codex approvals through the existing interaction surfaces", () 
 
   it("lets an MCP controller authorize one denied-action retry, keeping both turns' answers", async () => {
     const f = await fixture();
-    const mcp = mcpWire();
+    const mcp = mcpWire(cleanups);
     await mcp.start();
     const first = f.peer.nextTurn();
     const run = await f.started();
