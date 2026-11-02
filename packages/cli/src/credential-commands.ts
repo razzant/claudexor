@@ -30,6 +30,7 @@ import {
 } from "./config-dir-login-harnesses.js";
 import { type ParsedArgs, flagStr } from "./args.js";
 import { print, printJson, printUsageError, quotaRefreshLabel } from "./cli-io.js";
+import { subcommandFlagScopeError } from "./command-scope.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import { daemonGet } from "./ops-commands.js";
@@ -139,6 +140,8 @@ export async function profilesCommandWithDeps(
   const get = deps.daemonGet ?? daemonGet;
   const spawnVendor = deps.spawnSync ?? spawnSync;
   const sub = args._[1] ?? "list";
+  const scopeError = subcommandFlagScopeError("profiles", sub, Object.keys(args.flags));
+  if (scopeError) return printUsageError(json, scopeError);
   if (sub === "login") {
     // INV-135 profile login: the SAME vendor login command the setup jobs run,
     // spawned interactively in THIS terminal with the profile's scoped state.
@@ -426,11 +429,19 @@ export async function profilesCommandWithDeps(
     // the auto-registered row leaves the registry. Run BEFORE installing an
     // engine whose canonicalizers refuse the migrated row's native locator.
     const harness = args._[2];
-    const { addr } = await ensureDaemon();
+    // Only an ABSENT operand means every migrated harness. An explicitly blank
+    // one, such as an unset "$HARNESS", must not widen to that.
+    if (harness !== undefined && harness.trim() === "") {
+      return printUsageError(
+        json,
+        "usage: claudexor profiles rollback-migration [harness] (the harness cannot be blank; omit it to roll back every migrated harness)",
+      );
+    }
+    const { addr } = await (deps.ensureDaemon ?? ensureDaemon)();
     const response = await controlApiFetch(addr, "/accounts-migration/rollback", {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
-      body: JSON.stringify(harness ? { harnessId: harness } : {}),
+      body: JSON.stringify(harness === undefined ? {} : { harnessId: harness }),
     });
     if (!response.ok) {
       return printUsageError(

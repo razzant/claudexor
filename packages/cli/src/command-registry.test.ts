@@ -266,6 +266,41 @@ describe("command registry — the one owner of the CLI surface", () => {
     expect(commandPositionalError("project", ["list", "unexpected"])).toContain("usage:");
   });
 
+  it("admits and advertises the profiles migration rollback, still refusing invalid shapes (#570)", () => {
+    expect(commandPositionalError("profiles", ["rollback-migration"])).toBeNull();
+    expect(commandPositionalError("profiles", ["rollback-migration", "codex"])).toBeNull();
+    // One optional harness only; the refusal names the reachable spelling.
+    expect(commandPositionalError("profiles", ["rollback-migration", "codex", "claude"])).toContain(
+      "rollback-migration [harness]",
+    );
+    expect(commandPositionalError("profiles", ["migration-rollback"])).toContain(
+      "invalid positional arguments",
+    );
+    // `--harness` is not a profiles flag, so it cannot silently widen a
+    // one-harness rollback to every migrated harness.
+    expect(commandFlagScopeError("profiles", ["harness"])).toContain("--harness");
+    expect(findCommand("accounts-migration-rollback")).toBeUndefined();
+    const profiles = findCommand("profiles") as CliCommandSpec;
+    expect(renderCommandHelp(profiles)).toContain("rollback-migration [harness]");
+    expect(renderHelp("0.0.0-test")).toContain("rollback-migration [harness]");
+  });
+
+  it("scopes --display-name to `profiles add` across every verb profiles dispatches (#570)", () => {
+    const profiles = findCommand("profiles") as CliCommandSpec;
+    // The scope check passes an undeclared verb, so a missing verb (or alias)
+    // would silently keep ignoring the flag.
+    const verbs = profiles.positionalPatterns.flatMap((pattern) => pattern.prefix ?? []);
+    expect(Object.keys(profiles.subcommandFlags ?? {}).sort()).toEqual([...verbs].sort());
+    for (const verb of verbs) {
+      const error = subcommandFlagScopeError("profiles", verb, ["display-name"]);
+      if (verb === "add") expect(error).toBeNull();
+      else expect(error, verb).toContain("--display-name");
+      expect(subcommandFlagScopeError("profiles", verb, ["json"]), verb).toBeNull();
+    }
+    // The preflight union keeps it, so the add form reaches its handler.
+    expect(commandFlagScopeError("profiles", ["display-name"])).toBeNull();
+  });
+
   it("host fallback examples and recovery verbs project the registry, not hand lists", () => {
     expect(hostFallbackExamples()).toEqual([
       'claudexor ask "..."',
