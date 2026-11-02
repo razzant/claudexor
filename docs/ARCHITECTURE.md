@@ -2261,6 +2261,13 @@ old client.
 `claudexor doctor`, `models`, and `auth status` are also thin projections of the
 daemon's typed `/v2/harnesses` and `/v2/harnesses/:id/models` readiness services;
 requested harness filters reach the producer instead of probing unrelated adapters.
+Default-shape `/v2/harnesses` reads and `GET /v2/agent-capabilities` share one
+status-projection cache policy (`cli/src/status-projection-cache.ts`): a computed
+sweep serves for 15 seconds, concurrent readers join one in-flight computation, a
+changed global config file recomputes at once, and the daemon's credential
+mutations and setup-login transitions invalidate it. A `fresh` harness read
+bypasses the window; the catalog has no fresh form and dates itself with
+`generatedAt`, and `claudexor capabilities` composes it in-process.
 `claudexor trust` and `secrets` likewise project `/v2/trust` and `/v2/secrets`;
 only the daemon owns user-level trust files and the selected managed-secret backend.
 
