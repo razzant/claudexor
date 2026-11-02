@@ -111,6 +111,12 @@ npm install -g claudexor
 claudexor doctor
 ```
 
+`pr` delivery requires the pinned publication scanner, which the npm packages do
+not bundle. Prepare it once with `claudexor scanner prepare`, or offline from the
+official archive with `claudexor scanner prepare --from-archive <file>`; a running
+daemon picks it up at its next `pr`. See
+[Publication scanner](docs/ARCHITECTURE.md#publication-scanner).
+
 You can also build from source — see Quickstart below.
 
 On a Mac, the app is the easiest way in — it ships as a signed and
@@ -999,8 +1005,10 @@ named file store and sends its bound token as a `WorkosCursorSessionToken` cooki
 to cursor.com; it does not refresh OAuth or write credentials. Dashboard balances
 and spending are display-only, not execution-quota or admission evidence.
 Public lookups: release name checks (registries), update checks (GitHub release
-manifest), download statistics (GitHub/npm). These are user-invoked except the
-app's update check on foreground; there is no update timer or auto-update ping.
+manifest), download statistics (GitHub/npm), the pinned scanner archive (GitHub
+release, `claudexor scanner prepare` without `--from-archive`). These are
+user-invoked except the app's update check on foreground; there is no update timer
+or auto-update ping.
 Files named `telemetry/` are **local only**: cost/latency averages and run evidence,
 not transmitted analytics.
 

@@ -2084,7 +2084,8 @@ open-source scanner Betterleaks 1.9.0 (MIT). The pin
 (`packages/delivery/src/publication-scanner-pin.ts`, which also locates the
 executable) lists, per platform
 (darwin, linux, win32 × arm64, x64), the official release archive digest and
-the extracted binary digest. Runtime never downloads. The executable is, in
+the extracted binary digest. Delivery never downloads; only the explicit
+preparation step below does. The executable is, in
 order: the file named by `CLAUDEXOR_BETTERLEAKS_PATH` (the only candidate when
 set), the copy bundled beside the engine bundle under
 `native/betterleaks/<platform>/`, or the provisioned copy at
@@ -2097,9 +2098,14 @@ the engine code, so it catches a wrong or altered staging, not someone who can
 already rewrite the engine bundle. A present bundled copy that does not match
 is refused, never skipped in favour of another candidate.
 
-Distribution. `scripts/lib/betterleaks-stage.mjs` is the one staging step: it
-checks the official archive and the binary against the pin and the MIT license,
-then writes `betterleaks`, `LICENSE` and `provenance.json`. The engine-resource
+Distribution. `packages/delivery/src/publication-scanner-provision.ts` is the
+one owner of proving an official archive: it copies the archive into private
+staging while hashing those bytes, extracts exactly the binary and `LICENSE` from
+that copy and checks the binary pin and the MIT license. Its module runs from
+source with Node's type stripping as well as from the shipped package, so CI, the
+release build and an installed CLI execute the same proof. `scripts/lib/betterleaks-stage.mjs`
+is the one staging step on top of it: it writes `betterleaks`, `LICENSE` and
+`provenance.json` into a distribution's `native/` tree. The engine-resource
 build stages darwin-arm64 and darwin-x64 for the universal macOS app and its
 update closure; release builds sign them in place with the other native helpers
 and then record the signed digests. The closure builder accepts only those two
@@ -2108,14 +2114,54 @@ both. Each per-target SSH runtime archive carries only its own target's build
 under `lib/native/betterleaks/<target>/`, which `verify-remote-runtime-archive.mjs`
 checks. The release and remote-runtime SBOMs list every bundled scanner with
 its upstream source and digest. The npm packages have no per-platform payload
-and carry no scanner: an npm-installed CLI uses `CLAUDEXOR_BETTERLEAKS_PATH`
-or the provisioned copy. `scripts/provision-betterleaks.mjs` is the explicit
-setup/CI step for that copy (it downloads or takes `--from-archive`, checks
-both digests and installs the binary with its license); from an npm install,
-the binary extracted from the official v1.9.0 archive for the platform works
-the same way through `CLAUDEXOR_BETTERLEAKS_PATH`. With no matching scanner
-`pr` refuses `publication_scan_unavailable`; local apply, branch and commit
-are unaffected.
+and carry no scanner: an npm-installed CLI prepares the provisioned copy once with
+`claudexor scanner prepare`, or uses `CLAUDEXOR_BETTERLEAKS_PATH`. With no matching
+scanner `pr` refuses `publication_scan_unavailable`, naming that command; local
+apply, branch and commit are unaffected.
+
+`claudexor scanner prepare [--from-archive <file>]` is that step: it downloads
+the pin's official asset, or, with `--from-archive` and no network, takes an
+official archive the user already has. It is
+local: it writes only `<config root>/tools/betterleaks/1.9.0/<platform>/`, never
+installed package files, and contacts no daemon. An engine with the same config
+root and no explicit path finds the copy through its own resolver at its next
+`pr`, with no restart or environment change; the receipt's `resolution` states
+what this environment's lookup order would run, an explicit path or bundled copy
+included. It prepares nothing on another machine: an SSH runtime bundles its own
+build. `scripts/provision-betterleaks.mjs` runs the same code from a source
+checkout, for CI before its dependencies are installed.
+
+The proof runs in a unique sibling staging directory (`.<platform>.staging-*`)
+before anything becomes visible: both digests, a regular executable file, the
+license and, for this host's own platform, the offline `version` probe. A local
+archive is copied there and never extracted where it lies, so a browser's
+quarantine mark on the user's file does not reach the binary: the pin, not the
+download route, vouches for those bytes. The complete payload then appears in one
+directory rename. A verified complete payload already there is reused without
+rewriting it (no download and no archive read, `already_prepared`). Anything else there, a binary without its
+license included, is left untouched and refused `scanner_install_conflict`, whose
+remedy is to remove it and run the command again. A preparation that loses the
+rename to a concurrent one verifies the winner and reuses it, or reports the
+conflict. The source script's `--dest <file>` keeps its explicit contract instead:
+after the same proof it replaces the binary at that path and the `LICENSE` beside
+it, whatever is there, and a refusal or an interruption before the replacement
+leaves the old files. Each name is renamed into place from a unique sibling
+staging directory, the license first, so the pair is not one atomic step and a
+concurrent writer of the same path is not fenced.
+
+SIGINT, SIGTERM and SIGHUP cancel the download or file copy and end the owned
+`tar` or probe child (SIGTERM, then SIGKILL after five seconds), whose exit is
+awaited before staging is removed. The last cancellation check and the rename are
+one synchronous block: a cancellation accepted before it never activates
+(`scanner_prepare_cancelled`), and one arriving after it finds the activation done
+and reported as prepared. Other typed failures are `scanner_download_failed`,
+`scanner_archive_unreadable`, `scanner_archive_mismatch`,
+`scanner_extract_failed`, `scanner_payload_invalid`, `scanner_install_failed` and
+`scanner_platform_unsupported`. Limits: a SIGKILL or a crash can leave a staging
+directory, which the resolver never reads and nothing collects, so delete it by
+hand; nothing is synced to disk, so a copy torn by a power loss fails its digest at
+the next resolve or preparation instead of being trusted. A reused payload gets
+the same checks except the archive digest, since no archive is at hand.
 
 For `pr`, `deliverUnlocked` materializes the exact candidate tree, creates the
 commit object it will publish (unreferenced until adopted) and calls
