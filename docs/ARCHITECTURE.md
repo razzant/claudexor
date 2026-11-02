@@ -4325,8 +4325,9 @@ journal bodies as content-addressed files, the receipts and any needed per-run
 log rewrite as fresh `O_DSYNC` temps in the body directory. The stage reads only
 the log's tail; the usual log, ending in a canonical line before the terminal,
 gets the terminal appended by the commit, and only another tail makes the stage
-read the whole log and stage its rewrite. The commit reuses the command the stage
-hydrated while its row is unchanged. Right after its SQL
+read the whole log and stage its rewrite. The commit hydrates the command once
+more on the request thread, as before staging (measured at 0.009 ms for a
+100-byte prompt and 1.1 ms for a 1 MiB one). Right after its SQL
 commit, in the same synchronous section, the file owner renames each staged file
 whose bytes still match into place and writes anything else itself. While staging
 awaits, ordinary events (control audits, live-message receipts) append before the

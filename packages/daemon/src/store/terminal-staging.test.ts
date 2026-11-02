@@ -22,7 +22,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { BlobFiles } from "./blob-files.js";
 import { SqlCommandPruner } from "./command-prune.js";
-import { commandRow } from "./command-rows.js";
 import { SqlCommandStore } from "./commands.js";
 import { MaintenanceController } from "./maintenance.js";
 import { Obligations } from "./obligations.js";
@@ -263,25 +262,14 @@ describe("terminal receipts and bodies are written off the request thread before
     expect(f.temps()).toEqual([]);
   });
 
-  it("commits with the command its stage hydrated, unless the row changed meanwhile", async () => {
+  it("commits the command as it is at the commit, also when its row changed after the stage", async () => {
     const f = await fixture();
-    const params = commandRow(f.store, "job")!.params_sha;
-    const reads = vi.spyOn(f.blobs, "read");
-    const paramReads = () => reads.mock.calls.filter(([sha]) => sha === params).length;
     await f.commands.stageTerminal("job", terminal(), telemetry());
-    expect(paramReads()).toBe(1);
+    f.commands.update("job", { startedAt: "2026-11-02T00:00:00.500Z" });
     expect(f.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
       state: "materialized",
     });
-    expect(paramReads()).toBe(1);
-
-    const g = await fixture();
-    await g.commands.stageTerminal("job", terminal(), telemetry());
-    g.commands.update("job", { startedAt: "2026-11-02T00:00:00.500Z" });
-    expect(g.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
-      state: "materialized",
-    });
-    expect(g.commands.get("job")).toMatchObject({
+    expect(f.commands.get("job")).toMatchObject({
       state: "failed",
       startedAt: "2026-11-02T00:00:00.500Z",
     });

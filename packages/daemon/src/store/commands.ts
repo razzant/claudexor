@@ -47,26 +47,10 @@ function terminalRecord(current: JobRecord, event: RunEvent): JobRecord {
   };
 }
 
-/** Every column equal, bodies by content: the row a terminal stage read is still the row. */
-function sameRow(a: CommandRow, b: CommandRow): boolean {
-  const keys = Object.keys(a) as Array<keyof CommandRow>;
-  if (keys.length !== Object.keys(b).length) return false;
-  return keys.every((key) => {
-    const x: unknown = a[key];
-    const y: unknown = b[key];
-    return x instanceof Uint8Array && y instanceof Uint8Array
-      ? Buffer.compare(x, y) === 0
-      : x === y;
-  });
-}
-
 /** Partition-scoped SQL command writes. Collection reads live in the separate
  * addressed query owner, not an enumerable in-memory command cache. */
 export class SqlCommandStore implements CommandStorePort {
   private readonly events: SqlEventLedger;
-  /** The command a terminal stage hydrated, by job id, for its commit to reuse
-   * while the row is unchanged: still one hydration per terminal. */
-  private readonly stagedRecords = new Map<string, { row: CommandRow; record: JobRecord }>();
   constructor(
     private readonly store: EngineStore,
     private readonly blobs: BlobFiles,
@@ -263,7 +247,6 @@ export class SqlCommandStore implements CommandStorePort {
       const row = commandRow(this.store, id, this.generation.pid);
       if (!row) return;
       current = hydrateCommand(row, this.blobs);
-      this.stagedRecords.set(id, { row, record: current });
       const next = terminalRecord(current, event);
       const { params: _params, ...record } = next;
       bodies = [
@@ -288,13 +271,10 @@ export class SqlCommandStore implements CommandStorePort {
     raw: RunEvent,
     telemetry: RunTelemetry | null,
   ): { state: "materialized" } | { state: "pending"; error: unknown } {
-    const staged = this.stagedRecords.get(id);
-    this.stagedRecords.delete(id);
     const event = RunEvent.parse(raw);
     const row = commandRow(this.store, id, this.generation.pid);
     if (!row) throw new Error(`no such job: ${id}`);
-    const current =
-      staged && sameRow(staged.row, row) ? staged.record : hydrateCommand(row, this.blobs);
+    const current = hydrateCommand(row, this.blobs);
     const next = terminalRecord(current, event);
     const prepared = this.prepare(next, row);
     const { params: _params, ...record } = next;
