@@ -4530,7 +4530,13 @@ first acquires that authority and binds/proves the real socket and
 Control API with product admission closed. Health, handshake, status, shutdown
 and recovery remain reachable in `recovery_only`; product operations receive
 `daemon_recovery_only`. Only then may the storage owner open or import SQL and
-complete recovery/admission duties. The current global generation must be ready;
+complete recovery/admission duties. A Stop that arrives while startup is still
+binding or proving those transports ends startup as an ordinary clean stop.
+Only that Stop's own cancellation counts: the typed `daemon_stopping` refusal
+of a listener it stopped, or the startup abort it raises before closing the
+transports a proof is dialing. A proof that already decided, such as another
+runtime's identity or serving mode, and every other startup failure still exit
+nonzero. The current global generation must be ready;
 a logically damaged project generation stays isolated while healthy projects
 serve. Physical corruption closes product admission for the whole store.
 Recovery access overrides `CLAUDEXOR_NO_CONTROL_API=1` when needed. A successful

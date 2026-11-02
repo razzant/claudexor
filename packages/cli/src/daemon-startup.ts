@@ -15,17 +15,36 @@ export class DaemonStartupAdmission {
   }
 }
 
-/** Stage 3 bind: start the REAL socket + control transports (product
- * admission still closed) and publish their addresses. Returns the control
- * address, or null when the control API is disabled or shutdown began. */
-export async function bindRecoveryTransport(input: {
+interface RecoveryTransportBind {
   server: { start(): Promise<void> };
   control: { start(): Promise<{ host: string; port: number }> } | null;
   requested: () => boolean;
   daemonDir: string;
   logPath: string;
   socketPath: string;
-}): Promise<{ host: string; port: number } | null> {
+}
+
+/** Stage 3 bind: start the REAL socket + control transports (product
+ * admission still closed) and publish their addresses. Returns the control
+ * address, or null when the control API is disabled or shutdown began. A Stop
+ * during a listen surfaces as that server's own typed `daemon_stopping`
+ * refusal, raised after its stop joined the start: shutdown began. Any other
+ * start failure stays a startup failure, whether or not a Stop is under way. */
+export async function bindRecoveryTransport(
+  input: RecoveryTransportBind,
+): Promise<{ host: string; port: number } | null> {
+  try {
+    return await bindTransport(input);
+  } catch (error) {
+    if (input.requested() && (error as { code?: unknown } | null)?.code === "daemon_stopping")
+      return null;
+    throw error;
+  }
+}
+
+async function bindTransport(
+  input: RecoveryTransportBind,
+): Promise<{ host: string; port: number } | null> {
   const stamp = () => `[${new Date().toISOString()}]`;
   if (!input.requested()) await input.server.start();
   if (!input.requested()) {
@@ -58,19 +77,43 @@ export async function bindRecoveryTransport(input: {
   return controlAddr;
 }
 
-/** Stage 3 proof: prove self-health and exact identity through the REAL
- * transport while product admission is still closed. The proof dials the
- * socket itself: the daemon's in-process client cannot stand in for it. */
-export async function proveRecoveryTransport(input: {
+interface RecoveryTransportProof {
   socketPath: string;
   identity: { version: string; sha: string };
   token: string;
   control: { host: string; port: number } | null;
-}): Promise<void> {
-  const health = (await new DaemonClient(input.socketPath, input.token).health()) as {
-    ok?: unknown;
-    servingMode?: unknown;
-  } | null;
+  /** Startup cancellation: a Stop aborts it before closing these transports. */
+  signal?: AbortSignal;
+}
+
+/** Stage 3 proof: prove self-health and exact identity through the REAL
+ * transport while product admission is still closed. The proof dials the
+ * socket itself: the daemon's in-process client cannot stand in for it.
+ * "cancelled" means a Stop aborted startup before the proof decided; that Stop
+ * fences and closes these very transports, so nothing answered after the
+ * abort is evidence about them. A decided failure and any other error reject. */
+export async function proveRecoveryTransport(
+  input: RecoveryTransportProof,
+): Promise<"proved" | "cancelled"> {
+  try {
+    await proveTransport(input);
+    return "proved";
+  } catch (error) {
+    if (input.signal?.aborted && error === input.signal.reason) return "cancelled";
+    throw error;
+  }
+}
+
+async function proveTransport(input: RecoveryTransportProof): Promise<void> {
+  type HealthReply = { ok?: unknown; servingMode?: unknown } | null;
+  let health: HealthReply;
+  try {
+    health = (await new DaemonClient(input.socketPath, input.token).health()) as HealthReply;
+  } finally {
+    // The socket RPC has no abort of its own: once startup was aborted, its
+    // answer or failure is reported as that abort (fetch below does the same).
+    input.signal?.throwIfAborted();
+  }
   if (health?.ok !== true || health.servingMode !== "recovery_only") {
     throw new Error(
       "daemon transport proof failed: socket health did not report a recovery-only serving daemon",
@@ -84,6 +127,7 @@ export async function proveRecoveryTransport(input: {
       "content-type": "application/json",
     },
     body: JSON.stringify({ protocolMajor: CONTROL_PROTOCOL_MAJOR, client: "claudexord-startup" }),
+    signal: input.signal,
   });
   if (!response.ok) {
     throw new Error(`daemon transport proof failed: control handshake HTTP ${response.status}`);
