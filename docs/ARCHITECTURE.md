@@ -4379,13 +4379,17 @@ Control API, CLI, MCP, ACP, and macOS consume those typed facts rather than
 rewriting every cancellation as user intent; a legacy cancellation with no
 reason stays unknown/cancelled instead of receiving a fabricated cause.
 
-Cancellation wins only until the synchronous terminal commit starts. An abort
-observed before the terminal barrier replaces the prepared outcome with
-cancellation facts while retaining the independent checks/review/no-change/
-work-state evidence already established for the run. Once a terminal has
-committed to the engine store, Cancel is a NO-OP: the committed terminal
-wins, a later abort cannot rewrite the durable result, EventLog refuses every
-later terminal emit, and the daemon keeps reporting the committed outcome.
+Cancellation wins only until the terminal's verdict is fixed: when the
+strategy's terminal is held, or, for a Delegate parent still draining its
+children, when the terminal is prepared; either way before its bytes are staged
+and it commits. An abort observed before then replaces the prepared outcome
+with cancellation facts while retaining the independent checks/review/no-change/
+work-state evidence already established for the run. A Stop that arrives after
+it, during the settlement barrier or while the prepared bytes are staged, keeps
+that verdict. Once a terminal has committed to the engine store, Cancel is a
+NO-OP: the committed terminal wins, a later abort cannot rewrite the durable
+result, EventLog refuses every later terminal emit, and the daemon keeps
+reporting the committed outcome.
 The `aborted -> cancelled` mapping survives only as the daemon's fail-closed
 fallback classification for a malformed runner result with no recognized
 lifecycle.

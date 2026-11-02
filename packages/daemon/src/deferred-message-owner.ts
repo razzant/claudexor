@@ -25,14 +25,14 @@ export function assertDeferredOperator(beltContext: boolean, targetParams?: unkn
     );
 }
 
-/** Command-adjacent storage boundary; preparation and queue publication stay
- * with the daemon's existing admission/settlement owner. */
 /** The successor identity a promotion's staged acceptance was written under. */
 export interface PromotionStamp {
   jobId: string;
   createdAt: string;
 }
 
+/** Command-adjacent storage boundary; preparation and queue publication stay
+ * with the daemon's existing admission/settlement owner. */
 export interface DeferredMessageOwner {
   get(id: string): DeferredMessageDetail | null;
   reservation(predecessor: string): DeferredMessageProjection | null;
