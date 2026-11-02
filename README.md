@@ -693,6 +693,10 @@ claudexor daemon logs
 claudexor daemon stop
 ```
 
+If start refuses with `another claudexor daemon owns <path>` while nothing answers,
+read [Legacy PID-only writer records](docs/ARCHITECTURE.md#legacy-pid-only-writer-records)
+before touching that path.
+
 ## Artifact Layout
 
 Every project run creates files under the external per-project namespace

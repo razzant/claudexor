@@ -4520,6 +4520,21 @@ by pid and a digest of its token, then preserves that tombstone so a delayed
 contender cannot quarantine a live successor. Acquisition is the only
 quarantine mutator and tombstones have no automatic GC.
 
+Windows daemon leases opt into the kernel birth reader and record FILETIME at
+acquisition, so a reused PID is rejected by exact identity comparison rather
+than treated as a live legacy owner. Core defaults are unchanged. A birth read
+that fails at acquisition still writes a PID-only record with the legacy limits
+below. A recorded birth that cannot be read later stays
+`identity_unavailable` while the pid is present or inaccessible, so it blocks
+instead of proving anything. Existing PID-only records cannot acquire a
+historical identity retrospectively: file timestamps are not process identity
+(a clock correction can reverse their ordering). Their recovery requires the
+independently established operator evidence described under
+[Legacy PID-only writer records](#legacy-pid-only-writer-records); neither age
+nor timestamp ordering authorizes automatic quarantine. Legacy inspection does
+not launch the Windows birth helper. Recorded identities use its existing
+30-second bound; the canary probe allows two reads plus overhead.
+
 Above the per-socket lease sits a PERSISTENT root authority for the shared
 data root. Before any store or import work the daemon validates/installs a permanent
 barrier at the canonical default writer address: the lease directory carries
@@ -4961,6 +4976,61 @@ and on POSIX the daemon best-effort chmods the socket 0600 — a chmod failure
 on exotic filesystems is tolerated at startup (the win32 named pipe is not a
 filesystem entry, so no chmod applies there; the bearer token remains the auth
 gate on every platform).
+
+#### Legacy PID-only writer records
+
+A writer record with no `identity` cannot show which process wrote it. While its
+pid is occupied or inaccessible, every start refuses with
+`another claudexor daemon owns <path>`, and `<path>` names that exact generation.
+Once the pid no longer exists, the next start proves the owner missing and moves
+the generation to its tombstone, with nothing to do by hand. There is no recovery
+command and no automatic release, because no safe signal distinguishes that writer
+from whatever now holds its pid.
+
+Hold by default. Move a record aside only when all three of these hold:
+
+1. `<path>` ends in `active.writer` and its parent directory holds
+   `root-authority-v2.json`.
+2. You have independent positive proof that the writer cannot resume: the pid now
+   belongs to a process whose full command line and parent identify it as
+   something other than a Claudexor daemon. A pid names one live process at a time,
+   so that process being something else means the writer is gone. On Windows, read
+   them with
+   `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Format-List CommandLine,ParentProcessId`;
+   a command line you cannot read proves nothing.
+3. Every launcher that could start a daemon on this root is stopped: the app, a
+   script, a scheduled task. For an externally owned root this decision and the
+   rename belong to its lifecycle owner.
+
+These are not that proof: a failing `claudexor daemon stop` or `status`, or an
+unreachable socket (the lease is taken before the socket binds, so a starting
+daemon shows the same); the image name (one Node cannot be told from another); the
+age of the record, or a process start time later than it (clocks can move
+backward).
+
+With all three established, rename that one directory in place to a new name, and
+keep it:
+
+```powershell
+Rename-Item -LiteralPath "<path>" -NewName "active.writer.operator-backup-<UTC time>"
+```
+
+The rename is reversible: while no daemon runs and `active.writer` is absent, rename
+the backup back and the refusal returns. It keeps the complete owner bytes, and
+leaves the root-authority marker, its floor, `engine.sqlite`, journals and run data
+untouched. Then start the daemon and check `claudexor daemon status`. A new record
+without `identity` means the birth read failed at acquisition, so these limits
+still apply.
+
+Three things are never part of this recovery:
+
+- Deleting `owner.json` alone: the directory that remains refuses every start as
+  `owner_missing`.
+- Renaming, moving or deleting the parent `.writer` directory or
+  `root-authority-v2.json`: that destroys the floor which keeps older runtimes off
+  this root.
+- Ending the recorded pid: it may be an unrelated program, and a record proves no
+  authority to signal it.
 
 ### SQLite engine store
 

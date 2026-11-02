@@ -100,7 +100,11 @@ describe("canary cleanup custody", () => {
     const [node, args, options] = vi.mocked(spawnSync).mock.calls[0]!;
     expect(node).toBe(process.execPath);
     expect(args?.slice(0, 2)).toEqual(["--input-type=module", "--eval"]);
-    expect(options).toMatchObject({ env: sb.env, cwd: sb.repo, timeout: 10_000 });
+    expect(options).toMatchObject({
+      env: sb.env,
+      cwd: sb.repo,
+      timeout: process.platform === "win32" ? 65_000 : 10_000,
+    });
     expect(rmSync).toHaveBeenCalledExactlyOnceWith(BASE, {
       recursive: true,
       force: true,

@@ -62,7 +62,7 @@ export function inspectSandboxLease(env: NodeJS.ProcessEnv, cwd: string): LeaseO
     env,
     cwd,
     encoding: "utf8",
-    timeout: 10_000,
+    timeout: process.platform === "win32" ? 65_000 : 10_000,
   });
   if (result.error || result.signal || result.status !== 0) {
     throw new Error(
