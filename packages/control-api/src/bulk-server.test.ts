@@ -60,7 +60,13 @@ function event(seq: number, type: string, payload: Record<string, unknown> = {})
 }
 
 async function fixture(
-  options: { pending?: () => ControlPendingInteraction[]; health?: () => void } = {},
+  options: {
+    pending?: () => ControlPendingInteraction[];
+    health?: () => void;
+    pollMs?: number;
+    /** The SQL composition's body-free observation and its post-commit notices. */
+    observe?: boolean;
+  } = {},
 ) {
   const runDir = mkdtempSync(join(tmpdir(), "claudexor-bulk-server-"));
   roots.push(runDir);
@@ -112,7 +118,24 @@ async function fixture(
     },
   };
   const services: DaemonControlApiOptions["services"] = { pendingInteractions: options.pending };
-  const server = new DaemonControlApiServer({ token, daemon, services });
+  const server = new DaemonControlApiServer({
+    token,
+    daemon,
+    services,
+    ...(options.pollMs ? { pollMs: options.pollMs } : {}),
+    ...(options.observe
+      ? {
+          runObservations: async (ids: readonly string[]) =>
+            ids.map(() => ({
+              status: record.state as "running",
+              pending: false,
+              token: "observed",
+              problem: null,
+            })),
+          runObservationChanges: () => () => {},
+        }
+      : {}),
+  });
   servers.push(server);
   const { host, port } = await server.start();
   const base = `http://${host}:${port}`;
@@ -124,7 +147,7 @@ async function fixture(
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-  return { server, record, base, host, port, get, post };
+  return { server, record, daemon, base, host, port, get, post };
 }
 
 const project = (job: BulkJob) => projectBulkJob(job, async () => null);
@@ -198,6 +221,47 @@ describe("bulk projection leaves the HTTP control plane available", () => {
       expect(submitted.mock.calls.map(([job]) => job.kind)).toEqual(["detail"]);
       const job = submitted.mock.calls[0]![0];
       expect(job.kind === "detail" && job.input.cursor).toBe(1);
+    } finally {
+      log.dispose();
+    }
+  });
+
+  it("tails a quiet live run with one replay job per new event and no command hydration", async () => {
+    const submitted = jobs(project);
+    const api = await fixture({ pollMs: 5, observe: true });
+    const status = vi.spyOn(api.daemon, "status");
+    const path = join(api.record.runDir!, "events.jsonl");
+    writeFileSync(path, "");
+    // Import the package instance shared with the server so this is its live owner.
+    const log = new EventLog(path, "run-one", "task-one");
+    const replays = () =>
+      submitted.mock.calls.filter(([job]) => job.kind === "event-replay").length;
+    const polls = () => new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      log.emit("run.created");
+      const response = await api.get("/v2/runs/run-one/events");
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      const until = async (needle: string) => {
+        while (!text.includes(needle)) {
+          const { value, done } = await reader.read();
+          if (done) throw new Error(`stream ended before ${JSON.stringify(needle)}`);
+          text += decoder.decode(value, { stream: true });
+        }
+      };
+      await until("id: 1\n");
+      await polls();
+      expect(replays()).toBe(1);
+      log.emit("harness.event", { text: "progress" });
+      await until("id: 2\n");
+      await polls();
+      expect(replays()).toBe(2);
+      log.emit("run.completed");
+      await until("event: end\n");
+      expect(status).not.toHaveBeenCalled();
+      await reader.cancel();
     } finally {
       log.dispose();
     }

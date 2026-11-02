@@ -1,22 +1,99 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
+import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { RunTelemetry, validateRunFactsInvariants, type RunFacts } from "@claudexor/schema";
+import {
+  RunTelemetry,
+  validateRunFactsInvariants,
+  type RunEvent,
+  type RunFacts,
+} from "@claudexor/schema";
 import { appendLine, hashJson } from "@claudexor/util";
 import { parse as parseYaml } from "yaml";
+import type { JobRecord } from "../job-record.js";
 import {
   lstatOrNull,
   normalizedTerminalEvents,
   recoveredTerminalFacts,
+  tailExpectsAppend,
 } from "../terminal-authority.js";
+import { sha256Hex } from "./blob-files.js";
 import { commandSummary } from "./command-rows.js";
-import { writeExternalFile } from "./external-files.js";
+import {
+  publishStagedFile,
+  writeExternalFile,
+  writeStagedTemp,
+  type ExternalWritePurpose,
+} from "./external-files.js";
 import type { Obligations, ObligationEffects, ObligationRow } from "./obligations.js";
 import { storedTerminal } from "./run-events.js";
 import type { EngineStore } from "./store.js";
 
+interface TerminalFile {
+  dir: string;
+  name: string;
+  bytes: Buffer;
+  purpose: ExternalWritePurpose;
+}
+
+const receipt = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+
+/** How much of a per-run log's end the stage reads to judge a plain append. */
+const LOG_TAIL_BYTES = 64 * 1024;
+
+/** The last bytes of a file, on the libuv pool; a missing file reads as empty. */
+async function readTail(path: string): Promise<{ tail: Buffer; whole: boolean }> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return { tail: Buffer.alloc(0), whole: true };
+    throw error;
+  }
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, LOG_TAIL_BYTES);
+    const tail = Buffer.alloc(length);
+    let read = 0;
+    while (read < length) {
+      const { bytesRead } = await handle.read(tail, read, length - read, size - length + read);
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    return { tail: tail.subarray(0, read), whole: read === size };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The telemetry receipt for a terminal's RunFacts; a mismatch is refused. */
+function telemetryReceipt(telemetry: unknown, facts: RunFacts): Buffer | null {
+  if (telemetry === null || telemetry === undefined) return null;
+  const prepared = RunTelemetry.parse(telemetry);
+  if (hashJson(prepared.run_facts) !== hashJson(facts))
+    throw new Error("durable terminal telemetry does not match SQL authority");
+  return receipt(prepared);
+}
+
+/** What a terminal needs of its per-run log: nothing, its line appended, or a rewrite. */
+function eventsRepair(
+  bytes: Buffer,
+  event: RunEvent,
+  terminalSeq: number,
+): null | "append" | Buffer {
+  const normalized = Buffer.from(normalizedTerminalEvents(bytes, event, terminalSeq));
+  if (bytes.equals(normalized)) return null;
+  const added = Buffer.from(`${JSON.stringify(event)}\n`);
+  return normalized.equals(Buffer.concat([bytes, added])) ? "append" : normalized;
+}
+
 /** One handler for all partitions. SQL already owns the terminal; file repair
  * never inserts another terminal or changes its outcome. */
 export class SqlTerminalFiles {
+  /** Receipts written off the request thread for a run's coming terminal,
+   * by final path; the synchronous write publishes those whose bytes match. */
+  private readonly staged = new Map<string, Map<string, { temp: string; sha: string }>>();
+
   constructor(
     private readonly store: EngineStore,
     private readonly obligations: Obligations,
@@ -53,7 +130,78 @@ export class SqlTerminalFiles {
     }
   }
 
+  /**
+   * Off the request thread, before the synchronous terminal hook: write the
+   * receipts (and a needed per-run log rewrite) its file step will publish, as
+   * `O_DSYNC` temps with fresh names in the store's body directory (created on
+   * first use), which the existing orphan sweep reclaims if the process dies
+   * first. The hook renames a temp
+   * into place, after its SQL commit and in the same synchronous section, only
+   * when its bytes equal what it would write; anything else it writes itself.
+   */
+  async stage(record: JobRecord, event: RunEvent, telemetry: RunTelemetry | null): Promise<void> {
+    this.discard(event.run_id);
+    const files: TerminalFile[] = [];
+    let staging: string;
+    try {
+      staging = this.store.bodyDirectory();
+      const { facts, terminalSeq } = recoveredTerminalFacts(record, event);
+      const finalDir = join(record.runDir!, "final");
+      files.push({
+        dir: finalDir,
+        name: "run_facts.yaml",
+        bytes: receipt(facts),
+        purpose: "terminal_receipt",
+      });
+      const telemetryBytes = telemetryReceipt(telemetry, facts);
+      if (telemetryBytes)
+        files.push({
+          dir: finalDir,
+          name: "telemetry.yaml",
+          bytes: telemetryBytes,
+          purpose: "terminal_receipt",
+        });
+      // The usual log needs only the terminal appended, which the commit does;
+      // only a log whose tail says otherwise is read whole and a rewrite staged.
+      const eventsPath = join(record.runDir!, "events.jsonl");
+      const end = await readTail(eventsPath).catch(() => null);
+      if (!end || !tailExpectsAppend(end.tail, end.whole, event, terminalSeq)) {
+        const log = await readFile(eventsPath).catch(() => Buffer.alloc(0));
+        const repair = eventsRepair(log, event, terminalSeq);
+        if (repair instanceof Buffer)
+          files.push({
+            dir: record.runDir!,
+            name: "events.jsonl",
+            bytes: repair,
+            purpose: "terminal_log",
+          });
+      }
+    } catch {
+      return; // the hook decides and writes
+    }
+    const entries = new Map<string, { temp: string; sha: string }>();
+    this.staged.set(event.run_id, entries);
+    await Promise.all(
+      files.map(async ({ dir, name, bytes }) => {
+        try {
+          const temp = await writeStagedTemp(staging, name, bytes);
+          entries.set(join(dir, name), { temp, sha: sha256Hex(bytes) });
+        } catch {
+          /* the hook writes it */
+        }
+      }),
+    );
+  }
+
   private write(row: ObligationRow, effects: ObligationEffects): void {
+    try {
+      this.writeFiles(row, effects);
+    } finally {
+      this.discard(row.key);
+    }
+  }
+
+  private writeFiles(row: ObligationRow, effects: ObligationEffects): void {
     const event = storedTerminal(this.store, row.key, row.pid);
     const raw = this.store
       .prepare("SELECT summary FROM command WHERE run_id=? AND pid=?")
@@ -88,22 +236,23 @@ export class SqlTerminalFiles {
       if (value !== undefined && hashJson(validateRunFactsInvariants(value)) !== hashJson(facts))
         throw new Error("durable terminal RunFacts receipt does not match SQL authority");
     }
-    const write = this.io.write ?? writeExternalFile;
-    write(this.store, {
+    this.publish(row.key, {
       dir: finalDir,
       name: "run_facts.yaml",
-      bytes: Buffer.from(`${JSON.stringify(facts, null, 2)}\n`),
+      bytes: receipt(facts),
+      purpose: "terminal_receipt",
     });
     effects.register(finalDir);
-    const telemetry = (row.payload as { telemetry?: unknown } | null)?.telemetry;
-    if (telemetry !== null && telemetry !== undefined) {
-      const prepared = RunTelemetry.parse(telemetry);
-      if (hashJson(prepared.run_facts) !== hashJson(facts))
-        throw new Error("durable terminal telemetry does not match SQL authority");
-      write(this.store, {
+    const telemetry = telemetryReceipt(
+      (row.payload as { telemetry?: unknown } | null)?.telemetry,
+      facts,
+    );
+    if (telemetry) {
+      this.publish(row.key, {
         dir: finalDir,
         name: "telemetry.yaml",
-        bytes: Buffer.from(`${JSON.stringify(prepared, null, 2)}\n`),
+        bytes: telemetry,
+        purpose: "terminal_receipt",
       });
       effects.register(finalDir);
     }
@@ -112,13 +261,46 @@ export class SqlTerminalFiles {
     if (existing && (!existing.isFile() || existing.isSymbolicLink()))
       throw new Error("durable terminal event log is not a regular file");
     const bytes = existing ? readFileSync(eventsPath) : Buffer.alloc(0);
-    const normalized = Buffer.from(normalizedTerminalEvents(bytes, event, terminalSeq));
-    if (!bytes.equals(normalized)) {
-      const added = Buffer.from(`${JSON.stringify(event)}\n`);
-      if (normalized.equals(Buffer.concat([bytes, added])))
-        (this.io.append ?? appendLine)(eventsPath, JSON.stringify(event));
-      else write(this.store, { dir: root, name: "events.jsonl", bytes: normalized });
-    }
+    const repair = eventsRepair(bytes, event, terminalSeq);
+    if (repair === "append") (this.io.append ?? appendLine)(eventsPath, JSON.stringify(event));
+    else if (repair)
+      this.publish(row.key, {
+        dir: root,
+        name: "events.jsonl",
+        bytes: repair,
+        purpose: "terminal_log",
+      });
     effects.register(root);
+  }
+
+  /** A staged temp with exactly these bytes is renamed into place; else they are written. */
+  private publish(runId: string, file: TerminalFile): void {
+    const target = join(file.dir, file.name);
+    const staged = this.staged.get(runId)?.get(target);
+    if (staged && staged.sha === sha256Hex(file.bytes)) {
+      this.staged.get(runId)!.delete(target);
+      const published = publishStagedFile(this.store, {
+        temp: staged.temp,
+        dir: file.dir,
+        name: file.name,
+        bytes: file.bytes.byteLength,
+        purpose: file.purpose,
+      });
+      if (published) return;
+    }
+    (this.io.write ?? writeExternalFile)(this.store, file);
+  }
+
+  /** A run's staged temps nobody published (bytes changed, or the hook failed) go. */
+  private discard(runId: string): void {
+    const entries = this.staged.get(runId);
+    this.staged.delete(runId);
+    for (const { temp } of entries?.values() ?? []) {
+      try {
+        unlinkSync(temp);
+      } catch {
+        /* the orphan sweep reclaims it after the next start */
+      }
+    }
   }
 }

@@ -138,6 +138,14 @@ export class SqlCommandRouter
     // filtered event cannot fail merely because its old project is unavailable.
     return event;
   }
+  /** Off-loop staging ahead of `persistTerminal` (best effort; it decides). */
+  async stageTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
+    try {
+      await this.findById(jobId)?.stageTerminal(jobId, event, telemetry);
+    } catch {
+      /* persistTerminal decides and reports */
+    }
+  }
   persistTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
     const owner = this.findById(jobId);
     if (!owner) throw new Error(`terminal authority lost command ${jobId}`);

@@ -31,6 +31,9 @@ export interface PreparedEvent<T = unknown> {
   body: BodyRef | null;
 }
 
+/** The exact bytes of an event body; preparation and body staging share them. */
+export const eventBody = (payload: unknown): Buffer => Buffer.from(JSON.stringify(payload ?? null));
+
 /** Prepare the immutable JSON body before entering a transaction. Large bodies
  * use the existing BlobFiles writer; rollback may leave an unowned file for
  * its existing sweep, never a committed row or an advanced owner generation. */
@@ -38,7 +41,7 @@ export function prepareEvent<T>(
   blobs: BlobFiles,
   input: { type: string; time: string; payload: T },
 ): PreparedEvent<T> {
-  const bytes = Buffer.from(JSON.stringify(input.payload ?? null));
+  const bytes = eventBody(input.payload);
   return {
     type: input.type,
     time: input.time,

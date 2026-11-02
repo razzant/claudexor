@@ -49,7 +49,7 @@ const tick = () => {
   const id = "cmd-" + String(n).padStart(6, "0");
   const body = Buffer.alloc(70_000, n & 0xff);
   const ref = blobs.prepareBody(body);
-  writeExternalFile(store, { dir: daemonDir + "/final", name: id + ".yaml", bytes: Buffer.from("facts " + n) });
+  writeExternalFile(store, { dir: daemonDir + "/final", name: id + ".yaml", bytes: Buffer.from("facts " + n), purpose: "terminal_receipt" });
   store.transaction(() => {
     blobs.insertRow(ref);
     insert.run(id, new Date().toISOString(), ref.sha256);
