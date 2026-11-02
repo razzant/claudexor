@@ -32,9 +32,10 @@ function reapMk(prefix: string): string {
   reapDirs.push(dir);
   return dir;
 }
+// Synchronous removal cannot be interrupted; completing it slowly is not a failure (#376).
 afterAll(() => {
   for (const dir of reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0);
 
 async function initRepo(): Promise<string> {
   const repo = reapMk("claudexor-thread-partial-");
