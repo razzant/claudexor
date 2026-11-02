@@ -72,6 +72,8 @@ function fixture(options: { runDir?: boolean; notices?: boolean } = {}) {
   const busListeners = new Set<(event: { run_id?: string }) => void>();
   const noticeListeners = new Set<RunObservationListener>();
   const counts = { replays: 0, statuses: 0, observations: 0 };
+  /** When set, a replay's answer (computed at once) is returned only after it settles. */
+  let heldReads: Promise<void> | null = null;
   let lifecycle = "running";
   const res = new Response();
   const req = new EventEmitter();
@@ -81,7 +83,9 @@ function fixture(options: { runDir?: boolean; notices?: boolean } = {}) {
     json() {},
     readBatch: async (input) => {
       counts.replays += 1;
-      return readEventReplayBatch(input);
+      const batch = await readEventReplayBatch(input);
+      if (heldReads) await heldReads;
+      return batch;
     },
     opts: {
       daemon: {
@@ -124,6 +128,17 @@ function fixture(options: { runDir?: boolean; notices?: boolean } = {}) {
   const notice = (ids?: string[]) => {
     for (const listener of noticeListeners) listener(ids ? new Set(ids) : undefined);
   };
+  /** Delay the answers of the next replays until the returned release is called. */
+  const holdReads = () => {
+    let release!: () => void;
+    heldReads = new Promise<void>((resolve) => {
+      release = () => {
+        heldReads = null;
+        resolve();
+      };
+    });
+    return release;
+  };
   /** A bus event for a run, as another appender for it publishes one. */
   const push = (runId: string) => {
     for (const listener of busListeners) listener({ run_id: runId });
@@ -134,7 +149,20 @@ function fixture(options: { runDir?: boolean; notices?: boolean } = {}) {
   };
   const open = (lastEventId = 0) =>
     streamRunEvents(ctx, "job-x", lastEventId, req as never, res as never);
-  return { runDir, path, record, ctx, res, counts, writer, notice, push, setLifecycle, open };
+  return {
+    runDir,
+    path,
+    record,
+    ctx,
+    res,
+    counts,
+    writer,
+    notice,
+    push,
+    holdReads,
+    setLifecycle,
+    open,
+  };
 }
 
 /** Put valid run events back at `path` (a late mirror, or a restore by hand). */
@@ -362,6 +390,28 @@ describe("quiet run event stream", () => {
     f.push("run-x");
     await vi.waitFor(() => expect(seqs(f.res.body)).toEqual([1]));
   });
+
+  it.each(["notice", "bus push"] as const)(
+    "keeps a %s that lands while a read is finding the log missing",
+    async (change) => {
+      const tick = manualPollTimer();
+      const f = fixture({ notices: change === "notice" });
+      const changed = () => (change === "notice" ? f.notice(["job-x"]) : f.push("run-x"));
+      await f.open();
+      expect(f.counts.replays).toBe(1);
+      // A change starts one re-read; its "missing" answer is delayed...
+      const release = f.holdReads();
+      changed();
+      await vi.waitFor(() => expect(f.counts.replays).toBe(2));
+      // ...while the log is restored and its change arrives.
+      restoreLog(f.path, "a question");
+      changed();
+      release();
+      await tick(20);
+      expect(seqs(f.res.body)).toEqual([1]);
+      expect(f.res.ended).toBe(false);
+    },
+  );
 
   it("re-reads a log missing under its live writer only once the writer moves", async () => {
     const tick = manualPollTimer();

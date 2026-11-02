@@ -67,9 +67,13 @@ export async function streamRunEvents(
   // A bound run's log exists from `run.created` on: one found missing was
   // removed (retention, or by hand). It is read again only after a change: its
   // live writer moved past the seq it held at the miss, or a bus push or notice
-  // for this run arrived.
+  // for this run arrived since the read that found it missing started (so one
+  // landing during that read is not lost).
   let logMissing = false;
   let missedAt = 0;
+  let changes = 0;
+  let readFrom = 0;
+  let missedChanges = 0;
   // The highest seq this client holds: its resume cursor, then every frame sent.
   let sent = lastEventId;
   const lifetime = new AbortController();
@@ -93,8 +97,10 @@ export async function streamRunEvents(
   });
   req.on("aborted", cleanup);
   res.on("close", cleanup);
-  const readBatch = () =>
-    ctx.readBatch({ path: eventsPath!, lastEventId, cursor }, lifetime.signal);
+  const readBatch = () => {
+    readFrom = changes;
+    return ctx.readBatch({ path: eventsPath!, lastEventId, cursor }, lifetime.signal);
+  };
   // A first-job failure can still return the executor's typed HTTP problem.
   let nextBatch = eventsPath ? await readBatch() : undefined;
   if (closed || res.writableEnded || res.destroyed) return cleanup();
@@ -202,14 +208,19 @@ export async function streamRunEvents(
         // anything past what this client already has. A batch already read, a
         // terminal in view, or a present log without a live writer reads the file.
         const live = liveRunEventSeq(eventsPath);
-        const due = logMissing ? live !== null && live > missedAt : live === null || live > sent;
+        const due = logMissing
+          ? changes !== missedChanges || (live !== null && live > missedAt)
+          : live === null || live > sent;
         let batch: EventReplayResult | undefined;
         if (nextBatch !== undefined || terminalSeen || due) {
           batch = nextBatch ?? (await readBatch());
           nextBatch = undefined;
           if (closed || res.writableEnded || res.destroyed) return cleanup();
           logMissing = batch.missing === true;
-          if (logMissing) missedAt = live ?? 0;
+          if (logMissing) {
+            missedAt = live ?? 0;
+            missedChanges = readFrom;
+          }
         }
         if (batch && !logMissing) {
           cursor = batch.cursor;
@@ -301,7 +312,7 @@ export async function streamRunEvents(
   // so push and poll can never disagree.
   unsubscribe = ctx.opts.bus?.subscribe((event) => {
     if (closed || event.run_id !== (runId ?? rec.id)) return;
-    logMissing = false;
+    changes += 1;
     void writeAvailable();
   });
   // A committed change of this job's rows marks its lifecycle, and a missing
@@ -311,7 +322,7 @@ export async function streamRunEvents(
     if (closed) return;
     if (changed && !changed.has(rec.id) && !(runId && changed.has(runId))) return;
     lifecycleDirty = true;
-    logMissing = false;
+    changes += 1;
     queueMicrotask(() => void writeAvailable());
   });
   timer = setInterval(() => void writeAvailable(), ctx.opts.pollMs ?? 250);

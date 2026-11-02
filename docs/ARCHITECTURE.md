@@ -4305,7 +4305,8 @@ terminal waits for its file obligation; a read that no source answered is asked
 again on the next pass. A bound run's log exists from `run.created` on, so one
 found missing (reclaimed by retention, or removed) is not polled: it is read
 again only after a change, when its live writer has moved past the seq it held
-at the miss or a bus push or post-commit notice for the run arrives, so a log
+at the miss or a bus push or post-commit notice for the run arrives (also one
+that lands while the read finding it missing is still running), so a log
 restored under a live run is delivered on that change. Once its job is terminal
 the stream ends with `event: error` rather than `end`, because no terminal
 frame can be delivered: `run_event_not_found`, retryable with `reconnect`, or,
