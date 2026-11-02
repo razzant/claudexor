@@ -15,6 +15,49 @@ const output = (allowanceDebitUnobserved?: boolean): ReviewerOutput => ({
   ...(allowanceDebitUnobserved === undefined ? {} : { allowanceDebitUnobserved }),
 });
 
+describe("reviewer panel spend keeps observed zero amounts (#171)", () => {
+  const observed = (cash: boolean, valuation: boolean) => ({ cash, valuation, unknown: false });
+
+  it("takes valuation knowledge only from reviewers that reported a valuation", () => {
+    const panel = new ReviewerSpendAccumulator(2);
+    panel.record(0, {
+      ...output(),
+      valuationKnowledge: "estimated",
+      observedAmounts: observed(false, true),
+    });
+    // An API reviewer's valuation is unknown because it never had one.
+    panel.record(1, { ...output(), observedAmounts: observed(true, false) });
+    expect(panel.summary()).toMatchObject({
+      reviewValuationUsd: 0,
+      reviewValuationKnowledge: "estimated",
+      reviewObservedAmounts: { cash: true, valuation: true, unknown: false },
+    });
+  });
+
+  it("keeps a failed reviewer's reported zero", () => {
+    const panel = new ReviewerSpendAccumulator(1);
+    panel.recordPartial(0, {
+      partialCostUsd: 0,
+      partialCashKnowledge: "exact",
+      partialValuationKnowledge: "exact",
+      partialObservedAmounts: observed(false, true),
+    });
+    expect(panel.summary()).toMatchObject({
+      reviewValuationKnowledge: "exact",
+      reviewObservedAmounts: { cash: false, valuation: true, unknown: false },
+    });
+  });
+
+  it("states nothing observed for a panel without reported amounts", () => {
+    const panel = new ReviewerSpendAccumulator(1);
+    panel.record(0, output());
+    expect(panel.summary()).toMatchObject({
+      reviewValuationKnowledge: "unknown",
+      reviewObservedAmounts: { cash: false, valuation: false, unknown: false },
+    });
+  });
+});
+
 describe("reviewer panel spend keeps an unobserved allowance debit", () => {
   it("reports the panel debit unobserved when any finished or partial slot says so", () => {
     const finished = new ReviewerSpendAccumulator(2);

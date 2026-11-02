@@ -6255,10 +6255,37 @@ independent: vendor list prices are valuation, while unknown cash or credit
 consumption stays unknown. Current native transports expose no authoritative
 paid-credit debit amount, and the engine never invents one from token prices or a
 session-level Fast setting.
+A usage event's reported amount is evidence apart from its size. A reported
+`cost_usd` of 0 keeps its cash, valuation or unknown meaning and its exact or
+estimated status through the spend row, settlement, ledger and settled budget
+projection, in every lane and review panel. An event with no amount reports
+nothing, and known controllable cash or a stated cost knowledge is not a receipt:
+included work without an amount settles as usage missing, and a zero receipt
+leaves an unpriced try of the same attempt, earlier or later, unknown. Each
+lane's `budget.observation` spend row reports one usage amount and names its
+meaning in `amount_kind`; a review panel writes one aggregate row after its
+settlement, with separate cash, valuation and unknown totals and no
+`amount_kind`. A zero row is evidence of that amount only. Before the first
+settlement the budget projection reads as it did before zero rows existed: spend
+is the sum of nonzero spend rows, or else of reported usage costs, and is always
+estimated, with `remainingUsd` derived from that estimate; valuation is the
+estimated sum of nonzero rows; `cashKnowledge` is absent. A zero row adds no
+total, certainty or valuation there, because the attempt's other tries may still
+be unpriced. An exact total, an exact `$0` included, comes only from the ledger's
+`budget.cash` and the decision record. From the first settlement on, the reading
+is the latest settlement's cumulative disclosure, as before: an attempt still
+running when another settles shows at its own settlement, and that now includes
+a settled zero valuation.
 Persisted routing cost averages carry a cost-evidence generation in the existing
 metrics file. Older unclassified costs are read as unknown while duration,
 sample counts and auth routing survive. A new explicitly unpriced attempt
 clears the cost average; auth-only updates preserve compatible observations.
+The only zero sample is a reported cash receipt whose total is known, exact or
+estimated: a zero valuation, included work without a receipt and an attempt with
+an earlier unpriced interval clear the average as unpriced. The average is per
+harness, not per model, and a receipt covers only the charge it reports: a free
+model's zero lowers the figure for that harness's paid models, and an upstream
+bill outside the receipt is not counted.
 Mixed review panels classify
 each observed amount separately from its prospective billing basis;
 their aggregate is never blindly charged as cash. Panel admission keeps
