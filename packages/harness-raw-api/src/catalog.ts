@@ -7,8 +7,8 @@ import type {
   ModelCatalogObservation,
 } from "@claudexor/core";
 import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
-import { redactSecrets } from "@claudexor/util";
 import { parseModelsList, type ParsedModel } from "./parse.js";
+import { redactAndBound } from "./providerError.js";
 
 /** Model enumeration is interactive (a picker waits on it): keep it snappy. */
 const RAW_API_MODELS_TIMEOUT_MS = 15_000;
@@ -144,10 +144,10 @@ function unavailable(
   httpStatus: number | null,
   detail: string,
 ): ModelCatalogObservation {
-  const bounded = redactSecrets(detail.replace(/\s+/g, " ").trim()).slice(
-    0,
+  const bounded = redactAndBound(
+    detail.replace(/\s+/g, " ").trim(),
     FAILURE_DETAIL_MAX_CHARS,
-  );
+  ).value;
   return { status: "unavailable", failure: { cause, httpStatus, detail: bounded || "no detail" } };
 }
 
