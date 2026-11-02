@@ -347,6 +347,22 @@ Tests and local smokes must never touch real user state:
 - Isolate global config, the daemon (token/socket/jobs/logs), trust files, and
   run artifacts by pointing `CLAUDEXOR_CONFIG_DIR` at a temp dir; isolate host
   plugin files by pointing `HOME` at a temp dir.
+- A linked-worktree verification build must explicitly put Turbo's cache in
+  run-owned scratch outside both the source checkout and the verification tree.
+  A private `HOME` does not redirect Turbo's shared Git-worktree cache. For a
+  POSIX shell with `TMPDIR` outside those trees:
+
+  ```bash
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/claudexor-build.XXXXXX")"
+  TURBO_CACHE_DIR="$scratch/turbo" pnpm build
+  ```
+
+  On other shells, set `TURBO_CACHE_DIR` to an equivalent absolute run-owned
+  scratch path. `--cache-dir` also selects the cache explicitly. `--force`
+  bypasses cache reads, but still writes cache entries. Keep reports, source
+  reproducers and intended binaries out of cache scratch and preserve them
+  before releasing the scratch directory. This recipe does not change normal
+  shared caching, capture rules or existing saved results.
 - A smoke that starts a packaged entry gives it an empty environment (`env -i`)
   plus only the variables it needs, and observes the root derived from those
   same values. A scratch `HOME` alone does not isolate a child that still
@@ -472,7 +488,7 @@ Tests and local smokes must never touch real user state:
   This mode accepts only the canonical default config path and requires the
   battery directory outside both `~/.claudexor` and the source checkout. It
   deliberately does not export `CLAUDEXOR_CONFIG_DIR`. The battery entrypoint
-  itself first forces every workspace build (no Turbo cache), then dynamically
+  itself first forces every workspace build (bypassing Turbo cache reads), then dynamically
   loads the resulting dist modules and records the launched daemon entry digest
   beside its exact version/SHA/entry handshake. The
   lane refuses a pre-existing daemon, stops only the identity-bound daemon it
