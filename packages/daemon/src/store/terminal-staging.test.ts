@@ -31,11 +31,32 @@ import { storedTerminal } from "./run-events.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
 
+/** The pool-side writes: the paths they opened, and a gate that holds their data. */
+const pool = vi.hoisted(() => ({ hold: null as Promise<void> | null, held: [] as string[] }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const open = async (...args: Parameters<typeof actual.open>) => {
+    const handle = await actual.open(...args);
+    const write = handle.write.bind(handle) as (...input: unknown[]) => Promise<unknown>;
+    return Object.assign(handle, {
+      write: async (...input: unknown[]) => {
+        if (pool.hold) {
+          pool.held.push(String(args[0]));
+          await pool.hold;
+        }
+        return write(...input);
+      },
+    });
+  };
+  return { ...actual, open, default: { ...actual, open } };
+});
+
 const TIME = "2026-11-02T00:00:00.000Z";
 const dist = (file: string) => resolve(import.meta.dirname, "../../dist/store", file);
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  Object.assign(pool, { hold: null, held: [] });
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
@@ -170,6 +191,49 @@ describe("terminal receipts and bodies are written off the request thread before
     );
     expect(readFileSync(join(f.runDir, "events.jsonl"), "utf8")).toContain('"type":"run.failed"');
     expect(f.files.pending("run")).toBe(false);
+  });
+
+  it("keeps the request thread serving while the terminal's staged writes wait on the drive", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    pool.hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ticks = 0;
+    const timer = setInterval(() => ticks++, 2);
+    try {
+      const staging = f.commands.stageTerminal("job", terminal(), telemetry());
+      // Both receipts and the large journal body are written on the pool, and held there.
+      const held = () => pool.held.map((path) => basename(path));
+      await vi.waitFor(() => {
+        expect(held()).toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/^\.run_facts\.yaml\./),
+            expect.stringMatching(/^\.telemetry\.yaml\./),
+            expect.stringMatching(/^\.[0-9a-f]{64}\./),
+          ]),
+        );
+      });
+      const before = ticks;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(ticks - before).toBeGreaterThan(3);
+      // The request thread still answers from SQL; nothing is committed or visible.
+      expect(f.commands.get("job")?.state).toBe("running");
+      expect(storedTerminal(f.store, "run", f.generation.pid)).toBeUndefined();
+      expect(existsSync(join(f.runDir, "final", "run_facts.yaml"))).toBe(false);
+      release();
+      await staging;
+    } finally {
+      clearInterval(timer);
+      release();
+    }
+    expect(f.commands.persistTerminal("job", terminal(), telemetry())).toEqual({
+      state: "materialized",
+    });
+    expect(f.writes().filter((write) => write.purpose === "terminal_receipt")).toEqual([
+      expect.objectContaining({ staged: true }),
+      expect.objectContaining({ staged: true }),
+    ]);
   });
 
   it("writes on the request thread what changed after staging and drops the stale temp", async () => {
