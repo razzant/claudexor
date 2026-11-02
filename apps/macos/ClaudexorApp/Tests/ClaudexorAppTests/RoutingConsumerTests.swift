@@ -332,6 +332,38 @@ struct RoutingConsumerTests {
         let card = TurnFailureCard(run: run, reason: "raw_patch_apply_failed: does not apply", openRun: {})
         #expect(card.title == "Patch refused: it does not apply to the candidate" && !card.refused)
         #expect(RunFacts.patchRefusalTitle(code: "raw_context_exceeds_window") == nil)
+
+        // Every typed patch code is named, on the failed turn's card even when an
+        // earlier round left output; none claims anything about sending or paying.
+        let titles = [
+            "raw_patch_apply_failed": "Patch refused: it does not apply to the candidate",
+            "raw_patch_outside_scope": "Patch refused: it touches a path outside its packet",
+            "raw_patch_stale_preimage": "Patch refused: it edits a file version its packet did not hold",
+            "raw_patch_path_traversal": "Patch refused: it names an invalid path",
+            "raw_patch_binary_unsupported": "Patch refused: binary changes are not accepted",
+            "raw_patch_truncated": "Patch refused: the answer was not a complete patch",
+            "raw_patch_missing_evidence": "Patch refused: its packet or evidence is missing",
+            "raw_patch_digest_mismatch": "Patch refused: its bytes do not match their digest",
+            "raw_patch_base_mismatch": "Patch refused: the candidate is not the tree its packet described",
+            "raw_patch_requires_isolation": "Patch refused: it can only apply in an isolated copy",
+        ]
+        run.artifactPaths = ["final/patch.diff"]
+        #expect(run.hasPatchArtifact)
+        for (code, title) in titles {
+            #expect(RunFacts.patchRefusalTitle(code: code) == title)
+            run.failureCode = code
+            #expect(TurnFailureCard.namesRefusal(run), "\(code)")
+            #expect(RunFacts.refusal(run) == nil, "\(code)")
+        }
+        // A refusal the patch labels do not own keeps its card rule; other failures
+        // with output, and a run that did not fail, gain no card.
+        run.failureCode = "model_selection_required"
+        #expect(TurnFailureCard.namesRefusal(run))
+        run.failureCode = "harness_failed"
+        #expect(!TurnFailureCard.namesRefusal(run))
+        run.failureCode = "raw_patch_apply_failed"
+        run.phase = .succeeded
+        #expect(!TurnFailureCard.namesRefusal(run))
     }
 
     /// A real run whose first try never reached the endpoint (it was down

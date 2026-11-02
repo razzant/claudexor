@@ -167,8 +167,8 @@ struct TurnReceiptRow: View {
 }
 
 /// The inline card for a terminal-failed turn with nothing else to show, and
-/// for a request the engine refused before sending (#147/#393). The reason is
-/// the engine's own text, selectable and complete. Pure: values in, one action out.
+/// for a typed refusal (`namesRefusal`, #147/#393/#551). The reason is the
+/// engine's own text, selectable and complete. Pure: values in, one action out.
 struct TurnFailureCard: View {
     struct Route: Equatable {
         let label: String
@@ -259,6 +259,14 @@ struct TurnFailureCard: View {
 }
 
 extension TurnFailureCard {
+    /// A typed refusal is named even beside output: a later round's refused patch
+    /// keeps the earlier round's result, which says nothing about why the run failed.
+    /// Any other failure with output keeps its receipt chip alone.
+    static func namesRefusal(_ run: TaskRun) -> Bool {
+        RunFacts.refusal(run) != nil
+            || (run.phase.isFailureShaped && RunFacts.patchRefusalTitle(code: run.failureCode) != nil)
+    }
+
     /// Every input from the run's typed facts, so the card is composed here and
     /// nowhere else (the turn card passes only the reason and the action).
     init(run: TaskRun, reason: String, openRun: @escaping () -> Void) {
