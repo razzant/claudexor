@@ -350,6 +350,7 @@ import {
   evaluateConvergence,
   failureSignature,
   gatesPassed,
+  requireReadingReviewers,
   reviewCandidate,
   runGates,
 } from "@claudexor/review";
@@ -381,9 +382,9 @@ export interface OrchestratorDeps {
   registry: AdapterRegistry;
   /** Daemon-lifetime Delegate family budget authority. */
   delegationBudgetAuthority?: DelegationBudgetAuthority;
-  /** Reviewers an embedder constructs itself, used as given: they skip panel
-   * admission (file reading, readiness, accounts, models), which applies to the
-   * panels the engine resolves. No shipped entry point passes them. */
+  /** Reviewers an embedder constructs itself. They skip panel selection (readiness,
+   * accounts, models) but not file reading: one that does not declare it refuses the
+   * whole list before a candidate spends. No shipped entry point passes them. */
   reviewers?: ReviewerSpec[];
   paidBudget?: PaidBudget;
   routingGoal?: RoutingGoal;
@@ -896,7 +897,7 @@ export class Orchestrator {
     run: Pick<RunInput, "repoRoot" | "authPreference" | "signal">,
     onIgnoredSetting?: (detail: string) => void,
   ): Promise<ReviewerSpec[]> {
-    if (this.deps.reviewers) return this.deps.reviewers;
+    if (this.deps.reviewers) return requireReadingReviewers(this.deps.reviewers);
     const { repoRoot: cwd, authPreference, signal } = run;
     const panelDeps = {
       cwd,

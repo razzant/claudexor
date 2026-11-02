@@ -22,7 +22,6 @@ import type {
   ControlReviewerPanelEntry,
   CredentialProfile,
   EffortHint,
-  HarnessCapabilities,
   Intent,
   ProviderFamily,
 } from "@claudexor/schema";
@@ -40,7 +39,7 @@ import {
   validateModelOnUnreadCatalog,
 } from "@claudexor/core";
 import { WorkspaceManager } from "@claudexor/workspace";
-import type { ReviewerSpec } from "@claudexor/review";
+import { CANNOT_READ_EVIDENCE, admitFileReader, type ReviewerSpec } from "@claudexor/review";
 import { reviewerEffortVerdict } from "./reviewerEffort.js";
 import {
   listModelIdsWithRetry,
@@ -76,19 +75,6 @@ export interface ReviewerPanelDeps {
 function credentialProfileAuthRoute(profile: CredentialProfile): "local_session" | "api_key" {
   return profile.credential_kind === "api_key" ? "api_key" : "local_session";
 }
-
-/** INV-042 and the owner's choice: change review belongs to a harness that reads
- * the candidate evidence files itself (`read_files`), whatever it declares about
- * `review`. These two panels are where every shipped entry point gets its
- * reviewers (Agent review, best-of, convergence, `claudexor review`), so this one
- * test, before any model check, holds for all of them. Reviewers an
- * embedder injects directly (`OrchestratorDeps.reviewers`) skip panel admission
- * as a whole, as they always have. */
-function cannotReadForReview(capabilities: HarnessCapabilities): boolean {
-  return !capabilities.read_files;
-}
-const CANNOT_READ_EVIDENCE =
-  "cannot read the candidate evidence files itself; review changes with a harness that reads files";
 
 function discloseAutoSkip(deps: ReviewerPanelDeps, harnessId: string, reason: string): void {
   deps.onIgnoredSetting?.(`reviewer family '${harnessId}' skipped: ${reason}`);
@@ -205,7 +191,8 @@ export async function resolveExplicitReviewerPanel(
             `reviewer harness '${entry.harness}' is a fake harness and cannot be used in reviewer panels`,
           );
         }
-        if (cannotReadForReview(manifest.capabilities)) {
+        // After the account and any doctor probe above; before the doctor verdict and any model check.
+        if (!admitFileReader(adapter, manifest)) {
           throw new HarnessUnavailableError(
             `reviewer harness '${entry.harness}' ${CANNOT_READ_EVIDENCE}`,
           );
@@ -381,7 +368,7 @@ export async function resolveAutoReviewerPanel(
         discloseAutoSkip(deps, adapter.id, "fake harness");
         continue;
       }
-      if (cannotReadForReview(m.capabilities)) {
+      if (!admitFileReader(adapter, m)) {
         discloseAutoSkip(deps, adapter.id, `it ${CANNOT_READ_EVIDENCE}`);
         continue;
       }

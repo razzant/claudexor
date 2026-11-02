@@ -82,6 +82,9 @@ function fixture() {
 function adapterFor(id: string, prompts: Map<string, string>): HarnessAdapter {
   return {
     id,
+    async discover() {
+      return { capabilities: { read_files: true } };
+    },
     async doctor() {
       throw new Error("not used");
     },

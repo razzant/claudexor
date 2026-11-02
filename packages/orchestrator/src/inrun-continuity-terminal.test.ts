@@ -148,7 +148,7 @@ it("a succeeded best-of run carries no losing candidate's continuation facts", a
               display_name: "clean reviewer",
               kind: "local_cli",
               provider_family: "openai",
-              capabilities: { review: true },
+              capabilities: { review: true, read_files: true },
             });
           },
           async doctor() {
@@ -249,7 +249,7 @@ it("review failure after clean execution still carries continuation facts", asyn
               display_name: "fixture reviewer",
               kind: "local_cli",
               provider_family: "openai",
-              capabilities: { review: true },
+              capabilities: { review: true, read_files: true },
             });
           },
           async doctor() {

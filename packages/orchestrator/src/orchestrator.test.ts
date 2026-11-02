@@ -173,7 +173,7 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { review: true },
+        capabilities: { review: true, read_files: true },
       });
     },
     async doctor() {
@@ -1500,7 +1500,7 @@ describe("Orchestrator", () => {
             display_name: id,
             kind: "local_cli",
             provider_family: family,
-            capabilities: { review: true },
+            capabilities: { review: true, read_files: true },
           });
         },
         async doctor() {
@@ -11323,7 +11323,7 @@ describe("Orchestrator", () => {
             display_name: id,
             kind: "local_cli",
             provider_family: family,
-            capabilities: { review: true },
+            capabilities: { review: true, read_files: true },
           });
         },
         async doctor() {
@@ -12400,7 +12400,7 @@ describe("Orchestrator", () => {
             display_name: "slow agent reviewer",
             kind: "local_cli",
             provider_family: "anthropic",
-            capabilities: { review: true },
+            capabilities: { review: true, read_files: true },
           });
         },
         async doctor() {

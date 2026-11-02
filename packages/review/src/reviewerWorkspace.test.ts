@@ -62,7 +62,7 @@ function probe(id: string, onRun: (spec: HarnessRunSpec) => void): ReviewerSpec 
         display_name: id,
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { review: true, structured_output: true },
+        capabilities: { review: true, read_files: true, structured_output: true },
       });
     },
     async doctor() {

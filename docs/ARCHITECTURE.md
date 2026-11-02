@@ -506,7 +506,9 @@ is Ask without a project; the engine's own no-project Plan stays admitted. Chang
 review needs file reading too (INV-042), so the raw manifest and doctor declare no
 `review`: an explicit reviewer panel refuses such a route and the automatic panel
 skips it, both naming `cannot read the candidate evidence files itself`, before
-any account or model check. `audit` still requires `read_files`. Surfaces keep aggregate/default doctor evidence distinct from
+any model check or request. The automatic panel tests this first; the explicit
+panel resolves the entry's account first, so an account refusal can be the one it
+reports. `audit` still requires `read_files`. Surfaces keep aggregate/default doctor evidence distinct from
 exact-profile evidence and routing gates on the identity actually selected.
 
 Attachment and Browser request admission (requests with neither skip it) uses
@@ -8293,9 +8295,12 @@ code touching one of these areas must honor it or change it explicitly here.
   it declares about `review`, before any model check: review reads the
   candidate evidence files (INV-042). So a raw-API route is never a reviewer,
   profiled or not. Every shipped entry point gets its reviewers from these
-  panels; reviewers an embedder constructs and injects itself
-  (`OrchestratorDeps.reviewers`) are used as given and skip panel admission as a
-  whole.
+  panels. Reviewers an embedder injects (`OrchestratorDeps.reviewers`) or passes
+  to `reviewCandidate` skip panel selection (readiness, accounts, models) but not
+  this test: one that does not declare `read_files`, or whose discovery fails,
+  refuses the whole list before anything runs, as a `review_preflight` failure on
+  a run. The test reads a declaration; it does not prove a native harness opened a
+  file.
 - A credential profile cannot bootstrap a raw-API instance whose own key is
   absent: raw-API discovery is key-gated (an instance without its configured
   key is not a route, so no manifest exists for the profile probe to

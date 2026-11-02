@@ -63,6 +63,17 @@ __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
 });
 
+/** A fixture's discovery where only its file-reading declaration matters. */
+function readerManifest(id: string) {
+  return HarnessManifest.parse({
+    id,
+    display_name: id,
+    kind: "local_cli",
+    provider_family: "openai",
+    capabilities: { review: true, read_files: true },
+  });
+}
+
 function makeReviewer(id: string, family: ProviderFamily, findings: unknown[]): ReviewerSpec {
   const adapter: HarnessAdapter = {
     id,
@@ -72,7 +83,7 @@ function makeReviewer(id: string, family: ProviderFamily, findings: unknown[]): 
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { review: true, structured_output: true },
+        capabilities: { review: true, read_files: true, structured_output: true },
       });
     },
     async doctor() {
@@ -102,7 +113,7 @@ function makeWorkspaceProbeReviewer(id: string, probe: (cwd: string) => void): R
         display_name: id,
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { review: true, structured_output: true },
+        capabilities: { review: true, read_files: true, structured_output: true },
       });
     },
     async doctor() {
@@ -467,7 +478,7 @@ describe("sealed release native reviewer contract", () => {
     const adapter: HarnessAdapter = {
       id: "generic-reviewer",
       async discover() {
-        throw new Error("not used");
+        return readerManifest("generic-reviewer");
       },
       async doctor() {
         throw new Error("not used");
@@ -542,7 +553,7 @@ describe("sealed release native reviewer contract", () => {
           display_name: "release reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -766,7 +777,7 @@ describe("sealed release native reviewer contract", () => {
     const adapter: HarnessAdapter = {
       id: "release-no-retry",
       async discover() {
-        throw new Error("not used");
+        return readerManifest("release-no-retry");
       },
       async doctor() {
         throw new Error("not used");
@@ -1624,7 +1635,7 @@ describe("reviewEngine", () => {
       adapter: {
         id,
         async discover() {
-          throw new Error("not used");
+          return readerManifest(id);
         },
         async doctor() {
           throw new Error("not used");
@@ -1711,7 +1722,7 @@ describe("reviewEngine", () => {
       adapter: {
         id,
         async discover() {
-          throw new Error("not used");
+          return readerManifest(id);
         },
         async doctor() {
           throw new Error("not used");
@@ -1887,7 +1898,7 @@ describe("reviewEngine", () => {
       adapter: {
         id: "route-switch",
         async discover() {
-          throw new Error("not used");
+          return readerManifest("route-switch");
         },
         async doctor() {
           throw new Error("not used");
@@ -1959,7 +1970,7 @@ describe("reviewEngine", () => {
       const adapter: HarnessAdapter = {
         id,
         async discover() {
-          throw new Error("not used");
+          return readerManifest(id);
         },
         async doctor() {
           throw new Error("not used");
@@ -2038,7 +2049,7 @@ describe("reviewEngine", () => {
           display_name: "bad",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2104,7 +2115,7 @@ describe("reviewEngine", () => {
           display_name: "empty",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2148,7 +2159,7 @@ describe("reviewEngine", () => {
           display_name: "throwing",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2191,7 +2202,7 @@ describe("reviewEngine", () => {
           display_name: "error-event",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2258,7 +2269,7 @@ describe("reviewEngine", () => {
           display_name: "stalled",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2331,7 +2342,7 @@ describe("reviewEngine", () => {
           display_name: "cancelled",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2369,7 +2380,7 @@ describe("reviewEngine", () => {
           display_name: "second",
           kind: "local_cli",
           provider_family: "anthropic",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2466,7 +2477,7 @@ describe("reviewEngine", () => {
           display_name: "transient",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2525,7 +2536,7 @@ describe("reviewEngine", () => {
           display_name: "transient",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2592,7 +2603,7 @@ describe("reviewEngine", () => {
           display_name: "file-backed",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2687,7 +2698,7 @@ describe("reviewEngine", () => {
           display_name: "exact evidence reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2738,7 +2749,7 @@ describe("reviewEngine", () => {
           display_name: "must-not-start",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2810,7 +2821,7 @@ describe("reviewEngine", () => {
           display_name: "fallback cleanup",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2859,7 +2870,7 @@ describe("reviewEngine", () => {
           display_name: "dotted child",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2909,7 +2920,7 @@ describe("reviewEngine", () => {
           display_name: "cleanup failure",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -2995,7 +3006,7 @@ describe("reviewEngine", () => {
           display_name: "symlink reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3058,7 +3069,7 @@ describe("reviewEngine", () => {
           display_name: "hook bypass",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3117,7 +3128,7 @@ describe("reviewEngine", () => {
           display_name: "hidden evidence",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3207,7 +3218,7 @@ describe("reviewEngine", () => {
           display_name: "project config reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3280,7 +3291,7 @@ describe("reviewEngine", () => {
           display_name: "preserved output reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3596,7 +3607,7 @@ describe("reviewEngine", () => {
           display_name: "ignored file reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3708,7 +3719,7 @@ describe("reviewEngine", () => {
           display_name: "env secret reviewer",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3814,7 +3825,7 @@ describe("reviewEngine", () => {
           display_name: "auth switch",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -3906,7 +3917,7 @@ describe("reviewEngine", () => {
             display_name: id,
             kind: "local_cli",
             provider_family: family,
-            capabilities: { review: true, structured_output: true },
+            capabilities: { review: true, read_files: true, structured_output: true },
           });
         },
         async doctor() {
@@ -4007,7 +4018,7 @@ describe("reviewEngine", () => {
           display_name: "same harness",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4149,7 +4160,7 @@ describe("reviewEngine", () => {
           display_name: "mutating",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4219,7 +4230,7 @@ describe("reviewEngine", () => {
           display_name: "late error",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4294,7 +4305,7 @@ describe("reviewEngine", () => {
           display_name: "malformed late error",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4371,7 +4382,7 @@ describe("reviewEngine", () => {
           display_name: "throw after output",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { review: true, structured_output: true },
+          capabilities: { review: true, read_files: true, structured_output: true },
         });
       },
       async doctor() {
@@ -4521,7 +4532,7 @@ describe("reviewEngine", () => {
             display_name: "rev-cursor",
             kind: "local_cli",
             provider_family: "cursor",
-            capabilities: { review: true, structured_output: true },
+            capabilities: { review: true, read_files: true, structured_output: true },
           });
         },
         async doctor() {
@@ -4644,7 +4655,7 @@ describe("reviewer dispatch consumes ONE prepared result (model-id effort carrie
       id: "variant-reviewer",
       effortParameter: "--model",
       async discover() {
-        throw new Error("not used");
+        return readerManifest("variant-reviewer");
       },
       async doctor() {
         throw new Error("not used");

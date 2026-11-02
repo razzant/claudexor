@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
 import { FROZEN_REVIEW_EVIDENCE_FILES } from "@claudexor/context";
+import { HarnessManifest } from "@claudexor/schema";
 import { reviewCandidate, type ReviewerSpec } from "@claudexor/review";
 import { runDiffReview, type DiffReviewDeps, type FrozenDiffReviewInput } from "./diffReview.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -70,7 +71,13 @@ function reviewer(): ReviewerSpec {
   const adapter: HarnessAdapter = {
     id: "sealed-reviewer",
     async discover() {
-      throw new Error("not used");
+      return HarnessManifest.parse({
+        id: "sealed-reviewer",
+        display_name: "sealed reviewer",
+        kind: "local_cli",
+        provider_family: "anthropic",
+        capabilities: { review: true, read_files: true },
+      });
     },
     async doctor() {
       throw new Error("not used");

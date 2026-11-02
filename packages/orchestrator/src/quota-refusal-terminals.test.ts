@@ -50,7 +50,7 @@ const reviewer: ReviewerSpec = {
         display_name: "unused reviewer",
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { review: true },
+        capabilities: { review: true, read_files: true },
       });
     },
     async doctor() {

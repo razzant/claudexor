@@ -112,7 +112,7 @@ function recordingReviewer(
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { review: true },
+        capabilities: { review: true, read_files: true },
       });
     },
     async doctor() {

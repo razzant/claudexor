@@ -52,6 +52,7 @@ import {
 } from "./reviewerWorkspace.js";
 export { extractDiffPostimagePaths as __testExtractDiffPostimagePaths } from "./reviewerWorkspace.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
+import { requireReadingReviewers } from "./reviewerFileReading.js";
 import type {
   ReviewerArtifactContext,
   ReviewCandidateResult,
@@ -190,6 +191,7 @@ function reviewerInfo(
 }
 
 export async function reviewCandidate(input: ReviewCandidateInput): Promise<ReviewCandidateResult> {
+  await requireReadingReviewers(input.reviewers);
   const sourceRoot = resolve(input.cwd);
   const sourceExists = existsSync(sourceRoot);
   const canonicalSourceRoot = sourceExists ? realpathSync(sourceRoot) : sourceRoot;

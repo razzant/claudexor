@@ -838,3 +838,72 @@ describe("reviewer panels over a typed catalog read", () => {
     ]);
   });
 });
+
+describe("file reading among a panel's gates (INV-042)", () => {
+  const blind = (order: string[]): HarnessAdapter => {
+    const base = reviewerAdapter("blind", "openai", []);
+    return {
+      ...base,
+      async discover() {
+        order.push("discover");
+        const manifest = await base.discover();
+        return HarnessManifest.parse({
+          ...manifest,
+          capabilities: { ...manifest.capabilities, read_files: false },
+        });
+      },
+      async doctor(spec) {
+        order.push("doctor");
+        return base.doctor(spec);
+      },
+      async models() {
+        order.push("models");
+        return [];
+      },
+    };
+  };
+
+  it("the explicit panel resolves the account first, so an account refusal is what it reports", async () => {
+    const order: string[] = [];
+    await expect(
+      resolveExplicitReviewerPanel(
+        {
+          ...deps([blind(order)]),
+          resolveReviewerProfile: async () => {
+            order.push("account");
+            throw new HarnessUnavailableError("account refused");
+          },
+        },
+        [{ harness: "blind", credentialProfileId: "saved" }],
+      ),
+    ).rejects.toThrow("account refused");
+    expect(order).toEqual(["account"]);
+  });
+
+  it("past its account, the explicit panel refuses before any model check", async () => {
+    const order: string[] = [];
+    await expect(
+      resolveExplicitReviewerPanel(deps([blind(order)]), [{ harness: "blind", model: "m" }]),
+    ).rejects.toThrow("reviewer harness 'blind' cannot read the candidate evidence files itself");
+    // An unprofiled entry has already probed its doctor; that verdict is read after this test.
+    expect(order).toEqual(["discover", "doctor"]);
+  });
+
+  it("the automatic panel skips before it resolves an account, disclosing why", async () => {
+    const order: string[] = [];
+    const ignored: string[] = [];
+    const specs = await resolveAutoReviewerPanel({
+      ...deps([blind(order)]),
+      onIgnoredSetting: (detail) => ignored.push(detail),
+      resolveReviewerProfile: async () => {
+        order.push("account");
+        return null;
+      },
+    });
+    expect(specs).toEqual([]);
+    expect(order).toEqual(["discover"]);
+    expect(ignored.join("\n")).toContain(
+      "reviewer family 'blind' skipped: it cannot read the candidate evidence files itself",
+    );
+  });
+});

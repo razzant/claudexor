@@ -13,7 +13,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { HarnessAdapter } from "@claudexor/core";
 import { createRawApiAdapter } from "@claudexor/harness-raw-api";
 import { Orchestrator } from "@claudexor/orchestrator";
-import type { HarnessRunSpec } from "@claudexor/schema";
+import { ControlRunSummary, type HarnessRunSpec } from "@claudexor/schema";
+import { detailFor, summarizeRun } from "../../control-api/src/run-projection.js";
+import type { DaemonRunRecord } from "../../control-api/src/run-record.js";
 import {
   KEY_ENV,
   attemptRecord,
@@ -476,6 +478,113 @@ describe("a refused patch is the attempt's typed failure with its usage kept (#5
     expect(provider.posts).toHaveLength(1);
     expect(failureRecord(result.runDir).code).toBe("raw_patch_base_mismatch");
     noCrash(result.runDir);
+  });
+
+  describe("after an accepted round, the refusal stays named and that round's work stays kept", () => {
+    /** The real control projection of this run's real artifacts, as every surface reads it. */
+    const projected = (result: { runId: string; taskId: string; runDir: string }) => {
+      const record: DaemonRunRecord = {
+        id: "job-raw",
+        runId: result.runId,
+        taskId: result.taskId,
+        state: "failed",
+        runDir: result.runDir,
+        params: { mode: "agent", prompt: "Build the feature" },
+      };
+      return { summary: ControlRunSummary.parse(summarizeRun(record)), detail: detailFor(record) };
+    };
+    /** What stays is the first round's change, from the run's base, on an untouched source. */
+    const keepsTheAcceptedRound = (
+      repo: string,
+      base: string,
+      result: { runId: string; taskId: string; runDir: string },
+    ) => {
+      const { summary, detail } = projected(result);
+      expect(summary.result.kind).toBe("patch");
+      expect(summary.result.applyState).toBe("not_applied");
+      expect(summary.result.adopted).toBeNull();
+      expect(summary.result.revertable).toBe(false);
+      expect(detail.primaryOutput?.kind).toBe("diagnostic");
+      expect(detail.applyEligibility?.eligible).toBe(false);
+      for (const attemptId of ["a01", "a02"])
+        expect(existsSync(join(result.runDir, "attempts", attemptId, "patch.diff"))).toBe(true);
+      const patch = readFileSync(join(result.runDir, "final", "patch.diff"), "utf8");
+      expect(patch).toContain("+# draft");
+      expect(patch).not.toContain("# final");
+      deliverFromBase(repo, base, result.runDir, { "README.md": "# draft\n" });
+      expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
+      noCrash(result.runDir);
+      return summary;
+    };
+    const FIRST = { patch: edit("README.md", "# repo", "# draft"), cost: 0.1 };
+    /** The gate still fails after the first round, so a second one is asked for. */
+    const needsSecondRound = { tests: [gateOn("README.md", "# final")] };
+
+    /** The real adapter, faulting only the second round's answer. */
+    const faultingSecondRound = (fault: (event: any, spec: HarnessRunSpec) => void) => {
+      let round = 0;
+      const adapter = intercepted((event, spec) => {
+        if (round === 2) fault(event, spec);
+      });
+      const run = adapter.run.bind(adapter);
+      adapter.run = (spec) => {
+        round += 1;
+        return run(spec);
+      };
+      return adapter;
+    };
+
+    it.each([
+      [
+        "raw_patch_digest_mismatch",
+        (event: any) => {
+          event.patch_envelope.patch_hash = `sha256:${"0".repeat(64)}`;
+        },
+      ],
+      [
+        "raw_patch_base_mismatch",
+        (_event: any, spec: HarnessRunSpec) => {
+          writeFileSync(join(spec.cwd, "stray.txt"), "appeared after the packet\n");
+        },
+      ],
+    ])("%s on round two ends the run with rounds left", async (code, fault) => {
+      const repo = committed();
+      const base = git(repo, "rev-parse", "HEAD");
+      provider.answers = [FIRST, { patch: edit("README.md", "# draft", "# final"), cost: 0.2 }];
+      const result = await rounds(faultingSecondRound(fault), repo, 3, needsSecondRound);
+      expect(provider.posts).toHaveLength(2);
+      expect(result.lifecycle).toBe("failed");
+      expect(result.spendUsd).toBeCloseTo(0.3);
+      const summary = keepsTheAcceptedRound(repo, base, result);
+      expect(summary.state).toBe("failed");
+      expect(summary.failure?.code).toBe(code);
+      expect(summary.failure?.category).toBe("internal");
+      expect(summary.failure?.attemptId).toBe("a02");
+      expect(summary.failure?.safeMessage).toContain(code);
+      expect(summary.outcomeFacts?.lifecycle).toBe("failed");
+      expect(summary.outcomeFacts?.checks).toBe("failed");
+      expect(summary.outcomeFacts?.reason).toBe("not_converged");
+    });
+
+    it.each([
+      ["raw_patch_apply_failed", { patch: edit("README.md", "not the content", "x"), cost: 0.2 }],
+      ["raw_patch_truncated", { text: "I would rather explain it", cost: 0.2 }],
+    ])("%s on the last allowed round keeps the same state", async (code, answer) => {
+      const repo = committed();
+      const base = git(repo, "rev-parse", "HEAD");
+      provider.answers = [FIRST, answer];
+      const result = await rounds(openrouter(), repo, 2, needsSecondRound);
+      expect(provider.posts).toHaveLength(2);
+      expect(result.lifecycle).toBe("failed");
+      expect(result.spendUsd).toBeCloseTo(0.3);
+      const summary = keepsTheAcceptedRound(repo, base, result);
+      expect(summary.state).toBe("failed");
+      expect(summary.failure?.code).toBe(code);
+      expect(summary.failure?.category).toBe("harness_error");
+      expect(summary.failure?.attemptId).toBe("a02");
+      expect(summary.outcomeFacts?.lifecycle).toBe("failed");
+      expect(summary.outcomeFacts?.checks).toBe("failed");
+    });
   });
 
   it("in-place convergence stays refused for a patch producer", async () => {
