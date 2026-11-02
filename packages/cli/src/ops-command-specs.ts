@@ -156,6 +156,16 @@ export const OPS_COMMAND_SPECS_AFTER_REMOTE = [
     stability: "stable",
   },
   {
+    id: "scanner",
+    positionalPatterns: [{ prefix: ["prepare"], min: 1, max: 1 }],
+    usageArgs: "prepare [--from-archive <file>]",
+    summary:
+      "Prepare the pinned publication scanner `pr` requires, under this machine's config root (download, or an official archive)",
+    flags: ["from-archive", "json"],
+    mutability: "ops",
+    stability: "stable",
+  },
+  {
     id: "profiles",
     positionalPatterns: [
       { min: 0, max: 0 },

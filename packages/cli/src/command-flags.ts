@@ -350,6 +350,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "profiles add: human-readable label for the new credential profile",
   ),
   valueFlag("from-env", "<VAR>", null),
+  valueFlag(
+    "from-archive",
+    "<file>",
+    "scanner prepare: use this official archive instead of downloading it; both digests are checked",
+  ),
   booleanFlag("allow-full-access", null),
   booleanFlag("revoke-full-access", null),
   valueFlag("access-default", "<profile>", null),

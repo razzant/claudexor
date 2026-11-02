@@ -65,6 +65,11 @@ export const BETTERLEAKS_RELEASES: Readonly<Record<string, ScannerRelease>> = {
 
 export const BETTERLEAKS_RELEASE_URL = `https://github.com/betterleaks/betterleaks/releases/download/v${BETTERLEAKS_VERSION}`;
 
+/** Where the explicit preparation step fetches a release's official archive. */
+export function scannerArchiveUrl(release: ScannerRelease): string {
+  return `${BETTERLEAKS_RELEASE_URL}/${release.asset}`;
+}
+
 /** Explicit path to a provisioned scanner; it must still match the pin. */
 export const SCANNER_PATH_ENV = "CLAUDEXOR_BETTERLEAKS_PATH";
 
@@ -86,7 +91,8 @@ function releaseKey(release: ScannerRelease): string {
   return Object.keys(BETTERLEAKS_RELEASES).find((k) => BETTERLEAKS_RELEASES[k] === release) ?? "";
 }
 
-/** Where `claudexor`'s provisioner places the pinned binary under a config root. */
+/** Where `claudexor scanner prepare` places the pinned binary under a config root;
+ * its directory is the unit that activates, with the license beside the binary. */
 export function provisionedScannerPath(
   configDir: string,
   release: ScannerRelease | null = scannerRelease(),

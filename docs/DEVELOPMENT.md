@@ -375,8 +375,10 @@ Tests and local smokes must never touch real user state:
 - `pr` delivery tests that exercise the real publication scanner run only when
   `CLAUDEXOR_BETTERLEAKS_PATH` names the pinned build; provision it with
   `node scripts/provision-betterleaks.mjs --dest <file>` (CI does this before
-  its publication scan). Their transport is a local bare remote and a fake
-  `gh`; nothing is pushed off the machine. See
+  its publication scan). It proves the archive with the code
+  `claudexor scanner prepare` ships, then replaces that file and the `LICENSE`
+  beside it. Their transport is a local bare remote and a fake `gh`; nothing is
+  pushed off the machine. See
   [Publication scanner](ARCHITECTURE.md#publication-scanner).
 - On macOS, `scripts/build-engine-resources.sh` stages the pinned darwin
   scanners into `native/betterleaks/`. It downloads the two official archives
