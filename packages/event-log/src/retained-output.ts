@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { renameSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { RunEvent } from "@claudexor/schema";
+import { HarnessSpeech, type RunEvent } from "@claudexor/schema";
 import { writeText } from "@claudexor/util";
 
 export const RETAINED_OUTPUT_PATH = "final/retained-output.md";
@@ -12,6 +12,10 @@ interface TextBlock {
   last: number;
   delta: boolean;
   final: boolean;
+  /** The adapter-issued speech key: every fragment and the complete text of that key are this block. */
+  key?: string;
+  /** The harness's complete text of the keyed block replaced its fragments. */
+  complete?: boolean;
 }
 
 interface SourceOutput {
@@ -19,6 +23,10 @@ interface SourceOutput {
   harness: string;
   session: string;
   blocks: TextBlock[];
+  /** Keyed blocks by speech key; a key never names two blocks or merges with another key. */
+  keyed: Map<string, TextBlock>;
+  /** The block the last text event reached: the only one an unkeyed repetition can continue. */
+  current?: TextBlock;
   openDelta: boolean;
   pendingFlush: boolean;
   /** The block of the last final AnswerAssembly accepts (null when that final has no
@@ -28,13 +36,18 @@ interface SourceOutput {
 
 /** What a caller already passes on, so the projection does not repeat it. */
 interface CarriedOutput {
-  /** Carried text (a final answer, a checkpoint): a block wholly within it is omitted. */
+  /**
+   * @deprecated Accepted so earlier callers still compile, and ignored: carried
+   * prose identifies no recorded event, so it never removes a block (#568).
+   */
   text?: string;
   /** The native try (attempt, process session) whose answer is carried. Its answer is
    * the LAST typed final AnswerAssembly accepts (a later native turn's final wins),
-   * so only that final and the blocks it repeats are omitted; its earlier finals and
-   * other narration stay. Without an accepted final its joined narration is the
-   * answer and the whole try is omitted. */
+   * so only that final's own block is omitted: its keyed fragments (with the run a
+   * joined frame names) and its exact adjacent delta, flush and complete forms. Its
+   * earlier finals and other narration stay, whatever their text. Without an accepted
+   * final its joined narration is the answer and the whole try is omitted. Text never
+   * decides what is represented. */
   represented?: { attempt: string; session: string };
 }
 
@@ -66,11 +79,12 @@ export function retainedOutput(
     const harness = String(p["harness_id"] ?? "unknown");
     const session = String(p["session_id"] ?? "unknown");
     const key = JSON.stringify([attempt, harness, session]);
-    const source = sources.get(key) ?? {
+    const source: SourceOutput = sources.get(key) ?? {
       attempt,
       harness,
       session,
       blocks: [],
+      keyed: new Map(),
       openDelta: false,
       pendingFlush: false,
     };
@@ -96,26 +110,11 @@ export function retainedOutput(
       if (accepted) source.answer = null;
       continue;
     }
-    const seq = event.seq ?? 0;
-    const last = source.blocks.at(-1);
-    if (delta && source.openDelta && last) {
-      last.text += text;
-      last.last = seq;
-    } else if (
-      !delta &&
-      last?.text === text &&
-      (source.openDelta || source.pendingFlush || final || payload?.["buffered"] === true)
-    ) {
-      // Exact adjacent delta/flush/final repetition, never a semantic or substring match.
-      last.last = seq;
-      last.delta = false;
-      last.final ||= final;
-    } else {
-      source.blocks.push({ text, first: seq, last: seq, delta, final });
-    }
+    const block = textBlock(source, event.seq ?? 0, text, delta, final, p["speech"], payload);
+    source.current = block;
     source.openDelta = delta;
     source.pendingFlush = payload?.["buffered"] === true;
-    if (accepted) source.answer = text.trim() ? source.blocks.at(-1)! : null;
+    if (accepted) source.answer = text.trim() ? block : null;
   }
   const observed = [...sources.values()]
     .flatMap((source) => source.blocks)
@@ -128,12 +127,13 @@ export function retainedOutput(
       carried.represented.session === source.session;
     const answer = represented ? source.answer : undefined;
     const blocks = source.blocks.filter((block) => {
-      const text = block.text.trim();
-      if (!text || carried.text?.includes(text)) return false;
+      if (!block.text.trim()) return false;
       if (!represented) return true;
       // No accepted final: the joined narration is the answer.
       if (answer === undefined) return false;
-      return answer === null || (block !== answer && !answer.text.trim().includes(text));
+      // Only the carried final's own block is represented: equal or contained text
+      // elsewhere (another turn, a short "OK" inside "NOT OK") is its own evidence.
+      return block !== answer;
     });
     if (!blocks.length) return [];
     return [
@@ -169,6 +169,110 @@ export function retainedOutput(
     sections.join("\n\n---\n\n") +
     "\n"
   );
+}
+
+/**
+ * The block one text event belongs to. A keyed event (`speech`, typed only) is
+ * its key's block wherever that block began: fragments extend it verbatim until
+ * the harness's complete text replaces them, and another key is another block
+ * even for equal words. An unkeyed event has no identity of its own: it
+ * continues only the block the last text event reached, and only in the shapes
+ * one speech takes on the wire (an open unkeyed delta run, or an exact
+ * repetition of text just streamed or flushed, or of that block by a typed
+ * final), or completes the keyed run its adapter names (`joinedRun`). A block
+ * that holds a typed final is closed, since what follows is another native
+ * turn. Anything else is a separate segment.
+ */
+function textBlock(
+  source: SourceOutput,
+  seq: number,
+  text: string,
+  delta: boolean,
+  final: boolean,
+  rawSpeech: unknown,
+  payload: Record<string, unknown> | null | undefined,
+): TextBlock {
+  const speech = HarnessSpeech.safeParse(rawSpeech).data;
+  if (speech && speech.op !== "abandoned") {
+    const known = source.keyed.get(speech.key);
+    if (!known) {
+      const block: TextBlock = {
+        text,
+        first: seq,
+        last: seq,
+        delta: speech.op === "fragment",
+        final,
+        key: speech.key,
+        complete: speech.op === "complete",
+      };
+      source.blocks.push(block);
+      source.keyed.set(speech.key, block);
+      return block;
+    }
+    if (speech.op === "complete") {
+      known.text = text;
+      known.complete = true;
+      known.delta = false;
+    } else if (!known.complete) known.text += text;
+    known.last = seq;
+    known.final ||= final;
+    return known;
+  }
+  const joined = delta ? undefined : joinedRun(source, seq, text, final, payload);
+  if (joined) return joined;
+  const current = source.current;
+  if (delta && source.openDelta && current && current.key === undefined) {
+    current.text += text;
+    current.last = seq;
+    return current;
+  }
+  if (
+    !delta &&
+    current &&
+    !current.final &&
+    current.text === text &&
+    (source.openDelta || source.pendingFlush || final || payload?.["buffered"] === true)
+  ) {
+    // Exact adjacent delta/flush/final repetition, never a semantic or substring match.
+    current.last = seq;
+    current.delta = false;
+    current.final ||= final;
+    return current;
+  }
+  const block: TextBlock = { text, first: seq, last: seq, delta, final };
+  source.blocks.push(block);
+  return block;
+}
+
+/**
+ * A frame whose adapter names the keyed run it joins (`payload.joined_speech_keys`,
+ * Claude's `text_runs_joined` frame) is that run's complete form only when the
+ * named blocks are this source's last blocks in that order, none complete or
+ * final, and its text is exactly theirs joined. They become one block; on any
+ * other shape every block stays as recorded and the frame is its own segment.
+ */
+function joinedRun(
+  source: SourceOutput,
+  seq: number,
+  text: string,
+  final: boolean,
+  payload: Record<string, unknown> | null | undefined,
+): TextBlock | undefined {
+  const keys = payload?.["joined_speech_keys"];
+  if (!Array.isArray(keys) || keys.length === 0) return undefined;
+  const run = source.blocks.slice(-keys.length);
+  if (
+    run.length !== keys.length ||
+    run.some((block, i) => block.key !== keys[i] || block.complete || block.final) ||
+    run.map((block) => block.text).join("") !== text
+  ) {
+    return undefined;
+  }
+  const [block, ...rest] = run as [TextBlock, ...TextBlock[]];
+  source.blocks.length -= rest.length;
+  for (const other of rest) source.keyed.set(other.key!, block);
+  Object.assign(block, { text, last: seq, delta: false, complete: true, final });
+  return block;
 }
 
 /** Publish a derived artifact atomically; a failed write never announces a partial file. */

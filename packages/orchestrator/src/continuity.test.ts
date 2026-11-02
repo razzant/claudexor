@@ -140,6 +140,24 @@ describe("continuity packet budget + fallback (INV-137)", () => {
     expect(Buffer.byteLength(r.packetMarkdown ?? "", "utf8")).toBeGreaterThan(0);
   });
 
+  it("ends each one-line entry on a whole character within its 200-unit allowance (#577)", () => {
+    // UTF-16 unit 200 cuts an emoji in half in `split`, falls between two
+    // emoji in `aligned`, and is the exact end of `fits`.
+    const split = `a${"😀".repeat(150)}`;
+    const aligned = "😀".repeat(150);
+    const fits = "😀".repeat(100);
+    const big = "x".repeat(6 * 1024);
+    const prior = [
+      turn("t1", split, fits),
+      turn("t2", aligned, "ok"),
+      ...Array.from({ length: 4 }, (_, i) => turn(`t${i + 3}`, big, big)),
+    ];
+    const packet = buildContinuation(req({ priorTurns: prior })).packetMarkdown;
+    expect(packet).toContain(`- Turn 1 — user: a${"😀".repeat(99)}… · assistant: ${fits}\n`);
+    expect(packet).toContain(`- Turn 2 — user: ${"😀".repeat(100)}… · assistant: ok\n`);
+    expect(packet).not.toMatch(/\p{Surrogate}/u);
+  });
+
   it("keeps every turn verbatim and NOT summarized when under budget", () => {
     const prior = [turn("t1", "one", "short a"), turn("t2", "two", "short b")];
     const r = buildContinuation(
