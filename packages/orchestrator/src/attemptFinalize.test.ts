@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import type { WorkReport } from "@claudexor/schema";
 import {
+  attemptInterruption,
   finalizeAttempt,
   readOnlyNoSuccessTerminal,
+  type AttemptInterruption,
   unrecoveredToolErrorFailure,
   webEvidenceFailure,
 } from "./attemptFinalize.js";
@@ -584,7 +586,7 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
     workReport: null as WorkReport | null,
     workReportSource: "absent" as const,
     workReportViolation: null as string | null,
-    contextTerminalExhausted: false,
+    interruption: null as AttemptInterruption | null,
   };
 
   it("clean completed report ⇒ completed work_state, no reason", () => {
@@ -637,9 +639,33 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
   });
 
   it("terminal context exhaustion with no completed report ⇒ interrupted", () => {
-    const r = finalizeAttempt({ ...base, contextTerminalExhausted: true });
+    const r = finalizeAttempt({ ...base, interruption: "context_capacity_exhausted" });
     expect(r.outcomeClass).toBe("interrupted");
     expect(r.reason).toBe("context_capacity_exhausted");
+  });
+
+  it("the max-turns cap ⇒ interrupted with its own reason, outranking the contract and the error (#299)", () => {
+    const r = finalizeAttempt({
+      ...base,
+      harnessErrored: true,
+      workReportSource: "constrained",
+      workReportViolation: "final answer is not the JSON work_report envelope",
+      interruption: "turn_limit_reached",
+    });
+    expect(r.outcomeClass).toBe("interrupted");
+    expect(r.reason).toBe("turn_limit_reached");
+    expect(r.workState).toEqual({ state: "unverified", source: "constrained" });
+  });
+
+  it("attemptInterruption: context exhaustion outranks the cap; neither is null", () => {
+    const t = (contextExhausted: boolean, turnLimitReached: boolean) => ({
+      contextExhausted,
+      turnLimitReached,
+    });
+    expect(attemptInterruption(t(true, true))).toBe("context_capacity_exhausted");
+    expect(attemptInterruption(t(false, true))).toBe("turn_limit_reached");
+    expect(attemptInterruption(t(false, false))).toBeNull();
+    expect(attemptInterruption(null)).toBeNull();
   });
 
   it("a COMPLETED report survives a concurrent context signal (completed wins the exhaustion race)", () => {
@@ -647,7 +673,7 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
       ...base,
       workReport: completed,
       workReportSource: "constrained",
-      contextTerminalExhausted: true,
+      interruption: "context_capacity_exhausted",
     });
     expect(r.outcomeClass).toBe("clean");
     expect(r.workState.state).toBe("completed");

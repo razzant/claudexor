@@ -94,6 +94,7 @@ import {
   candidateRoster,
   candidateStatuses,
   convergenceOutcomeFacts,
+  interruptionOf,
   isWorkingCandidate,
   partitionCandidates,
   toCandidateEvidence,
@@ -284,6 +285,7 @@ import {
 } from "./continuity.js";
 import {
   activePlanPointer,
+  priorTurnOutput,
   resolveContinuitySummary,
   workspaceAnchor,
 } from "./continuity-facts.js";
@@ -307,7 +309,9 @@ import { beginNativeRetry } from "./native-retry-telemetry.js";
 import * as delegateFailure from "./delegationFailure.js";
 import * as secretDiff from "./secretDiff.js";
 import {
+  attemptInterruption,
   finalizeAttempt,
+  interruptionDetail,
   unrecoveredToolErrorFailure,
   webEvidenceFailure,
 } from "./attemptFinalize.js";
@@ -369,7 +373,6 @@ import {
   rankHarnesses,
 } from "@claudexor/budget";
 import {
-  readTextSafe,
   hashJson,
   newId,
   noProjectRepoRoot,
@@ -2170,9 +2173,7 @@ export class Orchestrator {
       const priorTurns: ContinuityTurn[] = ctx.priorTurns.map((t) => ({
         id: t.id,
         prompt: t.prompt,
-        outputText: t.runId
-          ? (readTextSafe(join(store.runPaths(t.runId).finalDir, "answer.md")) ?? "")
-          : "",
+        ...priorTurnOutput(t.runId, store),
       }));
       const req: ContinuityRequest = {
         lane,
@@ -2837,7 +2838,7 @@ export class Orchestrator {
       workReportSource: unwrapped.source,
       workReportViolation: unwrapped.contractViolation,
       workReportUnverified: unwrapped.unverified ?? null,
-      contextTerminalExhausted: telemetry.contextExhausted,
+      interruption: attemptInterruption(telemetry),
     });
     harnessErrored = finalized.harnessErrored;
     if (finalized.outcomeClass === "contract_failure" && unwrapped.contractViolation)
@@ -4800,7 +4801,7 @@ export class Orchestrator {
     let converged = false;
     let exhausted = false;
     let processingBudgetDenial: BudgetDenial | null = null;
-    let interrupted = false; // D-16 r8: terminalizes the run interrupted
+    let interrupted: ReturnType<typeof interruptionOf> | null = null; // D-16 r8, #299
 
     let lastFindings: ReviewFinding[] = [];
     let lastRun: CandidateRun | null = null;
@@ -5142,7 +5143,7 @@ export class Orchestrator {
         // D-16 r8: interrupted (errored===false) would CONVERGE a partial diff
         // as clean — break BEFORE review; a harness error still gate-retries.
         if (run.outcomeClass === "interrupted") {
-          interrupted = true;
+          interrupted = interruptionOf(run);
           break;
         }
 
@@ -5973,6 +5974,7 @@ export class Orchestrator {
         planAttempts.push(plannerAttemptSummary(outcome));
         if (outcome.status !== "success") {
           if (outcome.telemetry?.effortResolution?.resolution === "rejected") break;
+          if (outcome.telemetry?.turnLimitReached) break; // #299: the cap ends the run
           const next = adapters[idx + 1];
           if (next && !input.signal?.aborted) {
             fallbackFrom = outcome.harnessId;
@@ -6932,7 +6934,7 @@ export class Orchestrator {
         workReportSource: roUnwrapped.source,
         workReportViolation: roUnwrapped.contractViolation,
         workReportUnverified: roUnwrapped.unverified ?? null,
-        contextTerminalExhausted: telemetry.contextExhausted,
+        interruption: attemptInterruption(telemetry),
       });
       // A broken WorkReport contract is a hard failure ONLY when the finalizer
       // ranked it so — a concurrent terminal context exhaustion outranks it
@@ -7006,9 +7008,8 @@ export class Orchestrator {
         harnessId: adapter.id,
         status: scoutInterrupted ? "failed" : "success",
         report: report || "(no output)",
-        error: scoutInterrupted ? "context capacity exhausted before the scout completed" : null,
+        error: scoutInterrupted ? interruptionDetail(roFinalized.reason) : null,
         telemetry,
-        ...(scoutInterrupted ? { interrupted: true } : {}),
         ...continuity.terminalFacts(roResumable),
       });
       launched.delete(tried);
@@ -7019,7 +7020,7 @@ export class Orchestrator {
               .join("; ")}\n`
           : "";
         const scoutTag = scoutInterrupted
-          ? " interrupted (context capacity exhausted)"
+          ? ` interrupted (${interruptionDetail(roFinalized.reason)})`
           : ` (${adapter.id})`;
         store.writeText(
           join(paths.findingsDir, `${attemptId}${scoutInterrupted ? "-interrupted" : ""}.md`),
@@ -7109,7 +7110,7 @@ export class Orchestrator {
           }
           if (last?.telemetry.effortResolution?.resolution === "rejected") break;
           // Per-harness fallback_model: one same-harness retry on FAILURE (not
-          // policy blocks) before falling through to the next harness.
+          // policy blocks or the caller's max-turns cap, #299) before the next harness.
           const fallbackModel = routed.settings?.fallbackModel;
           const firstModel =
             contract.routing_models[routed.adapter.id] ?? routed.settings?.defaultModel ?? null;
@@ -7117,6 +7118,7 @@ export class Orchestrator {
             last &&
             last.status === "failed" &&
             !last.telemetry.requestRefusal &&
+            !last.telemetry.turnLimitReached &&
             fallbackModel &&
             fallbackModel !== firstModel &&
             !budgetStopped &&

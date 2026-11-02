@@ -137,7 +137,12 @@ when it cannot account for usage, is treated as unknown rather than free. Thinki
 discarded. A top-level error frame fails the turn; a result that still follows
 contributes its usage once and never an answer. A failed result (`is_error` or a
 non-success subtype) becomes the turn's error from its `errors`, else its
-`error`, else its `result` text, and that error is a masked diagnostic. Whether
+`error`, else its `result` text, and that error is a masked diagnostic. The
+exception is `error_max_turns`: it is the typed max-turns stop shared with
+Claude (`turn_limit`), so the run ends `interrupted / turn_limit_reached`
+instead of failing. No capped Grok run has been recorded: the frame shape
+(`subtype`, `is_error`, `num_turns`, `errors`) is the one the parser tests
+assume, matching Claude's. Whether
 Grok ever puts otherwise unstreamed model text in a failed result's `result` is
 not established: the recorded fixtures are successful streams and a quota
 failure carrying `errors`, and no documented contract covers it. If it did,

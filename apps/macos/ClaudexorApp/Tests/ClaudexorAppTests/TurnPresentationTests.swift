@@ -90,6 +90,15 @@ import ClaudexorKit
         #expect(attention(.cancelled) == nil)
     }
 
+    @Test func maxTurnsStopIsNamedLikeTheEngineLabel() {
+        // #299: the engine's `interrupted / turn_limit_reached` ("Turn limit reached").
+        #expect(attention(.interrupted, reason: "turn_limit_reached")
+            == TurnPresentation.Attention(text: "Turn limit reached", tone: .failure))
+        #expect(line(.interrupted, reason: "turn_limit_reached").stateWord == nil)
+        #expect(attention(.interrupted)
+            == TurnPresentation.Attention(text: RunPhase.interrupted.label, tone: .failure))
+    }
+
     @Test func attentionStatesRaiseOneLoudChipWithoutStutter() {
         // Failure: the chip voices the lifecycle terminal; the state word goes
         // silent — never "Failed [Failed]".

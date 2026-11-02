@@ -26,6 +26,7 @@ import type {
 } from "@claudexor/schema";
 import { redactSecrets, safeInvoke } from "@claudexor/util";
 import {
+  attemptInterruption,
   finalizeAttempt,
   unrecoveredToolErrorFailure,
   webEvidenceFailure,
@@ -85,6 +86,11 @@ export function plannerAttemptSummary(outcome: PlannerAttemptOutcome) {
     harnessId: outcome.harnessId,
     status: outcome.status,
     outcomeClass: outcome.outcomeClass,
+    // The typed limit that interrupted this attempt (#299); null when none did.
+    interruption:
+      outcome.outcomeClass === "interrupted"
+        ? (attemptInterruption(outcome.telemetry) ?? "context_capacity_exhausted")
+        : null,
     error: outcome.error,
     declaredFailure: outcome.declaredFailure,
   };
@@ -388,7 +394,7 @@ export async function runPlannerAttempt(
     workReportSource: planUnwrapped.source,
     workReportViolation: planUnwrapped.contractViolation,
     workReportUnverified: planUnwrapped.unverified ?? null,
-    contextTerminalExhausted: telemetry.contextExhausted,
+    interruption: attemptInterruption(telemetry),
   });
   if (!harnessError && finalized.outcomeClass === "contract_failure") {
     harnessError = `work_report contract: ${planUnwrapped.contractViolation}`;

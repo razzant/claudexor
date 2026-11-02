@@ -3614,7 +3614,14 @@ not retry automatically.
   with a bounded continuation packet delivered as `context/THREAD.md` and
   discloses it via a typed `session.continuity` event + a `continuity` field on
   the turn record (INV-137); a plain in-lane turn resumes natively with no
-  packet. An in-run account hop that MOVED the lane's session (claude, codex)
+  packet. Each earlier turn carries its `final/answer.md`. A turn that wrote no
+  answer and whose run did not succeed carries its `final/retained-output.md`
+  exactly as stored instead, under a heading that says it ended without a final
+  answer and that the text is not a completion verdict; when its terminal facts
+  (`final/run_facts.yaml`) cannot be read, the heading says only that no final
+  answer is recorded and the outcome is unknown. A successful turn without
+  `answer.md` (a plan or a report) keeps its earlier rendering, with the active
+  plan pointer for a plan. An in-run account hop that MOVED the lane's session (claude, codex)
   is disclosed on the same channel as `native_resume` with `lane_switched_from`
   naming the previous profile — the conversation continued natively on another
   account; the per-try run receipt (`run.continuity`) carries the carrier. Past a byte budget the packet's oldest turns collapse; the engine
@@ -6781,6 +6788,30 @@ remain unbudgeted; no predictive native refusal or guessed model window is added
 The native input cap excludes separate instructions and is not token capacity. A terminal `capacity_exhausted` with no completed
 WorkReport maps to `interrupted / context_capacity_exhausted`.
 
+The max-turns cap (#299) is a sibling typed stop: the cap ends the run and the
+caller chooses what happens next. Claude Code reports a capped turn as an
+`error_max_turns` result (`is_error`) and then exits 1 (read from the 2.1.316
+binary); the Grok parser maps a result of the same shape the same way, which is
+tested on synthetic frames only (no capped Grok run has been recorded). The
+adapter emits one `error` event carrying the typed `turn_limit` field
+(`turnLimitError` in core), whatever the exit code, so the run loop records a
+following non-zero exit as the harness's own report rather than a crash, and a
+consumer that only reads errors (the thread summary pass, the auth capability
+smoke, the reviewer engine) never takes the partial narration for an answer.
+With no completed WorkReport the finalizer maps it to `interrupted /
+turn_limit_reached` (label "Turn limit reached", ACP stop `max_turn_requests`)
+in every lane: Agent candidates are never reviewed or adopted, an Ask chain and
+an all-capped deep scan end interrupted, and the Plan pipeline's failure
+terminal names the same reason. Nothing re-runs the work implicitly: the
+attempt is never resumed, rotated or replayed under the same cap, the Ask
+`fallback_model` replay and the solo Plan fallback to the next harness are
+skipped, and an Ask chain never falls through to its next harness after it.
+The partial stays in `final/retained-output.md` and the attempt's evidence, an
+unfinished Agent tree stays under custody where the run keeps stopped work, and
+Agent and Ask terminals carry `resumable.cause: turn_limit` for an explicit
+`continueFrom`; Plan has no in-run continuation facts, and its next step is a
+later thread turn. The D-16d one-shot continuation stays context-only.
+
 One-shot continuation (D-16d): when an eligible terminal `capacity_exhausted`
 (cause `repeated_refill` only — `prompt_too_long` may be an irreducible packet)
 leaves no completed WorkReport, `continuation_count == 0`, and the run is
@@ -6809,8 +6840,8 @@ resume keeps the id; codex compares the `thread/resume` reply before
 session) and the adapter's typed rejection of carried state. "Acted" is a
 sticky fact of the attempt (an accepted answer, agent progress, a file change
 or a diff in any try). An attempt that did not act keeps the rotation and
-transient rules above, except typed context exhaustion and native permission
-refusal end the attempt rather than replaying the same limitation. AGY's adapter
+transient rules above, except typed context exhaustion, the max-turns cap and
+native permission refusal end the attempt rather than replaying the same limitation. AGY's adapter
 recognizes exact native-stderr auto-denial, not empty output or model prose.
 Only a nonempty typed final keeps an answer with that warning; narration
 cannot make the refusal successful. `permission_denial` records

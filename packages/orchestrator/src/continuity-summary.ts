@@ -27,7 +27,7 @@ import {
   type HarnessAdapter,
   type ProcessingAdmission,
 } from "@claudexor/core";
-import type { ContinuityTurn } from "./continuity.js";
+import { noFinalAnswerText, type ContinuityTurn } from "./continuity.js";
 import { admitCurrentProfileDispatch, type ModelGovernedRoute } from "./modelGovernance.js";
 
 /** Default wall-clock ceiling for one inline summary pass. */
@@ -93,7 +93,9 @@ function transcript(turns: ContinuityTurn[]): string {
       const output = t.outputText.trim()
         ? boundBytes(t.outputText.trim(), PER_TURN_INPUT_BYTES / 2)
         : "(no recorded answer)";
-      return `Turn ${i + 1}\nUser: ${prompt}\nAssistant: ${output}`;
+      const missing = noFinalAnswerText(t);
+      const said = missing ? `Assistant (${missing.note})` : "Assistant";
+      return `Turn ${i + 1}\nUser: ${prompt}\n${said}: ${output}`;
     })
     .join("\n\n");
 }

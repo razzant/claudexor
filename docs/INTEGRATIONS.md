@@ -2140,9 +2140,11 @@ and Task tools also carry plan progress); `user` tool_result blocks →
 `stream_event` text deltas → `payload.delta === true` messages. Finality: the
 terminal `result` is the typed final answer — `final: true` is stamped ONLY on
 a success result (`structured_output` verbatim when present, else the result
-text); error subtypes never claim finality, and `error_max_turns` /
-structured-output-retries-exhausted are benign turn-control outcomes, not run
-failures. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
+text); error subtypes never claim finality. `error_max_turns` is one typed
+`error` carrying `turn_limit` (the run ends `interrupted / turn_limit_reached`
+and is never resumed under the same cap; ARCHITECTURE, context signals), and
+structured-output retries exhausted stay a benign conformance outcome, not a
+run failure. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
 frames surface (flagged `delta`); subagent frames (`parent_tool_use_id`) and
 block/lifecycle frames never do. A complete message follows only a block the
 CLI completes: a stream cut short leaves its fragments without one.

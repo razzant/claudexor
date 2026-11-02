@@ -1538,6 +1538,33 @@
           "additionalProperties": false,
           "description": "Typed context-management signal (compaction boundary / capacity exhaustion) set by the adapter; orthogonal to the transient-retry taxonomy."
         },
+        "turn_limit": {
+          "type": "object",
+          "properties": {
+            "native_code": {
+              "type": "string",
+              "description": "The vendor's own terminal subtype, verbatim."
+            },
+            "num_turns": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Turns the vendor counted."
+            }
+          },
+          "required": [
+            "native_code",
+            "num_turns"
+          ],
+          "additionalProperties": false,
+          "description": "Typed max-turns stop set by the adapter on the error event that ends a capped native turn; orthogonal to the transient-retry taxonomy."
+        },
         "error": {
           "type": "string",
           "description": "Error text for error events."

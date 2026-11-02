@@ -83,18 +83,25 @@ describe("Claude native API failure evidence", () => {
     },
   );
 
-  it.each(["error_max_turns", "error_max_structured_output_retries"])(
-    "preserves %s control semantics",
-    (subtype) => {
-      const frame = { ...recording("2.1.288").at(-1), subtype };
-      const parsed = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
-        frame,
-        "fixture",
-      )!;
-      expect(parsed.some((event) => event.type === "thinking")).toBe(true);
-      expect(parsed.some((event) => event.request_refusal || event.type === "error")).toBe(false);
-    },
-  );
+  it("preserves error_max_structured_output_retries control semantics", () => {
+    const frame = {
+      ...recording("2.1.288").at(-1),
+      subtype: "error_max_structured_output_retries",
+    };
+    const parsed = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(frame, "fixture")!;
+    expect(parsed.some((event) => event.type === "thinking")).toBe(true);
+    expect(parsed.some((event) => event.request_refusal || event.type === "error")).toBe(false);
+  });
+
+  it("keeps error_max_turns its own typed stop, never an API failure or a version refusal (#299)", () => {
+    // The recorded frame carries api_error_status and claude_code_version_too_old.
+    const frame = { ...recording("2.1.288").at(-1), subtype: "error_max_turns" };
+    const parsed = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(frame, "fixture")!;
+    const errors = parsed.filter((event) => event.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.turn_limit?.native_code).toBe("error_max_turns");
+    expect(parsed.some((e) => e.request_refusal || e.payload?.["vendor_failure"])).toBe(false);
+  });
 
   it.each([401, 429, 500])("HTTP %s alone is never the version stop", (status) => {
     const frame = { ...recording("2.1.165").at(-1), api_error_status: status };

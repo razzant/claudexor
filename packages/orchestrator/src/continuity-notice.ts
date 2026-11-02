@@ -26,6 +26,7 @@ const CAUSE_PHRASE: Record<ResumableCause, string> = {
   transport: "the process died",
   permission_denied: "a native tool permission was refused (no automatic privilege escalation)",
   context_exhausted: "the context window was exhausted",
+  turn_limit: "the max-turns limit set for it was reached",
   wall_clock: "the wall-clock deadline",
   cancelled: "a cancel",
   host_restart: "a host restart",

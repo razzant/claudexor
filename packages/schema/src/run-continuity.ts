@@ -23,6 +23,7 @@ export const ResumableCause = z
     "transport",
     "permission_denied",
     "context_exhausted",
+    "turn_limit",
     "wall_clock",
     "cancelled",
     "host_restart",
@@ -30,7 +31,7 @@ export const ResumableCause = z
     "other",
   ])
   .describe(
-    "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, a transport death (crash, timeout, watchdog), a confirmed native tool permission refusal, context exhaustion, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause.",
+    "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, a transport death (crash, timeout, watchdog), a confirmed native tool permission refusal, context exhaustion, the run's max-turns cap, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause.",
   );
 export type ResumableCause = z.infer<typeof ResumableCause>;
 

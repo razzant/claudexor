@@ -1,7 +1,8 @@
 /**
  * Continuity FACTS (INV-137): the I/O-bearing helpers that feed the pure packet
- * builder (`continuity.ts`) — the active-plan pointer, the git workspace anchor,
- * and the cached-or-fresh LLM summary resolution. Split out of the orchestrator
+ * builder (`continuity.ts`) — each earlier turn's recorded output, the
+ * active-plan pointer, the git workspace anchor, and the cached-or-fresh LLM
+ * summary resolution. Split out of the orchestrator
  * so the engine's chat surface stays under the readability ratchet; each is a
  * free function taking explicit, already-resolved inputs (no orchestrator
  * `this`), so they are directly unit-testable.
@@ -9,11 +10,13 @@
 import { join } from "node:path";
 import {
   PlanQuestionsArtifact,
+  RunOutcomeFacts,
   derivePlanReadiness,
   type CredentialProfile,
 } from "@claudexor/schema";
 import { readTextSafe } from "@claudexor/util";
 import type { ArtifactStore } from "@claudexor/artifact-store";
+import { RETAINED_OUTPUT_PATH } from "@claudexor/event-log";
 import type { HarnessAdapter, ProcessingAdmission } from "@claudexor/core";
 import {
   readThreadSummary,
@@ -26,9 +29,38 @@ import {
   type ContinuityAnchor,
   type ContinuityPlanPointer,
   type ContinuityRequest,
+  type ContinuityTurn,
   type ResolvedSummary,
 } from "./continuity.js";
 import { summarizeThreadPrefix } from "./continuity-summary.js";
+
+/**
+ * An earlier turn's recorded output for the packet (#405): its final answer
+ * when the run wrote one. Otherwise the run's existing
+ * `final/retained-output.md`, exactly as stored, flagged so it is never shown
+ * as an answer: `ended` when the run's terminal facts say it did not succeed,
+ * `unknown` when they cannot be read (missing or unparsable), which claims
+ * nothing about how it ended. A successful run without `answer.md` (a plan or
+ * report turn) keeps its previous rendering.
+ */
+export function priorTurnOutput(
+  runId: string | null,
+  store: ArtifactStore,
+): Pick<ContinuityTurn, "outputText" | "noFinalAnswer"> {
+  if (!runId) return { outputText: "" };
+  const { root, finalDir } = store.runPaths(runId);
+  const answer = readTextSafe(join(finalDir, "answer.md")) ?? "";
+  if (answer.trim()) return { outputText: answer };
+  const raw = store.readYaml<{ outcome?: { lifecycle?: unknown } }>(
+    join(finalDir, "run_facts.yaml"),
+  );
+  const lifecycle = RunOutcomeFacts.shape.lifecycle.safeParse(raw?.outcome?.lifecycle).data;
+  if (lifecycle === "succeeded") return { outputText: answer };
+  return {
+    outputText: readTextSafe(join(root, RETAINED_OUTPUT_PATH)) ?? "",
+    noFinalAnswer: lifecycle ? "ended" : "unknown",
+  };
+}
 
 /** The thread's most recent readable plan pointer (INV-137 packet section). */
 export function activePlanPointer(

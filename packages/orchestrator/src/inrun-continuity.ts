@@ -1,8 +1,8 @@
 /** Agent and Ask share one per-attempt continuation owner. Before progress,
  * existing fresh-retry/rotation rules apply. After progress, limits move the
  * session to another account (or a packet); transport resumes the same account
- * bounded by max_retries. Deterministic permission/context refusals stop rather
- * than replaying the same limitation. Pins never rotate.
+ * bounded by max_retries. Permission/context refusals and the max-turns cap stop
+ * rather than replaying the same limitation. Pins never rotate.
  *
  * Acted is sticky across every try (answer, activity, file change or diff): a
  * silent resumed try never reopens the fresh rung. The capsule, per-try receipts,
@@ -265,6 +265,7 @@ export class InRunContinuity {
     // or rotating accounts. Keep its answer and ordinary continuation evidence.
     if (this.permissionDenied) return this.breakWith("permission_denied");
     if (facts.telemetry.contextExhausted) return this.breakWith("context_exhausted");
+    if (facts.telemetry.turnLimitReached) return this.breakWith("turn_limit"); // #299
     if (!this.acted) return this.legacy(facts);
     const typedRefusal = facts.newTransients.some((t) => TYPED_REFUSALS.has(t.category));
     if (typedRefusal) return this.breakWith("other");

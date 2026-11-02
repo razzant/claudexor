@@ -138,6 +138,8 @@ export interface AttemptTelemetry
    * `repeated_refill` (claude's rapid-refill breaker), never on `prompt_too_long`
    * (an irreducible packet). */
   contextExhaustedCause: NonNullable<HarnessEvent["context"]>["cause"] | null;
+  /** #299: the vendor ended a native turn at the max-turns cap (typed `turn_limit`). */
+  turnLimitReached: boolean;
   /** D-16c: the raw `{work_report}` payload a `side_tool` route surfaced on its
    * final message (claude StructuredOutput tool), or null. The unwrap validates
    * it while the markdown answer stays the deliverable. */
@@ -214,6 +216,7 @@ export function createAttemptTelemetry(
     },
     contextExhausted: false,
     contextExhaustedCause: null,
+    turnLimitReached: false,
     sideToolWorkReport: null,
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
@@ -327,6 +330,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     t.contextExhausted = true;
     t.contextExhaustedCause = ev.context.cause ?? null;
   }
+  if (ev.turn_limit) t.turnLimitReached = true;
   // D-16c side_tool: capture the raw work_report the StructuredOutput tool
   // surfaced on the final message (last-wins). The unwrap validates it.
   const sideTool = ev.payload?.["work_report_side_tool"];

@@ -492,6 +492,7 @@
                             "input_required",
                             "work_incomplete",
                             "context_capacity_exhausted",
+                            "turn_limit_reached",
                             "work_report_contract"
                           ],
                           "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
@@ -2102,13 +2103,14 @@
                     "transport",
                     "permission_denied",
                     "context_exhausted",
+                    "turn_limit",
                     "wall_clock",
                     "cancelled",
                     "host_restart",
                     "input_required",
                     "other"
                   ],
-                  "description": "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, a transport death (crash, timeout, watchdog), a confirmed native tool permission refusal, context exhaustion, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause."
+                  "description": "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, a transport death (crash, timeout, watchdog), a confirmed native tool permission refusal, context exhaustion, the run's max-turns cap, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause."
                 },
                 "resetsAt": {
                   "type": [

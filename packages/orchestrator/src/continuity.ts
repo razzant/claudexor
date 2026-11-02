@@ -40,6 +40,26 @@ export interface ContinuityTurn {
   prompt: string;
   /** The turn's primary output text (final/answer.md), "" when none. */
   outputText: string;
+  /** #405: no final answer was recorded, and `outputText` is the turn's retained
+   * output, never an answer. `ended`: its run did not succeed; `unknown`: its
+   * outcome could not be read, so nothing is claimed about how it ended. */
+  noFinalAnswer?: "ended" | "unknown";
+}
+
+const NO_FINAL_ANSWER = {
+  ended: { lead: "The turn ended without a final answer.", note: "ended without a final answer" },
+  unknown: {
+    lead: "No final answer is recorded for this turn, and its outcome could not be read.",
+    note: "no final answer recorded; outcome could not be read",
+  },
+} as const;
+
+/** How a turn without a final answer is described (`lead` sentence, short `note`);
+ * null for an answered turn. */
+export function noFinalAnswerText(
+  turn: Pick<ContinuityTurn, "noFinalAnswer">,
+): { lead: string; note: string } | null {
+  return turn.noFinalAnswer ? NO_FINAL_ANSWER[turn.noFinalAnswer] : null;
 }
 
 export interface ContinuityLane {
@@ -169,13 +189,19 @@ function verbatimEntry(turn: ContinuityTurn, index: number): string {
   const output = turn.outputText.trim()
     ? boundBytes(turn.outputText.trim(), PER_TURN_BUDGET_BYTES / 2)
     : "_(no recorded output)_";
-  return `### Turn ${index + 1}\n\n**User asked:**\n\n${prompt}\n\n**The assistant answered:**\n\n${output}\n`;
+  const missing = noFinalAnswerText(turn);
+  const said = missing
+    ? `**${missing.lead} The assistant's recorded output (not a completion verdict):**`
+    : "**The assistant answered:**";
+  return `### Turn ${index + 1}\n\n**User asked:**\n\n${prompt}\n\n${said}\n\n${output}\n`;
 }
 
 function collapsedEntry(turn: ContinuityTurn, index: number): string {
   const prompt = oneLine(turn.prompt) || "(empty)";
   const output = turn.outputText.trim() ? oneLine(turn.outputText) : "(no recorded output)";
-  return `- Turn ${index + 1} — user: ${prompt} · assistant: ${output}`;
+  const missing = noFinalAnswerText(turn);
+  const speaker = missing ? `assistant (${missing.note})` : "assistant";
+  return `- Turn ${index + 1} — user: ${prompt} · ${speaker}: ${output}`;
 }
 
 /**
