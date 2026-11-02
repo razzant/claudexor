@@ -145,7 +145,8 @@ export async function streamRunEvents(
       return TERMINAL_STATES.has(rec.state) ? rec.state : null;
     }
   };
-  // A terminal whose log is gone cannot be delivered: say why, retryably.
+  // A terminal whose log is gone cannot be delivered: say why (retryably, unless
+  // retention reclaimed it).
   const unreadableLog = () =>
     Object.assign(new Error("run event log is not available"), {
       code: readRunTombstone(dirname(eventsPath!))
@@ -274,13 +275,16 @@ export async function streamRunEvents(
       }
     } catch (error) {
       if (!closed && !res.writableEnded && !res.destroyed) {
+        const code = thrownProblemCode(error);
+        // Retention reclaimed the log for good: reconnecting cannot deliver it.
+        const permanent = code === "run_expired_by_retention";
         res.write(
           `event: error\ndata: ${JSON.stringify({
-            code: thrownProblemCode(error),
+            code,
             message: "Run event stream could not be read.",
-            retryable: true,
+            retryable: !permanent,
             fieldErrors: [],
-            requiredActions: ["reconnect"],
+            requiredActions: permanent ? [] : ["reconnect"],
             evidenceRefs: [],
             context: {},
           })}\n\n`,

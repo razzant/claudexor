@@ -333,6 +333,7 @@ describe("quiet run event stream", () => {
     expect(f.res.body).toContain("event: error\n");
     expect(f.res.body).toContain('"code":"run_event_not_found"');
     expect(f.res.body).toContain('"retryable":true');
+    expect(f.res.body).toContain('"requiredActions":["reconnect"]');
     expect(f.res.body).not.toContain("event: end\n");
   });
 
@@ -388,6 +389,9 @@ describe("quiet run event stream", () => {
     await f.open();
     expect(f.res.ended).toBe(true);
     expect(f.res.body).toContain('"code":"run_expired_by_retention"');
+    // Retention reclaimed it for good: reconnecting cannot deliver it.
+    expect(f.res.body).toContain('"retryable":false');
+    expect(f.res.body).toContain('"requiredActions":[]');
     expect(f.res.body).not.toContain("event: end\n");
   });
 });

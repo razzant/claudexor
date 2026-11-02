@@ -4307,9 +4307,10 @@ found missing (reclaimed by retention, or removed) is not polled: it is read
 again only after a change, when its live writer has moved past the seq it held
 at the miss or a bus push or post-commit notice for the run arrives, so a log
 restored under a live run is delivered on that change. Once its job is terminal
-the stream ends with the retryable `event: error` (`run_expired_by_retention`
-when a tombstone names retention, else `run_event_not_found`) rather than `end`,
-because no terminal frame can be delivered. `output.ready` is guaranteed to precede the terminal
+the stream ends with `event: error` rather than `end`, because no terminal
+frame can be delivered: `run_event_not_found`, retryable with `reconnect`, or,
+when a tombstone names retention, `run_expired_by_retention`, not retryable and
+with no required action, because reconnecting cannot bring that log back. `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
 has applied the terminal event provably has the output. The EventLog's
 once-only terminal-preparation hook also builds and validates the immutable
