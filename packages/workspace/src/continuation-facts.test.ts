@@ -173,30 +173,152 @@ describe("recorded output that what a run carries forward does not represent", (
     // carried answer, an unwrapped deliverable, does not contain verbatim.
     say("a01", "s1", '{"deliverable":"FINAL-ANSWER-2","work_report":{}}'),
     started("a02", "s2", "sid-B"),
+    // Another attempt saying the carried answer's words is its own output (#568).
     say("a02", "s2", "FINAL-ANSWER-2"),
     say("a02", "s2", "OTHER-ATTEMPT-FACT-3"),
   ];
-  const carried = "# Answer\n\nFINAL-ANSWER-2";
 
-  it("keeps earlier tries and other attempts once, never the represented try or carried text", () => {
+  it("keeps earlier tries and other attempts once, whatever their words, never the represented try", () => {
     const facts = runExecutionFacts(events);
-    const output = unrepresentedOutput(events, facts, "a01", carried)!;
+    const output = unrepresentedOutput(events, facts, "a01")!;
     expect(output).toContain("EARLY-TRY-FACT-1");
     expect(output).toContain("OTHER-ATTEMPT-FACT-3");
     expect(output).not.toContain("work_report");
-    expect(output).not.toMatch(/^FINAL-ANSWER-2$/m);
+    expect(output).toMatch(/^FINAL-ANSWER-2$/m);
     expect(output.match(/## Attempt a01/g)).toHaveLength(1);
     expect(output).toContain("Session: `s0`");
     expect(output).not.toContain("Session: `s1`");
   });
 
-  it("without a known represented attempt only the carried text is left out", () => {
-    const output = unrepresentedOutput(events, runExecutionFacts(events), null, carried)!;
+  it("without a known represented attempt nothing is left out", () => {
+    const output = unrepresentedOutput(events, runExecutionFacts(events), null)!;
     expect(output).toContain("work_report");
-    expect(output).not.toMatch(/^FINAL-ANSWER-2$/m);
+    expect(output).toMatch(/^FINAL-ANSWER-2$/m);
     // The represented try alone leaves nothing to add.
-    expect(unrepresentedOutput(events.slice(2, 4), runExecutionFacts(events), "a01", "")).toBe(
-      null,
+    expect(unrepresentedOutput(events.slice(2, 4), runExecutionFacts(events), "a01")).toBe(null);
+  });
+
+  it("still accepts the earlier call shapes, whose carried text filters nothing", () => {
+    const facts = runExecutionFacts(events);
+    // Every recorded word, as an earlier caller passed its carried answer.
+    const carried = "# Answer\n\nEARLY-TRY-FACT-1 FINAL-ANSWER-2 OTHER-ATTEMPT-FACT-3";
+    const identity = unrepresentedOutput(events, facts, "a01");
+    expect(identity).toMatch(/^FINAL-ANSWER-2$/m);
+    expect(unrepresentedOutput(events, facts, "a01", carried)).toBe(identity);
+    // The published event-log entry keeps accepting the `text` option, inert.
+    const represented = { attempt: "a01", session: "s1" };
+    expect(retainedOutput(events, 0, false, { text: carried, represented })).toBe(
+      retainedOutput(events, 0, false, { represented }),
+    );
+  });
+});
+
+describe("continuation evidence keeps output by identity, never by words (#568)", () => {
+  /** A completed run: its winner's final answer, telemetry and these events with exact seqs. */
+  function completedRun(rows: Array<[string, Record<string, unknown>]>, answer: string) {
+    const dir = mkdtempSync(join(tmpdir(), "cx-identity-"));
+    roots.push(dir);
+    mkdirSync(join(dir, "final"));
+    const events = rows.map(([type, payload], index) => ({
+      seq: index + 1,
+      ts: "t",
+      run_id: "r",
+      task_id: "k",
+      type,
+      payload: { harness_id: "fake", ...payload },
+    }));
+    writeFileSync(
+      join(dir, "events.jsonl"),
+      events.map((e) => JSON.stringify(e)).join("\n") + "\n",
+    );
+    writeFileSync(join(dir, "final", "answer.md"), `${answer}\n`);
+    writeFileSync(
+      join(dir, "final", "telemetry.yaml"),
+      JSON.stringify(
+        RunTelemetry.parse({
+          schema_version: SCHEMA_VERSION,
+          run_id: "r",
+          task_id: "k",
+          mode: "ask",
+          requested_access: "readonly",
+          effective_access: "readonly",
+          external_context_policy: "auto",
+          effective_web_mode: "off",
+          web: {
+            required: false,
+            policy: "off",
+            effective_mode: "off",
+            attempted: false,
+            satisfied: false,
+            status: "none",
+            tool: null,
+            target: null,
+            error_summary: null,
+          },
+          final_attempt_id: "a02",
+          attempts: [],
+          generated_at: "2026-11-01T00:00:00.000Z",
+        }),
+      ),
+    );
+    return dir;
+  }
+  const start = (
+    attempt: string,
+    session: string,
+    native: string,
+  ): [string, Record<string, unknown>] => [
+    "harness.event",
+    {
+      attempt_id: attempt,
+      session_id: session,
+      type: "started",
+      payload: { native_session_id: native },
+    },
+  ];
+  const text = (
+    attempt: string,
+    session: string,
+    value: string,
+    extra: Record<string, unknown> = {},
+  ): [string, Record<string, unknown>] => [
+    "harness.event",
+    { attempt_id: attempt, session_id: session, type: "message", text: value, ...extra },
+  ];
+  const header = (attempt: string, session: string) =>
+    `## Attempt ${attempt} · fake\n\nSession: \`${session}\`\n\n`;
+
+  it("keeps equal and contained words of other attempts, tries and turns; leaves out the carried final once", () => {
+    const dir = completedRun(
+      [
+        start("a01", "s1", "sid-1"), // 1
+        text("a01", "s1", "OK", { final: true }), // 2: another attempt, words inside the answer
+        start("a02", "s2", "sid-2"), // 3
+        text("a02", "s2", "NOT OK", { final: true }), // 4: an earlier try, the answer's own words
+        start("a02", "s3", "sid-2"), // 5: the represented (last accepted) try
+        text("a02", "s3", "OK"), // 6: narration
+        text("a02", "s3", "OK", { final: true }), // 7: its first native turn's final repeats it
+        // 8-11: the second turn, keyed as Claude streams it, then its unkeyed result.
+        text("a02", "s3", "NOT", {
+          speech: { key: "k", op: "fragment" },
+          payload: { delta: true },
+        }),
+        text("a02", "s3", " OK", {
+          speech: { key: "k", op: "fragment" },
+          payload: { delta: true },
+        }),
+        text("a02", "s3", "NOT OK", { speech: { key: "k", op: "complete" } }),
+        text("a02", "s3", "NOT OK", { final: true }),
+      ],
+      "NOT OK",
+    );
+    expect(readContinuationEvidence(dir).output).toBe(
+      "Final answer (final/answer.md, attempt a02):\n\nNOT OK\n\n# Retained output\n\n" +
+        "> Recorded assistant text, not a completion verdict. The run outcome and checks remain authoritative.\n\n" +
+        "Source: `events.jsonl`. Attempts and physical sessions are kept separate.\n\n" +
+        `${header("a01", "s1")}### Observed final message · events 2–2\n\nOK\n\n---\n\n` +
+        `${header("a02", "s2")}### Observed final message · events 4–4\n\nNOT OK\n\n---\n\n` +
+        `${header("a02", "s3")}### Observed final message · events 6–7\n\nOK`,
     );
   });
 });

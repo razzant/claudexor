@@ -380,8 +380,8 @@ export async function main(): Promise<void> {
         admissionFlight = null;
       }
     }
-    if (!shutdown.requested()) {
-      await proveRecoveryTransport({ socketPath, identity, token, control: address });
+    const proof = { socketPath, identity, token, control: address, signal: abort.signal };
+    if (!shutdown.requested() && (await proveRecoveryTransport(proof)) === "proved") {
       opening = storage.open(abort.signal).then(completeAdmission);
       try {
         await opening;

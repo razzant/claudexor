@@ -429,3 +429,45 @@ describe("#450 command outcomes at every closing point of the collector", () => 
     expect(markdown).toContain("- shell — cat x (unresolved: no result recorded) · attempt a01");
   });
 });
+
+describe("tool rows end on a whole character at their unit limits (#577 class)", () => {
+  // U+1F600 is one character in two UTF-16 units.
+  const emoji = "\u{1F600}";
+  const call = (target: string | undefined, text?: string) => ({
+    type: "tool_call",
+    session_id: "s",
+    ...(text === undefined ? { tool: { name: "Read", target } } : { text }),
+  });
+  const lone = /\p{Surrogate}/u;
+
+  it("a target straddling unit 160 and a name straddling unit 80 drop that character whole", () => {
+    const calls = toolCallIndex([
+      call(`${"t".repeat(159)}${emoji} tail`),
+      call(undefined, `${"n".repeat(79)}${emoji} rest\nsecond line`),
+    ]);
+    expect(calls[1]!.name).toBe("n".repeat(79));
+    const markdown = render(calls);
+    expect(markdown).toContain(`- Read — ${"t".repeat(159)} (unresolved: no result recorded)`);
+    expect(markdown).toContain(`- ${"n".repeat(79)} (unresolved: no result recorded)`);
+    expect(lone.test(markdown)).toBe(false);
+    expect(Buffer.from(markdown, "utf8").toString("utf8")).not.toContain("�");
+  });
+
+  it("keeps a character inside the limit, text that fits and a source's own lone surrogate", () => {
+    const inside = `${"t".repeat(158)}${emoji}tail`;
+    const exact = "e".repeat(160);
+    const malformed = `${"m".repeat(159)}\uD83Dx`;
+    const calls = toolCallIndex([
+      call(inside),
+      call(exact),
+      call(malformed),
+      call(undefined, `${"n".repeat(78)}${emoji}rest`),
+    ]);
+    expect(calls[3]!.name).toBe(`${"n".repeat(78)}${emoji}`);
+    const markdown = render(calls);
+    expect(markdown).toContain(`- Read — ${"t".repeat(158)}${emoji} (unresolved`);
+    expect(markdown).toContain(`- Read — ${exact} (unresolved`);
+    // The limits are unchanged and malformed source text is not repaired.
+    expect(markdown).toContain(`- Read — ${malformed.slice(0, 160)} (unresolved`);
+  });
+});
