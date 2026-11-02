@@ -1401,13 +1401,22 @@ to `row.enabled=false`, and the deprecated key is kept mirrored for the
 downgrade window (the row is the authority; its Enabled PATCH updates the
 mirror). The supported downgrade path is the engine's own rollback —
 `POST /v2/accounts-migration/rollback` / `claudexor profiles
-rollback-migration` — run BEFORE installing an older engine whose
-canonicalizers refuse the native locator. That account-registration rollback
+rollback-migration [harness]`, where omitting the harness reverses every
+migrated harness — run BEFORE installing an older engine whose
+canonicalizers refuse the native locator. The CLI refuses an explicitly empty or
+blank harness before contacting the daemon, so an unset shell variable cannot
+widen the rollback. The run gate's instruction names the blocked harness. The
+daemon writes that instruction without knowing its reader's lifecycle owner, so
+its restart advice names both: `claudexor daemon stop` for a standalone daemon,
+and the owning application for an externally owned one, which refuses that
+command (`daemon_lifecycle_external`). That account-registration rollback
 cannot undo the SQL engine-store migration or lower its semantic floor.
 `claudexor auth login <harness>` is
 bootstrap sugar: it ensures the `<harness>-default` row (claude/codex on their
 native dirs; cursor on an isolated file-store dir) and signs into it; a
 cancelled or failed login keeps the cold row with its Sign-in affordance.
+`--display-name` labels a new row on `claudexor profiles add`; every other
+`profiles` verb refuses it with a usage error instead of ignoring it.
 
 Every Cursor account rides the vendor's own FILE credential store: a
 `config_dir_login` cursor row selects `AGENT_CLI_CREDENTIAL_STORE=file`
