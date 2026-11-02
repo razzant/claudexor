@@ -81,6 +81,20 @@ function fixture() {
 
 const received = () => JSON.parse(stdout) as Record<string, unknown>;
 
+/** Await the end of an owned fixture on every path through its test. One still running after
+ * 10 s keeps its root, so nothing is deleted under it, and adds a soft failure that is reported
+ * alongside any failure of the test itself. */
+async function awaitFixtureEnd(root: string, what: string, ended: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!ended() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  const running = !ended();
+  if (running) {
+    const at = roots.indexOf(root);
+    if (at >= 0) roots.splice(at, 1);
+  }
+  expect.soft(running, `${what} was still running after 10 s, so ${root} was kept`).toBe(false);
+}
+
 describe.skipIf(process.platform === "win32")("claudexor scanner prepare", () => {
   it("answers one JSON receipt for a real preparation, with nothing else on stdout", async () => {
     const f = fixture();
@@ -214,17 +228,32 @@ describe.skipIf(process.platform === "win32")("claudexor scanner prepare", () =>
     });
     const before = process.listenerCount("SIGINT");
     const run = f.prepare(true, { tarCommand });
-    while (!existsSync(pidFile) || readFileSync(pidFile, "utf8").trim() === "")
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    process.emit("SIGINT");
-    expect(await run).toBe(1);
-    expect(received()).toMatchObject({ ok: false, code: "scanner_prepare_cancelled" });
-    expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
-    expect(existsSync(dirname(f.binary))).toBe(false);
-    expect(readdirSync(dirname(dirname(f.binary))).filter((n) => n.includes("staging"))).toEqual(
-      [],
+    // Observed from the start, so cleanup can tell when the command has ended.
+    let ended = false;
+    run.then(
+      () => (ended = true),
+      () => (ended = true),
     );
-    expect(process.listenerCount("SIGINT")).toBe(before);
+    try {
+      const deadline = Date.now() + 15_000;
+      while (!existsSync(pidFile) || readFileSync(pidFile, "utf8").trim() === "") {
+        if (Date.now() > deadline) throw new Error("the extractor did not start");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      process.emit("SIGINT");
+      expect(await run).toBe(1);
+      expect(received()).toMatchObject({ ok: false, code: "scanner_prepare_cancelled" });
+      expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
+      expect(existsSync(dirname(f.binary))).toBe(false);
+      expect(readdirSync(dirname(dirname(f.binary))).filter((n) => n.includes("staging"))).toEqual(
+        [],
+      );
+      expect(process.listenerCount("SIGINT")).toBe(before);
+    } finally {
+      // Whatever happened above: interrupt the command while it still listens, and join it.
+      if (process.listenerCount("SIGINT") > before) process.emit("SIGINT");
+      await awaitFixtureEnd(f.root, "the interrupted preparation", () => ended);
+    }
   });
 
   it("is reached through the ops dispatcher and refuses another verb", async () => {

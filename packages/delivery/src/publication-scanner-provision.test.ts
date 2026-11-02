@@ -109,6 +109,20 @@ async function waitFor(check: () => boolean, what: string): Promise<void> {
   }
 }
 
+/** Await the end of an owned fixture on every path through its test. One still running after
+ * 10 s keeps its root, so nothing is deleted under it, and adds a soft failure that is reported
+ * alongside any failure of the test itself. */
+async function awaitFixtureEnd(root: string, what: string, ended: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!ended() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  const running = !ended();
+  if (running) {
+    const at = roots.indexOf(root);
+    if (at >= 0) roots.splice(at, 1);
+  }
+  expect.soft(running, `${what} was still running after 10 s, so ${root} was kept`).toBe(false);
+}
+
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -523,18 +537,29 @@ describe.skipIf(process.platform === "win32")("explicit scanner preparation", ()
       const tarCommand = fakeCommand(f.root, "slow-tar", `echo $$ > "${pidFile}"\nexec sleep 30`);
       const controller = new AbortController();
       const run = provisionScanner({ ...f.input, tarCommand, signal: controller.signal });
-      await waitFor(
-        () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "",
-        "tar",
+      // Observed from the start: an early rejection is handled, and cleanup can tell it ended.
+      let ended = false;
+      run.then(
+        () => (ended = true),
+        () => (ended = true),
       );
-      const pid = Number(readFileSync(pidFile, "utf8"));
-      expect(alive(pid)).toBe(true);
-      controller.abort();
-      const error = await refusal(run);
-      expect(error.code).toBe("scanner_prepare_cancelled");
-      expect(alive(pid)).toBe(false);
-      expect(existsSync(f.dir)).toBe(false);
-      expect(stagingLeft(f.parent)).toEqual([]);
+      try {
+        await waitFor(
+          () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "",
+          "tar",
+        );
+        const pid = Number(readFileSync(pidFile, "utf8"));
+        expect(alive(pid)).toBe(true);
+        controller.abort();
+        const error = await refusal(run);
+        expect(error.code).toBe("scanner_prepare_cancelled");
+        expect(alive(pid)).toBe(false);
+        expect(existsSync(f.dir)).toBe(false);
+        expect(stagingLeft(f.parent)).toEqual([]);
+      } finally {
+        controller.abort();
+        await awaitFixtureEnd(f.root, "the cancelled preparation", () => ended);
+      }
     });
 
     it("escalates when the child ignores the polite signal", async () => {
@@ -547,17 +572,27 @@ describe.skipIf(process.platform === "win32")("explicit scanner preparation", ()
       );
       const controller = new AbortController();
       const run = provisionScanner({ ...f.input, tarCommand, signal: controller.signal });
-      await waitFor(
-        () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "",
-        "tar",
+      let ended = false;
+      run.then(
+        () => (ended = true),
+        () => (ended = true),
       );
-      const pid = Number(readFileSync(pidFile, "utf8"));
-      controller.abort();
-      const error = await refusal(run);
-      expect(error.code).toBe("scanner_prepare_cancelled");
-      expect(alive(pid)).toBe(false);
-      expect(stagingLeft(f.parent)).toEqual([]);
-    }, 20_000);
+      try {
+        await waitFor(
+          () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "",
+          "tar",
+        );
+        const pid = Number(readFileSync(pidFile, "utf8"));
+        controller.abort();
+        const error = await refusal(run);
+        expect(error.code).toBe("scanner_prepare_cancelled");
+        expect(alive(pid)).toBe(false);
+        expect(stagingLeft(f.parent)).toEqual([]);
+      } finally {
+        controller.abort();
+        await awaitFixtureEnd(f.root, "the cancelled preparation", () => ended);
+      }
+    }, 30_000); // Room for a failed readiness wait (15 s) and the cleanup after it (10 s).
 
     it("accepted at the last moment never activates", async () => {
       const f = fixture();
@@ -594,19 +629,24 @@ describe.skipIf(process.platform === "win32")("explicit scanner preparation", ()
       const f = fixture();
       const holder = join(f.root, "holder");
       execFileSync("mkfifo", [`${holder}.fifo`]);
-      // The extractor exits at once. Its descendant inherited the extractor's stdout and
-      // stderr pipes and keeps them open until a line arrives on its FIFO.
+      // The test holds its own end of the FIFO (opening it read-write never blocks on Linux or
+      // macOS) until the holder is done, so a release line waits for a holder that starts late.
+      const release = openSync(`${holder}.fifo`, constants.O_RDWR | constants.O_NONBLOCK);
+      // The extractor records the pid of the descendant it starts, then exits at once. That
+      // descendant inherited the extractor's stdout and stderr pipes and keeps them open until
+      // a line arrives on its FIFO.
       const tarCommand = fakeCommand(
         f.root,
         "forking-tar",
-        `sh -c 'exec 3<>"$0.fifo"; echo $$ > "$0.pid"; read -r _ <&3; echo $$ > "$0.exited"' "${holder}" &\nexit 0`,
+        `sh -c 'exec 3<>"$0.fifo"; read -r _ <&3; echo $$ > "$0.exited"' "${holder}" &\necho $! > "${holder}.pid"\nexit 0`,
       );
       // Observe rejection immediately, even if the holder has not reached its ready marker.
       const run = provisionScanner({ ...f.input, tarCommand }).then(
         (value) => ({ value }),
         (error: unknown) => ({ error }),
       );
-      let pid: number | null = null;
+      let ended = false;
+      run.then(() => (ended = true));
       let outcome: { error: unknown } | { value: unknown } | "hung" = "hung";
       let holdingWhenSettled = false;
       try {
@@ -614,7 +654,7 @@ describe.skipIf(process.platform === "win32")("explicit scanner preparation", ()
           () => existsSync(`${holder}.pid`) && readFileSync(`${holder}.pid`, "utf8").trim() !== "",
           "the pipe holder",
         );
-        pid = Number(readFileSync(`${holder}.pid`, "utf8"));
+        const pid = Number(readFileSync(`${holder}.pid`, "utf8"));
         // A hang guard, not a speed bound: an implementation that waits for the pipes
         // to close never settles while the holder holds them.
         let guard: NodeJS.Timeout | undefined;
@@ -625,17 +665,20 @@ describe.skipIf(process.platform === "win32")("explicit scanner preparation", ()
         clearTimeout(guard);
         holdingWhenSettled = alive(pid) && !existsSync(`${holder}.exited`);
       } finally {
-        // Release that exact holder through its FIFO and join it, whatever happened above.
-        if (pid !== null) {
-          const fifo = openSync(`${holder}.fifo`, constants.O_WRONLY | constants.O_NONBLOCK);
-          writeSync(fifo, "go\n");
-          closeSync(fifo);
-          await waitFor(
-            () => existsSync(`${holder}.exited`) && !alive(pid as number),
-            "the released holder to exit",
-          );
-        }
-        if (outcome === "hung") await run;
+        // Release whatever holder was started, seen or not, then join the preparation. That
+        // ends only after the extractor exited, and the extractor records the holder before it
+        // exits, so a missing record then means that no holder was started.
+        writeSync(release, "go\n");
+        await awaitFixtureEnd(f.root, "the preparation", () => ended);
+        const recorded = existsSync(`${holder}.pid`)
+          ? Number(readFileSync(`${holder}.pid`, "utf8"))
+          : null;
+        await awaitFixtureEnd(
+          f.root,
+          "the released pipe holder",
+          () => recorded === null || (existsSync(`${holder}.exited`) && !alive(recorded)),
+        );
+        closeSync(release);
       }
       expect(outcome).not.toBe("hung");
       expect(holdingWhenSettled).toBe(true);

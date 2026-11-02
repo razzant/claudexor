@@ -156,6 +156,20 @@ tarTest("--dest keeps the old files when the proof fails", async () => {
   expect(d.files()).toEqual(d.before);
 });
 
+/** Await the end of an owned fixture on every path through its test. One still running after
+ * 10 s keeps its root, so nothing is deleted under it, and adds a soft failure that is reported
+ * alongside any failure of the test itself. */
+async function awaitFixtureEnd(root, what, ended) {
+  const deadline = Date.now() + 10_000;
+  while (!ended() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  const running = !ended();
+  if (running) {
+    const at = roots.indexOf(root);
+    if (at >= 0) roots.splice(at, 1);
+  }
+  expect.soft(running, `${what} was still running after 10 s, so ${root} was kept`).toBe(false);
+}
+
 tarTest("--dest keeps the old files when interrupted before the replacement", async () => {
   const a = archive();
   const d = occupiedDest(a);
@@ -168,13 +182,24 @@ tarTest("--dest keeps the old files when interrupted before the replacement", as
     signal: controller.signal,
     tarCommand,
   });
-  const deadline = Date.now() + 15_000;
-  while (!existsSync(pidFile) || readFileSync(pidFile, "utf8").trim() === "") {
-    if (Date.now() > deadline) throw new Error("the extractor did not start");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  // Observed from the start: an early rejection is handled, and cleanup can tell it ended.
+  let ended = false;
+  placing.then(
+    () => (ended = true),
+    () => (ended = true),
+  );
+  try {
+    const deadline = Date.now() + 15_000;
+    while (!existsSync(pidFile) || readFileSync(pidFile, "utf8").trim() === "") {
+      if (Date.now() > deadline) throw new Error("the extractor did not start");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    controller.abort();
+    await expect(placing).rejects.toMatchObject({ code: "scanner_prepare_cancelled" });
+    expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
+    expect(d.files()).toEqual(d.before);
+  } finally {
+    controller.abort();
+    await awaitFixtureEnd(a.root, "the cancelled placement", () => ended);
   }
-  controller.abort();
-  await expect(placing).rejects.toMatchObject({ code: "scanner_prepare_cancelled" });
-  expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
-  expect(d.files()).toEqual(d.before);
 });
