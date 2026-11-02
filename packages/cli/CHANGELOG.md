@@ -1,5 +1,44 @@
 # @claudexor/cli
 
+## 5.0.2
+
+### Patch Changes
+
+- a0f3a0e: `GET /v2/agent-capabilities` (and the MCP `claudexor_capabilities` tool, which reads it) now uses the daemon's existing status-projection cache, the same one default `GET /v2/harnesses` reads use. Concurrent and in-window reads share one harness sweep, so normally one sweep runs at a time, about one per 15 seconds (a config change or invalidation during a sweep starts a fresh one beside it, and only the fresh one's result is cached; a reader that had already joined the older sweep still receives that one's result); the first read after the window still waits for a full sweep. A computed catalog is served for 15 seconds (its `generatedAt` says when it was built), on top of the doctor's own reuse of a report (by default 90 seconds when OK, 15 seconds otherwise), so an out-of-band change such as a vendor CLI login outside the daemon can take about 30 seconds (non-OK to OK) or 105 seconds (OK to broken) to show, plus sweep time. A change to the global config recomputes it at once, and the daemon's credential mutations and setup logins invalidate it. Callers that read the catalog for one static fact, such as a harness row's `liveInput`, no longer pile up concurrent discovery, doctor and model-inventory sweeps or leave several running after they give up. `claudexor capabilities` still composes the catalog in-process.
+- d9f50f5: An isolated copy of an ordinary folder (directory mode without `--in-place`) is no longer deleted when the run's final capture refuses, for example on an unreadable file or a FIFO in the copy (#563). The copy with the files the executor wrote is kept for inspection under the same per-attempt custody as a refused isolated Git source: the failure names its path, the next actions say to inspect it and decide yourself, and no exact result, apply or revert is offered. Crash recovery, file GC and command pruning keep it until the run's `discard` decision releases it. If retention setup fails, the failure says which part: the custody record was written but the run's address to it was not (setup incomplete until crash recovery restores the address), or the custody record itself was not written (held by the running process only). A per-try capture that a later capture replaces keeps nothing, and in-place runs are unchanged. In a best-of run, a candidate whose copy could not be retained durably is excluded rather than failing the run: a healthy sibling still wins and can be applied, and the run summary and timeline name the excluded candidate's exact capture cause, kept copy and failed retention stage; the CLI follow line previews that receipt. A one-shot continuation after context exhaustion runs in the same copy: if its final capture refuses, the copy is kept and the run stays interrupted, and the failure message, summary, next actions and the continuation's completion event name its attempt, capture cause and kept copy. When a best-of run holds both such a kept copy and a winner's pending files, `discard` now gives up both instead of leaving the winner applicable. Before the executor starts, a new `workspace.prepared` run event, shown on the run timeline (and in the macOS turn transcript of local and remote SSH runs, live and restored) and in the CLI follow output, and a matching line in the executor's prompt state which folder the copy was prepared from, which paths were selected, how many files, directories and symbolic links were copied, and which selected paths were not found there, naming every path. It is a warning when nothing was copied or a selected path was not found; a selected path that does not exist yet is reported as possible new output, not refused.
+- 135f6de: Large stored bodies (over 64 KiB) whose bytes are known before their database commit are now written to disk off the daemon's request thread: an enqueued command's parameters and its acceptance record, a finished run's returned result and its update record, a thread turn's prompt, a deferred draft after its capture, and the command a draft is promoted into, with its acceptance record, after the draft's validation. The same write-through temp file is written on Node's file worker pool and linked into place only if that body is not already stored; the synchronous commit then finds it and only registers its directory for the usual durability barrier. The store creates its body directory, registered like any other new directory, before the first such write, so a new store, or one whose bodies all stayed small, stages too. Nothing about durability, ordering or the stored bytes changes, and if the staged file was cleaned up or staging failed, the commit writes the body itself as before. A body staged for a request that is then refused or held stays on disk, unowned, until the orphan sweep at the next daemon start removes it. HTTP requests, Stop and stream heartbeats no longer wait behind those writes when the disk is slow.
+- 51e5250: A run's terminal receipts (`final/run_facts.yaml`, `final/telemetry.yaml`), any rewrite of its event log that the terminal needs, and its large terminal bodies are now written to disk off the daemon's request thread before the terminal commits. The terminal is prepared first, with its outcome and receipt frozen, then its bytes are written as write-through temp files on Node's file worker pool (in the store's body directory, which a new store creates before its first terminal), and the synchronous terminal commit renames them into place right after the database commit instead of writing them there. The stage reads only the end of the run's event log to see that the usual terminal just appends (only a log that ends otherwise is read whole and its rewrite staged), so staging does not repeat the commit's full pass over the log on the request thread; the commit still loads the job record once more itself, which measures 0.009 ms for a 100-byte prompt and 1.1 ms for a 1 MiB one. Durability, the order in which a terminal becomes visible, and the receipt contents are unchanged; anything that could not be staged, or changed meanwhile, is written by the commit as before. A control audit or live-message receipt that arrives during that write is recorded before the terminal, which takes the next sequence number and keeps its prepared outcome and time; a cancel arriving then does not change the outcome. If the daemon stops before the commit, there is no terminal and no receipt, and the leftover temp files and unowned bodies are removed by the existing orphan sweep after the next start. `EventLog.flushDeferredTerminal()` is removed: `await log.commitDeferredTerminal()` commits a held terminal, staging its bytes first when a staging hook is set and committing before its first yield otherwise.
+- Updated dependencies [a0f3a0e]
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+- Updated dependencies [135f6de]
+- Updated dependencies [153b02d]
+- Updated dependencies [51e5250]
+  - @claudexor/mcp-server@5.0.2
+  - @claudexor/schema@5.0.2
+  - @claudexor/workspace@5.0.2
+  - @claudexor/orchestrator@5.0.2
+  - @claudexor/control-api@5.0.2
+  - @claudexor/daemon@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/acp-server@5.0.2
+  - @claudexor/config@5.0.2
+  - @claudexor/core@5.0.2
+  - @claudexor/delivery@5.0.2
+  - @claudexor/gateway@5.0.2
+  - @claudexor/harness-acp@5.0.2
+  - @claudexor/harness-agy@5.0.2
+  - @claudexor/harness-claude@5.0.2
+  - @claudexor/harness-codex@5.0.2
+  - @claudexor/harness-cursor@5.0.2
+  - @claudexor/harness-fake@5.0.2
+  - @claudexor/harness-grok@5.0.2
+  - @claudexor/harness-opencode@5.0.2
+  - @claudexor/harness-raw-api@5.0.2
+  - @claudexor/review@5.0.2
+  - @claudexor/artifact-store@5.0.2
+  - @claudexor/secrets@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

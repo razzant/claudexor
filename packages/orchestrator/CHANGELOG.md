@@ -1,5 +1,30 @@
 # @claudexor/orchestrator
 
+## 5.0.2
+
+### Patch Changes
+
+- d9f50f5: An isolated copy of an ordinary folder (directory mode without `--in-place`) is no longer deleted when the run's final capture refuses, for example on an unreadable file or a FIFO in the copy (#563). The copy with the files the executor wrote is kept for inspection under the same per-attempt custody as a refused isolated Git source: the failure names its path, the next actions say to inspect it and decide yourself, and no exact result, apply or revert is offered. Crash recovery, file GC and command pruning keep it until the run's `discard` decision releases it. If retention setup fails, the failure says which part: the custody record was written but the run's address to it was not (setup incomplete until crash recovery restores the address), or the custody record itself was not written (held by the running process only). A per-try capture that a later capture replaces keeps nothing, and in-place runs are unchanged. In a best-of run, a candidate whose copy could not be retained durably is excluded rather than failing the run: a healthy sibling still wins and can be applied, and the run summary and timeline name the excluded candidate's exact capture cause, kept copy and failed retention stage; the CLI follow line previews that receipt. A one-shot continuation after context exhaustion runs in the same copy: if its final capture refuses, the copy is kept and the run stays interrupted, and the failure message, summary, next actions and the continuation's completion event name its attempt, capture cause and kept copy. When a best-of run holds both such a kept copy and a winner's pending files, `discard` now gives up both instead of leaving the winner applicable. Before the executor starts, a new `workspace.prepared` run event, shown on the run timeline (and in the macOS turn transcript of local and remote SSH runs, live and restored) and in the CLI follow output, and a matching line in the executor's prompt state which folder the copy was prepared from, which paths were selected, how many files, directories and symbolic links were copied, and which selected paths were not found there, naming every path. It is a warning when nothing was copied or a selected path was not found; a selected path that does not exist yet is reported as possible new output, not refused.
+- 51e5250: A run's terminal receipts (`final/run_facts.yaml`, `final/telemetry.yaml`), any rewrite of its event log that the terminal needs, and its large terminal bodies are now written to disk off the daemon's request thread before the terminal commits. The terminal is prepared first, with its outcome and receipt frozen, then its bytes are written as write-through temp files on Node's file worker pool (in the store's body directory, which a new store creates before its first terminal), and the synchronous terminal commit renames them into place right after the database commit instead of writing them there. The stage reads only the end of the run's event log to see that the usual terminal just appends (only a log that ends otherwise is read whole and its rewrite staged), so staging does not repeat the commit's full pass over the log on the request thread; the commit still loads the job record once more itself, which measures 0.009 ms for a 100-byte prompt and 1.1 ms for a 1 MiB one. Durability, the order in which a terminal becomes visible, and the receipt contents are unchanged; anything that could not be staged, or changed meanwhile, is written by the commit as before. A control audit or live-message receipt that arrives during that write is recorded before the terminal, which takes the next sequence number and keeps its prepared outcome and time; a cancel arriving then does not change the outcome. If the daemon stops before the commit, there is no terminal and no receipt, and the leftover temp files and unowned bodies are removed by the existing orphan sweep after the next start. `EventLog.flushDeferredTerminal()` is removed: `await log.commitDeferredTerminal()` commits a held terminal, staging its bytes first when a staging hook is set and committing before its first yield otherwise.
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+- Updated dependencies [51e5250]
+  - @claudexor/schema@5.0.2
+  - @claudexor/workspace@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/event-log@5.0.2
+  - @claudexor/arbitration@5.0.2
+  - @claudexor/budget@5.0.2
+  - @claudexor/config@5.0.2
+  - @claudexor/context@5.0.2
+  - @claudexor/core@5.0.2
+  - @claudexor/delivery@5.0.2
+  - @claudexor/gateway@5.0.2
+  - @claudexor/policy@5.0.2
+  - @claudexor/review@5.0.2
+  - @claudexor/artifact-store@5.0.2
+  - @claudexor/synthesis@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes
