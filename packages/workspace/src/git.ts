@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdtempSync,
@@ -19,6 +20,12 @@ import {
 } from "./git-initialization.js";
 import { assertNoBinaryStubs, git, gitEnv, SCRATCH_INDEX_CONFIG } from "./git-run.js";
 import { diskProgress, gitObserved } from "./git-observed.js";
+import {
+  absentAfterCheckout,
+  cloneFailureMessage,
+  incompleteCloneMessage,
+} from "./isolated-clone-content.js";
+import { repositoryEndpoint } from "./object-store.js";
 export { git, revParse } from "./git-run.js";
 export { captureWorkingTreeTransient, diffWorkingTreeTransient } from "./git-transient-capture.js";
 export {
@@ -140,9 +147,16 @@ export async function worktreeAdd(
 
 /** Disposable candidate checkout with private refs/index/objects. The source
  * repository is only an object alternate, so harness `git add`/`commit` cannot
- * write candidate blobs or refs into the user's repository. Claudexor's own
- * clone lists the project object store as a SECOND alternate (#535 D2): a
- * dirty base resolves after the user's prune; the user repo never gets it. */
+ * write candidate blobs or refs into the user's repository. That alternate is
+ * the FIRST one whatever the source's depth: `--shared` writes it only when Git
+ * clones the path locally, and a shallow source Git silently clones through its
+ * transport instead (#501), so it is written here, keeping what only the source
+ * holds (a dirty snapshot, a delivery's composed tree) readable in the clone.
+ * A shallow source Git copies locally keeps its history boundary (see
+ * keepShallowBoundary), and a copy or checkout that cannot be complete is refused
+ * naming what the source lacks (isolated-clone-content.ts); nothing is fetched.
+ * Claudexor's own clone lists the project object store as a SECOND alternate
+ * (#535 D2): a dirty base resolves after the user's prune; the user repo never gets it. */
 export async function isolatedCloneAdd(
   repo: string,
   path: string,
@@ -156,13 +170,13 @@ export async function isolatedCloneAdd(
     { timeoutMs: 120_000, windowsConsole: "none" },
   );
   assertCaptureComplete(cloned);
-  if (cloned.code !== 0) {
-    throw new WorkspaceError(`isolated clone failed: ${cloned.stderr.trim()}`);
-  }
-  if (storeObjects && existsSync(storeObjects)) {
-    const alternates = join(path, ".git", "objects", "info", "alternates");
-    appendFileSync(alternates, `${storeObjects}\n`);
-  }
+  if (cloned.code !== 0)
+    throw new WorkspaceError(await cloneFailureMessage(repo, baseSha, cloned.stderr));
+  const alternates = join(path, ".git", "objects", "info", "alternates");
+  if (!existsSync(alternates))
+    appendFileSync(alternates, `${(await repositoryEndpoint(repo)).objectsDir}\n`);
+  else await keepShallowBoundary(repo, path);
+  if (storeObjects && existsSync(storeObjects)) appendFileSync(alternates, `${storeObjects}\n`);
   // A large checkout may take long: only a stall (no disk progress) stops it.
   const checkout = await gitObserved(path, ["checkout", "-q", "-b", branch, baseSha], {
     label: "checkout (isolated clone)",
@@ -172,12 +186,34 @@ export async function isolatedCloneAdd(
   if (checkout.code !== 0) {
     throw new WorkspaceError(`isolated clone checkout failed: ${checkout.stderr.trim()}`);
   }
+  // Git checks out a commit whose content no object directory here holds (what a
+  // partial clone never fetched or a sparse checkout left out) by reporting each
+  // such file and succeeding (#501). That tree is refused, and nothing is fetched.
+  const absent = await absentAfterCheckout(path);
+  if (absent.length > 0)
+    throw new WorkspaceError(incompleteCloneMessage(repo, baseSha, absent, checkout.stderr));
   const detachedRemote = await git(path, ["remote", "remove", "origin"]);
   if (detachedRemote.code !== 0) {
     throw new WorkspaceError(
       `isolated clone remote removal failed: ${detachedRemote.stderr.trim()}`,
     );
   }
+}
+
+/** Git copies a shallow source locally when it is a linked worktree of a shallow
+ * repository: refs and the alternate come, the `shallow` file does not, so the clone's
+ * history ends at parents it does not hold instead of at the boundary, and a log, a
+ * blame or `fsck` there fails (#501). The source's own boundary, wherever Git keeps it,
+ * goes into the clone; a full source has none. */
+async function keepShallowBoundary(repo: string, clone: string): Promise<void> {
+  const located = await gitObserved(
+    repo,
+    ["rev-parse", "--path-format=absolute", "--git-path", "shallow"],
+    { label: "rev-parse --git-path shallow" },
+  );
+  const boundary = located.stdout.trim();
+  const own = join(clone, ".git", "shallow");
+  if (boundary && existsSync(boundary) && !existsSync(own)) copyFileSync(boundary, own);
 }
 
 /** Recreate a worktree for an EXISTING branch (recovery: dir lost, branch survived). */
