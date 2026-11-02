@@ -246,7 +246,9 @@ export async function accountPoolsProjection(
         kind: "none",
         reason:
           selection.outcome === "exhausted"
-            ? `${selection.reserveOnly ? `every enabled account has reached its saved quota reserve (headroom_threshold ${Math.round((h?.profile_policy?.headroom_threshold ?? 1) * 100)}%) while the provider still reports quota left` : "every enabled account is over its quota window"}${selection.resets_at ? ` (earliest reset ${selection.resets_at})` : ""}; unpinned runs wait for the reset (the paid API-key route requires the explicit api_key preference)`
+            ? selection.reopening === "unknown"
+              ? "every enabled account is unavailable, and the vendor refused further usage on at least one with no reopening time named, so no reset is known (the paid API-key route requires the explicit api_key preference)"
+              : `${selection.reserveOnly ? `every enabled account has reached its saved quota reserve (headroom_threshold ${Math.round((h?.profile_policy?.headroom_threshold ?? 1) * 100)}%) while the provider still reports quota left` : "every enabled account is over its quota window"}${selection.resets_at ? ` (earliest reset ${selection.resets_at})` : ""}; unpinned runs wait for the reset (the paid API-key route requires the explicit api_key preference)`
             : unready.length > 0
               ? `no enabled account is ready (${unready
                   .map(

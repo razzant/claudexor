@@ -1,5 +1,6 @@
 import {
   ControlProblem,
+  REOPENING_UNKNOWN_REFUSAL_CODE,
   type HarnessEvent,
   type QuotaRefusal,
   type QuotaRequestKind,
@@ -46,15 +47,47 @@ export function quotaRefusalResetsAt(
   return block ? block.resets_at : (breach?.resets_at ?? null);
 }
 
+/**
+ * A pinned account the vendor refused with no reopening time (#558). Nothing
+ * malfunctioned and the account cannot serve, but no timer is known to heal it
+ * (the same vendor code covers a workspace out of credits), so it never wears
+ * `subscription_window_exhausted`, which every reader takes for "waiting cures
+ * it". `declaredFailure` leaves the run record's code null; the category, the
+ * null reset, the basis and the vendor's own evidence state the facts.
+ */
+function pinnedUsageRefusal(message: string, quotaRefusal: QuotaRefusal | null): QuotaRefusalError {
+  return Object.assign(new Error(message), {
+    code: REOPENING_UNKNOWN_REFUSAL_CODE,
+    category: "harness_unavailable",
+    resetsAt: null,
+    quotaRefusal,
+  });
+}
+
 /** A typed provider limit observed on a pinned subject's own try (Agent, Ask or
  * Plan): a pin never rotates, so the try's own limit is the typed terminal,
  * with the window the vendor named when it named one. */
 export function pinnedTypedLimit(
   profileId: string,
   harnessId: string,
-  limit: { resetsAt: string | null; constraintId?: string | null } | null,
+  limit: {
+    resetsAt: string | null;
+    constraintId?: string | null;
+    reopening?: "unknown" | null;
+  } | null,
   afterProgress = false,
 ): QuotaRefusalError {
+  if (limit?.reopening === "unknown")
+    return pinnedUsageRefusal(
+      `credential profile "${profileId}" (${harnessId}) was refused further usage by the vendor` +
+        `${afterProgress ? " after progress" : ""}, with no reopening time named; a pinned account never rotates`,
+      {
+        basis: "provider_cooldown",
+        constraintId: limit.constraintId ?? null,
+        usedRatio: null,
+        threshold: null,
+      },
+    );
   const resetsAt = limit?.resetsAt ?? null;
   return Object.assign(
     new Error(
@@ -129,6 +162,13 @@ export function pinnedWindowBlocked(
   block: QuotaBlock,
   breach: HeadroomBreach | null = null,
 ): QuotaRefusalError {
+  if (block.reopening === "unknown")
+    return pinnedUsageRefusal(
+      `credential profile "${profileId}" (${harnessId}) was refused further usage by the vendor, ` +
+        `with no reopening time named (${block.constraint_id ?? "cooldown"}; a pinned account never rotates` +
+        `${block.recheck_at ? `; not retried before ${block.recheck_at}` : ""})`,
+      quotaRefusalBasis(breach, block),
+    );
   return Object.assign(
     new Error(
       `credential profile "${profileId}" (${harnessId}) is ${

@@ -1,8 +1,8 @@
 /** Agent and Ask share one per-attempt continuation owner. Before progress,
  * existing fresh-retry/rotation rules apply. After progress, limits move the
  * session to another account (or a packet); transport resumes the same account
- * bounded by max_retries. Deterministic permission/context refusals stop rather
- * than replaying the same limitation. Pins never rotate.
+ * bounded by max_retries. Permission/context refusals and the max-turns cap stop
+ * rather than replaying the same limitation. Pins never rotate.
  *
  * Acted is sticky across every try (answer, activity, file change or diff): a
  * silent resumed try never reopens the fresh rung. The capsule, per-try receipts,
@@ -155,6 +155,7 @@ export class InRunContinuity {
         resetsAt: ev.rate_limit.resets_at ?? null,
         retryDelayMs: ev.rate_limit.retry_delay_ms ?? null,
         constraintId: ev.rate_limit.constraint_id ?? null,
+        reopening: ev.rate_limit.reopening ?? null,
       };
     }
     if (ev.type === "usage" && this.expectedSessionId && this.tryFirstInputTokens === null) {
@@ -265,6 +266,7 @@ export class InRunContinuity {
     // or rotating accounts. Keep its answer and ordinary continuation evidence.
     if (this.permissionDenied) return this.breakWith("permission_denied");
     if (facts.telemetry.contextExhausted) return this.breakWith("context_exhausted");
+    if (facts.telemetry.turnLimitReached) return this.breakWith("turn_limit"); // #299
     if (!this.acted) return this.legacy(facts);
     const typedRefusal = facts.newTransients.some((t) => TYPED_REFUSALS.has(t.category));
     if (typedRefusal) return this.breakWith("other");
@@ -372,6 +374,7 @@ export class InRunContinuity {
     if (
       !facts.sawRetryable ||
       !facts.rawDeliverableEmpty ||
+      this.limit?.reopening === "unknown" ||
       facts.nativeTry >= this.deps.retryPolicy.maxRetries
     )
       return { kind: "break" };
@@ -400,25 +403,23 @@ export class InRunContinuity {
     );
     if (this.deps.pinned) {
       this.lastCause = "pinned_limit";
-      this.terminalCode = "subscription_window_exhausted";
-      return {
-        kind: "terminal",
-        error: quotaRefusalWithScope(
-          pinnedTypedLimit(
-            facts.runSpec.credential_profile?.profile_id ?? "default",
-            this.deps.adapter.id,
-            this.limit,
-            true,
-          ),
-          {
-            harness: this.deps.adapter.id,
-            profileId: facts.runSpec.credential_profile?.profile_id ?? null,
-            model: facts.runSpec.model_hint,
-            requestKind: "text",
-            constraintId: this.limit?.constraintId,
-          },
+      const error = quotaRefusalWithScope(
+        pinnedTypedLimit(
+          facts.runSpec.credential_profile?.profile_id ?? "default",
+          this.deps.adapter.id,
+          this.limit,
+          true,
         ),
-      };
+        {
+          harness: this.deps.adapter.id,
+          profileId: facts.runSpec.credential_profile?.profile_id ?? null,
+          model: facts.runSpec.model_hint,
+          requestKind: "text",
+          constraintId: this.limit?.constraintId,
+        },
+      );
+      this.terminalCode = codeOf(error);
+      return { kind: "terminal", error };
     }
     if (effectiveLimitAction(this.deps.policy, route) !== "rotate")
       return this.breakWith("vendor_limit");

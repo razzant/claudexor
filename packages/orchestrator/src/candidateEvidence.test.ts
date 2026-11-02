@@ -134,7 +134,7 @@ describe("convergenceOutcomeFacts precedence", () => {
     const facts = convergenceOutcomeFacts(
       {
         converged: false,
-        interrupted: true,
+        interrupted: "context_capacity_exhausted",
         stuckNoProgress: true,
         aborted: true,
         exhausted: true,
@@ -143,9 +143,13 @@ describe("convergenceOutcomeFacts precedence", () => {
     );
     expect(facts.lifecycle).toBe("interrupted");
     expect(facts.reason).toBe("context_capacity_exhausted");
+    const capped = { converged: false, stuckNoProgress: false, aborted: false, exhausted: false };
+    expect(
+      convergenceOutcomeFacts({ ...capped, interrupted: "turn_limit_reached" }, cancel),
+    ).toMatchObject({ lifecycle: "interrupted", reason: "turn_limit_reached" });
   });
   it("keeps the pre-r8 ladder for non-interrupted states", () => {
-    const base = { converged: false, interrupted: false, aborted: false, exhausted: false };
+    const base = { converged: false, interrupted: null, aborted: false, exhausted: false };
     expect(convergenceOutcomeFacts({ ...base, stuckNoProgress: true }, cancel).reason).toBe(
       "stuck_no_progress",
     );

@@ -8,9 +8,12 @@ import { newAttemptOutputMarkers } from "./attemptOutputMarkers.js";
  * a later try (a continuation, a transient retry or a rotated account) may run
  * another model or report none. observedModel stays first-wins, and a proof
  * only ever comes from the event that set it, so no later try's proof is
- * paired with an earlier try's string.
+ * paired with an earlier try's string. The vendor's own failure evidence is the
+ * try's too: a later try that ends without it (a crash, a cancel, an early stop)
+ * never speaks with an earlier try's cause (#414).
  */
 export function beginNativeRetry(t: AttemptTelemetry): void {
   t.outputMarkers = newAttemptOutputMarkers();
   t.observedModelCatalogMatch = null;
+  t.vendorFailure = null;
 }

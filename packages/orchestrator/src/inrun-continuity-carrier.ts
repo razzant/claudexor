@@ -82,6 +82,8 @@ export interface LimitEvidenceState {
   resetsAt: string | null;
   retryDelayMs: number | null;
   constraintId: string | null;
+  /** `unknown`: a usage refusal that names no reopening time (#558); never a same-account retry. */
+  reopening?: "unknown" | null;
 }
 
 export interface ContinuedTryContext {

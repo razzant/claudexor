@@ -195,6 +195,7 @@ enum RunReasonLabel {
         case "workspace_unavailable": return "Workspace unavailable"
         case "capture_refused": return "Changes not captured"
         case "wall_clock_exceeded": return "Time limit reached"
+        case "turn_limit_reached": return "Turn limit reached"
         case "crash_interrupted": return "Interrupted"
         case "user_cancelled": return "Cancelled"
         default: return nil

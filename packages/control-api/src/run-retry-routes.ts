@@ -36,6 +36,7 @@ type RetryServices = Pick<
 export interface RunRetryRouteContext {
   daemon: DaemonFacadeClient;
   storeId?: () => string | undefined;
+  wantsStoreId?: boolean;
   services?: RetryServices;
   findRun(id: string): Promise<DaemonRunRecord | null>;
   waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
@@ -272,7 +273,7 @@ async function respondToExactRetryJob(
       ...(retryTurnId ? { turnId: retryTurnId } : {}),
     });
   }
-  const metadata = runStart.acceptedTaskGroupReceipt(accepted, ctx.storeId);
+  const metadata = runStart.acceptedRunReceipt(accepted, ctx.storeId, ctx.wantsStoreId);
   if (!accepted.runId && TERMINAL_STATES.has(accepted.state)) {
     // The replayed job died BEFORE it bound a run (e.g. the trust gate's typed
     // 403). A 202 here would hand the caller a durable handle for a run that

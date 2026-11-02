@@ -7,6 +7,7 @@ import { probeCredentialProfileStatus, profileStatusAdmits } from "@claudexor/or
 import {
   CredentialProfile,
   GlobalConfig,
+  REOPENING_UNKNOWN_COOLDOWN_ID,
   type CredentialProfileStatus,
   type QuotaAbsence,
   type QuotaSnapshot,
@@ -281,6 +282,43 @@ describe("Accounts display acquisition", () => {
     f.setQuota({ snapshots: [], absences: [], refreshed_at: null });
     expect((await f.service.credentialProfiles()).accountPools[0]?.next_up.kind).toBe("profile");
     expect(f.probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("next_up promises no reset for an account the vendor refused with no reopening time (#558)", async () => {
+    const f = fixture();
+    expect((await f.service.credentialProfiles()).accountPools[0]?.next_up.kind).toBe("profile");
+    f.setQuota({
+      snapshots: [
+        {
+          subject: {
+            harness: f.profile.harness_id,
+            subject_id: f.profile.profile_id,
+            credential_route: "vendor_native",
+            plan_label: null,
+          },
+          constraints: [
+            {
+              id: REOPENING_UNKNOWN_COOLDOWN_ID,
+              label: "Cooldown",
+              used_ratio: null,
+              window_seconds: null,
+              resets_at: null,
+              cooldown_until: new Date(Date.now() + 5 * 60_000).toISOString(),
+            },
+          ],
+          source: "codex_rollout",
+          observed_at: new Date().toISOString(),
+          freshness: "fresh",
+        },
+      ],
+      absences: [],
+      refreshed_at: null,
+    });
+    expect((await f.service.credentialProfiles()).accountPools[0]?.next_up).toEqual({
+      kind: "none",
+      reason:
+        "every enabled account is unavailable, and the vendor refused further usage on at least one with no reopening time named, so no reset is known (the paid API-key route requires the explicit api_key preference)",
+    });
   });
 
   it("display reuse never replaces the runtime's independent readiness check", async () => {

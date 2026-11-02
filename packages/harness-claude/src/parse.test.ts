@@ -321,16 +321,24 @@ describe("parseClaudeEvent", () => {
     // The terminal result is claude's TYPED final answer (F2.5 W-C1).
     expect(ok[1]?.final).toBe(true);
 
-    // error_max_turns is a BENIGN turn-control outcome (the run hit --max-turns
-    // with partial work preserved), NOT a run failure -> a timeline thinking
-    // event, never an error (mirrors ExitPlanMode/AskUserQuestion handling).
+    // #299: error_max_turns (an is_error result; the CLI then exits 1) is ONE
+    // typed error carrying `turn_limit`, never a final answer. The engine
+    // reports interrupted / turn_limit_reached and never resumes under the cap.
     const maxTurns = parseClaudeEvent(
-      { type: "result", subtype: "error_max_turns", num_turns: 12 },
+      {
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: true,
+        num_turns: 12,
+        errors: ["Reached maximum number of turns (12)"],
+      },
       "s1",
     ) as HarnessEvent[];
-    expect(maxTurns.map((e) => e.type)).toEqual(["usage", "thinking"]);
-    expect(maxTurns[1]?.text).toContain("max-turns");
-    expect(maxTurns[1]?.payload?.["max_turns_reached"]).toBe(true);
+    expect(maxTurns.map((e) => e.type)).toEqual(["usage", "error"]);
+    expect(maxTurns[1]?.turn_limit).toEqual({ native_code: "error_max_turns", num_turns: 12 });
+    expect(maxTurns[1]?.error).toContain("max-turns limit reached after 12 turns");
+    expect(maxTurns.some((e) => e.final)).toBe(false);
+    for (const e of maxTurns) expect(() => HarnessEvent.parse(e)).not.toThrow();
 
     // Other non-success subtypes remain real errors.
     const realError = parseClaudeEvent(

@@ -1926,6 +1926,7 @@
                             "input_required",
                             "work_incomplete",
                             "context_capacity_exhausted",
+                            "turn_limit_reached",
                             "work_report_contract"
                           ],
                           "description": "Typed reason qualifying a non-clean terminal; null on a clean success."

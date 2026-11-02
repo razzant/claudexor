@@ -429,8 +429,8 @@ export function writePlanHarnessFailure(
       ),
     });
   }
-  // D-16: context exhaustion stays interrupted after policy/budget precedence.
-  const anyInterrupted = planAttempts.some((p) => p.outcomeClass === "interrupted");
+  // D-16/#299: a typed limit stays interrupted after policy/budget precedence.
+  const limit = planAttempts.find((p) => p.interruption !== null)?.interruption;
   // No canonical plan: the read-only owner must not promote discarded raw output.
   const noPlanTerminal = readOnlyNoSuccessTerminal({
     webBlocked: blocked,
@@ -439,8 +439,8 @@ export function writePlanHarnessFailure(
     attemptsCount: planAttempts.length,
   });
   const planFailFacts =
-    !blocked && !budgetMapping && anyInterrupted
-      ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" })
+    !blocked && !budgetMapping && limit
+      ? makeOutcomeFacts("interrupted", { reason: limit })
       : budgetMapping
         ? makeOutcomeFacts("failed", { reason: budgetMapping.reason })
         : makeOutcomeFacts(noPlanTerminal.lifecycle, { reason: noPlanTerminal.reason });

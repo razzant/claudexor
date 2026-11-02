@@ -290,6 +290,7 @@ export function harnessEventPayload(
     rate_limit: ev.rate_limit,
     request_refusal: ev.request_refusal,
     permission_denial: ev.permission_denial,
+    turn_limit: ev.turn_limit,
     tool: ev.tool,
     interaction: ev.interaction,
     // Preserve finality/status for answer dedup and activity (W-C1/W-C2);

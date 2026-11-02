@@ -8,7 +8,11 @@
  * retained run answers even while the daemon is down; its files prove the run
  * exists, not that it is live.
  *
- * Only the run registry's own 404 from a running daemon says `no such run`.
+ * Only the run registry's own 404 from a running daemon says `no such run`, and
+ * it speaks for one store: `context.storeId` names the store that answered, when
+ * known. A caller holding the run's receipt compares the two; a different or
+ * missing store leaves the run unknown, and even the same store only proves that
+ * it retains no such record, not that the run never started.
  * Every other stop is its own typed problem: a malformed id is a usage error;
  * without a reachable daemon, runs from other projects were not checked; a
  * lost connection is an incomplete lookup; daemon problems, other 404s and
@@ -24,6 +28,7 @@ import {
   ControlRunDetail,
   ControlRunSummary,
   isTerminalLifecycle,
+  TaskGroupReceipt,
 } from "@claudexor/schema";
 import { noProjectRepoRoot, userConfigDir } from "@claudexor/util";
 import { CliError, controlProblemError, usageError } from "./cli-error.js";
@@ -82,11 +87,20 @@ export async function resolveRunStore(runId: string): Promise<ResolvedRunStore> 
     const body = knownProblem(parseJson(text));
     // A fenced id always reaches the run-detail route, whose `http_404` problem
     // is the registry's absence verdict; any other 404 keeps its own problem.
-    if (response.status === 404 && ControlProblem.safeParse(body).data?.code === "http_404") {
-      throw new CliError("operational", `no such run ${runId}`, {
-        code: "run_not_found",
-        retryable: false,
-      });
+    const problem = ControlProblem.safeParse(body).data;
+    if (response.status === 404 && problem?.code === "http_404") {
+      const store = TaskGroupReceipt.shape.storeId.safeParse(problem.context["storeId"]);
+      throw new CliError(
+        "operational",
+        store.success
+          ? `no such run ${runId} in engine store ${store.data}`
+          : `no such run ${runId}`,
+        {
+          code: "run_not_found",
+          retryable: false,
+          ...(store.success ? { context: { storeId: store.data } } : {}),
+        },
+      );
     }
     throw controlProblemError(response.status, body, `run lookup failed (HTTP ${response.status})`);
   }

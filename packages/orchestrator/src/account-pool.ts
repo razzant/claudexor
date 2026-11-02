@@ -55,7 +55,13 @@ import { quotaRefusalBasis, quotaRefusalResetsAt } from "./quota-refusal-scope.j
 export type PoolQuotaVerdict =
   | { kind: "fresh_headroom"; headroom: number }
   | { kind: "unknown" }
-  | { kind: "exhausted"; resets_at: string | null; basis: QuotaRefusalBasis };
+  | {
+      kind: "exhausted";
+      resets_at: string | null;
+      basis: QuotaRefusalBasis;
+      /** A usage refusal with no reopening time (#558): no instant heals this row. */
+      reopening?: "unknown";
+    };
 
 export interface PoolCandidate {
   profile: CredentialProfile;
@@ -175,6 +181,7 @@ export function rankAccountPool(args: {
           kind: "exhausted",
           resets_at: quotaRefusalResetsAt(breach, block),
           basis: refusal.basis,
+          ...(block?.reopening ? { reopening: block.reopening } : {}),
         },
       });
       continue;
@@ -243,6 +250,8 @@ export type PoolSelection =
       resets_at: string | null;
       /** Every exhausted row stopped only at the owner's saved reserve. */
       reserveOnly?: boolean;
+      /** A row the vendor refused with no reopening time (#558): no reset is known. */
+      reopening?: "unknown";
     };
 
 /** Select the unpinned-run account from the pool (or report why not). */
@@ -253,13 +262,18 @@ export function selectFromAccountPool(args: Parameters<typeof rankAccountPool>[0
   if (ranked.length === 0) return { outcome: "empty", resets_at: null };
   let resetsAt: string | null = null;
   let reserveOnly = true;
+  let reopeningUnknown = false;
   for (const candidate of ranked) {
     if (candidate.verdict.kind !== "exhausted") continue;
     if (candidate.verdict.basis !== "owner_reserve") reserveOnly = false;
+    if (candidate.verdict.reopening === "unknown") reopeningUnknown = true;
     if (candidate.verdict.resets_at === null) continue;
     if (resetsAt === null || candidate.verdict.resets_at < resetsAt) {
       resetsAt = candidate.verdict.resets_at;
     }
   }
-  return { outcome: "exhausted", resets_at: resetsAt, reserveOnly };
+  // As in the pool terminal's fold: one member with no known reopening dates nothing.
+  return reopeningUnknown
+    ? { outcome: "exhausted", resets_at: null, reserveOnly, reopening: "unknown" }
+    : { outcome: "exhausted", resets_at: resetsAt, reserveOnly };
 }

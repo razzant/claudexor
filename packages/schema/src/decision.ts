@@ -70,6 +70,8 @@ export const RunReason = z
     "input_required",
     "work_incomplete",
     "context_capacity_exhausted",
+    // #299: the vendor ended the work at the run's max-turns cap (interrupted).
+    "turn_limit_reached",
     "work_report_contract",
   ])
   .describe("Typed reason qualifying a non-clean terminal; null on a clean success.");

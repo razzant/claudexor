@@ -1,4 +1,5 @@
 import type { HarnessEvent, ToolRef } from "@claudexor/schema";
+import { turnLimitError } from "@claudexor/core";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 type ObjectValue = Record<string, any>;
@@ -201,8 +202,11 @@ export function createGrokParser() {
       resulted = true;
       const events: HarnessEvent[] = [];
       // After a vendor error frame the turn has already failed: keep the
-      // spend, never a late answer or a second failure.
-      if (!failed && (obj.is_error === true || (obj.subtype && obj.subtype !== "success"))) {
+      // spend, never a late answer or a second failure. The max-turns cap is
+      // its own typed stop (#299), never a generic failure.
+      if (!failed && obj.subtype === "error_max_turns") {
+        events.push(turnLimitError(sessionId, base.ts, obj.subtype, obj.num_turns));
+      } else if (!failed && (obj.is_error === true || (obj.subtype && obj.subtype !== "success"))) {
         const detail = Array.isArray(obj.errors)
           ? obj.errors.filter((v: unknown) => typeof v === "string").join("; ")
           : "";

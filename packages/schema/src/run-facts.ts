@@ -436,7 +436,7 @@ export function validateRunFactsInvariants(value: unknown): RunFacts {
       "host_cancelled",
       "owner_task_gone",
     ]),
-    interrupted: new Set(["crash_interrupted", "context_capacity_exhausted"]),
+    interrupted: new Set(["crash_interrupted", "context_capacity_exhausted", "turn_limit_reached"]),
   };
   if (!lifecycleReasons[outcome.lifecycle].has(outcome.reason)) {
     violations.push(

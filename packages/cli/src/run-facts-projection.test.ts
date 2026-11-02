@@ -109,6 +109,15 @@ describe("RunFacts CLI projections (GH #29)", () => {
     }
   });
 
+  it("keeps an ordinary handle's accepting store, never a producer's lone context key", () => {
+    const storeId = "22222222-2222-4222-8222-222222222222";
+    const out = { runId: "", runDir: "", jobId: "job", status: "failed" };
+    expect(projectTerminalRunOutput({ ...out, storeId }, "ask", null)).toMatchObject({ storeId });
+    expect(
+      projectTerminalRunOutput({ ...out, errorContext: { storeId } }, "ask", null),
+    ).not.toHaveProperty("storeId");
+  });
+
   it("retains a pre-run failure's accepted metadata from server error context", () => {
     const metadata = {
       taskGroupId: "11111111-1111-4111-8111-111111111111",

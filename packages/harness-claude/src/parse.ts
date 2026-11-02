@@ -1,5 +1,6 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { InputTokenUsage } from "@claudexor/schema";
+import { turnLimitError } from "@claudexor/core";
 import { nowIso } from "@claudexor/util";
 import {
   claudeCompactBoundaryEvents,
@@ -486,20 +487,12 @@ function parseClaudeEventStateful(
     for (const ev of claudeEntitlementEvents(obj.result, successResult, sessionId, ts))
       out.push(ev);
     if (obj.subtype && obj.subtype !== "success") {
-      // `error_max_turns` is NOT a run failure: the turn ended because it hit the
-      // configured --max-turns ceiling, with all partial work already streamed
-      // (file_change / message events). Mirror the ExitPlanMode / AskUserQuestion
-      // benign-event handling above — surface it as a normal timeline event so
-      // the run is NOT marked errored. (CLAUDEXOR_BIBLE §5: benign turn-control
-      // outcomes never fail a run.)
+      // #299: the --max-turns cap ended the turn before a final answer (the
+      // result is `is_error` and the CLI exits 1). One TYPED error: the engine
+      // reports `interrupted / turn_limit_reached` and never resumes or replays
+      // under the same cap; the partial work already streamed stays evidence.
       if (obj.subtype === "error_max_turns") {
-        out.push({
-          type: "thinking",
-          session_id: sessionId,
-          ts,
-          text: "turn ended at the configured max-turns limit (partial work preserved)",
-          payload: { max_turns_reached: true, num_turns: numberOrUndef(obj.num_turns) },
-        });
+        out.push(turnLimitError(sessionId, ts, obj.subtype, obj.num_turns));
       } else if (obj.subtype === "error_max_structured_output_retries") {
         // The model exhausted its structured-output retries: a CONFORMANCE
         // failure, not a run failure — the engine validator reports it as

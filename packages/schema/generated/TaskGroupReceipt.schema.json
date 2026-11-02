@@ -12,7 +12,7 @@
         "storeId": {
           "type": "string",
           "minLength": 1,
-          "description": "Identity of the durable engine store that accepted this group member, stable across restarts."
+          "description": "Identity of the durable engine store that accepted this command, stable across restarts. A group member always carries it; an ordinary receipt carries it only for a request sending `X-Claudexor-Store-Identity: 1`, and it stays absent, meaning unknown, when the store has no identity to give."
         }
       },
       "required": [

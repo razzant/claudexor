@@ -8,6 +8,7 @@ import {
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { dominantHarnessFailureCategory } from "./harnessFailure.js";
+import { completionVendorFailure } from "./transientClassify.js";
 import type { TryFacts } from "./inrun-continuity-types.js";
 
 /** The admission gate's callback, fired once a send is admitted, right before
@@ -20,6 +21,8 @@ interface OpenTry {
   error: string | null;
   at: string | null;
   foreign: boolean;
+  /** #414: the vendor's own failure this try's completion carried. */
+  vendor?: VendorFailureEvidence | null;
   /** Set by the gate's own callback once this try's send was admitted. */
   dispatched?: true;
   gate: unknown;
@@ -69,6 +72,7 @@ export class PoolAttemptEvidence {
       open.error = event.error ?? event.text ?? null;
       open.at = event.ts;
     }
+    if (event.type === "completed") open.vendor = completionVendorFailure(event);
   }
 
   settle(
@@ -91,7 +95,7 @@ export class PoolAttemptEvidence {
     if (open.foreign || !open.dispatched || !facts.harnessErrored) return;
     if (facts.aborted || facts.budgetStopped || facts.requestRefused) return;
     const profile = open.spec.credential_profile ?? null;
-    const vendor = [...facts.newTransients].reverse().find((t) => t.vendorFailure)?.vendorFailure;
+    const vendor = open.vendor;
     this.rows.push({
       harnessId: this.harnessId,
       profileId: profile?.profile_id ?? null,

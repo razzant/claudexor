@@ -6,7 +6,7 @@ import { z } from "zod/v3";
 // the ONLY compatibility signal (renaming every route for cosmetic symmetry
 // was rejected as churn).
 export const CONTROL_PROTOCOL_MAJOR = 3 as const;
-/** Opt-in request header (value `1`) for handshake extensions an older strict client would refuse. */
+/** Opt-in request header (value `1`) for answer fields an older strict client would refuse. */
 export const CONTROL_STORE_IDENTITY_HEADER = "x-claudexor-store-identity";
 
 export const ControlHandshakeRequest = z

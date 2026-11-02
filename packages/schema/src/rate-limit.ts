@@ -33,6 +33,12 @@ export const RateLimitSignal = z.object({
     .nullable()
     .default(null)
     .describe("Suggested retry delay in milliseconds, when reported."),
+  reopening: z
+    .enum(["unknown"])
+    .optional()
+    .describe(
+      "unknown: the vendor's own typed code refused further usage on this account and named no reopening time, and the refusal is not known to be a timed window (Codex usage_limit_exceeded also covers a workspace out of credits). No reset is derived from it and the same account is never retried for it. Absent: resets_at, retry_delay_ms and the vendor's window say when to come back, as before.",
+    ),
 });
 export type RateLimitSignal = z.infer<typeof RateLimitSignal>;
 
