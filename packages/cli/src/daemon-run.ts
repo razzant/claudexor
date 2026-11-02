@@ -345,7 +345,6 @@ export async function enqueueAndAwait(
     const startRes = await controlApiFetch(addr, url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${addr.token}`,
         "content-type": "application/json",
         ...(opts.idempotencyKey !== undefined ? { "Idempotency-Key": opts.idempotencyKey } : {}),
       },
@@ -386,7 +385,7 @@ export async function enqueueAndAwait(
     process.stderr.write("\ncancelling daemon run (Ctrl-C again to detach)...\n");
     void controlApiFetch(addr, `/runs/${encodeURIComponent(jobId)}/control`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         control: {
           kind: "cancel",

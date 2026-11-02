@@ -216,7 +216,7 @@ export async function profilesCommandWithDeps(
       const { addr } = await ensureDaemon();
       const response = await controlApiFetch(addr, "/setup/jobs", {
         method: "POST",
-        headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           harness,
           action: "login",
@@ -366,7 +366,6 @@ export async function profilesCommandWithDeps(
       {
         method: "PATCH",
         headers: {
-          Authorization: `Bearer ${addr.token}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ enabled: sub === "enable" }),
@@ -399,7 +398,7 @@ export async function profilesCommandWithDeps(
     const response = await controlApiFetch(
       addr,
       `/credential-profiles/${encodeURIComponent(harness)}/${encodeURIComponent(profileId)}`,
-      { method: "DELETE", headers: { Authorization: `Bearer ${addr.token}` } },
+      { method: "DELETE" },
     );
     if (!response.ok) {
       return printUsageError(
@@ -429,7 +428,7 @@ export async function profilesCommandWithDeps(
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(addr, "/accounts-migration/rollback", {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(harness ? { harnessId: harness } : {}),
     });
     if (!response.ok) {
@@ -546,7 +545,7 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(addr, "/secrets", {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!response.ok)
@@ -573,7 +572,6 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(addr, `/secrets/${encodeURIComponent(name)}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${addr.token}` },
     });
     if (!response.ok)
       throw new Error(`secret delete failed (${response.status}): ${await response.text()}`);
