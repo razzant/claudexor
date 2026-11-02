@@ -8,7 +8,11 @@ import { join } from "node:path";
 import { reviewerProcessingCost } from "./processing-routing.js";
 import type { ArtifactStore, RunPaths } from "@claudexor/artifact-store";
 import type { BudgetLedger } from "@claudexor/budget";
-import { reviewUsageCostSettlement, attemptCostEvidence } from "@claudexor/budget";
+import {
+  anyUsageAmountObserved,
+  reviewUsageCostSettlement,
+  attemptCostEvidence,
+} from "@claudexor/budget";
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import type { EventLog } from "@claudexor/event-log";
 import {
@@ -309,12 +313,16 @@ export async function reviewCandidateRuns(
               cash: result.reviewCashKnowledge,
               allowanceDebitUnobserved: result.reviewAllowanceDebitUnobserved,
               valuation: result.reviewValuationKnowledge,
+              observedAmounts: result.reviewObservedAmounts,
             },
             [`attempt:${run.attemptId}`, "review:panel"],
             result.reviewUnknownUsd,
           ),
         );
-        if ((result.reviewSpendUsd ?? 0) > 0) {
+        if (
+          (result.reviewSpendUsd ?? 0) > 0 ||
+          anyUsageAmountObserved(result.reviewObservedAmounts)
+        ) {
           log.emit("budget.observation", {
             harness_id: "review-panel",
             attempt_id: run.attemptId,

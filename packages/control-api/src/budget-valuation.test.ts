@@ -78,6 +78,63 @@ describe("budgetValuationFromEvents (QA-023c)", () => {
     expect(v.valuationKnowledge).toBe("unknown");
   });
 
+  it.each([
+    [false, "exact"],
+    [true, "estimated"],
+  ] as const)(
+    "keeps a reported valuation zero (estimated=%s) before and after settlement",
+    (estimated, knowledge) => {
+      const row = {
+        type: "budget.observation",
+        payload: { kind: "spend", usd: 0, estimated, amount_kind: "valuation" },
+      };
+      expect(budgetValuationFromEvents([row])).toEqual({
+        valuationUsd: 0,
+        valuationKnowledge: knowledge,
+      });
+      expect(
+        budgetValuationFromEvents([
+          row,
+          {
+            type: "budget.cash",
+            payload: {
+              cash_spend_usd: 0,
+              valuation_usd: 0,
+              estimated: false,
+              valuation_knowledge: knowledge,
+            },
+          },
+        ]),
+      ).toEqual({ valuationUsd: 0, valuationKnowledge: knowledge });
+    },
+  );
+
+  it.each(["cash", "unknown", undefined])(
+    "never reads a %s zero spend row as an estimated valuation",
+    (amount_kind) => {
+      expect(
+        budgetValuationFromEvents([
+          {
+            type: "budget.observation",
+            payload: { kind: "spend", usd: 0, ...(amount_kind ? { amount_kind } : {}) },
+          },
+        ]),
+      ).toEqual({ valuationUsd: null, valuationKnowledge: "unknown" });
+    },
+  );
+
+  it("still reads a positive spend row as the legacy estimated valuation", () => {
+    expect(
+      budgetValuationFromEvents([
+        {
+          type: "budget.observation",
+          payload: { kind: "spend", usd: 0, amount_kind: "valuation" },
+        },
+        { type: "budget.observation", payload: { kind: "spend", usd: 0.5, amount_kind: "cash" } },
+      ]),
+    ).toEqual({ valuationUsd: 0.5, valuationKnowledge: "estimated" });
+  });
+
   it("falls back to summed budget.observation for runs predating budget.cash", () => {
     const v = budgetValuationFromEvents([
       { type: "budget.observation", payload: { kind: "spend", usd: 0.01 } },

@@ -83,6 +83,12 @@ function computeBudgetSnapshot(
       spendUsd = fold.observationUsd;
       source = "events";
       estimated = true; // valuation-derived: at best an estimate of cash
+    } else if (fold.cashZeroObserved) {
+      // A reported cash zero is cash evidence before any settlement; its own
+      // estimated flag arrives through observationEstimated below.
+      spendUsd = 0;
+      source = "events";
+      estimated = false;
     } else if (fold.sawCost) {
       spendUsd = fold.usageCostUsd;
       source = "events";

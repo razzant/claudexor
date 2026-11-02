@@ -4,9 +4,11 @@
  * used to spell out identical bodies, and a drifted field name in one of them
  * would have split the consumers' view of the same machinery.
  */
+import { reportedUsageCostUsd } from "@claudexor/budget";
 import type { RunEventType } from "@claudexor/schema";
 import { transientRetryDelayMs, type TransientRetryPolicy } from "./runSupport.js";
 import { classifyAdapterThrow, type AttemptTelemetry } from "./attemptTelemetry.js";
+import type { AttemptUsageCost } from "./attemptUsageCost.js";
 
 type Emit = (type: RunEventType, payload: Record<string, unknown>) => void;
 
@@ -86,23 +88,30 @@ export function emitTransientRetryPlan(
   return delayMs;
 }
 
-/** Read-only lanes burn quota too: fold one usage event's spend into the
- * attempt's running cost and disclose it as a `budget.observation`. */
-export function observeReadonlySpend(
+/** One owner for every lane's spend row: fold one usage event's reported amount,
+ * zero included, into the attempt's running cost and disclose it as a
+ * `budget.observation`. An event without an amount reports nothing. The attempt's
+ * telemetry has already classified the event, so `amount_kind` is the meaning the
+ * ledger will settle (the live budget projection reads a zero row by it). */
+export function observeUsageSpend(
   ev: { type: string; usage?: { cost_usd?: number | null; estimated?: boolean | null } | null },
-  emit: Emit,
+  emit: (type: "budget.observation", payload: Record<string, unknown>) => void,
   harnessId: string,
   attemptId: string,
+  usageCost: Pick<AttemptUsageCost, "lastAmountKind">,
 ): { costUsd: number; estimated: boolean } {
-  if (ev.type !== "usage" || !ev.usage?.cost_usd) return { costUsd: 0, estimated: false };
+  const usd = ev.type === "usage" ? reportedUsageCostUsd(ev) : undefined;
+  if (usd === undefined) return { costUsd: 0, estimated: false };
+  const estimated = ev.usage?.estimated === true;
   emit("budget.observation", {
     harness_id: harnessId,
     attempt_id: attemptId,
     kind: "spend",
-    usd: ev.usage.cost_usd,
-    estimated: ev.usage.estimated === true,
+    usd,
+    estimated,
+    ...(usageCost.lastAmountKind ? { amount_kind: usageCost.lastAmountKind } : {}),
   });
-  return { costUsd: ev.usage.cost_usd, estimated: ev.usage.estimated === true };
+  return { costUsd: usd, estimated };
 }
 
 /** The transient machinery's terminal disclosure for an attempt that still

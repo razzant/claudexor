@@ -337,6 +337,61 @@ describe("folded run event facts at the detail job", () => {
     expect((await bothLanes(r.record)).budget.spendUsd).toBe(6);
   });
 
+  it("reads a reported cash zero the same across appends, before and after its settlement (#171)", async () => {
+    const r = run("zero");
+    const usage = r.line("harness.event", {
+      harness_id: "raw-api",
+      attempt_id: "a01",
+      type: "usage",
+      usage: { cost_usd: 0 },
+    });
+    writeFileSync(r.path, usage);
+    // Before any spend row the legacy reading of the usage event stays an estimate.
+    let detail = await bothLanes(r.record);
+    expect(detail.budget).toMatchObject({ spendUsd: 0, estimated: true, valuationUsd: null });
+
+    appendFileSync(
+      r.path,
+      r.line("budget.observation", {
+        harness_id: "raw-api",
+        attempt_id: "a01",
+        kind: "spend",
+        usd: 0,
+        estimated: false,
+        amount_kind: "cash",
+      }),
+    );
+    detail = await bothLanes(r.record);
+    expect(detail.budget).toMatchObject({
+      spendUsd: 0,
+      estimated: false,
+      valuationUsd: null,
+      valuationKnowledge: "unknown",
+      remainingUsd: 10,
+    });
+
+    appendFileSync(
+      r.path,
+      r.line("budget.cash", {
+        cash_spend_usd: 0,
+        valuation_usd: 0,
+        estimated: false,
+        valuation_knowledge: "unknown",
+        cash_knowledge: "exact",
+        controllable_cash_knowledge: "exact",
+      }),
+    );
+    detail = await bothLanes(r.record);
+    expect(detail.budget).toMatchObject({
+      cashKnowledge: "exact",
+      spendUsd: 0,
+      estimated: false,
+      valuationUsd: null,
+      valuationKnowledge: "unknown",
+      remainingUsd: 10,
+    });
+  });
+
   it("keeps nothing outside a projection and bounds what the worker keeps", async () => {
     const before = retainedRunEventFactsForTests();
     const outside = run("outside");

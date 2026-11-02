@@ -36,6 +36,7 @@ import {
   telemetrySummary,
 } from "./attemptTelemetry.js";
 import { settleGrantedAttemptLease } from "./attemptUsageCost.js";
+import { observeUsageSpend } from "./laneStreamEvents.js";
 import { runModelGovernedRoute } from "./modelGovernance.js";
 
 /** The reducer runs under the fixed `synth` attempt id (roster/cost visible). */
@@ -311,17 +312,15 @@ export async function runDeepScanReducer(
     observeAttemptTelemetry(telemetry, event);
     observeBudgetSignals(ledger, log, adapter.id, attemptId, event, budgetSignalState);
     deps.quotaEventSink?.(adapter.id, event);
-    if (event.type === "usage" && event.usage?.cost_usd) {
-      cost += event.usage.cost_usd;
-      if (event.usage.estimated) costEstimated = true;
-      log.emit("budget.observation", {
-        harness_id: adapter.id,
-        attempt_id: attemptId,
-        kind: "spend",
-        usd: event.usage.cost_usd,
-        estimated: event.usage.estimated === true,
-      });
-    }
+    const spend = observeUsageSpend(
+      event,
+      (type, payload) => log.emit(type, payload),
+      adapter.id,
+      attemptId,
+      telemetry.usageCost,
+    );
+    cost += spend.costUsd;
+    costEstimated ||= spend.estimated;
     const streamDenial = updateProcessingStreamHold(
       spec,
       telemetry.usageCost,
