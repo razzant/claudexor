@@ -16,10 +16,7 @@ function output(value: unknown, json: boolean): void {
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
   const { addr } = await ensureDaemon();
-  const response = await controlApiFetch(addr, path, {
-    ...init,
-    headers: { Authorization: `Bearer ${addr.token}`, ...init?.headers },
-  });
+  const response = await controlApiFetch(addr, path, init);
   if (!response.ok)
     throw new Error(`control API failed (${response.status}): ${await response.text()}`);
   return response.json();

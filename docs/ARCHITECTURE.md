@@ -1416,13 +1416,22 @@ to `row.enabled=false`, and the deprecated key is kept mirrored for the
 downgrade window (the row is the authority; its Enabled PATCH updates the
 mirror). The supported downgrade path is the engine's own rollback —
 `POST /v2/accounts-migration/rollback` / `claudexor profiles
-rollback-migration` — run BEFORE installing an older engine whose
-canonicalizers refuse the native locator. That account-registration rollback
+rollback-migration [harness]`, where omitting the harness reverses every
+migrated harness — run BEFORE installing an older engine whose
+canonicalizers refuse the native locator. The CLI refuses an explicitly empty or
+blank harness before contacting the daemon, so an unset shell variable cannot
+widen the rollback. The run gate's instruction names the blocked harness. The
+daemon writes that instruction without knowing its reader's lifecycle owner, so
+its restart advice names both: `claudexor daemon stop` for a standalone daemon,
+and the owning application for an externally owned one, which refuses that
+command (`daemon_lifecycle_external`). That account-registration rollback
 cannot undo the SQL engine-store migration or lower its semantic floor.
 `claudexor auth login <harness>` is
 bootstrap sugar: it ensures the `<harness>-default` row (claude/codex on their
 native dirs; cursor on an isolated file-store dir) and signs into it; a
 cancelled or failed login keeps the cold row with its Sign-in affordance.
+`--display-name` labels a new row on `claudexor profiles add`; every other
+`profiles` verb refuses it with a usage error instead of ignoring it.
 
 Every Cursor account rides the vendor's own FILE credential store: a
 `config_dir_login` cursor row selects `AGENT_CLI_CREDENTIAL_STORE=file`
@@ -2273,9 +2282,25 @@ application 4.0. The existing `appUpdateRequired` path keeps the old working
 engine until the app is updated; no numeric sentinel hides unlimited from an
 old client.
 
+### Readiness projections
+
 `claudexor doctor`, `models`, and `auth status` are also thin projections of the
 daemon's typed `/v2/harnesses` and `/v2/harnesses/:id/models` readiness services;
 requested harness filters reach the producer instead of probing unrelated adapters.
+Default-shape `/v2/harnesses` reads and `GET /v2/agent-capabilities` share one
+status-projection cache policy (`cli/src/status-projection-cache.ts`): a computed
+sweep serves for 15 seconds, concurrent and in-window readers share one
+computation, a changed global config file recomputes at once, and the daemon's
+credential mutations and setup-login transitions invalidate it. The first read
+after the window still waits for a full sweep. The window stacks on its inputs'
+own caches: by default a doctor report is reused for 90 seconds when OK and 15
+seconds otherwise (`core/src/doctor.ts`), and model inventories keep their own
+windows, so an out-of-band change such as a vendor CLI login or install outside
+the daemon reaches the projection within about 30 seconds from non-OK to OK and
+105 seconds from OK to broken, plus sweep time. Harness maintenance and
+auth-readiness refresh clear the doctor evidence, not this window. A `fresh`
+harness read bypasses the window; the catalog has no fresh form and dates itself
+with `generatedAt`, and `claudexor capabilities` composes it in-process.
 `claudexor trust` and `secrets` likewise project `/v2/trust` and `/v2/secrets`;
 only the daemon owns user-level trust files and the selected managed-secret backend.
 
@@ -3229,7 +3254,11 @@ timestamp. Labels cover `store.begin_immediate`, `store.commit`, `store.external
 so clients can parse status from engines that report those synchronous spans.
 Detail and summary report worker queue/projection wall time in `bulk`.
 Scope persistence measures synchronous serialization, not its asynchronous file writes. These
-samples may overlap and do not identify the cause of a delay. `store.commit`
+samples may overlap and do not identify the cause of a delay. A `store.external_write`
+sample that enters the list is also written to the daemon log with its purpose
+(`blob_body`, `terminal_receipt`, `terminal_log`, `import`), byte count and its
+split between metadata calls before the write, the `O_DSYNC` open/write/close,
+and the publishing rename; the status schema is unchanged. `store.commit`
 also exposes lifetime `p50_ms`/`p99_ms` using the same histogram precision.
 Older engines omit the new optional fields. The catalog still points to the
 same `ControlDaemonStatus` response schema.
@@ -3521,8 +3550,9 @@ not retry automatically.
   attempts (a checkpoint carries only the exhausted try's last typed final as
   its report, so a checkpoint continuation's index keeps every other output
   recorded in this run once: earlier tries of the exhausted attempt and that
-  try's other narration and earlier native-turn finals, never the report or a
-  block repeating it), and its
+  try's other narration and earlier native-turn finals, whatever their words,
+  never the report's own block with its keyed fragments and exact adjacent
+  forms), and its
   receipt names the attempt of this run that carries its
   latest work, else the planned predecessor. An attempt's own model (a fallback model or budget
   downgrade) is never replaced by an inherited one; synthesis and repair never
@@ -3557,9 +3587,12 @@ not retry automatically.
   then the recorded output it does not represent (other attempts, the winning
   attempt's earlier native tries and the winning try's own other narration,
   an earlier native turn's final included), each block once under
-  its attempt and try (process session), never the answer, the try's last
-  typed final (the one carried) or a block repeating them; a try without a
-  typed final is represented whole, since its joined narration is the answer.
+  its attempt and try (process session), never the try's last typed final
+  (the one carried), whose block includes its keyed fragments and exact
+  adjacent streamed forms; a try without a typed final is represented whole,
+  since its joined narration is the answer. Identity decides, never words:
+  equal or contained text of another attempt, try or turn stays, as does every
+  block when the represented try is unknown.
   The tool rows of a source with several attempts name their attempt.
   Workspace: an
   explicit `execution.workspaceRoot` or live isolation wins; otherwise a
@@ -3623,8 +3656,14 @@ not retry automatically.
   collapse-boundary turn) under the thread's lane dir — computed once by a
   bounded read-only ask-mode pass on the lane's own harness + credential route
   (single turn, hard timeout, no job queue) and reused until a new head turn
-  advances the boundary. A timeout or unavailable harness falls back to
-  mechanical one-liners, so the delta is never lost; the disclosure's
+  advances the boundary. The pass receives at most 2 KiB of each collapsed
+  turn's prompt and of its answer and keeps at most 8 KiB of its summary; each
+  cut ends at a whole UTF-8 character and adds a trailing `…` outside those
+  limits. A summary saved before that rule is reused as saved, with any U+FFFD
+  its byte cut left, until the boundary advances; it is neither regenerated nor
+  migrated. A timeout or unavailable harness falls back to
+  mechanical one-liners of at most 200 UTF-16 code units per field, cut the
+  same way, so the delta is never lost; the disclosure's
   `summarized` flag is set either way. A `planRunId` body field implements an approved
   plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
   turn) and delivers it to the executor as a server-owned file reference, so the
@@ -4311,7 +4350,23 @@ line-number ids; ambiguous legacy/mixed logs conservatively count/scan in finite
 worker jobs. UTF-8 and incomplete-line carry remain across batches. Frames
 carry whole exact events, never arbitrary text fragments. The stream is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
-fallback; `output.ready` is guaranteed to precede the terminal
+fallback. A quiet tail does no I/O: a replay batch goes to the bulk worker only
+while the live writer's in-memory seq is ahead of what the client holds, or
+when no live writer owns the log or a terminal is in view, and the job lifecycle
+is re-read body-free (the `wait-many` observation, falling back to the addressed
+status only when no observation answers) after a post-commit observation notice
+for the job, on every pass when the host publishes no notices, and while a
+terminal waits for its file obligation; a read that no source answered is asked
+again on the next pass. A bound run's log exists from `run.created` on, so one
+found missing (reclaimed by retention, or removed) is not polled: it is read
+again only after a change, when its live writer has moved past the seq it held
+at the miss or a bus push or post-commit notice for the run arrives (also one
+that lands while the read finding it missing is still running), so a log
+restored under a live run is delivered on that change. Once its job is terminal
+the stream ends with `event: error` rather than `end`, because no terminal
+frame can be delivered: `run_event_not_found`, retryable with `reconnect`, or,
+when a tombstone names retention, `run_expired_by_retention`, not retryable and
+with no required action, because reconnecting cannot bring that log back. `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
 has applied the terminal event provably has the output. The EventLog's
 once-only terminal-preparation hook also builds and validates the immutable
@@ -4319,7 +4374,24 @@ once-only terminal-preparation hook also builds and validates the immutable
 event. One SQL transaction commits the command result, immutable `run_terminal`
 event, scoped event copies and a `pending` terminal-files obligation. The file
 owner then materializes telemetry, `final/run_facts.yaml` and the per-run terminal
-line before best-effort live publication. A file error leaves the SQL terminal
+line before best-effort live publication. Before that synchronous commit, a held
+or fallback terminal is prepared once (canonical type, receipt and outcome frozen)
+and its durable bytes are staged off the request thread: large command and
+journal bodies as content-addressed files, the receipts and any needed per-run
+log rewrite as fresh `O_DSYNC` temps in the body directory. The stage reads only
+the log's tail; the usual log, ending in a canonical line before the terminal,
+gets the terminal appended by the commit, and only another tail makes the stage
+read the whole log and stage its rewrite. The commit hydrates the command once
+more on the request thread, as before staging (measured at 0.009 ms for a
+100-byte prompt and 1.1 ms for a 1 MiB one). Right after its SQL
+commit, in the same synchronous section, the file owner renames each staged file
+whose bytes still match into place and writes anything else itself. While staging
+awaits, ordinary events (control audits, live-message receipts) append before the
+terminal, which then takes the next seq and keeps its prepared time and verdict;
+another terminal is refused, and a cancel arriving then does not change that
+verdict. A crash before the commit leaves neither terminal nor receipt, and the
+orphan sweep reclaims the staged temps and unowned bodies after the next start.
+A file error leaves the SQL terminal
 and its obligation intact; immediate reconciliation or startup retries those
 same file effects without another generation or a second terminal authority.
 The obligation becomes `materialized` only after every effect completed, then
@@ -4362,13 +4434,17 @@ Control API, CLI, MCP, ACP, and macOS consume those typed facts rather than
 rewriting every cancellation as user intent; a legacy cancellation with no
 reason stays unknown/cancelled instead of receiving a fabricated cause.
 
-Cancellation wins only until the synchronous terminal commit starts. An abort
-observed before the terminal barrier replaces the prepared outcome with
-cancellation facts while retaining the independent checks/review/no-change/
-work-state evidence already established for the run. Once a terminal has
-committed to the engine store, Cancel is a NO-OP: the committed terminal
-wins, a later abort cannot rewrite the durable result, EventLog refuses every
-later terminal emit, and the daemon keeps reporting the committed outcome.
+Cancellation wins only until the terminal's verdict is fixed: when the
+strategy's terminal is held, or, for a Delegate parent still draining its
+children, when the terminal is prepared; either way before its bytes are staged
+and it commits. An abort observed before then replaces the prepared outcome
+with cancellation facts while retaining the independent checks/review/no-change/
+work-state evidence already established for the run. A Stop that arrives after
+it, during the settlement barrier or while the prepared bytes are staged, keeps
+that verdict. Once a terminal has committed to the engine store, Cancel is a
+NO-OP: the committed terminal wins, a later abort cannot rewrite the durable
+result, EventLog refuses every later terminal emit, and the daemon keeps
+reporting the committed outcome.
 The `aborted -> cancelled` mapping survives only as the daemon's fail-closed
 fallback classification for a malformed runner result with no recognized
 lifecycle.
@@ -4412,8 +4488,9 @@ pings can be dropped.
 
 A QUEUED job's per-run stream does not 404: `GET /v2/runs/:id/events` opens the
 SSE response immediately, heartbeats while the job waits for a slot, and binds
-to the run directory when it materializes — a client can subscribe at enqueue
-time and never race the scheduler. `claudexor follow` rides the same contract
+to the run directory when it materializes (it re-reads the job after a
+post-commit notice for it, not on every poll) — a client can subscribe at
+enqueue time and never race the scheduler. `claudexor follow` rides the same contract
 with bounded reconnects (`Last-Event-ID` resume) and exits 1 with "stream
 lost" when the stream ends without a terminal event.
 
@@ -4499,7 +4576,13 @@ first acquires that authority and binds/proves the real socket and
 Control API with product admission closed. Health, handshake, status, shutdown
 and recovery remain reachable in `recovery_only`; product operations receive
 `daemon_recovery_only`. Only then may the storage owner open or import SQL and
-complete recovery/admission duties. The current global generation must be ready;
+complete recovery/admission duties. A Stop that arrives while startup is still
+binding or proving those transports ends startup as an ordinary clean stop.
+Only that Stop's own cancellation counts: the typed `daemon_stopping` refusal
+of a listener it stopped, or the startup abort it raises before closing the
+transports a proof is dialing. A proof that already decided, such as another
+runtime's identity or serving mode, and every other startup failure still exit
+nonzero. The current global generation must be ready;
 a logically damaged project generation stays isolated while healthy projects
 serve. Physical corruption closes product admission for the whole store.
 Recovery access overrides `CLAUDEXOR_NO_CONTROL_API=1` when needed. A successful
@@ -4556,6 +4639,10 @@ SNAPSHOT, disclosed as such in the receipt (`activeRunCheck: "snapshot"`): the
 active-run root set is read once through the in-process command activity
 projection and consumed by the synchronous removal in the same event-loop turn.
 There is no await where enqueue could interleave between check and mutation.
+A run references the project root its accepted request recorded. A run with no
+project, including one whose request omitted the scope, references none, and a
+started, unfinished run whose recorded scope cannot be resolved refuses every
+project removal (`409 active_run_scope_unresolved`).
 The exact opt-in `?trashedThreads=purge` (CLI `claudexor project remove <id>
 --purge-trashed-threads`) removes the project together with the threads already
 in its trash. Any other thread, active or closed, still refuses it
@@ -4939,8 +5026,26 @@ kept only for cold import and an independent frozen copy kept for tests.
   Provider generation and native account-reset I/O await `flushed()` before the
   external effect.
   Bodies up to 64 KiB live inline in the `blob` table; larger bodies are
-  content-addressed files under the resource store, written in the same tick
-  as the owning transaction.
+  content-addressed files under the resource store, present in the same tick
+  as the owning transaction. Where the bytes are known at an asynchronous
+  boundary before that synchronous owner (an enqueued command and its accepted
+  event, a returned run result and its updated event, a thread turn prompt, a
+  deferred draft after its capture, and a promoted draft's successor command and
+  its accepted event after validation, under the job id and creation time the
+  promotion then uses), the file is first written off the request
+  thread: the same `O_DSYNC` temp on the libuv pool, hard-linked into place only
+  while absent, the file itself not registered. Staged writes create no
+  directory; before the first one the store creates its body directory on the
+  request thread and registers each new level with the flusher, as a
+  synchronous owner would, so a fresh store or one whose bodies all stayed
+  inline stages too. The owner's same-tick preparation then finds the file and
+  only registers its directory under that commit's barrier; if the unowned file
+  was garbage-collected meanwhile, or staging failed, the owner writes it as
+  before. A body staged for a request that is then refused, replayed or held (a
+  stale draft revision, a raced enqueue, a refused turn or promotion, a terminal
+  whose sequence moved while it was staged) has no owner and is not collected
+  until the orphan sweep of the next start reclaims it; this costs disk space
+  only.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the
@@ -6153,10 +6258,37 @@ independent: vendor list prices are valuation, while unknown cash or credit
 consumption stays unknown. Current native transports expose no authoritative
 paid-credit debit amount, and the engine never invents one from token prices or a
 session-level Fast setting.
+A usage event's reported amount is evidence apart from its size. A reported
+`cost_usd` of 0 keeps its cash, valuation or unknown meaning and its exact or
+estimated status through the spend row, settlement, ledger and settled budget
+projection, in every lane and review panel. An event with no amount reports
+nothing, and known controllable cash or a stated cost knowledge is not a receipt:
+included work without an amount settles as usage missing, and a zero receipt
+leaves an unpriced try of the same attempt, earlier or later, unknown. Each
+lane's `budget.observation` spend row reports one usage amount and names its
+meaning in `amount_kind`; a review panel writes one aggregate row after its
+settlement, with separate cash, valuation and unknown totals and no
+`amount_kind`. A zero row is evidence of that amount only. Before the first
+settlement the budget projection reads as it did before zero rows existed: spend
+is the sum of nonzero spend rows, or else of reported usage costs, and is always
+estimated, with `remainingUsd` derived from that estimate; valuation is the
+estimated sum of nonzero rows; `cashKnowledge` is absent. A zero row adds no
+total, certainty or valuation there, because the attempt's other tries may still
+be unpriced. An exact total, an exact `$0` included, comes only from the ledger's
+`budget.cash` and the decision record. From the first settlement on, the reading
+is the latest settlement's cumulative disclosure, as before: an attempt still
+running when another settles shows at its own settlement, and that now includes
+a settled zero valuation.
 Persisted routing cost averages carry a cost-evidence generation in the existing
 metrics file. Older unclassified costs are read as unknown while duration,
 sample counts and auth routing survive. A new explicitly unpriced attempt
 clears the cost average; auth-only updates preserve compatible observations.
+The only zero sample is a reported cash receipt whose total is known, exact or
+estimated: a zero valuation, included work without a receipt and an attempt with
+an earlier unpriced interval clear the average as unpriced. The average is per
+harness, not per model, and a receipt covers only the charge it reports: a free
+model's zero lowers the figure for that harness's paid models, and an upstream
+bill outside the receipt is not counted.
 Mixed review panels classify
 each observed amount separately from its prospective billing basis;
 their aggregate is never blindly charged as cash. Panel admission keeps
@@ -6569,8 +6701,17 @@ writes are not optional observer callbacks. Cursor buffered snapshots are tagged
 as evidence and do not enter accepted-answer or retry predicates. The event-log
 package projects this ordered stream into `final/retained-output.md`, separating
 attempts and physical `session_id` values while retaining explicit delta bytes.
-It excludes reasoning, tool output and status prose, and collapses only exact
-adjacent delta/flush/final repetitions. A missing WorkReport still means an
+It excludes reasoning, tool output and status prose. Text carrying an
+adapter-issued `speech` key is one block per key: its fragments extend the block
+until the harness's complete text replaces them, and another key is another
+block even for equal words. A frame whose adapter names the keyed run it joins
+(Claude's `text_runs_joined` frame, `payload.joined_speech_keys`) makes those
+blocks one block only when they are the try's last blocks in that order, none
+complete or final, and the frame's text is exactly theirs joined; otherwise
+every block stays as recorded. Other unkeyed text collapses only exact adjacent
+delta/flush/final repetitions of the try's last text block (so Claude's unkeyed
+`result` is the final form of the block it repeats), and a block holding a
+typed final is closed, so the next native turn's text stays its own block. A missing WorkReport still means an
 unverified work state (a contract failure on the native channels, a disclosed
 `unverified` on the instructed fence); no additional generation is performed to
 repair the format.

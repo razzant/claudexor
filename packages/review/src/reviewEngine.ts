@@ -66,6 +66,7 @@ export type {
   ReviewerSpec,
 } from "./reviewRuntimeTypes.js";
 import { reviewerAuthMode, reviewerAuthSwitchFromEvent } from "./reviewRuntimeTypes.js";
+import { reportedUsageCostUsd } from "@claudexor/budget";
 import { ReviewerCostKnowledge } from "./reviewerCostKnowledge.js";
 import { ReviewerSpendAccumulator, type PartialReviewerSpend } from "./reviewerSpendAccumulator.js";
 import { WorkspaceManager } from "@claudexor/workspace";
@@ -845,20 +846,11 @@ async function collectReviewerOutput(
           at: eventTime,
         });
       }
-      if (
-        ev.type === "usage" &&
-        typeof ev.usage?.cost_usd === "number" &&
-        Number.isFinite(ev.usage.cost_usd) &&
-        ev.usage.cost_usd >= 0
-      ) {
-        costUsd += ev.usage.cost_usd;
-        if (ev.usage.estimated) costEstimated = true;
-        costKnowledge.observeUsage(
-          currentAuthMode,
-          ev.usage.cost_usd,
-          ev.usage.estimated === true,
-          ev,
-        );
+      const reportedUsd = ev.type === "usage" ? reportedUsageCostUsd(ev) : undefined;
+      if (reportedUsd !== undefined) {
+        costUsd += reportedUsd;
+        if (ev.usage?.estimated) costEstimated = true;
+        costKnowledge.observeUsage(currentAuthMode, reportedUsd, ev.usage?.estimated === true, ev);
         cashUsd = costKnowledge.totals.cashUsd;
         valuationUsd = costKnowledge.totals.valuationUsd;
         unknownUsd = costKnowledge.totals.unknownUsd;
@@ -1039,6 +1031,7 @@ async function collectReviewerOutput(
           partialUnknownUsd: unknownUsd,
           partialCashKnowledge: knowledge.cashKnowledge,
           partialAllowanceDebitUnobserved: knowledge.allowanceDebitUnobserved,
+          partialObservedAmounts: knowledge.observedAmounts,
           partialValuationKnowledge: knowledge.valuationKnowledge,
           partialObservedModel: observedModel,
           partialObservedCredentialProfileId: observedCredentialProfileId,
@@ -1094,6 +1087,7 @@ async function collectReviewerOutput(
             partialUnknownUsd: unknownUsd,
             partialCashKnowledge: knowledge.cashKnowledge,
             partialAllowanceDebitUnobserved: knowledge.allowanceDebitUnobserved,
+            partialObservedAmounts: knowledge.observedAmounts,
             partialValuationKnowledge: knowledge.valuationKnowledge,
             partialObservedModel: observedModel,
             partialObservedCredentialProfileId: observedCredentialProfileId,
@@ -1139,6 +1133,7 @@ async function collectReviewerOutput(
         partialUnknownUsd: unknownUsd,
         partialCashKnowledge: knowledge.cashKnowledge,
         partialAllowanceDebitUnobserved: knowledge.allowanceDebitUnobserved,
+        partialObservedAmounts: knowledge.observedAmounts,
         partialValuationKnowledge: knowledge.valuationKnowledge,
         partialObservedModel: observedModel,
         partialObservedCredentialProfileId: observedCredentialProfileId,

@@ -98,7 +98,6 @@ async function settingsRequest(
   const response = await controlApiFetch(addr, "/settings", {
     method,
     headers: {
-      Authorization: `Bearer ${addr.token}`,
       ...(body ? { "content-type": "application/json" } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),

@@ -541,9 +541,7 @@ async function daemonRun(
   let threadId = flagStr(args, "thread");
   if (threadId === undefined && flagBool(args, "resume")) {
     try {
-      const res = await controlApiFetch(addr, "/threads", {
-        headers: { Authorization: `Bearer ${addr.token}` },
-      });
+      const res = await controlApiFetch(addr, "/threads");
       if (!res.ok) throw new Error(`GET /threads failed: ${res.status}`);
       // Parse through the typed DTO — the field is camelCase `updatedAt`, and a
       // hand-rolled `updated_at` read silently sorts undefined and throws.
@@ -802,7 +800,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
     const { addr } = await ensureDaemon();
     const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/decision`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
     const text = await res.text();

@@ -101,18 +101,22 @@ function terminalRecords(runDir: string) {
  * Recorded assistant output that what a run carries forward does not
  * represent, each block once under its attempt and native try (its process
  * session). The represented try is the last accepted try of
- * `representedAttempt`, whose answer or report is carried: its last typed
- * final (AnswerAssembly's answer) and the blocks repeating it are left out,
- * its other narration and earlier native-turn finals stay (with no typed final
- * its joined narration is the carried answer, so the whole try is left out).
- * Any block the carried text contains is left out too. Read from events the
- * caller already holds.
+ * `representedAttempt`, whose answer or report is carried: only its last typed
+ * final (AnswerAssembly's answer) is left out, as one block with its own keyed
+ * and exact adjacent streamed forms; its other narration and earlier
+ * native-turn finals stay (with no typed final its joined narration is the
+ * carried answer, so the whole try is left out). Identity decides, never text:
+ * equal or contained words elsewhere stay, and without a represented try
+ * nothing is left out. Read from events the caller already holds.
+ *
+ * `_carried`, the carried text earlier callers pass, is accepted so they still
+ * compile and is ignored: that prose identifies no recorded event (#568).
  */
 export function unrepresentedOutput(
   events: readonly RunEvent[],
   facts: RunExecutionFacts,
   representedAttempt: string | null,
-  carried: string,
+  _carried?: string,
 ): string | null {
   const session = facts.accepted
     .filter((start) => start.attemptId === representedAttempt)
@@ -120,12 +124,7 @@ export function unrepresentedOutput(
   const represented =
     representedAttempt !== null && session ? { attempt: representedAttempt, session } : undefined;
   const harness = events.filter((event) => event.type === "harness.event");
-  return (
-    retainedOutput(harness, 0, false, {
-      text: carried,
-      ...(represented ? { represented } : {}),
-    })?.trim() || null
-  );
+  return retainedOutput(harness, 0, false, represented ? { represented } : {})?.trim() || null;
 }
 
 /**
@@ -219,7 +218,7 @@ export function readContinuationEvidence(runDir: string) {
   // winning try's other narration and earlier native-turn finals) stays beside
   // it as evidence, once under its attempt and try.
   const winner = telemetry?.final_attempt_id ?? null;
-  const unrepresented = answer ? unrepresentedOutput(events.events, facts, winner, answer) : null;
+  const unrepresented = answer ? unrepresentedOutput(events.events, facts, winner) : null;
   const output = answer
     ? unrepresented
       ? `Final answer (final/answer.md${winner ? `, attempt ${winner}` : ""}):\n\n${answer}\n\n${unrepresented}`

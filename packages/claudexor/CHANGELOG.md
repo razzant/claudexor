@@ -1,5 +1,15 @@
 # claudexor
 
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [a0f3a0e]
+- Updated dependencies [d9f50f5]
+- Updated dependencies [135f6de]
+- Updated dependencies [51e5250]
+  - @claudexor/cli@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

@@ -13,7 +13,8 @@ type Json = any;
  * observed text block of one incarnation in one parser instance; the native
  * message id only has to agree, because a retried response can replay it.
  * Text, timing, adjacency and frame counts never decide identity, and every
- * ambiguous case stays unkeyed.
+ * ambiguous case stays unkeyed. A `text_runs_joined` incarnation completes no
+ * key: its deferred frame can only name the run of keys it joins.
  */
 interface BlockLifecycle {
   /** Issued key; undefined for non-text, id-disagreeing or duplicated (invalidated) blocks. */
@@ -29,6 +30,8 @@ interface Incarnation {
   /** The CLI joins text runs into deferred frames: no completion is ever exact. */
   joined: boolean;
   blocks: Map<number, BlockLifecycle>;
+  /** Text blocks started since the last other block or text frame: the run a joined frame names. */
+  run: BlockLifecycle[];
 }
 
 export interface ClaudeSpeechState {
@@ -84,6 +87,42 @@ export function claudeCompletion(obj: Json, state: ClaudeSpeechState): HarnessSp
 }
 
 /**
+ * The keys a `text_runs_joined` frame joins. Such an incarnation defers each
+ * run of adjacent text blocks into ONE assistant frame after the run's last
+ * stop (recorded on 2.1.311: fixtures/recorded-partial-joined.jsonl). The
+ * frame names its run only when that is exact: one non-empty text block, not
+ * an interrupted partial, the incarnation's own id (and no `api_message_id`
+ * naming another response), no block still open, and every block of the run
+ * keyed and not yet completed. Any text frame ends the run, named or not.
+ * Naming completes no key, and the text is not compared: a consumer that
+ * relies on the name checks the words it holds.
+ */
+export function claudeJoinedRun(obj: Json, state: ClaudeSpeechState): string[] | undefined {
+  const incarnation = state.current;
+  const content = obj.message?.content;
+  if (!incarnation?.joined || !Array.isArray(content)) return undefined;
+  if (!content.some((block) => block?.type === "text")) return undefined;
+  const run = incarnation.run;
+  incarnation.run = [];
+  const block = content.length === 1 ? content[0] : undefined;
+  if (
+    incarnation.id === null ||
+    obj.aborted === true ||
+    typeof block?.text !== "string" ||
+    block.text.length === 0 ||
+    nativeId(obj.message?.id) !== incarnation.id ||
+    !agrees(obj, incarnation) ||
+    run.length === 0 ||
+    [...incarnation.blocks.values()].some((lifecycle) => lifecycle.open) ||
+    run.some((lifecycle) => !lifecycle.key || lifecycle.completed)
+  ) {
+    return undefined;
+  }
+  for (const lifecycle of run) lifecycle.completed = true;
+  return run.map((lifecycle) => lifecycle.key!);
+}
+
+/**
  * `stream_event` frames (--include-partial-messages, F2.5 W-C4). Only MAIN
  * conversation text deltas become delta messages; subagent frames carry
  * parent_tool_use_id and never surface or touch the lifecycle. Block
@@ -110,10 +149,11 @@ export function claudeStreamEvents(
         id: obj.api_message_id === undefined || obj.api_message_id === id ? id : null,
         joined: obj.text_runs_joined === true,
         blocks: new Map(),
+        run: [],
       };
       return [];
     }
-    case "content_block_start":
+    case "content_block_start": {
       if (!incarnation || index === null) return [];
       if (lifecycle) {
         // A second start for one index is ambiguous: the index stays unkeyed.
@@ -121,17 +161,19 @@ export function claudeStreamEvents(
         lifecycle.open = true;
         return [];
       }
-      incarnation.blocks.set(index, {
+      const text = event.content_block?.type === "text";
+      const started: BlockLifecycle = {
         key:
-          event.content_block?.type === "text" &&
-          incarnation.id !== null &&
-          agrees(obj, incarnation)
+          text && incarnation.id !== null && agrees(obj, incarnation)
             ? `claude:${state.namespace}:${incarnation.ordinal}:${index}`
             : undefined,
         open: true,
         completed: false,
-      });
+      };
+      incarnation.blocks.set(index, started);
+      incarnation.run = text ? [...incarnation.run, started] : [];
       return [];
+    }
     case "content_block_stop":
       if (!incarnation || !lifecycle) return [];
       // A stop naming another response neither closes this block nor leaves its

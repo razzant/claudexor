@@ -26,7 +26,7 @@ export async function retryCommand(args: ParsedArgs, json: boolean): Promise<num
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/retry`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: "{}",
     });
     const data = (await response.json()) as Record<string, unknown>;
@@ -47,9 +47,7 @@ export async function runAgainCommand(args: ParsedArgs, json: boolean): Promise<
   if (!runId) return printUsageError(json, "usage: claudexor run-again <run_id>");
   try {
     const { addr } = await ensureDaemon();
-    const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/run-again`, {
-      headers: { Authorization: `Bearer ${addr.token}` },
-    });
+    const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/run-again`);
     const data = (await response.json()) as Record<string, unknown>;
     if (!response.ok) throw controlProblemError(response.status, data, `HTTP ${response.status}`);
     if (json) printJson(data);

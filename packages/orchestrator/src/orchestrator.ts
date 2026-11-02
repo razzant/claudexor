@@ -246,7 +246,7 @@ import {
   dropDeltaPastBudget,
   emitPlanProgress,
   emitTransientExhausted,
-  observeReadonlySpend,
+  observeUsageSpend,
   recordAdapterThrow,
 } from "./laneStreamEvents.js";
 import {
@@ -329,7 +329,7 @@ import { recordProcessingIntent } from "./retry-processing-intent.js";
 import { prepareReviewEvidenceDir, recordReviewEvidenceCleanup } from "./reviewEvidence.js";
 import { savedForSynthesis } from "./savedCandidate.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
-import type { EventLog, TerminalPersistenceHook } from "@claudexor/event-log";
+import type { EventLog, TerminalPersistenceHook, TerminalStagingHook } from "@claudexor/event-log";
 import { buildContextPack, writeEvidencePacket } from "@claudexor/context";
 import { RawPatchLane, endsConvergence } from "./rawPatchLane.js";
 import {
@@ -599,6 +599,8 @@ export interface RunInput {
   onEvent?: (event: RunEvent) => void;
   onEventPersist?: (event: RunEvent) => void;
   onTerminalPersist?: TerminalPersistenceHook;
+  /** Writes the terminal's durable bytes off the request thread before its commit. */
+  onTerminalStage?: TerminalStagingHook;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
   onHarnessEvent?: (event: HarnessEvent) => void;
   /** Called once when the run id/dir are known, before any harness work begins. */
@@ -2861,6 +2863,7 @@ export class Orchestrator {
     const attemptDir = join(paths.attemptsDir, attemptId);
     recordCleanAttemptMetrics(globalConfigDir(), adapter.id, {
       costUsd: cost,
+      usageCost: telemetry.usageCost,
       streamMs: attemptStreamEndedMs - attemptStartedMs,
       errored,
       aborted: signal?.aborted === true,
@@ -6802,11 +6805,12 @@ export class Orchestrator {
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
               this.deps.quotaEventSink?.(adapter.id, ev);
-              const spend = observeReadonlySpend(
+              const spend = observeUsageSpend(
                 ev,
                 (t, p) => log.emit(t, p),
                 adapter.id,
                 attemptId,
+                telemetry.usageCost,
               );
               cost += spend.costUsd;
               costEstimated ||= spend.estimated;

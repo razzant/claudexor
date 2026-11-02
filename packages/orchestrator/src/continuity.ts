@@ -27,7 +27,10 @@
 export const PER_TURN_BUDGET_BYTES = 8 * 1024;
 /** Whole-packet verbatim budget; older turns collapse past this. */
 export const TOTAL_BUDGET_BYTES = 24 * 1024;
-/** One-line collapsed entry keeps this many chars of each field. */
+/**
+ * One-line collapsed entry keeps up to this many UTF-16 code units of each
+ * field; a cut ends on a whole character and adds "…" outside the allowance.
+ */
 export const COLLAPSE_PREFIX_CHARS = 200;
 
 export interface ContinuityTurn {
@@ -142,7 +145,11 @@ function boundBytes(text: string, maxBytes: number): string {
 
 function oneLine(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > COLLAPSE_PREFIX_CHARS ? `${flat.slice(0, COLLAPSE_PREFIX_CHARS)}…` : flat;
+  if (flat.length <= COLLAPSE_PREFIX_CHARS) return flat;
+  // A cut between a surrogate pair's halves would leave a lone surrogate, which
+  // becomes U+FFFD in THREAD.md; drop that character whole instead (#577).
+  const head = flat.slice(0, COLLAPSE_PREFIX_CHARS);
+  return `${/\p{Surrogate}$/u.test(head) ? head.slice(0, -1) : head}…`;
 }
 
 /** Delta turns for this lane: everything AFTER the checkpoint (all prior when

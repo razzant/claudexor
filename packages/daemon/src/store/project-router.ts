@@ -172,6 +172,13 @@ export class SqlProjectRouter {
   createTurn(id: string, prompt: string, input: CreateTurnInput = {}) {
     return this.requireThread(id).createTurn(id, prompt, input);
   }
+  async stageTurnPrompt(id: string, prompt: string): Promise<void> {
+    try {
+      await this.forThread(id)?.stageTurnPrompt(prompt);
+    } catch {
+      /* createTurn decides and reports */
+    }
+  }
   findTurnByIdempotency(id: string, input: NonNullable<CreateTurnInput["idempotency"]>) {
     return this.requireThread(id).findTurnByIdempotency(id, input);
   }

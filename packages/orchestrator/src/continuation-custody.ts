@@ -272,6 +272,8 @@ export async function flushContinuationTerminal(
     }
   } finally {
     pendingRuns.delete(context.log);
-    context.log.flushDeferredTerminal();
+    // The held terminal's durable bytes are staged off the request thread
+    // first; its verdict is already fixed and its commit stays synchronous.
+    await context.log.commitDeferredTerminal();
   }
 }

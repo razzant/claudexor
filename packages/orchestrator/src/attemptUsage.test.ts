@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
-import { attemptUsageCostSettlement, BudgetLedger } from "@claudexor/budget";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import {
+  attemptUsageCostSettlement,
+  BudgetLedger,
+  loadHarnessMetrics,
+  recordHarnessMetric,
+} from "@claudexor/budget";
 import { processAttemptUsage } from "./attemptUsage.js";
 import {
   AttemptPostStreamError,
@@ -13,6 +21,7 @@ import {
 import { createAttemptTelemetry, observeAttemptTelemetry } from "./attemptTelemetry.js";
 import { appliedAttemptFacts } from "./delegatedHome.js";
 import { attemptTelemetryRecord } from "./attemptTelemetry.js";
+import { recordCleanAttemptMetrics } from "./runSupport.js";
 import { AttemptTelemetryRecord, HarnessEvent } from "@claudexor/schema";
 
 const usageEvent = (estimated: boolean) =>
@@ -22,6 +31,110 @@ const usageEvent = (estimated: boolean) =>
     ts: new Date().toISOString(),
     usage: { input_tokens: 1, output_tokens: 1, cost_usd: 0.37, estimated },
   }) as const;
+
+describe("a clean attempt's routing cost sample (#171)", () => {
+  const configDirs: string[] = [];
+  afterAll(() => configDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+  const NO_DEBIT = {
+    nativeMode: null,
+    kind: "included" as const,
+    source: "fixture.allowance",
+    debit: "unobserved" as const,
+  };
+  const frame = (type: string, route: "vendor_native" | "managed_api_key", extra: object = {}) =>
+    HarnessEvent.parse({
+      type,
+      session_id: "s",
+      ts: "2026-11-02T00:00:00.000Z",
+      credential_route: route,
+      ...extra,
+    });
+  const interval = (route: "vendor_native" | "managed_api_key", extra: object = {}) => [
+    frame("started", route, extra),
+    frame("completed", route, extra),
+  ];
+  const paidUsage = (usage: object) => [
+    frame("started", "managed_api_key"),
+    frame("usage", "managed_api_key", { usage }),
+    frame("completed", "managed_api_key"),
+  ];
+  /** The average after a seeded 0.4 and one clean attempt over these real frames. */
+  function averageAfter(frames: HarnessEvent[], outcome = { errored: false, aborted: false }) {
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-routing-sample-"));
+    configDirs.push(configDir);
+    recordHarnessMetric(configDir, "h", { costUsd: 0.4 });
+    const telemetry = createAttemptTelemetry("auto", false);
+    let cost = 0;
+    for (const event of frames) {
+      observeAttemptTelemetry(telemetry, event);
+      if (event.type === "usage")
+        cost = processAttemptUsage({
+          event,
+          telemetry,
+          harnessId: "h",
+          attemptId: "a01",
+          cost,
+          costEstimated: false,
+          cancel: vi.fn(),
+        }).cost;
+    }
+    recordCleanAttemptMetrics(configDir, "h", {
+      costUsd: cost,
+      usageCost: telemetry.usageCost,
+      streamMs: 5,
+      authMode: telemetry.authMode,
+      ...outcome,
+    });
+    return loadHarnessMetrics(configDir)["h"]?.avg_cost_usd;
+  }
+  const moved = (sample: number) => 0.4 * 0.7 + sample * 0.3;
+
+  it.each([
+    ["an exact cash receipt of zero", paidUsage({ cost_usd: 0 }), moved(0)],
+    ["an estimated cash receipt of zero", paidUsage({ cost_usd: 0, estimated: true }), moved(0)],
+    ["ordinary positive cash", paidUsage({ cost_usd: 0.25 }), moved(0.25)],
+    ["an API route that reported no amount", paidUsage({ input_tokens: 1 }), null],
+    [
+      "a zero valuation",
+      [
+        frame("started", "vendor_native"),
+        frame("usage", "vendor_native", { usage: { cost_usd: 0 } }),
+        frame("completed", "vendor_native"),
+      ],
+      null,
+    ],
+    ["ordinary included work with no amount", interval("vendor_native"), null],
+    [
+      "included work with no debit and no amount",
+      interval("vendor_native", { processing_cost_basis: NO_DEBIT }),
+      null,
+    ],
+    [
+      "a zero receipt after an unpriced paid interval",
+      [...interval("managed_api_key"), ...paidUsage({ cost_usd: 0 })],
+      null,
+    ],
+    [
+      "a zero receipt after included work whose debit is unobserved",
+      [
+        ...interval("vendor_native", { processing_cost_basis: NO_DEBIT }),
+        ...paidUsage({ cost_usd: 0 }),
+      ],
+      null,
+    ],
+  ])("%s", (_label, frames, expected) => {
+    const average = averageAfter(frames);
+    if (expected === null) expect(average).toBeNull();
+    else expect(average).toBeCloseTo(expected, 10);
+  });
+
+  it.each([
+    { errored: true, aborted: false },
+    { errored: false, aborted: true },
+  ])("leaves the average alone when the attempt is not clean: %o", (outcome) => {
+    expect(averageAfter(paidUsage({ cost_usd: 0 }), outcome)).toBe(0.4);
+  });
+});
 
 describe("processAttemptUsage", () => {
   it.each(["included", "paid_credits"] as const)(
@@ -498,6 +611,72 @@ describe("processAttemptUsage", () => {
       expect(guard).not.toHaveBeenCalled();
       expect(cancel).not.toHaveBeenCalled();
     }
+  });
+
+  it("discloses a reported zero with its status but never consults the cap guard (#171)", () => {
+    const telemetry = createAttemptTelemetry("auto", false);
+    const zero = (estimated: boolean) =>
+      HarnessEvent.parse({
+        ...usageEvent(estimated),
+        credential_route: "managed_api_key",
+        usage: { cost_usd: 0, estimated },
+      });
+    for (const event of [
+      { type: "started", session_id: "s", ts: "2026-11-02T00:00:00.000Z" },
+      {
+        ...usageEvent(false),
+        credential_route: "managed_api_key",
+        usage: { cost_usd: 0.25, estimated: false },
+      },
+      zero(true),
+    ])
+      observeAttemptTelemetry(telemetry, HarnessEvent.parse(event));
+    const guard = vi.fn(() => true);
+    const cancel = vi.fn();
+    const emitted: Array<Record<string, unknown>> = [];
+    const result = processAttemptUsage({
+      event: zero(true),
+      telemetry,
+      harnessId: "raw-api",
+      attemptId: "a01",
+      cost: 0.25,
+      costEstimated: false,
+      emit: (_type, payload) => emitted.push(payload),
+      budgetGuard: guard,
+      cancel,
+    });
+    expect(result).toEqual({ cost: 0.25, costEstimated: true, hardCapReached: false });
+    expect(guard).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(emitted).toEqual([
+      {
+        harness_id: "raw-api",
+        attempt_id: "a01",
+        kind: "spend",
+        usd: 0,
+        estimated: true,
+        amount_kind: "cash",
+      },
+    ]);
+  });
+
+  it("emits nothing and leaves the status alone when no amount was reported (#171)", () => {
+    const guard = vi.fn(() => true);
+    const emit = vi.fn();
+    const result = processAttemptUsage({
+      event: { ...usageEvent(true), usage: { input_tokens: 1, estimated: true } },
+      telemetry: createAttemptTelemetry("auto", false),
+      harnessId: "raw-api",
+      attemptId: "a01",
+      cost: 0,
+      costEstimated: false,
+      emit,
+      budgetGuard: guard,
+      cancel: vi.fn(),
+    });
+    expect(result).toEqual({ cost: 0, costEstimated: false, hardCapReached: false });
+    expect(emit).not.toHaveBeenCalled();
+    expect(guard).not.toHaveBeenCalled();
   });
 
   it("trips the guard and cancels metered API usage", () => {

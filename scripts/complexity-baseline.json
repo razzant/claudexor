@@ -18,7 +18,7 @@
   "packages/control-api/src/daemon-server.ts": 2286,
   "packages/control-api/src/operation-catalog.ts": 469,
   "packages/control-api/src/thread-turn-routes.ts": 600,
-  "packages/daemon/src/server.ts": 608,
+  "packages/daemon/src/server.ts": 563,
   "packages/daemon/src/threads.ts": 593,
   "packages/harness-claude/src/index.ts": 772,
   "packages/harness-codex/src/index.ts": 867,

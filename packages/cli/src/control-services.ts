@@ -100,6 +100,11 @@ export function controlServices(
   const harnessesPollCache = new StatusProjectionCache<Awaited<ReturnType<typeof listHarnesses>>>({
     versionOf: globalConfigVersion,
   });
+  // The capability catalog is the same sweep plus model truth per harness. Read
+  // per run entry, it kept doctors running after 3 s callers left (2026-11-01).
+  const catalogCache = new StatusProjectionCache<
+    Awaited<ReturnType<typeof buildAgentCapabilityCatalog>>
+  >({ versionOf: globalConfigVersion });
   const bustStatusCaches = (subject?: CredentialMutationSubject) =>
     bustCredentialStatusCaches(quotaRegistry, accounts, subject);
   const journalPartition = (partition: string): PartitionControlPort =>
@@ -278,7 +283,7 @@ export function controlServices(
         : harnessModels(input.harnessId, NO_PROJECT_ROOT, true, input.route),
     authReadiness: async (input: { harnessId: string; request: unknown }) =>
       authReadiness.refresh(input.harnessId, input.request),
-    agentCapabilities: async () => buildAgentCapabilityCatalog(),
+    agentCapabilities: async () => catalogCache.read(() => buildAgentCapabilityCatalog()),
     runApplicability: async (input: { repoRoot: string }) =>
       projectRunApplicability(input.repoRoot),
     ...setupJobControlServices(setupJobs),

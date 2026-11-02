@@ -138,6 +138,8 @@ export function createSqlDaemonExecutors(
     runtimeConcurrencyCaps: options.runtimeConcurrencyCaps,
     terminalPersistence: (jobId) => (event, telemetry) =>
       graph.threads.persistTerminal(jobId, event, telemetry),
+    terminalStaging: (jobId) => (event, telemetry) =>
+      graph.threads.stageTerminal(jobId, event, telemetry),
   });
   return {
     deferredStart: createDeferredStartPreparation({

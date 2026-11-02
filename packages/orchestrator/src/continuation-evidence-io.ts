@@ -15,12 +15,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { retainedOutput } from "@claudexor/event-log";
 import type { ResumableCause, RunEvent } from "@claudexor/schema";
-import type {
-  EvidenceIndexInput,
-  EvidenceIndexSources,
-  EvidenceSteering,
-  EvidenceToolCall,
-  UncoveredWork,
+import {
+  wholeCharPrefix,
+  type EvidenceIndexInput,
+  type EvidenceIndexSources,
+  type EvidenceSteering,
+  type EvidenceToolCall,
+  type UncoveredWork,
 } from "./continuation-evidence.js";
 
 type Row = Record<string, unknown>;
@@ -111,7 +112,7 @@ export function toolCallIndex(events: readonly Row[]): EvidenceToolCall[] {
       typeof tool?.["name"] === "string" && tool["name"].trim()
         ? tool["name"]
         : typeof ev["text"] === "string" && ev["text"].trim()
-          ? ev["text"].split("\n")[0]!.slice(0, 80)
+          ? wholeCharPrefix(ev["text"].split("\n")[0]!, 80)
           : "tool";
     if (ev["type"] === "tool_call") {
       open({ name, target, resolved: false }, session, id, target);

@@ -1,8 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
 import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
+import { readThreadSummary } from "@claudexor/workspace";
 import { summarizeThreadPrefix } from "./continuity-summary.js";
-import type { ContinuityTurn } from "./continuity.js";
+import { resolveContinuitySummary } from "./continuity-facts.js";
+import {
+  buildContinuation,
+  planContinuation,
+  type ContinuityRequest,
+  type ContinuityTurn,
+} from "./continuity.js";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  reapDirs.push(dir);
+  return dir;
+}
+afterAll(() => {
+  for (const dir of reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 function manifestFor(id: string): HarnessAdapter {
   return {
@@ -163,5 +184,129 @@ describe("summarizeThreadPrefix (INV-137, V9c)", () => {
   it("returns null for an empty prefix (nothing to summarise)", async () => {
     const text = await summarizeThreadPrefix(params(summarizingLane("lane-a", "x"), { turns: [] }));
     expect(text).toBeNull();
+  });
+});
+
+/** A lane that records each prompt it is given and answers with `answer` as its typed final. */
+function answeringLane(id: string, answer: string, prompts: string[]): HarnessAdapter {
+  return {
+    ...manifestFor(id),
+    async *run(spec) {
+      prompts.push(spec.prompt);
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: spec.session_id, ts } as never;
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts,
+        text: answer,
+        final: true,
+      } as never;
+      yield { type: "completed", session_id: spec.session_id, ts } as never;
+    },
+  };
+}
+
+/** Characters 2 (Cyrillic), 3 (CJK) and 4 (emoji, a UTF-16 surrogate pair) UTF-8 bytes wide. */
+const WIDE_CHARS = ["Ж", "中", "😀"];
+const utf8Bytes = (text: string): number => Buffer.byteLength(text, "utf8");
+
+/**
+ * A text whose `limit`-byte cut falls `into` bytes inside one `char`, and the
+ * whole-character prefix a correct cut keeps. ASCII padding shifts where the
+ * characters start; with `into` 0, `kept` is exactly `limit` bytes. The
+ * expectations come from this construction, not from the code under test.
+ */
+function cutInside(char: string, limit: number, into: number): { text: string; kept: string } {
+  const room = limit - into;
+  const width = utf8Bytes(char);
+  const kept = "a".repeat(room % width) + char.repeat(Math.floor(room / width));
+  return { text: `${kept}${char.repeat(4)}`, kept };
+}
+
+describe("summary pass byte bounds keep whole UTF-8 characters (INV-137, #577)", () => {
+  it("cuts each transcript field at 2 KiB and the summary at 8 KiB on a character boundary, through the thread packet", async () => {
+    // The summary cache lives under (config dir, project root, thread, boundary
+    // turn). A fresh config dir and project root for each execution keep a
+    // repeat, retry, restart or parallel worker from reading another
+    // execution's cached summary, so every case below reaches the adapter.
+    const configDir = reapMk(join(tmpdir(), "claudexor-577-summary-config-"));
+    const projectRoot = reapMk(join(tmpdir(), "claudexor-577-summary-project-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      // Long ASCII turns after the probe turn make the packet budget collapse
+      // the probe turn, so the real summary consumer sends it to the pass.
+      const filler = "f".repeat(5 * 1024);
+      for (const char of WIDE_CHARS) {
+        for (let into = 1; into < utf8Bytes(char); into += 1) {
+          const prompt = cutInside(char, 2048, into);
+          const output = cutInside(char, 2048, utf8Bytes(char) - into);
+          const answer = cutInside(char, 8192, into);
+          const priorTurns: ContinuityTurn[] = [
+            { id: "t1", prompt: prompt.text, outputText: output.text },
+            ...["t2", "t3", "t4"].map((id) => ({ id, prompt: filler, outputText: filler })),
+          ];
+          const unchanged = structuredClone(priorTurns);
+          const req: ContinuityRequest = {
+            lane: { harness: "lane-b", profileId: null },
+            priorTurns,
+            laneCheckpointTurnId: null,
+            nativeResumeAvailable: false,
+            priorHeadLane: { harness: "lane-a", profileId: null },
+            activePlan: null,
+            anchor: null,
+          };
+          const plan = planContinuation(req);
+          expect(plan.collapsedPrefix[0]?.id).toBe("t1");
+          const threadId = `th-577-${utf8Bytes(char)}-${into}`;
+          expect(readThreadSummary(projectRoot, threadId, plan.summaryUpToTurnId ?? "")).toBeNull();
+          const prompts: string[] = [];
+          const resolved = await resolveContinuitySummary({
+            req,
+            threadId,
+            projectRoot,
+            cwd: projectRoot,
+            adapter: answeringLane("lane-b", answer.text, prompts),
+            credentialProfile: null,
+            authPreference: "auto",
+            laneEnv: {},
+            envInheritance: "clean",
+          });
+          const summary = `${answer.kept}…`;
+          expect(prompts).toHaveLength(1);
+          expect(prompts[0]).toContain(
+            `Turn 1\nUser: ${prompt.kept}…\nAssistant: ${output.kept}…\n`,
+          );
+          expect(resolved?.text).toBe(summary);
+          expect(readThreadSummary(projectRoot, threadId, resolved?.upToTurnId ?? "")).toBe(
+            summary,
+          );
+          const packet = buildContinuation({ ...req, cachedSummary: resolved }).packetMarkdown;
+          expect(packet).toContain(`## Earlier conversation (summary)\n\n${summary}\n`);
+          for (const text of [prompts[0], packet])
+            expect(text).not.toMatch(/\uFFFD|\p{Surrogate}/u);
+          expect(priorTurns).toEqual(unchanged);
+        }
+      }
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("leaves exactly fitting fields and summary unchanged and marks a one-byte cut", async () => {
+    for (const char of WIDE_CHARS) {
+      const fits = cutInside(char, 2048, 0).kept;
+      const summary = cutInside(char, 8192, 0).kept;
+      const prompts: string[] = [];
+      const text = await summarizeThreadPrefix(
+        params(answeringLane("lane-a", summary, prompts), {
+          turns: [{ id: "t1", prompt: fits, outputText: `${fits}x` }],
+        }),
+      );
+      expect(prompts[0]).toContain(`\nUser: ${fits}\nAssistant: ${fits}…`);
+      expect(text).toBe(summary);
+    }
   });
 });

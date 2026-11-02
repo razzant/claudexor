@@ -133,7 +133,7 @@ function mandatoryRefusal(files: string[]): RawContextRefusalError {
   return new RawContextRefusalError(
     "raw_context_mandatory_unavailable",
     `raw_context_mandatory_unavailable: mandatory context cannot be delivered complete: ${files.join("; ")}. ` +
-      "Commit the files at the run's base, or remove them from context.mandatory_files.",
+      "Provide the named paths as complete UTF-8 files in the current candidate, or adjust context.mandatory_files.",
   );
 }
 

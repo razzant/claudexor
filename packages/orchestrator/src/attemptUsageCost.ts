@@ -1,11 +1,18 @@
-import type { CostKnowledge, HarnessEvent, UsageCostSummary } from "@claudexor/schema";
+import type {
+  CostKnowledge,
+  HarnessEvent,
+  UsageCostBasis,
+  UsageCostSummary,
+} from "@claudexor/schema";
 import {
   attemptUsageCostSettlement,
   reportedCashKnowledge,
+  reportedUsageCostUsd,
   unknownCostSettlement,
   UsageCostTracker,
   type BudgetLedger,
   type BudgetSettlement,
+  type ObservedUsageAmounts,
 } from "@claudexor/budget";
 import type { AppliedAttemptFacts } from "./delegatedHome.js";
 
@@ -20,6 +27,10 @@ export interface AttemptUsageCost {
   readonly unknownPaidUsd?: number;
   /** Included work whose route reported no actual debit (reported cash unknown). */
   readonly allowanceDebitUnobserved?: boolean;
+  /** Meanings a usage event reported an amount for, zero included. */
+  readonly observedAmounts?: ObservedUsageAmounts;
+  /** Meaning of the latest reported amount. */
+  readonly lastAmountKind?: UsageCostBasis["kind"] | null;
 }
 
 const usageTrackers = new WeakMap<AttemptUsageCost, UsageCostTracker>();
@@ -145,6 +156,8 @@ export function newAttemptUsageCost(): AttemptUsageCost {
       enumerable: false,
       get: () => tracker.snapshot().allowanceDebitUnobserved,
     },
+    observedAmounts: { enumerable: false, get: () => tracker.snapshot().observedAmounts },
+    lastAmountKind: { enumerable: false, get: () => tracker.lastAmountKind },
   });
   return cost;
 }
@@ -164,6 +177,20 @@ export function attemptUsageCostSummary(cost: AttemptUsageCost): UsageCostSummar
   };
 }
 
+/** One clean attempt's routing cost sample. Null means unpriced and clears the
+ * average. The only zero sample is a reported cash receipt with a known total:
+ * included work without a receipt, a zero valuation and an earlier unpriced
+ * interval are not evidence that the route is free. */
+export function attemptRoutingCostSample(costUsd: number, usage: AttemptUsageCost): number | null {
+  if (costUsd > 0) return costUsd;
+  const receipt = usage.observedAmounts?.cash === true && usage.cashUsd === 0;
+  const total = reportedCashKnowledge(
+    usage.cashKnowledge ?? "unknown",
+    usage.allowanceDebitUnobserved,
+  );
+  return receipt && total !== "unknown" ? 0 : null;
+}
+
 /** Observe one event and return the route to carry into the next event. */
 export function observeAttemptUsageEvent(
   cost: AttemptUsageCost,
@@ -180,8 +207,8 @@ export function observeAttemptUsageEvent(
     else if (event.payload["to_auth_mode"] === "api_key") mode = "api_key";
   }
   tracker.observeEvent(mode, event);
-  const usd = event.usage?.cost_usd;
-  if (typeof usd === "number" && Number.isFinite(usd) && usd >= 0) {
+  const usd = reportedUsageCostUsd(event);
+  if (usd !== undefined) {
     const receiptMode =
       event.credential_route === "vendor_native"
         ? "local_session"

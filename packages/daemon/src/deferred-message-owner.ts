@@ -25,6 +25,12 @@ export function assertDeferredOperator(beltContext: boolean, targetParams?: unkn
     );
 }
 
+/** The successor identity a promotion's staged acceptance was written under. */
+export interface PromotionStamp {
+  jobId: string;
+  createdAt: string;
+}
+
 /** Command-adjacent storage boundary; preparation and queue publication stay
  * with the daemon's existing admission/settlement owner. */
 export interface DeferredMessageOwner {
@@ -39,13 +45,18 @@ export interface DeferredMessageOwner {
     key: string,
     capturedStart?: CapturedRunStart,
   ): DeferredMessageReceipt;
+  /** Off-loop staging of the draft body `mutate` will own (best effort). */
+  stage?(input: DeferredMessageMutation, capturedStart?: CapturedRunStart): Promise<void>;
   request(id: string): CapturedRunStart;
+  /** Off-loop staging of the acceptance bodies `promote` will own (best effort). */
+  stagePromotion?(id: string, expectedRevision: number): Promise<PromotionStamp>;
   promote(
     id: string,
     expectedRevision: number,
     preparedStart: CapturedRunStart,
     fence: () => DeferredMessageHold | null,
     admit: (request: CapturedRunStart, draftId: string) => void,
+    stamp?: PromotionStamp,
   ): {
     draft: DeferredMessageProjection;
     record: JobRecord | null;

@@ -102,6 +102,15 @@ function bytes(text: string): number {
   return Buffer.byteLength(text, "utf8");
 }
 
+/**
+ * The first `units` UTF-16 code units of `text`, one fewer when that cut would
+ * split a surrogate pair (its lone half reads as U+FFFD). Shorter text and a
+ * lone surrogate already in the source are kept exactly.
+ */
+export function wholeCharPrefix(text: string, units: number): string {
+  return text.slice(0, (text.codePointAt(units - 1) ?? 0) > 0xffff ? units - 1 : units);
+}
+
 /** Truncate to at most `maxBytes` UTF-8 bytes on a safe char boundary. */
 function bound(text: string, maxBytes: number): { text: string; cut: boolean } {
   if (bytes(text) <= maxBytes) return { text, cut: false };
@@ -279,7 +288,7 @@ export function uncoveredWorkSection(work: UncoveredWork): string {
 }
 
 function toolRow(call: EvidenceToolCall): string {
-  const target = call.target ? ` — ${call.target.replace(/\s+/g, " ").slice(0, 160)}` : "";
+  const target = call.target ? ` — ${wholeCharPrefix(call.target.replace(/\s+/g, " "), 160)}` : "";
   // A recorded result whose command was moved to the background, timed out or
   // ended unknown is not a completed command (#450).
   const unconfirmed = call.resolved ? commandOutcomeLabel(call.commandOutcome) : null;

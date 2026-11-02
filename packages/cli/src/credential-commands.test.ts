@@ -76,6 +76,164 @@ describe("claudexor profiles add (INV-135)", () => {
     ).not.toBe(0);
     expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(0);
   });
+
+  it("labels the new profile with --display-name, on either side of the operands (#570)", async () => {
+    expect(
+      await profilesCommand(
+        parseArgs(["profiles", "add", "claude", "work", "--display-name", "Work laptop"]),
+        true,
+      ),
+    ).toBe(0);
+    expect(
+      await profilesCommand(
+        parseArgs(["profiles", "add", "--display-name", "Spare", "codex", "spare"]),
+        true,
+      ),
+    ).toBe(0);
+    const rows = loadConfig(noProjectRepoRoot()).global.credential_profiles;
+    expect(rows.map((row) => [row.harness_id, row.profile_id, row.display_name])).toEqual([
+      ["claude", "work", "Work laptop"],
+      ["codex", "spare", "Spare"],
+    ]);
+  });
+});
+
+/** The real rollback route and request schema on a loopback server (#570): it
+ * records what each command actually asks the daemon to reverse. Ephemeral
+ * port, never a real daemon or migration. */
+async function withRollbackDaemon<T>(
+  fn: (
+    ensureDaemon: () => Promise<{ addr: { baseUrl: string; token: string } }>,
+    bodies: unknown[],
+  ) => Promise<T>,
+): Promise<T> {
+  const bodies: unknown[] = [];
+  const token = "profile-rollback-fixture";
+  const server = new DaemonControlApiServer({
+    token,
+    daemon: {
+      enqueue: async () => ({ id: "unused", state: "queued" }),
+      status: async (id: string) => ({ id, state: "failed" }),
+      list: async () => [],
+      cancel: async () => ({ cancelled: true }),
+    } as never,
+    services: {
+      rollbackAccountsMigration: async (input: unknown) => {
+        bodies.push(input);
+        return { rolledBack: [] };
+      },
+    },
+  });
+  const { host, port } = await server.start();
+  try {
+    return await fn(async () => ({ addr: { baseUrl: `http://${host}:${port}`, token } }), bodies);
+  } finally {
+    await server.stop();
+  }
+}
+
+describe("claudexor profiles verb flags and the rollback operand (#570)", () => {
+  // A regression must fail here and never start a daemon: external ownership
+  // makes the real ensureDaemon attach-only, and this hermetic root has none.
+  beforeEach(() => vi.stubEnv("CLAUDEXOR_DAEMON_OWNER", "external"));
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  const captureStreams = () => {
+    const output = { stdout: "", stderr: "" };
+    vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      output.stdout += String(chunk);
+      return true;
+    }) as never);
+    vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      output.stderr += String(chunk);
+      return true;
+    }) as never);
+    return output;
+  };
+
+  it.each<[string, string[], object]>([
+    ["one harness", ["codex"], { harnessId: "codex" }],
+    ["every migrated harness when the operand is absent", [], {}],
+  ])("asks the daemon to reverse %s", async (_scope, operands, body) => {
+    const output = captureStreams();
+    await withRollbackDaemon(async (ensureDaemon, bodies) => {
+      const code = await profilesCommandWithDeps(
+        parseArgs(["profiles", "rollback-migration", ...operands, "--json"]),
+        true,
+        { ensureDaemon },
+      );
+      expect(code).toBe(0);
+      expect(bodies).toEqual([body]);
+    });
+    expect(JSON.parse(output.stdout)).toEqual({ rolledBack: [] });
+  });
+
+  it.each([
+    ["empty", ""],
+    ["spaces", "   "],
+    ["tab", "\t"],
+    ["newline", "\n"],
+  ])("refuses an explicit operand of %s before reaching the daemon", async (_kind, operand) => {
+    const output = captureStreams();
+    const ensureDaemon = vi.fn();
+    const code = await profilesCommandWithDeps(
+      parseArgs(["profiles", "rollback-migration", operand, "--json"]),
+      true,
+      { ensureDaemon },
+    );
+    expect(code).toBe(2);
+    expect(ensureDaemon).not.toHaveBeenCalled();
+    expect(JSON.parse(output.stdout)).toMatchObject({
+      ok: false,
+      exitCode: 2,
+      code: "invalid_argument",
+    });
+    expect(output.stdout).toContain("rollback-migration [harness]");
+  });
+
+  it("keeps the refusal of an empty operand on stderr in human mode", async () => {
+    const output = captureStreams();
+    const ensureDaemon = vi.fn();
+    const code = await profilesCommandWithDeps(
+      parseArgs(["profiles", "rollback-migration", ""]),
+      false,
+      { ensureDaemon },
+    );
+    expect(code).toBe(2);
+    expect(ensureDaemon).not.toHaveBeenCalled();
+    expect(output.stdout).toBe("");
+    expect(output.stderr).toContain("rollback-migration [harness]");
+  });
+
+  it.each<[string, string[]]>([
+    // The value flag would eat the harness and leave an all-harness request.
+    ["rollback-migration", ["rollback-migration", "--display-name", "codex"]],
+    ["rollback-migration", ["rollback-migration", "codex", "--display-name", "x"]],
+    // A bare `profiles` means `list`.
+    ["list", ["--display-name", "x"]],
+    ["list", ["list", "--display-name", "x"]],
+    ["login", ["login", "claude", "work", "--display-name", "x"]],
+    ["enable", ["enable", "claude", "work", "--display-name", "x"]],
+    ["disable", ["disable", "claude", "work", "--display-name", "x"]],
+    ["remove", ["remove", "claude", "work", "--display-name", "x"]],
+    ["rm", ["rm", "claude", "work", "--display-name", "x"]],
+  ])("refuses --display-name where `%s` would ignore it: %j", async (verb, rest) => {
+    const output = captureStreams();
+    const deps = { daemonGet: vi.fn(), ensureDaemon: vi.fn(), spawnSync: vi.fn() };
+    const code = await profilesCommandWithDeps(
+      parseArgs(["profiles", ...rest, "--json"]),
+      true,
+      deps,
+    );
+    expect(code).toBe(2);
+    expect(JSON.parse(output.stdout).message).toContain(
+      `\`claudexor profiles ${verb}\`: --display-name`,
+    );
+    for (const dep of Object.values(deps)) expect(dep).not.toHaveBeenCalled();
+  });
 });
 
 type ScriptedJobState = "waiting_for_input" | "running" | "succeeded" | "failed" | "cancelled";

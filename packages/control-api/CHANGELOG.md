@@ -1,5 +1,21 @@
 # @claudexor/control-api
 
+## 5.0.2
+
+### Patch Changes
+
+- d9f50f5: An isolated copy of an ordinary folder (directory mode without `--in-place`) is no longer deleted when the run's final capture refuses, for example on an unreadable file or a FIFO in the copy (#563). The copy with the files the executor wrote is kept for inspection under the same per-attempt custody as a refused isolated Git source: the failure names its path, the next actions say to inspect it and decide yourself, and no exact result, apply or revert is offered. Crash recovery, file GC and command pruning keep it until the run's `discard` decision releases it. If retention setup fails, the failure says which part: the custody record was written but the run's address to it was not (setup incomplete until crash recovery restores the address), or the custody record itself was not written (held by the running process only). A per-try capture that a later capture replaces keeps nothing, and in-place runs are unchanged. In a best-of run, a candidate whose copy could not be retained durably is excluded rather than failing the run: a healthy sibling still wins and can be applied, and the run summary and timeline name the excluded candidate's exact capture cause, kept copy and failed retention stage; the CLI follow line previews that receipt. A one-shot continuation after context exhaustion runs in the same copy: if its final capture refuses, the copy is kept and the run stays interrupted, and the failure message, summary, next actions and the continuation's completion event name its attempt, capture cause and kept copy. When a best-of run holds both such a kept copy and a winner's pending files, `discard` now gives up both instead of leaving the winner applicable. Before the executor starts, a new `workspace.prepared` run event, shown on the run timeline (and in the macOS turn transcript of local and remote SSH runs, live and restored) and in the CLI follow output, and a matching line in the executor's prompt state which folder the copy was prepared from, which paths were selected, how many files, directories and symbolic links were copied, and which selected paths were not found there, naming every path. It is a warning when nothing was copied or a selected path was not found; a selected path that does not exist yet is reported as possible new output, not refused.
+- 153b02d: A quiet run event stream (`GET /v2/runs/:id/events`) no longer queues a history-read job on the shared bulk worker or rehydrates the full job record every 250 ms. It reads the run's `events.jsonl` only while the run's live writer holds events the client does not have (or when no live writer owns the log, a batch is still owed, or a terminal is in view), and it re-reads the job's state body-free, from the same observation `POST /v2/runs/wait-many` uses, only after a committed change of that job (every pass on a host without change notices, and while a terminal waits for its files). A stream opened while the job is queued re-reads the job after a change instead of on every tick. A lifecycle read that fails is retried on the next tick. A stream whose run log is missing (reclaimed by retention or removed) no longer re-reads it every 250 ms, with or without a live writer: it reads it again only after the writer appends or a change for that run is published, so a log restored while the run is live is delivered then. Once its job is terminal it ends with `event: error`, because its terminal event cannot be delivered: `run_event_not_found` (retryable, reconnect), or `run_expired_by_retention`, marked not retryable with no required action because reconnecting cannot bring a reclaimed log back. Run detail, summary, cursor and artifact reads no longer wait behind those no-op replays. Push delivery, the heartbeat, resume cursors, backpressure and the terminal end rule are unchanged, and the wire contract is the same.
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+- Updated dependencies [51e5250]
+  - @claudexor/schema@5.0.2
+  - @claudexor/workspace@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/event-log@5.0.2
+  - @claudexor/delivery@5.0.2
+  - @claudexor/secrets@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

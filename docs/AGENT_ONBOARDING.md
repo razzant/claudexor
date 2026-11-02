@@ -117,7 +117,9 @@ contract throughout these steps, including repair and connection recovery.
    transport and `external_terminal` as `client_pty`; do not infer a
    harness-specific mechanism from the global setup operation. The same
    catalog is served at `GET /v2/agent-capabilities` on the daemon and by the MCP
-   `claudexor_capabilities` tool.
+   `claudexor_capabilities` tool, possibly from a recent composition dated by
+   `generatedAt` ([readiness projections](ARCHITECTURE.md#readiness-projections));
+   the CLI verb composes it live.
 4. **Check harness health.** `claudexor doctor` (human) or
    `claudexor doctor --json`. Doctor is the aggregate/default-store projection,
    not a universal admission veto. An unpinned request first uses the canonical

@@ -20,7 +20,7 @@ export interface BudgetEventFold {
   componentAware: boolean;
   cashKnowledge?: Knowledge;
   controllableCashKnowledge?: Knowledge;
-  /** Summed `budget.observation` spend, the legacy cash and valuation fallback. */
+  /** Summed nonzero `budget.observation` spend, the legacy cash and valuation fallback. */
   observationUsd: number;
   sawObservation: boolean;
   /** An estimated observation or harness usage report. */
@@ -71,7 +71,10 @@ export function addBudgetEvent(fold: BudgetEventFold, ev: Record<string, unknown
   }
   if (ev["type"] === "budget.observation" && payload["kind"] === "spend") {
     const usd = payload["usd"];
-    if (typeof usd === "number" && Number.isFinite(usd)) {
+    // A reported zero is evidence of that amount alone. Before settlement it
+    // adds no total, certainty or valuation: another try of its attempt may be
+    // unpriced, and only the ledger's budget.cash states an exact $0.
+    if (typeof usd === "number" && Number.isFinite(usd) && usd !== 0) {
       fold.observationUsd += usd;
       fold.sawObservation = true;
     }
@@ -101,9 +104,9 @@ export function foldBudgetEvents(events: readonly Record<string, unknown>[]): Bu
  * truth. The owner-locked ledger settles native-subscription work to cash $0
  * while accumulating its token valuation on `budget.cash.valuation_usd`
  * (last-wins, cumulative). An UNKNOWN valuation (no usage ever reported — e.g.
- * a Cursor draft) stays NULL and is never coerced to a fake $0. The legacy
- * fallback for runs predating budget.cash is the summed `budget.observation`
- * spend.
+ * a Cursor draft) stays NULL and is never coerced to a fake $0. Before the first
+ * settlement, and for runs predating budget.cash, the fallback is the summed
+ * nonzero `budget.observation` spend; a zero row proves no valuation.
  */
 export function budgetValuation(fold: BudgetEventFold): {
   valuationUsd: number | null;

@@ -1,5 +1,19 @@
 # @claudexor/daemon
 
+## 5.0.2
+
+### Patch Changes
+
+- 6ba9b91: A slow external file write is now attributed in the daemon log. When a write becomes one of the 32 worst synchronous sections that `GET /v2/daemon/status` reports as `worstSync`, the daemon also logs one `store.external_write` line naming what it carried (a large stored body, a run's terminal receipt, a terminal event-log rewrite, or an import), its byte count, and how its time split between metadata calls, the write-through data write, and the publishing rename. The status schema and its labels are unchanged.
+- 135f6de: Large stored bodies (over 64 KiB) whose bytes are known before their database commit are now written to disk off the daemon's request thread: an enqueued command's parameters and its acceptance record, a finished run's returned result and its update record, a thread turn's prompt, a deferred draft after its capture, and the command a draft is promoted into, with its acceptance record, after the draft's validation. The same write-through temp file is written on Node's file worker pool and linked into place only if that body is not already stored; the synchronous commit then finds it and only registers its directory for the usual durability barrier. The store creates its body directory, registered like any other new directory, before the first such write, so a new store, or one whose bodies all stayed small, stages too. Nothing about durability, ordering or the stored bytes changes, and if the staged file was cleaned up or staging failed, the commit writes the body itself as before. A body staged for a request that is then refused or held stays on disk, unowned, until the orphan sweep at the next daemon start removes it. HTTP requests, Stop and stream heartbeats no longer wait behind those writes when the disk is slow.
+- 51e5250: A run's terminal receipts (`final/run_facts.yaml`, `final/telemetry.yaml`), any rewrite of its event log that the terminal needs, and its large terminal bodies are now written to disk off the daemon's request thread before the terminal commits. The terminal is prepared first, with its outcome and receipt frozen, then its bytes are written as write-through temp files on Node's file worker pool (in the store's body directory, which a new store creates before its first terminal), and the synchronous terminal commit renames them into place right after the database commit instead of writing them there. The stage reads only the end of the run's event log to see that the usual terminal just appends (only a log that ends otherwise is read whole and its rewrite staged), so staging does not repeat the commit's full pass over the log on the request thread; the commit still loads the job record once more itself, which measures 0.009 ms for a 100-byte prompt and 1.1 ms for a 1 MiB one. Durability, the order in which a terminal becomes visible, and the receipt contents are unchanged; anything that could not be staged, or changed meanwhile, is written by the commit as before. A control audit or live-message receipt that arrives during that write is recorded before the terminal, which takes the next sequence number and keeps its prepared outcome and time; a cancel arriving then does not change the outcome. If the daemon stops before the commit, there is no terminal and no receipt, and the leftover temp files and unowned bodies are removed by the existing orphan sweep after the next start. `EventLog.flushDeferredTerminal()` is removed: `await log.commitDeferredTerminal()` commits a held terminal, staging its bytes first when a staging hook is set and committing before its first yield otherwise.
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/workspace@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/core@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

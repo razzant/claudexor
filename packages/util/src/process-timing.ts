@@ -121,10 +121,11 @@ export class ProcessTiming {
     entry.projection.record(projectionMs);
   }
 
-  recordSync(operation: SyncOperation, durationMs: number): void {
-    if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  /** True when the sample is now one of the 32 worst sections (`worstSync`). */
+  recordSync(operation: SyncOperation, durationMs: number): boolean {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return false;
     const duration = roundedMs(durationMs);
-    if (this.worst.length === 32 && duration < this.worst[31]!.durationMs) return;
+    if (this.worst.length === 32 && duration < this.worst[31]!.durationMs) return false;
     const index = this.worst.findIndex((sample) => sample.durationMs <= duration);
     this.worst.splice(index < 0 ? this.worst.length : index, 0, {
       operation,
@@ -132,6 +133,7 @@ export class ProcessTiming {
       at: new Date().toISOString(),
     });
     this.worst.length = Math.min(this.worst.length, 32);
+    return true;
   }
 
   roll(windowMs: number, windowEndedAt: string): void {

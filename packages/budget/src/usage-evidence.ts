@@ -17,6 +17,29 @@ export interface UsageCostTotals {
   valuationEstimated: boolean;
 }
 
+/** Which meanings usage events actually reported an amount for, zero included.
+ * This is not certainty: included work knows its controllable cash exactly
+ * without any receipt, and a later receipt leaves an earlier unpriced interval
+ * unknown. */
+export interface ObservedUsageAmounts {
+  cash: boolean;
+  valuation: boolean;
+  unknown: boolean;
+}
+
+export function anyUsageAmountObserved(observed: ObservedUsageAmounts | undefined): boolean {
+  return observed?.cash === true || observed?.valuation === true || observed?.unknown === true;
+}
+
+/** The amount a usage event reported: finite and nonnegative, zero included.
+ * Undefined means it reported none, which is never the same as zero. */
+export function reportedUsageCostUsd(event: {
+  usage?: { cost_usd?: number | null } | null;
+}): number | undefined {
+  const usd = event.usage?.cost_usd;
+  return typeof usd === "number" && Number.isFinite(usd) && usd >= 0 ? usd : undefined;
+}
+
 /** Observed amount meaning is independent from prospective billing. A native
  * premium tariff alone never turns a token estimate into a debit receipt. */
 export function usageAmountKind(
@@ -71,6 +94,8 @@ function allowanceDebitUnobserved(
 export class UsageCostTracker {
   readonly totals: UsageCostTotals;
   unknownPaidUsd = 0;
+  /** Meaning of the latest reported amount, for the row disclosing that amount. */
+  lastAmountKind: UsageCostBasis["kind"] | null = null;
   private processing?: ProcessingReceipt;
   private billing?: ProcessingCostBasis;
   private active = false;
@@ -80,6 +105,7 @@ export class UsageCostTracker {
   private activeAllowance = false;
   private intervalKey: string | null = null;
   private sawRoute = false;
+  private sawCashReceipt = false;
   private sawUnknownUsage = false;
   private sawValuation = false;
   private unresolvedPaid = false;
@@ -136,7 +162,9 @@ export class UsageCostTracker {
       event?.processing ?? this.processing,
       event?.processing_cost_basis ?? this.billing,
     );
+    this.lastAmountKind = kind;
     if (kind === "cash") {
+      this.sawCashReceipt = true;
       this.activeCashReceipt = true;
       this.totals.cashUsd += usd;
       this.totals.cashEstimated ||= estimated;
@@ -172,6 +200,7 @@ export class UsageCostTracker {
     cashKnowledge: CostKnowledge;
     valuationKnowledge: CostKnowledge;
     allowanceDebitUnobserved: boolean;
+    observedAmounts: ObservedUsageAmounts;
   } {
     const cashUnknown =
       this.unknownPaidAmount ||
@@ -189,6 +218,11 @@ export class UsageCostTracker {
       allowanceDebitUnobserved:
         this.allowanceUnobserved ||
         (this.activeSawEvent && this.activeAllowance && !this.activeCashReceipt),
+      observedAmounts: {
+        cash: this.sawCashReceipt,
+        valuation: this.sawValuation,
+        unknown: this.sawUnknownUsage,
+      },
     };
   }
 }
