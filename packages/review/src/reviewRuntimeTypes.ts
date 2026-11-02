@@ -1,8 +1,4 @@
-import type {
-  HarnessAdapter,
-  ModelCatalogObservation,
-  PreparedHarnessProcessing,
-} from "@claudexor/core";
+import type { HarnessAdapter, PreparedHarnessProcessing } from "@claudexor/core";
 import {
   FallbackReason,
   type AuthPreference,
@@ -56,10 +52,6 @@ export interface ReviewerSpec {
   /** Exact resolved profile (null = pool/default); `profilePinned: false` = the pool chose it. */
   credentialProfile?: CredentialProfile | null;
   profilePinned?: boolean;
-  /** The typed catalog read that admitted `requestedModel` for this credential
-   * (the explicit panel's): the review request sends the key that read checked
-   * (#393 x #147). Absent when no typed read admitted it. */
-  catalog?: ModelCatalogObservation;
 }
 
 export interface ReviewerOutput {

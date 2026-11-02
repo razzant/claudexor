@@ -68,6 +68,9 @@ const BINARY_EXT = new Set([
 ]);
 
 export interface AtlasOptions {
+  /** The exact paths to account for, when a caller already holds them; default:
+   * what `git ls-files` (or a walk outside Git) finds in the tree. */
+  files?: readonly string[];
   include?: string[];
   exclude?: string[];
   mandatory?: string[];
@@ -190,7 +193,7 @@ export async function buildScopeAtlas(
   const maxFileBytes = opts.maxFileBytes ?? 256 * 1024;
   const tokenLimit = opts.tokenLimit ?? 200_000;
 
-  const files = new Set(await listFiles(repoRoot));
+  const files = new Set(opts.files ?? (await listFiles(repoRoot)));
   const atlas: ScopeAtlasEntry[] = [];
   const candidates: { rel: string; bytes: number; mandatory: boolean }[] = [];
   const missingMandatory: string[] = [];

@@ -285,6 +285,7 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
         kind: "local_cli",
         provider_family: family,
         capabilities: {
+          read_files: true,
           implement: true,
           review: true,
           // Manifest truth source for strict model-truth tests: explicit "model-x"
@@ -883,7 +884,7 @@ function markdownPlannerAdapter(id: string, planLines: string[]): HarnessAdapter
         display_name: id,
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { plan: true },
+        capabilities: { read_files: true, plan: true },
         access_profiles_supported: ["readonly"],
       });
     },
@@ -8957,6 +8958,7 @@ describe("Orchestrator", () => {
             kind: "local_cli",
             provider_family: family,
             capabilities: {
+              read_files: true,
               review: true,
               effort_levels: family === "anthropic" ? ["max"] : [],
             },
@@ -9036,6 +9038,7 @@ describe("Orchestrator", () => {
             kind: "local_cli",
             provider_family: family,
             capabilities: {
+              read_files: true,
               review: true,
               effort_levels: family === "anthropic" ? ["max"] : [],
             },
@@ -9129,7 +9132,7 @@ describe("Orchestrator", () => {
           display_name: "rev cursor",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true, effort_levels: [] },
+          capabilities: { read_files: true, review: true, effort_levels: [] },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -9198,7 +9201,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true },
+          capabilities: { read_files: true, review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -9268,7 +9271,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true },
+          capabilities: { read_files: true, review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -9347,7 +9350,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true },
+          capabilities: { read_files: true, review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -9406,7 +9409,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true },
+          capabilities: { read_files: true, review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -9460,7 +9463,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true },
+          capabilities: { read_files: true, review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -9518,7 +9521,7 @@ describe("Orchestrator", () => {
           display_name: "rev",
           kind: "local_cli",
           provider_family: "cursor",
-          capabilities: { review: true },
+          capabilities: { read_files: true, review: true },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -9596,6 +9599,7 @@ describe("Orchestrator", () => {
             kind: opts.kind ?? "local_cli",
             provider_family: "cursor",
             capabilities: {
+              read_files: true,
               review: opts.reviewCapability ?? true,
               known_models: opts.knownModels ?? [],
             },
@@ -10342,6 +10346,7 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: "openai",
           capabilities: {
+            read_files: true,
             plan: true,
             ...(opts.constrained === true
               ? {
@@ -10409,7 +10414,7 @@ describe("Orchestrator", () => {
           display_name: id,
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { plan: true, web_policy: "tools" },
+          capabilities: { read_files: true, plan: true, web_policy: "tools" },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -10532,7 +10537,7 @@ describe("Orchestrator", () => {
           display_name: "planner",
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { plan: true, web_policy: "tools" },
+          capabilities: { read_files: true, plan: true, web_policy: "tools" },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -10709,7 +10714,7 @@ describe("Orchestrator", () => {
           display_name: id,
           kind: "local_cli",
           provider_family: "openai",
-          capabilities: { plan: true },
+          capabilities: { read_files: true, plan: true },
           access_profiles_supported: ["readonly"],
         });
       },

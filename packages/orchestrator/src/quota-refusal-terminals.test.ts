@@ -315,6 +315,7 @@ describe("pinned typed limit terminals carry the quota basis", () => {
         profiles: ["a", "b"],
         pinned: "a",
         capabilities: {
+          read_files: true,
           plan: true,
           work_report_transport: "constrained",
           json_schema_output: true,

@@ -65,8 +65,8 @@ enum HarnessPoolPresentation {
         /// Runs only when explicitly selected; Auto never chooses it. The
         /// doctor's own reason says why.
         case manualOnly(reason: String)
-        /// Project-scoped Ask on a harness whose manifest declares it cannot read
-        /// files: the engine refuses it before dispatch.
+        /// Project-scoped Ask or Plan on a harness whose manifest declares it cannot
+        /// read files: the engine refuses it before dispatch.
         case cannotReadProjectFiles
         /// Neither Auto nor an explicit selection can run it.
         case unavailable(reason: String)
@@ -91,8 +91,8 @@ enum HarnessPoolPresentation {
     static let manualOnlyTitle = "Manual only — Auto won't pick these"
 
     /// Classify one harness for `intent`. Not enabled at all = unavailable with
-    /// the doctor's reason (as before); a project Ask on a declared non-reader =
-    /// refused; then Auto-eligible, else manual only.
+    /// the doctor's reason (as before); a project Ask or Plan on a declared
+    /// non-reader = refused; then Auto-eligible, else manual only.
     static func lane(
         label: String,
         intent: String,
@@ -111,7 +111,9 @@ enum HarnessPoolPresentation {
         guard routableIntents.contains(intent) || enabledIntents.contains(intent) else {
             return .unavailable(reason: reason)
         }
-        if intent == "explain", projectScoped, readsFiles == false { return .cannotReadProjectFiles }
+        if intent == "explain" || intent == "plan", projectScoped, readsFiles == false {
+            return .cannotReadProjectFiles
+        }
         return routableIntents.contains(intent) ? .auto : .manualOnly(reason: reason)
     }
 

@@ -22,6 +22,7 @@ import type {
   ControlReviewerPanelEntry,
   CredentialProfile,
   EffortHint,
+  HarnessCapabilities,
   Intent,
   ProviderFamily,
 } from "@claudexor/schema";
@@ -30,7 +31,7 @@ import {
   estimateEffectiveAuthRoute,
   knownModelIdsForRoute,
 } from "@claudexor/schema";
-import type { HarnessAdapter, ModelCatalogObservation } from "@claudexor/core";
+import type { HarnessAdapter } from "@claudexor/core";
 import {
   HarnessUnavailableError,
   ModelCatalogUnavailableError,
@@ -75,6 +76,19 @@ export interface ReviewerPanelDeps {
 function credentialProfileAuthRoute(profile: CredentialProfile): "local_session" | "api_key" {
   return profile.credential_kind === "api_key" ? "api_key" : "local_session";
 }
+
+/** INV-042 and the owner's choice: change review belongs to a harness that reads
+ * the candidate evidence files itself (`read_files`), whatever it declares about
+ * `review`. These two panels are where every shipped entry point gets its
+ * reviewers (Agent review, best-of, convergence, `claudexor review`), so this one
+ * test, before any model check, holds for all of them. Reviewers an
+ * embedder injects directly (`OrchestratorDeps.reviewers`) skip panel admission
+ * as a whole, as they always have. */
+function cannotReadForReview(capabilities: HarnessCapabilities): boolean {
+  return !capabilities.read_files;
+}
+const CANNOT_READ_EVIDENCE =
+  "cannot read the candidate evidence files itself; review changes with a harness that reads files";
 
 function discloseAutoSkip(deps: ReviewerPanelDeps, harnessId: string, reason: string): void {
   deps.onIgnoredSetting?.(`reviewer family '${harnessId}' skipped: ${reason}`);
@@ -189,6 +203,11 @@ export async function resolveExplicitReviewerPanel(
         if (manifest.kind === "fake") {
           throw new HarnessUnavailableError(
             `reviewer harness '${entry.harness}' is a fake harness and cannot be used in reviewer panels`,
+          );
+        }
+        if (cannotReadForReview(manifest.capabilities)) {
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' ${CANNOT_READ_EVIDENCE}`,
           );
         }
         if (status.status !== "ok") {
@@ -313,7 +332,6 @@ export async function resolveExplicitReviewerPanel(
           authPreference,
           processingPreference: entry.processingPreference,
           ...(deps.resolveReviewerProfile ? { credentialProfile, profilePinned } : {}),
-          catalog: requestedModel ? modelInventory.get(inventoryKey)?.read : undefined,
         });
         break;
       }
@@ -361,6 +379,10 @@ export async function resolveAutoReviewerPanel(
       }
       if (m.kind === "fake") {
         discloseAutoSkip(deps, adapter.id, "fake harness");
+        continue;
+      }
+      if (cannotReadForReview(m.capabilities)) {
+        discloseAutoSkip(deps, adapter.id, `it ${CANNOT_READ_EVIDENCE}`);
         continue;
       }
       if (seen.has(m.provider_family)) continue;
@@ -424,7 +446,6 @@ export async function resolveAutoReviewerPanel(
         // STRICT: the auto panel skips a family whose truth source does not
         // list the model, at zero cost. It does NOT inherit the explicit panel's
         // advisory forward (INV-104): nobody asked for this family by name.
-        let catalog: ModelCatalogObservation | undefined;
         if (requestedModel) {
           const route = credentialProfile
             ? credentialProfileAuthRoute(credentialProfile)
@@ -458,7 +479,6 @@ export async function resolveAutoReviewerPanel(
             discloseAutoSkip(deps, adapter.id, inventory.reason);
             continue familyLoop;
           }
-          catalog = inventory.read;
           // Locked: automatic selection never spawns on a guess, whatever the
           // harness declares, so absence is judged authoritative here.
           const check = validateModel(
@@ -505,7 +525,6 @@ export async function resolveAutoReviewerPanel(
           requestedEffort,
           authPreference,
           ...(deps.resolveReviewerProfile ? { credentialProfile, profilePinned: false } : {}),
-          catalog,
         });
         break;
       }

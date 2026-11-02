@@ -86,10 +86,11 @@ export class RequestRequirementsResolver {
       : requestedAccess;
   }
 
-  /** Project-scoped Ask is answered by the harness reading the project itself:
-   * its prompt carries a path atlas, never file contents (#133). A lane that may
-   * answer but cannot read files is refused before dispatch, while Ask without
-   * a project needs no file access. Null = admitted, or another check speaks. */
+  /** Project-scoped Ask and Plan are answered by the harness reading the project
+   * itself: their prompt carries a path atlas, never file contents (#133, #137). A
+   * lane that may play them but cannot read files is refused before dispatch, which
+   * holds a Council's drafts and its merge too; work without a project needs no
+   * file access. Null = admitted, or another check speaks. */
   projectReadRefusal(
     intent: Intent,
     input: { repoRoot: string },
@@ -99,7 +100,7 @@ export class RequestRequirementsResolver {
       manifest: { capabilities: { read_files: boolean } } | null;
     },
   ): string | null {
-    return intent === "explain" &&
+    return (intent === "explain" || intent === "plan" || intent === "spec") &&
       input.repoRoot !== NO_PROJECT_ROOT &&
       status.enabledIntents.includes(intent) &&
       status.manifest?.capabilities.read_files === false

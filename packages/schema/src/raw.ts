@@ -11,8 +11,8 @@ export type ImplementationTransport = z.infer<typeof ImplementationTransport>;
 
 export const RawContextFile = z.object({
   path: z.string().min(1).describe("Exact repo-relative readable/editable path."),
-  mode: z.string().describe("Git object mode at the bound base tree."),
-  blob_oid: z.string().min(1).describe("Git blob oid at the bound base tree."),
+  mode: z.string().describe("Git object mode in the packet's exact tree."),
+  blob_oid: z.string().min(1).describe("Git blob oid in the packet's exact tree."),
   content_hash: ContentHash,
   content: z.string().describe("Complete text content; never truncated."),
 });
@@ -128,8 +128,16 @@ export const RawContextPacket = z.object({
   schema_version: z.literal(1),
   packet_hash: ContentHash,
   budget: RawContextBudget.optional(),
-  base_commit_sha: z.string().min(1),
-  base_tree_sha: z.string().min(1),
+  base_commit_sha: z
+    .string()
+    .min(1)
+    .describe("The run's delivery base commit; every round of a run names the same one."),
+  base_tree_sha: z
+    .string()
+    .min(1)
+    .describe(
+      "The exact tree this request describes and its patch applies to: the delivery base's tree on a first round, afterwards the candidate an earlier round left.",
+    ),
   readable_files: z.array(RawContextFile),
   editable_paths: z.array(z.string().min(1)),
   creatable_roots: z
@@ -150,7 +158,7 @@ export const RawPatchPathEvidence = z.object({
     .string()
     .min(1)
     .nullable()
-    .describe("Base-tree blob oid, or null only when the path is absent in the base tree."),
+    .describe("Blob oid in the packet's exact tree, or null only when that tree lacks the path."),
 });
 export type RawPatchPathEvidence = z.infer<typeof RawPatchPathEvidence>;
 

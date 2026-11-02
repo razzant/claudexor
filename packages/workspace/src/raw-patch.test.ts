@@ -13,6 +13,8 @@ import { sha256 } from "@claudexor/util";
 import {
   captureRawPatchEnvelope,
   consumeRawPatchEnvelope,
+  rawCandidateTree,
+  rawPatchRefusalIsModelCorrectable,
   RawPatchRefusalError,
 } from "./raw-patch.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -340,9 +342,121 @@ describe("raw patch envelope consumer", () => {
     expect(await refusalCode(wrongBase)).toBe("raw_patch_base_mismatch");
     expect(readFileSync(join(wrongBase.worktreePath, "a.txt"), "utf8")).toBe("other\n");
 
+    // A tree the packet does not describe: stale since it was sent, whatever changed.
     const dirty = fixture();
     writeFileSync(join(dirty.worktreePath, "local.txt"), "uncommitted\n");
-    expect(await refusalCode(dirty)).toBe("raw_patch_requires_isolation");
+    expect(await refusalCode(dirty)).toBe("raw_patch_base_mismatch");
     expect(readFileSync(join(dirty.worktreePath, "a.txt"), "utf8")).toBe("old\n");
+
+    // A patch bound to another tree, and a packet naming another delivery base.
+    const otherTree = fixture();
+    otherTree.envelope = { ...otherTree.envelope, base_tree_sha: "0".repeat(40) };
+    expect(await refusalCode(otherTree)).toBe("raw_patch_base_mismatch");
+    const otherBase = fixture();
+    otherBase.context = { ...otherBase.context, base_commit_sha: "0".repeat(40) };
+    expect(await refusalCode(otherBase)).toBe("raw_patch_base_mismatch");
+  });
+
+  it("applies a later revision against the exact tree the earlier one left (#551)", async () => {
+    const input = fixture();
+    const consume = (context: RawContextPacket, envelope: RawGitPatchEnvelope) =>
+      consumeRawPatchEnvelope({
+        repoRoot: input.repo,
+        worktreePath: input.worktreePath,
+        baseCommitSha: input.baseCommitSha,
+        context,
+        envelope,
+      });
+    const createPatch = [
+      "diff --git a/new.txt b/new.txt",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/new.txt",
+      "@@ -0,0 +1 @@",
+      "+first",
+      "",
+    ].join("\n");
+    await consume(
+      input.context,
+      RawGitPatchEnvelope.parse({
+        ...input.envelope,
+        patch: createPatch,
+        patch_hash: sha256(createPatch),
+        touched_paths: [{ path: "new.txt", expected_blob_oid: null }],
+      }),
+    );
+    // The candidate moved; HEAD and the delivery base did not.
+    expect(git(input.worktreePath, "rev-parse", "HEAD")).toBe(input.baseCommitSha);
+    const tree = await rawCandidateTree(input.worktreePath);
+    expect(tree).not.toBe(input.context.base_tree_sha);
+    const blob = git(input.worktreePath, "rev-parse", `${tree}:new.txt`);
+    const editPatch = [
+      "diff --git a/new.txt b/new.txt",
+      "--- a/new.txt",
+      "+++ b/new.txt",
+      "@@ -1 +1 @@",
+      "-first",
+      "+second",
+      "",
+    ].join("\n");
+    const second = RawContextPacket.parse({
+      ...input.context,
+      base_tree_sha: tree,
+      readable_files: [
+        ...input.context.readable_files,
+        {
+          path: "new.txt",
+          mode: "100644",
+          blob_oid: blob,
+          content_hash: sha256("first\n"),
+          content: "first\n",
+        },
+      ],
+      editable_paths: ["a.txt", "new.txt"],
+    });
+    const edited = {
+      schema_version: 1 as const,
+      context_packet_hash: second.packet_hash,
+      base_tree_sha: tree,
+      patch: editPatch,
+      patch_hash: sha256(editPatch),
+      touched_paths: [{ path: "new.txt", expected_blob_oid: blob }],
+    };
+    // The packet of the round before is stale now, and so is a patch bound to it.
+    await expect(consume(input.context, input.envelope)).rejects.toMatchObject({
+      code: "raw_patch_base_mismatch",
+    });
+    const { materializedTreeSha } = await consume(second, edited);
+    expect(readFileSync(join(input.worktreePath, "new.txt"), "utf8")).toBe("second\n");
+    expect(await rawCandidateTree(input.worktreePath)).toBe(materializedTreeSha);
+    // The worktree's index and the source repository were never involved.
+    expect(git(input.worktreePath, "ls-files")).toBe("a.txt");
+    expect(existsSync(join(input.repo, "new.txt"))).toBe(false);
+  });
+});
+
+describe("what a raw patch refusal says about its repair (#551)", () => {
+  it("a patch the model wrote badly is its own to correct; a broken state is not", () => {
+    for (const code of [
+      "raw_patch_path_traversal",
+      "raw_patch_outside_scope",
+      "raw_patch_stale_preimage",
+      "raw_patch_binary_unsupported",
+      "raw_patch_truncated",
+      "raw_patch_apply_failed",
+    ] as const) {
+      expect(rawPatchRefusalIsModelCorrectable(code), code).toBe(true);
+      expect(new RawPatchRefusalError(code, code).category, code).toBe("harness_error");
+    }
+    for (const code of [
+      "raw_patch_requires_isolation",
+      "raw_patch_missing_evidence",
+      "raw_patch_digest_mismatch",
+      "raw_patch_base_mismatch",
+    ] as const) {
+      expect(rawPatchRefusalIsModelCorrectable(code), code).toBe(false);
+      expect(new RawPatchRefusalError(code, code).category, code).toBe("internal");
+    }
+    expect(new RawPatchRefusalError("raw_context_exceeds_window", "x").category).toBe("validation");
   });
 });

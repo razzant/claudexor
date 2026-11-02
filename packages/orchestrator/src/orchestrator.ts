@@ -149,8 +149,6 @@ import type {
   CredentialProfile,
   BudgetLease,
   ImplementationTransport,
-  RawContextPacket,
-  RawGitPatchEnvelope,
   WebPolicySupport,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
@@ -191,7 +189,6 @@ import type {
   HarnessAdapter,
   InteractionChannel,
   PreparedHarnessProcessing,
-  RawRequestCapacity,
 } from "@claudexor/core";
 import {
   prepareRoutedProcessing,
@@ -207,6 +204,8 @@ import {
   CLAUDEXOR_BROWSER_ARTIFACT_SUBDIR,
   countsAsAgentProgress,
   HarnessUnavailableError,
+  ModelSelectionRequiredError,
+  missingRouteModel,
   withInactivityWatchdog,
 } from "@claudexor/core";
 import {
@@ -331,11 +330,10 @@ import { prepareReviewEvidenceDir, recordReviewEvidenceCleanup } from "./reviewE
 import { savedForSynthesis } from "./savedCandidate.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import type { EventLog, TerminalPersistenceHook } from "@claudexor/event-log";
-import { buildContextPack, rawContextSizer, writeEvidencePacket } from "@claudexor/context";
+import { buildContextPack, writeEvidencePacket } from "@claudexor/context";
+import { RawPatchLane, endsConvergence } from "./rawPatchLane.js";
 import {
   WorkspaceManager,
-  captureRawPatchEnvelope,
-  consumeRawPatchEnvelope,
   snapshotTree,
   type EnsureGitRepositoryResult,
 } from "@claudexor/workspace";
@@ -383,6 +381,9 @@ export interface OrchestratorDeps {
   registry: AdapterRegistry;
   /** Daemon-lifetime Delegate family budget authority. */
   delegationBudgetAuthority?: DelegationBudgetAuthority;
+  /** Reviewers an embedder constructs itself, used as given: they skip panel
+   * admission (file reading, readiness, accounts, models), which applies to the
+   * panels the engine resolves. No shipped entry point passes them. */
   reviewers?: ReviewerSpec[];
   paidBudget?: PaidBudget;
   routingGoal?: RoutingGoal;
@@ -1203,6 +1204,7 @@ export class Orchestrator {
         if (auxiliaryUnsupported.has(harnessId))
           throw new AuxiliaryWritableRootsUnsupportedError(detail);
         if (stage === "access") throw new AccessProfileIncompatibleError(detail);
+        if (stage === "model") throw new ModelSelectionRequiredError(detail);
         throw new HarnessUnavailableError(detail);
       }
       dropped.push(detail);
@@ -1397,6 +1399,13 @@ export class Orchestrator {
       const readRefusal = this.requestRequirements.projectReadRefusal(intent, input, status);
       if (readRefusal) {
         dropLane(id, "capability", readRefusal);
+        continue;
+      }
+      const modelRefusal = status.enabledIntents.includes(intent)
+        ? missingRouteModel(adapter, input.models?.[id] ?? cfgEntry?.default_model)
+        : null;
+      if (modelRefusal) {
+        dropLane(id, "model", modelRefusal);
         continue;
       }
       const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
@@ -2192,6 +2201,7 @@ export class Orchestrator {
         projectRoot: runInput.repoRoot,
         cwd: repoRoot,
         adapter: this.deps.registry.get(harnessId),
+        model: this.deps.registry.get(harnessId)?.modelRequirement && runInput.models?.[harnessId],
         credentialProfile: sessionFields.credential_profile,
         authPreference: sessionFields.auth_preference ?? "auto",
         laneEnv:
@@ -2439,14 +2449,8 @@ export class Orchestrator {
     // #147: bound to the project's context config; each try's dispatch sizes its own
     // packet for THIS request from the catalog read the gate makes for that try.
     const { context } = this.projectConfig(contract.repo.root);
-    const sizeRawContext = rawContextSizer(routed.implementationTransport, envelope, context);
-    let rawContextPacket: RawContextPacket | null = null;
-    const dispatch = sizeRawContext
-      ? {
-          rawContext: async (capacity: RawRequestCapacity | null) =>
-            (rawContextPacket = await sizeRawContext(capacity)),
-        }
-      : {};
+    const rawLane = new RawPatchLane(routed.implementationTransport, envelope, context);
+    const { dispatch } = rawLane;
     bindProcessingAdmission(
       spec,
       ledger,
@@ -2561,8 +2565,7 @@ export class Orchestrator {
         const refusal = continuity.beginTry(runSpec, nativeTry, attemptAbort);
         const transientStart = telemetry.transientFailures.length;
         const rateLimitStart = telemetry.rateLimits.length;
-        let rawPatch: RawGitPatchEnvelope | null = null;
-        rawContextPacket = null; // a patch binds only the packet its own try sent
+        rawLane.beginTry();
         try {
           const watched = withInactivityWatchdog(runModelGovernedRoute(routed, runSpec, dispatch), {
             timeoutMs: inactivityMs,
@@ -2581,7 +2584,7 @@ export class Orchestrator {
           for await (const ev of watched) {
             // After Stop: stored evidence only, but file paths are still collected for the capture.
             const stopped = signal?.aborted === true;
-            if (!stopped) rawPatch = captureRawPatchEnvelope(sizeRawContext !== null, rawPatch, ev);
+            if (!stopped) rawLane.observe(ev);
             if (ev.type === "patch_produced") continue;
             if (directory) observeDirectoryPaths(observedPaths, ev, envelope.worktree_path);
             const capped = dropDeltaPastBudget(
@@ -2657,14 +2660,7 @@ export class Orchestrator {
             observeBudgetSignals(ledger, log, adapter.id, attemptId, ev, budgetSignalState);
             this.deps.quotaEventSink?.(adapter.id, ev);
           }
-          if (sizeRawContext && !harnessErrored)
-            await consumeRawPatchEnvelope({
-              repoRoot: envelope.repo_root,
-              worktreePath: envelope.worktree_path,
-              baseCommitSha: envelope.base_sha ?? "HEAD",
-              context: rawContextPacket,
-              envelope: rawPatch,
-            });
+          await rawLane.settle(harnessErrored);
         } catch (err) {
           // A throwing adapter must not lose the cost already streamed: record the
           // error here and let the caller settle the REAL accumulated spend. #31:
@@ -2676,7 +2672,7 @@ export class Orchestrator {
             processingRefusal = err;
             break;
           }
-          if (!recordAdapterThrow(telemetry, err)) break;
+          if (!rawLane.refused(err) && !recordAdapterThrow(telemetry, err)) break;
         } finally {
           clearFileBackedContext();
         }
@@ -2710,6 +2706,8 @@ export class Orchestrator {
         this.credentials.noteTryServed(refusal, telemetry.outputMarkers, delivered);
         const verdict = await continuity.afterTry({
           ...tryFacts,
+          // A refused patch is its account row above, but no retry or rotation repairs it.
+          requestRefused: tryFacts.requestRefused || rawLane.refusal !== null,
           // A cancel or deadline that landed during capture still stops the
           // attempt; the try's own facts above stay its evidence.
           stopped: signal?.aborted === true,
@@ -2748,6 +2746,7 @@ export class Orchestrator {
       harnessErrored &&
       !poolExhausted &&
       !processingRefusal &&
+      !rawLane.refusal &&
       !telemetry.requestRefusal &&
       !signal?.aborted
     ) {
@@ -2945,8 +2944,12 @@ export class Orchestrator {
       // A5: the typed refusal survives NORMAL attempt finalization (no throw).
       ...(telemetry.requestRefusal
         ? { declaredFailure: requestRefusalFailure(telemetry.requestRefusal) }
-        : poolExhausted || processingRefusal
-          ? { declaredFailure: declaredFailure(processingRefusal ?? poolExhausted) }
+        : poolExhausted || processingRefusal || rawLane.refusal
+          ? {
+              declaredFailure: declaredFailure(
+                processingRefusal ?? rawLane.refusal ?? poolExhausted,
+              ),
+            }
           : {}),
       outcomeClass: finalized.outcomeClass,
       applied,
@@ -5076,11 +5079,7 @@ export class Orchestrator {
           exhausted = true;
           break;
         }
-        if (
-          run.telemetry.requestRefusal ||
-          run.telemetry.effortResolution?.resolution === "rejected"
-        )
-          break;
+        if (endsConvergence(run)) break;
         if (delegateFailure.candidateFailureKind(run)) {
           const failure = delegateFailure.candidateFailureTerminal(run, "convergence");
           await delegateFailure.persistFailedCandidateOutput({

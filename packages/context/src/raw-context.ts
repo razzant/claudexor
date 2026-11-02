@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { RawRequestCapacity } from "@claudexor/core";
-import { RawContextRefusalError, runCapture } from "@claudexor/core";
+import { RawContextRefusalError, runCapture, runCaptureRaw } from "@claudexor/core";
 import {
   RawContextPacket,
   type ImplementationTransport,
@@ -32,9 +30,13 @@ export interface RawContextOptions {
   exclude?: readonly string[];
 }
 
-/** Builds one request's packet for the capacity of the request it rides
- * (null = no window known). */
-export type RawContextSizer = (capacity: RawRequestCapacity | null) => Promise<RawContextPacket>;
+/** Builds one request's packet for the capacity of the request it rides (null =
+ * no window known) and the tree the engine's snapshot of the candidate just read
+ * at that dispatch (#551). */
+export type RawContextSizer = (
+  capacity: RawRequestCapacity | null,
+  candidateTree: string,
+) => Promise<RawContextPacket>;
 
 /**
  * The packet builder of an envelope whose transport inlines a RawContextPacket,
@@ -52,12 +54,13 @@ export function rawContextSizer(
     throw new Error(
       "raw_patch_requires_isolation: raw patch producers require an isolated envelope",
     );
-  return (capacity) =>
+  return (capacity, candidateTree) =>
     buildRawContextPacket(envelope.worktree_path, envelope.base_sha ?? "HEAD", {
       mandatory: [...(options.mandatory_files ?? [])],
       include: [...(options.include ?? [])],
       exclude: [...(options.exclude ?? [])],
       capacity,
+      candidateTree,
     });
 }
 
@@ -70,18 +73,56 @@ async function gitOutput(repo: string, args: string[]): Promise<string> {
   return result.stdout;
 }
 
-async function baseEntries(repo: string, baseCommitSha: string): Promise<Map<string, GitEntry>> {
-  const output = await gitOutput(repo, ["ls-tree", "-r", "-z", baseCommitSha]);
+/** Every path of one exact tree with its identity; a mode decides what is readable. */
+async function treeEntries(repo: string, tree: string): Promise<Map<string, GitEntry>> {
+  const output = await gitOutput(repo, ["ls-tree", "-r", "-z", tree]);
   const entries = new Map<string, GitEntry>();
   for (const record of output.split("\0")) {
     if (!record) continue;
     const tab = record.indexOf("\t");
     if (tab < 0) continue;
-    const [mode, type, oid] = record.slice(0, tab).split(" ");
+    const [mode, , oid] = record.slice(0, tab).split(" ");
     const path = record.slice(tab + 1);
-    if (mode && type === "blob" && oid && path) entries.set(path, { mode, oid });
+    if (mode && oid && path) entries.set(path, { mode, oid });
   }
   return entries;
+}
+
+/** Why a delivered path's blob is left out: as text, its bytes would not survive. */
+const NOT_UTF8_TEXT = "not UTF-8 text";
+
+/**
+ * The exact bytes of each blob, read from the repository's object store in one
+ * batch (`git cat-file --batch`): the tree's own content, never a later version on
+ * disk, in the repository form a patch applies to (the form `git diff` shows).
+ */
+async function blobBytes(repo: string, oids: readonly string[]): Promise<Map<string, Buffer>> {
+  const wanted = [...new Set(oids)];
+  const blobs = new Map<string, Buffer>();
+  if (wanted.length === 0) return blobs;
+  const chunks: Buffer[] = [];
+  const result = await runCaptureRaw("git", ["-C", repo, "cat-file", "--batch"], {
+    timeoutMs: 60_000,
+    windowsConsole: "none",
+    input: `${wanted.join("\n")}\n`,
+    stdoutProjection: { write: (chunk) => void chunks.push(chunk), end: () => "" },
+  });
+  if (result.code !== 0) throw new Error(`git cat-file failed: ${result.stderr.trim()}`);
+  const out = Buffer.concat(chunks);
+  for (let at = 0; at < out.length;) {
+    const eol = out.indexOf(0x0a, at);
+    const header = out.subarray(at, eol < 0 ? out.length : eol).toString("latin1");
+    const [oid, type, size] = header.split(" ");
+    const start = eol + 1;
+    const end = start + Number(size);
+    if (eol < 0 || !oid || type !== "blob" || !/^\d+$/.test(size ?? "") || end > out.length)
+      throw new Error(`git cat-file answered no blob: ${header}`);
+    blobs.set(oid, out.subarray(start, end));
+    at = end + 1;
+  }
+  for (const oid of wanted)
+    if (!blobs.has(oid)) throw new Error(`git cat-file answered no blob for ${oid}`);
+  return blobs;
 }
 
 function estimateTokens(text: string): number {
@@ -98,8 +139,19 @@ function mandatoryRefusal(files: string[]): RawContextRefusalError {
 
 /**
  * Build the complete, bounded text packet consumed by raw patch producers.
- * Project mandatory files are delivered complete (exempt from the ordinary
- * per-file and budget omissions) or the packet is refused. With a KNOWN model
+ * `baseCommitSha` is the run's delivery base. The packet describes one tree,
+ * `candidateTree` (default: that base's own tree), which its patch applies to:
+ * its paths, blob identities and file contents all come from that tree. Each
+ * delivered file is its blob's exact bytes, read from Git in one batch, in the
+ * repository form a patch applies to (the form `git diff` shows), so a file whose
+ * line endings or filter Git converts on checkout arrives as the tree stores it.
+ * A blob that is not UTF-8 text is omitted, never sent with replaced bytes.
+ * `repoRoot` is read only to choose and budget paths; the manifest states each
+ * delivered file's blob figures and why any other is left out. The engine passes the
+ * tree its own snapshot of the candidate just read, so a later round reads what the
+ * earlier one left and new files carry their own blobs (#551). Project mandatory
+ * files are delivered complete (exempt from the ordinary per-file and budget
+ * omissions) or the packet is refused. With a KNOWN model
  * window the whole rendered request (framing + packet + output allowance) is
  * sized to it: optional files are dropped deterministically from the end of
  * path order, and mandatory content that still cannot fit refuses before any
@@ -114,6 +166,7 @@ export async function buildRawContextPacket(
     include?: string[];
     exclude?: string[];
     capacity?: RawRequestCapacity | null;
+    candidateTree?: string;
   } = {},
 ): Promise<RawContextPacket> {
   const capacity = options.capacity ?? null;
@@ -121,18 +174,31 @@ export async function buildRawContextPacket(
   const limit =
     capacity && window !== null ? window - capacity.outputAllowance - capacity.framingTokens : null;
   const mandatory = new Set(options.mandatory ?? []);
-  const [atlas, treeSha, entries] = await Promise.all([
-    buildScopeAtlas(repoRoot, {
-      mandatory: [...mandatory],
-      include: options.include ?? [],
-      exclude: options.exclude ?? [],
-      tokenLimit: limit === null ? RAW_CONTEXT_ASSUMED_CEILING_TOKENS : Math.max(limit, 0),
+  const treeSha =
+    options.candidateTree ??
+    (await gitOutput(repoRoot, ["rev-parse", `${baseCommitSha}^{tree}`])).trim();
+  const entries = await treeEntries(repoRoot, treeSha);
+  const atlas = await buildScopeAtlas(repoRoot, {
+    files: [...entries.keys()],
+    mandatory: [...mandatory],
+    include: options.include ?? [],
+    exclude: options.exclude ?? [],
+    tokenLimit: limit === null ? RAW_CONTEXT_ASSUMED_CEILING_TOKENS : Math.max(limit, 0),
+  });
+  const regular = (mode: string | undefined) => mode === "100644" || mode === "100755";
+  // Content and identity are one object: each delivered path's blob in the tree.
+  const blobs = await blobBytes(
+    repoRoot,
+    atlas.atlas.flatMap((entry) => {
+      const gitEntry = entries.get(entry.path);
+      return entry.disposition === "full" && gitEntry && regular(gitEntry.mode)
+        ? [gitEntry.oid]
+        : [];
     }),
-    gitOutput(repoRoot, ["rev-parse", `${baseCommitSha}^{tree}`]).then((value) => value.trim()),
-    baseEntries(repoRoot, baseCommitSha),
-  ]);
+  );
   // Every mandatory path is delivered complete or named here, with its cause.
   const unavailable = new Map<string, string>();
+  const leftOut = new Map<string, string>();
   const readableFiles: RawContextFile[] = [];
   const omissions: OmissionEntry[] = [...atlas.omitted];
   const omittedPaths = new Set(omissions.map((item) => item.path));
@@ -151,15 +217,17 @@ export async function buildRawContextPacket(
       continue;
     }
     const gitEntry = entries.get(entry.path);
-    if (!gitEntry || (gitEntry.mode !== "100644" && gitEntry.mode !== "100755")) {
-      const reason = gitEntry
-        ? `unsupported git mode ${gitEntry.mode}`
-        : "missing base-tree evidence";
+    const bytes = gitEntry && regular(gitEntry.mode) ? blobs.get(gitEntry.oid) : undefined;
+    const content = bytes?.toString("utf8");
+    // The delivered text must be the blob's bytes: one that is not UTF-8 text would
+    // arrive with replaced bytes, so it is left out like a binary file.
+    if (!gitEntry || !bytes || content === undefined || !Buffer.from(content).equals(bytes)) {
+      const reason = bytes ? NOT_UTF8_TEXT : `unsupported git mode ${gitEntry?.mode}`;
       if (mandatory.has(entry.path)) unavailable.set(entry.path, reason);
+      leftOut.set(entry.path, reason);
       omissions.push({ path: entry.path, reason, replacement: "index" });
       continue;
     }
-    const content = readFileSync(join(repoRoot, entry.path), "utf8");
     readableFiles.push({
       path: entry.path,
       mode: gitEntry.mode,
@@ -174,17 +242,23 @@ export async function buildRawContextPacket(
     throw mandatoryRefusal([...unavailable].map(([path, cause]) => `${path} (${cause})`));
 
   readableFiles.sort((a, b) => a.path.localeCompare(b.path));
+  const delivered = new Map(readableFiles.map((file) => [file.path, file]));
   const kept = readableFiles.filter((file) => mandatory.has(file.path));
   const optional = readableFiles.filter((file) => !mandatory.has(file.path));
   const dropped: RawContextFile[] = [];
   const assemble = (): RawContextPacket => {
     const files = [...kept, ...optional].sort((a, b) => a.path.localeCompare(b.path));
     const droppedPaths = new Set(dropped.map((file) => file.path));
-    const manifest: ScopeAtlasEntry[] = atlas.atlas.map((entry) =>
-      droppedPaths.has(entry.path)
-        ? { path: entry.path, disposition: "omitted", bytes: entry.bytes, reason: "token_budget" }
-        : entry,
-    );
+    const manifest: ScopeAtlasEntry[] = atlas.atlas.map((entry) => {
+      // The atlas read the directory; a delivered path's figures are its blob's.
+      const file = delivered.get(entry.path);
+      const bytes = file ? Buffer.byteLength(file.content) : entry.bytes;
+      if (droppedPaths.has(entry.path))
+        return { path: entry.path, disposition: "omitted", bytes, reason: "token_budget" };
+      const reason = leftOut.get(entry.path);
+      if (reason) return { path: entry.path, disposition: "omitted", bytes, reason };
+      return file ? { ...entry, bytes, hash: file.content_hash } : entry;
+    });
     const packetOmissions = [
       ...omissions,
       ...dropped.map((file) => ({

@@ -496,10 +496,17 @@ mode's intent (`explain` for Ask, `audit` for Ask's `--deep-scan` sweep,
 `implement` for Agent/repair paths, `plan`, etc.) and support read-only when the
 mode requires it. Answering needs no file access, so `explain` does not depend
 on `read_files`: a route that cannot read files (raw API) answers Ask without a
-project, while a project-scoped Ask on it refuses before dispatch as
+project, while a project-scoped Ask or Plan on it refuses before dispatch as
 `cannot read project files: ask without a project or choose a harness that
-reads files`, because the Ask prompt carries a path atlas, never file contents.
-`audit` still requires `read_files`. Surfaces keep aggregate/default doctor evidence distinct from
+reads files`, because those prompts carry a path atlas, never file contents.
+Automatic selection omits such a lane with that reason, and a Council resolves
+its pool through this same admission, so neither a draft nor a merge of a project
+plan runs on it. Public Plan requires a project scope, so text-only planning there
+is Ask without a project; the engine's own no-project Plan stays admitted. Change
+review needs file reading too (INV-042), so the raw manifest and doctor declare no
+`review`: an explicit reviewer panel refuses such a route and the automatic panel
+skips it, both naming `cannot read the candidate evidence files itself`, before
+any account or model check. `audit` still requires `read_files`. Surfaces keep aggregate/default doctor evidence distinct from
 exact-profile evidence and routing gates on the identity actually selected.
 
 Attachment and Browser request admission (requests with neither skip it) uses
@@ -819,7 +826,15 @@ frozen values, so a run made on a settings default stays reproducible after
 the default changes (QA-035); an inherited native speed is kept the same way
 from the source run's frozen routing-time intent (Processing and account catalogs); the resolved map is what route-spec building
 reads; per-attempt overrides
-(budget downgrade to `fallback_model`, fallback retry) sit on top. Every
+(budget downgrade to `fallback_model`, fallback retry) sit on top. A route whose
+request must name a model (raw API, `modelRequirement`) has no default of its own:
+below the run and the saved default only the operator's instance choice applies (an
+instance argument, else that instance's own variable, frozen the same way and judged
+like any explicit model). With none of them the lane is refused
+`model_selection_required` before any catalog read or request, or omitted by Auto
+with typed stage `model`. A blank value was never a choice, and no other model or
+route stands in. Sending the instance choice is disclosed by one status line naming
+its source and by the doctor's `instance_model` check. Every
 explicit model — per-run, settings default, fallback, reviewer — must pass
 the harness's model truth source wherever that source can prove absence (live
 `models()` inventory, else manifest `known_models`; an authoritative harness
@@ -2440,10 +2455,32 @@ describes that exact request: each try (a retry or an account hop included)
 sizes its own packet, and a patch is accepted only against the packet its own
 try sent. A convergence round (`attempts`, `untilClean`) asks such a producer
 for the run's candidate intent, as one agent attempt does, never `repair`,
-which it does not play: the round gets the same packet and patch protocol. Only
-a round that starts from the clean base tree can apply its patch (a raw patch
-materializes only into a clean isolated tree), so a later round after an
-applied patch is refused `raw_patch_requires_isolation`. The project's
+which it does not play: the round gets the same packet and patch protocol. The
+run keeps one delivery base (`base_commit_sha`, the envelope's base), while each
+dispatch describes the exact tree the candidate holds at that moment
+(`base_tree_sha`, read through a scratch index as capture would record it). The
+file list, blob identities and contents all come from that tree: each delivered
+file is its blob's exact bytes, read from Git in one `cat-file --batch`, in the
+repository form a patch applies to (the form `git diff` shows), so a file whose
+line endings or filter Git converts on checkout arrives as the tree stores it,
+and a blob that is not UTF-8 text is omitted as `not UTF-8 text`, or refused when
+mandatory. The worktree is read only to choose and budget paths; the manifest
+states each delivered file's blob figures and why any other is left out. So a later
+round, or a raw round after a native one, reads what the earlier round left, new
+files carry their own blobs, and identity and content are one object. The patch applies only
+if the worktree still holds that exact tree (`raw_patch_base_mismatch` otherwise); capture stays base to
+candidate, so the final result holds every round. A refused patch is the attempt's
+typed failure (`RunFailure.code`), never a crashed process or a same-prompt retry.
+The code names what is wrong, not whether a request was sent: a patch intent
+without its packet (`raw_patch_missing_evidence`) and an over-window request are
+refused before any request, every other raw refusal after an answer, whose usage
+stays the attempt's evidence. Codes the model's own patch caused
+(`raw_patch_apply_failed`,
+`raw_patch_outside_scope`, `raw_patch_stale_preimage`, `raw_patch_path_traversal`,
+`raw_patch_binary_unsupported`, `raw_patch_truncated`; category `harness_error`)
+reach the next round through the ordinary revise prompt; the isolation, evidence,
+digest and base codes (category `internal`) end convergence, as an over-window
+refusal does. The project's
 `context` config binds it:
 `mandatory_files` are delivered complete, exempt from the ordinary 256 KiB
 per-file and budget omissions, and a mandatory path that is missing, unreadable
@@ -2456,8 +2493,7 @@ admits an explicit model, and the request sends the key that read checked: a
 key replaced while the packet is prepared is first read, and sent, by the next
 spawn. The adapter derives the capacity from those rows without
 reading again: the window of the requested model's row (a
-declared routing variant resolves to its listed row; no model hint means the
-adapter default), an output allowance (the row's `max_output_tokens`, else
+declared routing variant resolves to its listed row), an output allowance (the row's `max_output_tokens`, else
 16 384 tokens, never more than half the window; no `max_tokens` is sent), and the
 framing outside the packet (instructions, user text, patch protocol, attachments
 as sent, about 1 600 tokens per image). With a known window the whole rendered
@@ -8110,16 +8146,15 @@ code touching one of these areas must honor it or change it explicitly here.
   branch, and explicit trash/restore/purge owns its retention lifecycle.
 - Explicit reviewer panels accept only proven routes: an unprofiled/default
   entry requires doctor-OK readiness, while a profiled entry requires its exact
-  profile probe even when aggregate/default doctor is unavailable. A degraded
-  raw default route (key present but unproven by isolated smoke) is refused even
-  when the user names it — reviewer verdicts must ride proven routes, unlike
-  candidates where explicit selection admits degraded. A profiled raw-API
-  reviewer is admitted that way (as the automatic panel's profiled choice is),
-  and its request sends the key the panel's catalog read checked, but a route
-  that cannot read files gets the review prompt's evidence and patch paths with
-  the patch summary (statistics and changed paths), not the evidence or the
-  diff contents, so its verdict is not grounded in them. Delivering that
-  material to such reviewers is #137, open.
+  profile probe even when aggregate/default doctor is unavailable. Reviewer
+  verdicts ride proven routes, unlike candidates where explicit selection admits
+  degraded. Both panels admit only a harness that declares `read_files`, whatever
+  it declares about `review`, before any model check: review reads the
+  candidate evidence files (INV-042). So a raw-API route is never a reviewer,
+  profiled or not. Every shipped entry point gets its reviewers from these
+  panels; reviewers an embedder constructs and injects itself
+  (`OrchestratorDeps.reviewers`) are used as given and skip panel admission as a
+  whole.
 - A credential profile cannot bootstrap a raw-API instance whose own key is
   absent: raw-API discovery is key-gated (an instance without its configured
   key is not a route, so no manifest exists for the profile probe to

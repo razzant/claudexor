@@ -1,9 +1,7 @@
 import {
   effortResolutionEvent,
   prepareHarnessProcessing,
-  withDispatchModelCatalog,
   type HarnessAdapter,
-  type ModelCatalogObservation,
 } from "@claudexor/core";
 import type { EffortResolution, HarnessRunSpec } from "@claudexor/schema";
 import { appendLine } from "@claudexor/util";
@@ -16,17 +14,12 @@ import type { ReviewerArtifactContext } from "./reviewRuntimeTypes.js";
  * receipt's `submittedNative` (the adapter's `--model` reads it), the cost
  * basis rides the spec, and a model-id effort carrier (Cursor, Antigravity)
  * returns its level receipt from the same call. Re-run on every native retry,
- * so a rotated account prepares against its own inventory. `catalog`, the
- * typed read that admitted the reviewer's model, rides to the request like the
- * agent gate's dispatch read, so the review sends the key that read checked;
- * the adapter uses it only for the profile it was read under.
+ * so a rotated account prepares against its own inventory.
  */
 export async function prepareReviewerRunSpec(
   adapter: HarnessAdapter,
   spec: HarnessRunSpec,
-  catalog?: ModelCatalogObservation,
 ): Promise<{ spec: HarnessRunSpec; effort: EffortResolution | undefined }> {
-  if (catalog) spec = withDispatchModelCatalog(spec, catalog);
   if (!spec.processing_preference && !adapter.prepareProcessing) return { spec, effort: undefined };
   const prepared = await prepareHarnessProcessing(adapter, {
     preference: spec.processing_preference,

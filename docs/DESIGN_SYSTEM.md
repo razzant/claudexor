@@ -1270,8 +1270,9 @@ views in the shared design-system files; screens compose them.
   The auth route the turn actually ran under comes from the route receipt —
   never inferred from prose. A request the engine refused before sending
   (`RunFailure.code` `raw_context_exceeds_window`,
-  `raw_context_mandatory_unavailable` or `model_catalog_unavailable`, the last
-  now meaning a missing or rejected API key) shows the card even when a
+  `raw_context_mandatory_unavailable`, `model_catalog_unavailable`, now meaning a
+  missing or rejected API key, or `model_selection_required`, no model chosen for
+  the harness) shows the card even when a
   transcript exists, headed by `RunFacts.refusal` with a raised-hand glyph. The
   labels describe the refused request only: "Not sent: …", or "Retry not sent: …"
   when the record's typed `poolAttempts` lists earlier tries that failed after
@@ -1289,6 +1290,11 @@ views in the shared design-system files; screens compose them.
   edge, a closing "N more files" row with the remainder) and the record's typed
   `nextActions` as arrow lines; the engine's complete message is the summary's
   hover help. Without those sizes the body stays the engine's message verbatim.
+  A refused raw-API patch (`RunFailure.code` `raw_patch_*`) is no such refusal:
+  the same code can follow an answer the provider was paid for, so its card keeps
+  the failure triangle and is headed "Patch refused: …" naming what was wrong
+  (`RunFacts.patchRefusalTitle`), never "Not sent" and never a claim that it was
+  paid; the attempt's usage evidence says what was sent.
   The raw-API request the final attempt last prepared adds two compact run facts
   from the run summary's typed `rawContext`, which is receipted just before the
   POST, so its help says "prepared", never "sent": "Context ≈159k of 200k tokens
@@ -1771,7 +1777,7 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   on its own line. Selecting one from Auto makes Auto's harnesses plus that one the
   thread's explicit pool (`HarnessPoolPresentation.toggling` keeps ids outside
   Auto's set), which the engine runs as an explicit selection. A project-scoped
-  Ask on a harness whose manifest declares `read_files: false` is disabled with a
+  Ask or Plan on a harness whose manifest declares `read_files: false` is disabled with a
   visible line ("Can't read project files. Ask without a project, or choose a
   harness that reads files."), matching the engine's pre-dispatch refusal;
   not-installed or otherwise blocked harnesses keep their hover reason.

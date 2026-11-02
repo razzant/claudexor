@@ -104,7 +104,8 @@ struct RoutingConsumerTests {
         #expect(Self.lane(.codex, project) == .auto)
         // Not enabled at all stays the doctor's reason, project or not.
         #expect(Self.lane(.copilot, project) == .unavailable(reason: "installed: GitHub Copilot binary is not installed"))
-        // Only Ask needs the project read; an Agent turn stays manual only.
+        // A project Plan reads the project too; an Agent turn stays manual only.
+        #expect(Self.lane(.openrouter, Self.entries(intent: "plan", projectScoped: true)) == .cannotReadProjectFiles)
         #expect(Self.lane(.openrouter, Self.entries(intent: "implement", projectScoped: true))?.isManualOnly == true)
     }
 
@@ -311,6 +312,26 @@ struct RoutingConsumerTests {
         untyped.failureRecord = nil
         let plain = TurnFailureCard(run: untyped, reason: "engine text", openRun: {})
         #expect(plain.shortfall == nil && plain.nextActions.isEmpty && plain.refused)
+    }
+
+    @MainActor
+    @Test func aMissingModelIsNotSentAndARefusedPatchSaysNothingAboutSending() {
+        // #395: no model chosen is refused before any request.
+        #expect(RunFacts.refusal(code: "model_selection_required")
+            == RunFacts.Refusal(title: "Not sent: no model is selected for this harness",
+                                fact: "Not sent: no model selected", chip: "Not sent"))
+        // #551: a refused raw patch is named, but is no "Not sent" refusal: the same
+        // code can follow a paid answer.
+        var run = TaskRun(
+            id: "run-2", title: "t", prompt: "p", mode: .agent, phase: .failed, project: "billing-worker",
+            harnesses: [.openrouter], n: 1, createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, routeProof: .unverified, attentionNote: nil,
+            plan: [], activity: [], candidates: [], findings: [], diff: [])
+        run.failureCode = "raw_patch_apply_failed"
+        #expect(RunFacts.refusal(run) == nil)
+        let card = TurnFailureCard(run: run, reason: "raw_patch_apply_failed: does not apply", openRun: {})
+        #expect(card.title == "Patch refused: it does not apply to the candidate" && !card.refused)
+        #expect(RunFacts.patchRefusalTitle(code: "raw_context_exceeds_window") == nil)
     }
 
     /// A real run whose first try never reached the endpoint (it was down

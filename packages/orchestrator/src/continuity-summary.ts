@@ -45,6 +45,9 @@ export interface SummaryRunParams {
   cwd: string;
   /** Scoped lane-home env so the pass authenticates on the lane's own account. */
   env: Record<string, string>;
+  /** The lane's own model on a route whose request must name one (#395); otherwise
+   * absent, and the vendor chooses for this side computation. */
+  model?: string;
   /** Resolved credential profile for the lane (null = engine default ladder). */
   credentialProfile: CredentialProfile | null;
   authPreference: "subscription" | "api_key" | "auto";
@@ -120,7 +123,7 @@ export async function summarizeThreadPrefix(params: SummaryRunParams): Promise<s
       access: "readonly",
       external_context_policy: "off",
       tool_permission_policy: { web: "off", allow: [], deny: [] },
-      model_hint: null,
+      model_hint: params.model ?? null,
       effort_hint: null,
       max_turns: 1,
       auth_preference: params.authPreference === "auto" ? undefined : params.authPreference,

@@ -42,8 +42,10 @@ function reviewerAdapter(
         kind: "local_cli",
         provider_family: family,
         access_profiles_supported: ["readonly", "workspace_write"],
+        // A reviewer reads the candidate evidence itself, as every shipped one declares.
         capabilities: {
           review: true,
+          read_files: true,
           effort_levels: [...effortLevels],
           ...(extras.modelEffortLevels ? { model_effort_levels: extras.modelEffortLevels } : {}),
           ...(extras.knownModelEntries

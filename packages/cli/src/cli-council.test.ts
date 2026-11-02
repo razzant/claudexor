@@ -37,6 +37,7 @@ function planner(id: string, bad: boolean): HarnessAdapter {
         kind: "local_cli",
         provider_family: "openai",
         capabilities: {
+          read_files: true,
           plan: true,
           work_report_transport: "constrained",
           json_schema_output: true,

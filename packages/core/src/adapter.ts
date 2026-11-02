@@ -99,7 +99,7 @@ export type ModelCatalogObservation =
  * the model receives, never a tokenizer count.
  */
 export interface RawRequestCapacity {
-  /** Model the request names: the spec's model hint, else the adapter default. */
+  /** Model the request names: the spec's model hint, else the instance's choice. */
   model: string;
   /** Window of that model's catalog row (a routing variant resolves to its
    * listed row); null when unknown: no row, no field, or a failed read. */
@@ -110,6 +110,18 @@ export interface RawRequestCapacity {
   /** Estimated tokens the request carries outside the packet: instructions,
    * user text, the patch protocol and attachments as sent. */
   framingTokens: number;
+}
+
+/**
+ * A route whose request cannot omit a model (#395): a chat-completions body needs
+ * one and no vendor CLI picks it. The engine invents none, so an operator chooses.
+ */
+export interface RouteModelRequirement {
+  /** The operator's choice for this instance outside Settings (an instance
+   * argument or an environment variable) and where it was made; null when none. */
+  instanceChoice: { model: string; source: string } | null;
+  /** The variable that can make that choice, named by a refusal's remedy. */
+  env?: string;
 }
 
 export interface HarnessProcessingSpec extends HarnessModelSpec {
@@ -227,8 +239,16 @@ export interface HarnessAdapter {
 
   /** Capacity facts for a spec whose transport inlines a RawContextPacket
    * (#147), from `catalog`: the rows of the dispatch gate's own read for this
-   * spawn's credential identity ([] when that read failed). Reads nothing. */
-  rawRequestCapacity?(spec: HarnessRunSpec, catalog: readonly HarnessModel[]): RawRequestCapacity;
+   * spawn's credential identity ([] when that read failed). Reads nothing; null
+   * when the spec names no model, which no capacity can be read for. */
+  rawRequestCapacity?(
+    spec: HarnessRunSpec,
+    catalog: readonly HarnessModel[],
+  ): RawRequestCapacity | null;
+
+  /** Declared only by a route that cannot omit a model; absent means the vendor
+   * chooses when a run names none. */
+  readonly modelRequirement?: RouteModelRequirement;
 
   /** Translate service intent using this account's inventory before ranking or
    * reserving spend. Discovery only; never starts a generation or changes auth. */

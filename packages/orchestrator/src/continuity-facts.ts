@@ -75,6 +75,8 @@ export async function workspaceAnchor(repoRoot: string): Promise<ContinuityAncho
 
 export interface ContinuitySummaryInputs {
   req: ContinuityRequest;
+  /** The lane's own model, on a route whose request must name one (#395). */
+  model?: string | undefined;
   /** Present only for a thread turn; a non-thread run gets no summary. */
   threadId: string | undefined;
   /** Project root that keys the summary cache (matches the lane-home keying). */
@@ -127,6 +129,7 @@ export async function resolveContinuitySummary(
     if (!inputs.adapter) return null;
     const text = await summarizeThreadPrefix({
       adapter: inputs.adapter,
+      ...(inputs.model ? { model: inputs.model } : {}),
       turns: plan.collapsedPrefix,
       cwd: inputs.cwd,
       env: inputs.laneEnv,

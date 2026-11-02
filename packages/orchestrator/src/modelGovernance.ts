@@ -50,6 +50,10 @@
  * the request by another read. Where the producer binds its key to the read
  * (`credential`), the request sends that same key: one replaced while the
  * packet is prepared is first read, and sent, by the next spawn.
+ *
+ * A route that must name a model and has none refuses here too (#395), for any
+ * dispatch that did not come through run admission: nothing is read or sent. When
+ * the model it sends is the instance's own choice, the run says where that came from.
  */
 import { RoutingPreflightError, billingKnowledgeForAuthRoute } from "@claudexor/budget";
 import type { AuthVerification, EffortResolution, PaidFallback } from "@claudexor/schema";
@@ -62,11 +66,13 @@ import type {
 import {
   HarnessUnavailableError,
   ModelCatalogUnavailableError,
+  ModelSelectionRequiredError,
   RawContextRefusalError,
   abortSignalFromSpec,
   effortResolutionEvent,
   modelCatalogFailureRefuses,
   modelCatalogFailureText,
+  missingRouteModel,
   readModelCatalog,
   resolveEffortEvidence,
   validateModel,
@@ -352,12 +358,14 @@ export async function admitCurrentProfileDispatch(
 }
 
 /** What `runModelGovernedRoute` refuses with BEFORE anything is sent: budget
- * or routing admission, an unreadable catalog, an undeliverable packet. An
+ * or routing admission, no model on a route that must name one, an unreadable
+ * catalog, an undeliverable packet. An
  * attempt records it as its declared failure, never as a crashed harness. */
 export type DispatchRefusal =
   | ProcessingBudgetAdmissionError
   | RoutingPreflightError
   | ModelCatalogUnavailableError
+  | ModelSelectionRequiredError
   | RawContextRefusalError;
 
 export function isDispatchRefusal(err: unknown): err is DispatchRefusal {
@@ -365,6 +373,7 @@ export function isDispatchRefusal(err: unknown): err is DispatchRefusal {
     err instanceof ProcessingBudgetAdmissionError ||
     err instanceof RoutingPreflightError ||
     err instanceof ModelCatalogUnavailableError ||
+    err instanceof ModelSelectionRequiredError ||
     err instanceof RawContextRefusalError
   );
 }
@@ -388,6 +397,8 @@ export async function* runModelGovernedRoute(
     rawContext?: (capacity: RawRequestCapacity | null) => Promise<RawContextPacket>;
   } = {},
 ): AsyncIterable<HarnessEvent> {
+  const missingModel = missingRouteModel(routed.adapter, spec.model_hint);
+  if (missingModel) throw new ModelSelectionRequiredError(missingModel);
   let nativeModel: string | null = null;
   let preparedEffort: EffortResolution | undefined;
   let catalog: readonly HarnessModel[] = [];
@@ -413,6 +424,9 @@ export async function* runModelGovernedRoute(
   }
   const model = spec.model_hint?.trim();
   const unverified: string[] = [];
+  const instanceChoice = routed.adapter.modelRequirement?.instanceChoice;
+  if (instanceChoice && instanceChoice.model === spec.model_hint)
+    unverified.push(`model "${instanceChoice.model}" is set by ${instanceChoice.source}`);
   const profile = spec.credential_profile ?? null;
   const truth =
     model || dispatch.rawContext

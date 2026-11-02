@@ -7,7 +7,9 @@ import {
 } from "./errors.js";
 import {
   catalogRowFor,
+  chosenModel,
   hasModelInventoryForRoute,
+  missingRouteModel,
   modelCatalogFailureRefuses,
   observedModelCatalogMatch,
   readModelCatalog,
@@ -501,5 +503,33 @@ describe("observedModelCatalogMatch (synthetic catalogs)", () => {
     expect(observedModelCatalogMatch(" ", blank, null)).toBeNull();
     expect(observedModelCatalogMatch("", blank, null)).toBeNull();
     expect(observedModelCatalogMatch("GPT-5.5 High", catalog, "")).toBeNull();
+  });
+});
+
+describe("a route that must name a model (#395)", () => {
+  const requires = (instanceChoice: { model: string; source: string } | null, env?: string) => ({
+    id: "route",
+    modelRequirement: { instanceChoice, ...(env ? { env } : {}) },
+  });
+
+  it("a blank model was never a choice; any other keeps its exact bytes", () => {
+    expect(chosenModel(null)).toBeNull();
+    expect(chosenModel(undefined)).toBeNull();
+    expect(chosenModel("")).toBeNull();
+    expect(chosenModel(" \t\n")).toBeNull();
+    expect(chosenModel(" vendor/m ")).toBe(" vendor/m ");
+  });
+
+  it("refuses only a route that requires one and has none, naming what repairs it once", () => {
+    const refusal = missingRouteModel(requires(null, "ROUTE_MODEL"), "   ");
+    expect(refusal).toContain("route needs a model and none is selected; nothing was sent");
+    expect(refusal).toContain("`claudexor models --harness route`");
+    expect(refusal).toContain("`claudexor settings set harness.route.default_model <model>`");
+    expect(refusal).toContain("or set ROUTE_MODEL");
+    expect(missingRouteModel(requires(null), null)).not.toContain(", or set");
+    expect(missingRouteModel(requires(null), "vendor/m")).toBeNull();
+    expect(missingRouteModel(requires({ model: "m", source: "ENV" }), null)).toBeNull();
+    // A route whose vendor chooses is not this rule's business.
+    expect(missingRouteModel({ id: "cli" }, null)).toBeNull();
   });
 });

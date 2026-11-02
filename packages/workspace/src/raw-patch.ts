@@ -7,15 +7,41 @@ import type {
   RawPatchRefusalCode,
 } from "@claudexor/schema";
 import { sha256 } from "@claudexor/util";
-import { applyPatchProtected, git, materializePatchTree, revParse } from "./git.js";
+import { applyPatchProtected, materializePatchTree, revParse, snapshotTree } from "./git.js";
 
+/** What the model's own patch got wrong, so a later round can correct it. Every
+ * other refusal is an impossible state, isolation or digest fact no round repairs. */
+const MODEL_CORRECTABLE: ReadonlySet<string> = new Set<RawPatchRefusalCode>([
+  "raw_patch_path_traversal",
+  "raw_patch_outside_scope",
+  "raw_patch_stale_preimage",
+  "raw_patch_binary_unsupported",
+  "raw_patch_truncated",
+  "raw_patch_apply_failed",
+]);
+
+/** Whether another convergence round can repair a failure with this code. */
+export function rawPatchRefusalIsModelCorrectable(code: string): boolean {
+  return MODEL_CORRECTABLE.has(code);
+}
+
+/** A raw patch, or the evidence it needs, the engine refused: the attempt's own
+ * typed failure, never a crashed process. This module throws it only for an
+ * answer already received; the code says what is wrong, and whether a request
+ * was sent is the attempt's usage evidence, never read from the code. */
 export class RawPatchRefusalError extends Error {
+  readonly category: "harness_error" | "internal" | "validation";
   constructor(
     public readonly code: RawPatchRefusalCode,
     message: string,
   ) {
     super(message);
     this.name = "RawPatchRefusalError";
+    this.category = MODEL_CORRECTABLE.has(code)
+      ? "harness_error"
+      : code === "raw_context_exceeds_window"
+        ? "validation"
+        : "internal";
   }
 }
 
@@ -55,7 +81,21 @@ export function captureRawPatchEnvelope(
   return event.patch_envelope;
 }
 
-/** Validate and materialize a raw patch only inside its isolated candidate tree. */
+/** The exact tree a raw round starts from (#551): what this worktree holds now, as
+ * capture would record it (tracked and untracked, without ignored files), read
+ * through a scratch index so neither the worktree's index nor HEAD moves. It equals
+ * the run's base tree until a round changes something. */
+export async function rawCandidateTree(worktreePath: string): Promise<string> {
+  return revParse(worktreePath, `${await snapshotTree(worktreePath)}^{tree}`);
+}
+
+/**
+ * Validate and materialize a raw patch only inside its isolated candidate tree.
+ * `baseCommitSha` is the run's delivery base, which never moves. The patch applies
+ * to the packet's exact tree, and that tree must be what the worktree holds now:
+ * a candidate changed since the packet was sent, a tree the packet does not name
+ * or a commit that is not the run's base is refused before anything is written.
+ */
 export async function consumeRawPatchEnvelope(input: {
   repoRoot: string;
   worktreePath: string;
@@ -72,34 +112,20 @@ export async function consumeRawPatchEnvelope(input: {
   if (envelope.context_packet_hash !== context.packet_hash) {
     refuse("raw_patch_missing_evidence", "response does not bind the supplied context packet");
   }
-  const actualBaseTree = await revParse(repoRoot, `${baseCommitSha}^{tree}`);
   if (
     context.base_commit_sha !== baseCommitSha ||
-    context.base_tree_sha !== actualBaseTree ||
-    envelope.base_tree_sha !== actualBaseTree
+    envelope.base_tree_sha !== context.base_tree_sha
   ) {
-    refuse("raw_patch_base_mismatch", "patch and context do not bind the candidate base tree");
+    refuse("raw_patch_base_mismatch", "patch and context do not bind the run's base and one tree");
   }
-  let worktreeBaseTree: string;
+  let worktreeTree: string;
   try {
-    worktreeBaseTree = await revParse(worktreePath, "HEAD^{tree}");
+    worktreeTree = await rawCandidateTree(worktreePath);
   } catch {
-    refuse("raw_patch_requires_isolation", "isolated worktree base could not be verified");
+    refuse("raw_patch_requires_isolation", "isolated worktree tree could not be verified");
   }
-  if (worktreeBaseTree !== actualBaseTree) {
-    refuse("raw_patch_base_mismatch", "isolated worktree HEAD does not match the bound base tree");
-  }
-  const worktreeStatus = await git(worktreePath, [
-    "status",
-    "--porcelain=v1",
-    "-z",
-    "--untracked-files=all",
-  ]);
-  if (worktreeStatus.code !== 0) {
-    refuse("raw_patch_requires_isolation", "isolated worktree status could not be verified");
-  }
-  if (worktreeStatus.stdout.length !== 0) {
-    refuse("raw_patch_requires_isolation", "isolated worktree must be clean before raw apply");
+  if (worktreeTree !== context.base_tree_sha) {
+    refuse("raw_patch_base_mismatch", "isolated worktree no longer holds the packet's exact tree");
   }
   if (sha256(envelope.patch) !== envelope.patch_hash) {
     refuse("raw_patch_digest_mismatch", "patch_hash does not match the exact patch bytes");
@@ -174,7 +200,11 @@ export async function consumeRawPatchEnvelope(input: {
 
   let materializedTreeSha: string;
   try {
-    materializedTreeSha = await materializePatchTree(repoRoot, baseCommitSha, envelope.patch);
+    materializedTreeSha = await materializePatchTree(
+      worktreePath,
+      context.base_tree_sha,
+      envelope.patch,
+    );
   } catch (error) {
     refuse("raw_patch_apply_failed", error instanceof Error ? error.message : String(error));
   }

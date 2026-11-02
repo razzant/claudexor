@@ -268,7 +268,8 @@ extension TurnFailureCard {
             RunFacts.shortfall($0, earlierFailedTries: record?.poolAttempts.count ?? 0)
         }
         self.init(
-            title: refusal?.title ?? RunReasonLabel.label(run.outcomeFacts?.reason) ?? run.phase.label,
+            title: refusal?.title ?? RunFacts.patchRefusalTitle(code: run.failureCode)
+                ?? RunReasonLabel.label(run.outcomeFacts?.reason) ?? run.phase.label,
             refused: refusal != nil,
             category: run.failureCategory.flatMap { $0 == "unknown" ? nil : $0 },
             route: run.authRoute.flatMap { route -> Route? in
