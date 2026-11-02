@@ -72,7 +72,7 @@ export async function runRepl(repoRoot: string): Promise<number> {
 }
 
 async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise<number> {
-  const headers = { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" };
+  const headers = { "content-type": "application/json" };
   const api = async (method: string, path: string, body?: unknown): Promise<any> => {
     const res = await controlApiFetch(addr, path, {
       method,

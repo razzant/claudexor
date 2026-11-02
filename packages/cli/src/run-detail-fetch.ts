@@ -32,9 +32,7 @@ export async function fetchPlanReadiness(
 ): Promise<{ state: string; questionCount: number } | null> {
   if (!runId) return null;
   try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`);
     if (!res.ok) return null;
     const detail = (await res.json()) as Record<string, unknown>;
     const v = detail["planReadiness"];
@@ -53,9 +51,7 @@ export async function fetchPlanQuestions(
 ): Promise<import("@claudexor/schema").PlanQuestion[]> {
   if (!runId) return [];
   try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`);
     if (!res.ok) return [];
     const detail = (await res.json()) as Record<string, unknown>;
     const v = detail["planQuestions"];
@@ -80,9 +76,7 @@ export async function fetchCouncil(
 } | null> {
   if (!runId) return null;
   try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`);
     if (!res.ok) return null;
     const detail = (await res.json()) as Record<string, unknown>;
     const v = detail["council"];
@@ -118,9 +112,7 @@ export async function fetchRunDetail(
   if (!runId) return null;
   let res: Awaited<ReturnType<typeof controlApiFetch>>;
   try {
-    res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
+    res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`);
   } catch {
     return null;
   }

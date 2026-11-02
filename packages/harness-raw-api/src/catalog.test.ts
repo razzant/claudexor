@@ -1,6 +1,10 @@
 import { inspect } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readModelCatalog, withDispatchModelCatalog } from "@claudexor/core";
+import {
+  modelCatalogFailureText,
+  readModelCatalog,
+  withDispatchModelCatalog,
+} from "@claudexor/core";
 import { CredentialProfile, HarnessModel, HarnessRunSpec } from "@claudexor/schema";
 
 // Hermetic secrets: only refs a test stores resolve; nothing reads this machine.
@@ -123,6 +127,34 @@ describe("raw-api typed catalog read (#393)", () => {
     });
     // The display projection still fails soft for a picker.
     expect(await adapter.models!()).toEqual([]);
+  });
+
+  // #172: the whole detail is masked, then cut to its 200 UTF-16 units without
+  // separating the halves of an astral character.
+  const token = `ghp_${"a".repeat(36)}`;
+  const x = (count: number) => "x".repeat(count);
+  it.each([
+    {
+      name: "a token straddling the cut",
+      body: `${x(179)} ${token} after`,
+      detail: `${x(179)} [redacted] after`,
+    },
+    { name: "an astral character across the cut", body: `${x(199)}😀tail`, detail: x(199) },
+    {
+      name: "an astral character ending at the cut",
+      body: `${x(198)}😀tail`,
+      detail: `${x(198)}😀`,
+    },
+    { name: "ASCII at the bound", body: x(200), detail: x(200) },
+    { name: "ASCII above the bound", body: x(201), detail: x(200) },
+  ])("masks and bounds a failed read's detail: $name", async ({ body, detail }) => {
+    process.env.ROUTER_KEY = "sk-env";
+    stubFetch(() => new Response(body, { status: 503 }));
+    const read = await readModelCatalog(createRawApiAdapter(ROUTER), { cwd: "/repo" });
+    if (read.status !== "unavailable") throw new Error("expected a failed read");
+    expect(read.failure).toEqual({ cause: "http_status", httpStatus: 503, detail });
+    // Every disclosure and refusal quotes the detail through this one phrase.
+    expect(modelCatalogFailureText(read.failure)).toContain(`HTTP 503: ${detail})`);
   });
 
   it("types a timeout and a network failure without inventing a status", async () => {
