@@ -518,7 +518,7 @@ export async function guardAnnouncedRun(
           });
         }
       }
-      a.log.emit(terminalEventTypeFor("run.completed", result.facts), {
+      await a.log.emitTerminal(terminalEventTypeFor("run.completed", result.facts), {
         lifecycle: result.facts.lifecycle,
         facts: result.facts,
         reason: result.facts.reason,

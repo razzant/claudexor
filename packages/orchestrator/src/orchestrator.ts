@@ -330,7 +330,7 @@ import { recordProcessingIntent } from "./retry-processing-intent.js";
 import { prepareReviewEvidenceDir, recordReviewEvidenceCleanup } from "./reviewEvidence.js";
 import { savedForSynthesis } from "./savedCandidate.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
-import type { EventLog, TerminalPersistenceHook } from "@claudexor/event-log";
+import type { EventLog, TerminalPersistenceHook, TerminalStagingHook } from "@claudexor/event-log";
 import { buildContextPack, rawContextSizer, writeEvidencePacket } from "@claudexor/context";
 import {
   WorkspaceManager,
@@ -598,6 +598,8 @@ export interface RunInput {
   onEvent?: (event: RunEvent) => void;
   onEventPersist?: (event: RunEvent) => void;
   onTerminalPersist?: TerminalPersistenceHook;
+  /** Writes the terminal's durable bytes off the request thread before its commit. */
+  onTerminalStage?: TerminalStagingHook;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
   onHarnessEvent?: (event: HarnessEvent) => void;
   /** Called once when the run id/dir are known, before any harness work begins. */

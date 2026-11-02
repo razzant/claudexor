@@ -106,22 +106,77 @@ export function writeExternalFile(
     return { path: target, generation: registry.registerExternal(input.dir), written: true };
   } finally {
     const ended = performance.now();
-    if (processTiming.recordSync("store.external_write", ended - started))
-      registry.logSlowWrite?.(
-        `store.external_write ${JSON.stringify({
-          purpose: input.purpose,
-          bytes: input.bytes.byteLength,
-          written,
-          metadata_before_ms: ms((opened ?? ended) - started),
-          data_write_ms: opened === null ? 0 : ms((closed ?? ended) - opened),
-          metadata_publish_ms: closed === null ? 0 : ms(ended - closed),
-          total_ms: ms(ended - started),
-        })}`,
-      );
+    recordExternalWrite(registry, {
+      purpose: input.purpose,
+      bytes: input.bytes.byteLength,
+      written,
+      metadata_before_ms: (opened ?? ended) - started,
+      data_write_ms: opened === null ? 0 : (closed ?? ended) - opened,
+      metadata_publish_ms: closed === null ? 0 : ended - closed,
+      total_ms: ended - started,
+    });
   }
 }
 
-const ms = (value: number): number => Math.round(value * 1_000) / 1_000;
+/** One `store.external_write` section; one entering the worst sections is logged. */
+function recordExternalWrite(
+  registry: ExternalRegistry,
+  sample: {
+    purpose: ExternalWritePurpose;
+    bytes: number;
+    written: boolean;
+    staged?: true;
+  } & Record<`${string}_ms`, number>,
+): void {
+  if (!processTiming.recordSync("store.external_write", sample.total_ms)) return;
+  const rounded = Object.fromEntries(
+    Object.entries(sample).map(([key, value]) => [
+      key,
+      key.endsWith("_ms") ? Math.round(Number(value) * 1_000) / 1_000 : value,
+    ]),
+  );
+  registry.logSlowWrite?.(`store.external_write ${JSON.stringify(rounded)}`);
+}
+
+/**
+ * Publish a staged temp under its final name in the commit's synchronous
+ * step: rename it into place and register the directory, exactly what
+ * `writeExternalFile` does after its own write (and the same section for
+ * attribution). Null when the rename cannot happen there (another filesystem,
+ * or the temp is gone): the caller then writes the bytes itself.
+ */
+export function publishStagedFile(
+  registry: ExternalRegistry,
+  input: { temp: string; dir: string; name: string; bytes: number; purpose: ExternalWritePurpose },
+): ExternalFileReceipt | null {
+  const started = performance.now();
+  const target = join(input.dir, input.name);
+  let written = false;
+  try {
+    renameSync(input.temp, target);
+    written = true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EXDEV" && code !== "ENOENT") throw mapStoreError(error, `publishing ${target}`);
+    try {
+      unlinkSync(input.temp);
+    } catch {
+      /* best effort; the orphan sweep removes stale .tmp files */
+    }
+    return null;
+  } finally {
+    const ended = performance.now();
+    recordExternalWrite(registry, {
+      purpose: input.purpose,
+      bytes: input.bytes,
+      written,
+      staged: true,
+      metadata_publish_ms: ended - started,
+      total_ms: ended - started,
+    });
+  }
+  return { path: target, generation: registry.registerExternal(input.dir), written: true };
+}
 
 /** An `O_DSYNC` temp file in `dir` holding `bytes`, written on the libuv pool
  * rather than the request thread. The caller publishes or removes it. */

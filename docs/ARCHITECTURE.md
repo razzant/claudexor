@@ -4315,7 +4315,19 @@ once-only terminal-preparation hook also builds and validates the immutable
 event. One SQL transaction commits the command result, immutable `run_terminal`
 event, scoped event copies and a `pending` terminal-files obligation. The file
 owner then materializes telemetry, `final/run_facts.yaml` and the per-run terminal
-line before best-effort live publication. A file error leaves the SQL terminal
+line before best-effort live publication. Before that synchronous commit, a held
+or fallback terminal is prepared once (canonical type, receipt and outcome frozen)
+and its durable bytes are staged off the request thread: large command and
+journal bodies as content-addressed files, the receipts and any needed per-run
+log rewrite as fresh `O_DSYNC` temps in the body directory. Right after its SQL
+commit, in the same synchronous section, the file owner renames each staged file
+whose bytes still match into place and writes anything else itself. While staging
+awaits, ordinary events (control audits, live-message receipts) append before the
+terminal, which then takes the next seq and keeps its prepared time and verdict;
+another terminal is refused, and a cancel arriving then does not change that
+verdict. A crash before the commit leaves neither terminal nor receipt, and the
+orphan sweep reclaims the staged temps and unowned bodies after the next start.
+A file error leaves the SQL terminal
 and its obligation intact; immediate reconciliation or startup retries those
 same file effects without another generation or a second terminal authority.
 The obligation becomes `materialized` only after every effect completed, then

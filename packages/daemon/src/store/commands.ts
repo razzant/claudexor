@@ -36,6 +36,17 @@ import type { EngineStore } from "./store.js";
 import type { SqlTerminalFiles } from "./terminal-files.js";
 import { applyTerminalInTx, storedTerminal } from "./run-events.js";
 
+/** The command record a durable terminal settles, derived from its RunFacts. */
+function terminalRecord(current: JobRecord, event: RunEvent): JobRecord {
+  const { facts } = recoveredTerminalFacts(current, event);
+  return {
+    ...current,
+    state: facts.outcome.lifecycle,
+    finishedAt: event.ts,
+    result: terminalCommandResult(current, facts),
+  };
+}
+
 /** Partition-scoped SQL command writes. Collection reads live in the separate
  * addressed query owner, not an enumerable in-memory command cache. */
 export class SqlCommandStore implements CommandStorePort {
@@ -223,6 +234,35 @@ export class SqlCommandStore implements CommandStorePort {
     ).map((row) => row.root);
   }
 
+  /**
+   * Off the request thread, before the synchronous `persistTerminal`: write the
+   * large bodies it will own (BlobFiles.stageBody) and the receipts its file
+   * step will publish (SqlTerminalFiles.stage). Best effort; persistTerminal
+   * still decides, commits and writes whatever was not staged or has changed.
+   */
+  async stageTerminal(id: string, raw: RunEvent, telemetry: RunTelemetry | null): Promise<void> {
+    let current: JobRecord, event: RunEvent, bodies: Uint8Array[];
+    try {
+      event = RunEvent.parse(raw);
+      const row = commandRow(this.store, id, this.generation.pid);
+      if (!row) return;
+      current = hydrateCommand(row, this.blobs);
+      const next = terminalRecord(current, event);
+      const { params: _params, ...record } = next;
+      bodies = [
+        ...this.rowBodies(next, row),
+        eventBody({ record }),
+        eventBody(journaledRunEventCopy(event)),
+      ];
+    } catch {
+      return;
+    }
+    await Promise.all([
+      ...bodies.map((bytes) => this.blobs.stageBody(bytes)),
+      this.options.terminalFiles.stage(current, event, telemetry),
+    ]);
+  }
+
   /** The synchronous EventLog hook: one SQL terminal then immediate file repair.
    * Returning pending means SQL committed; EventLog must never roll it back or
    * emit another terminal. A second terminal INSERT is a constraint failure. */
@@ -235,13 +275,7 @@ export class SqlCommandStore implements CommandStorePort {
     const row = commandRow(this.store, id, this.generation.pid);
     if (!row) throw new Error(`no such job: ${id}`);
     const current = hydrateCommand(row, this.blobs);
-    const { facts } = recoveredTerminalFacts(current, event);
-    const next: JobRecord = {
-      ...current,
-      state: facts.outcome.lifecycle,
-      finishedAt: event.ts,
-      result: terminalCommandResult(current, facts),
-    };
+    const next = terminalRecord(current, event);
     const prepared = this.prepare(next, row);
     const { params: _params, ...record } = next;
     const updated = this.events.prepare("command.updated", { record });
