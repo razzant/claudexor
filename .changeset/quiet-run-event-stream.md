@@ -1,0 +1,5 @@
+---
+"@claudexor/control-api": patch
+---
+
+A quiet run event stream (`GET /v2/runs/:id/events`) no longer queues a history-read job on the shared bulk worker or rehydrates the full job record every 250 ms. It reads the run's `events.jsonl` only while the run's live writer holds events the client does not have (or when no live writer owns the log, a batch is still owed, or a terminal is in view), and it re-reads the job's state body-free, from the same observation `POST /v2/runs/wait-many` uses, only after a committed change of that job (every pass on a host without change notices, and while a terminal waits for its files). A stream opened while the job is queued re-reads the job after a change instead of on every tick. Run detail, summary, cursor and artifact reads no longer wait behind those no-op replays. Push delivery, the heartbeat, resume cursors, backpressure and the terminal end rule are unchanged, and the wire contract is the same.

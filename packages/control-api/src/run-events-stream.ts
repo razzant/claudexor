@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
+import { liveRunEventSeq } from "@claudexor/event-log";
 import type { DaemonRunRecord } from "./run-record.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import type {
@@ -9,6 +10,7 @@ import type {
 } from "./event-replay-batch.js";
 import { thrownProblemCode } from "./problem-response.js";
 import { requestGone } from "./request-liveness.js";
+import type { RunWaitManyHost } from "./run-wait-many.js";
 
 export interface StreamEventsCtx {
   findRun(id: string): Promise<DaemonRunRecord | null | undefined>;
@@ -17,6 +19,10 @@ export interface StreamEventsCtx {
   opts: {
     daemon: { status(id: string): Promise<DaemonRunRecord> };
     bus?: { subscribe(fn: (event: { run_id?: string }) => void): () => void } | undefined;
+    /** Body-free lifecycle reads (the wait-many observation): state, never the command body. */
+    runObservations?: RunWaitManyHost["snapshot"];
+    /** Post-commit notices naming changed job/run ids: the lifecycle wake-up. */
+    runObservationChanges?: RunWaitManyHost["subscribe"];
     pollMs?: number;
     heartbeatMs?: number;
     /** SQL composition supplies the existing terminal-files obligation fact. */
@@ -31,6 +37,12 @@ export interface StreamEventsCtx {
  * backpressure, and a single re-entrancy flag across the queued-phase
  * status await). Live stream ownership stays here; finite file/read/redact
  * batches run on the server's shared bulk executor.
+ *
+ * A quiet tail costs no I/O: a batch is read only while the live writer's
+ * in-memory seq is ahead of what this client holds (or no live writer owns the
+ * log, or a terminal is in view), and the lifecycle is re-read only after a
+ * post-commit notice for this run, body-free. Bus pushes and notices wake the
+ * tailer; the poll timer is the backstop and the heartbeat detects dead peers.
  */
 export async function streamRunEvents(
   ctx: StreamEventsCtx,
@@ -46,12 +58,17 @@ export async function streamRunEvents(
   // run starts, so `follow <jobId>` works from enqueue time. 404 stays for
   // truly unknown ids only.
   let eventsPath = rec.runDir ? join(rec.runDir, "events.jsonl") : null;
+  // A queued job learns its run id when the run binds its dir.
+  let runId = rec.runId;
   let cursor: EventReplayCursor | undefined;
   let closed = false;
   let terminalSeen = false;
+  // The highest seq this client holds: its resume cursor, then every frame sent.
+  let sent = lastEventId;
   const lifetime = new AbortController();
   const pendingTerminalFiles = () => ctx.opts.terminalFilesPending?.(rec.runId ?? rec.id) === true;
   let unsubscribe: (() => void) | undefined;
+  let unobserve: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   const cleanup = () => {
@@ -61,6 +78,7 @@ export async function streamRunEvents(
     clearInterval(timer);
     clearInterval(heartbeat);
     unsubscribe?.();
+    unobserve?.();
     ctx.sseClients.delete(res);
   };
   req.on("close", () => {
@@ -93,6 +111,27 @@ export async function streamRunEvents(
   // concludes. The durable file stays the single ordered source; this bit only
   // guarantees the tailer looks again.
   let pending = false;
+  // The lifecycle (job state) is re-read only when it may have changed: before
+  // the first look, after a notice for this run, on every pass for a host
+  // without notices, and while a terminal waits for its files (that clearing
+  // publishes no notice). A read claims the notices before it awaits.
+  const notices = ctx.opts.runObservationChanges;
+  let lifecycleDirty = true;
+  const claimLifecycle = () => {
+    lifecycleDirty = !notices;
+  };
+  const readLifecycle = async (): Promise<string> => {
+    if (ctx.opts.runObservations) {
+      try {
+        const [row] = await ctx.opts.runObservations([rec.id], lifetime.signal);
+        if (row && row.problem === null) return row.status;
+      } catch {
+        // No body-free answer: the addressed status below decides.
+      }
+      if (closed) return rec.state;
+    }
+    return (await ctx.opts.daemon.status(rec.id).catch(() => rec)).state;
+  };
   const writeAvailable = async () => {
     if (closed) return;
     if (draining) {
@@ -111,11 +150,21 @@ export async function streamRunEvents(
       for (;;) {
         pending = false;
         if (!eventsPath) {
-          // Still queued: poll the job until the run binds its dir (then tail
-          // it) or the job goes terminal without one (validation failure — a
-          // run that never materialized ends the stream honestly).
-          const latest = await ctx.opts.daemon.status(rec.id).catch(() => rec);
+          // Still queued: re-read the job when it may have changed until the
+          // run binds its dir (then tail it) or the job goes terminal without
+          // one (validation failure — a run that never materialized ends the
+          // stream honestly).
+          if (!lifecycleDirty) return;
+          claimLifecycle();
+          let latest = rec;
+          try {
+            latest = await ctx.opts.daemon.status(rec.id);
+          } catch {
+            lifecycleDirty = true;
+          }
           if (closed || res.writableEnded || res.destroyed) return cleanup();
+          if (TERMINAL_STATES.has(latest.state)) lifecycleDirty = true;
+          runId ??= latest.runId;
           if (latest.runDir) {
             eventsPath = join(latest.runDir, "events.jsonl");
           } else if (TERMINAL_STATES.has(latest.state) && !pendingTerminalFiles()) {
@@ -128,57 +177,73 @@ export async function streamRunEvents(
             return;
           }
         }
-        const batch = nextBatch ?? (await readBatch());
-        nextBatch = undefined;
-        if (closed || res.writableEnded || res.destroyed) return cleanup();
-        if (batch.missing) {
+        // The live writer's in-memory seq (no I/O) says whether the file holds
+        // anything past what this client already has. A batch already read, a
+        // terminal in view, or a log without a live writer reads the file.
+        const live = liveRunEventSeq(eventsPath);
+        if (nextBatch !== undefined || terminalSeen || live === null || live > sent) {
+          const batch = nextBatch ?? (await readBatch());
+          nextBatch = undefined;
+          if (closed || res.writableEnded || res.destroyed) return cleanup();
+          if (batch.missing) {
+            if (pending) continue;
+            return;
+          }
+          cursor = batch.cursor;
+          terminalSeen ||= batch.terminalSeen;
+          for (const { seq, type, data, terminal } of batch.frames) {
+            // Backpressure: a large replay into a slow client must not balloon
+            // the socket buffer — pause the tail until the kernel drains it
+            // (or the client goes away, which resolves via `close`).
+            const flushed = res.write(`id: ${seq}\nevent: ${type}\ndata: ${data}\n\n`);
+            sent = Math.max(sent, seq);
+            if (!flushed) {
+              await new Promise<void>((resolve) => {
+                const done = (): void => {
+                  res.off("drain", done);
+                  res.off("close", done);
+                  resolve();
+                };
+                res.once("drain", done);
+                res.once("close", done);
+              });
+              if (closed || res.writableEnded || res.destroyed) return cleanup();
+            }
+            if (terminal && !pendingTerminalFiles()) {
+              res.write("event: end\ndata: {}\n\n");
+              res.end();
+              cleanup();
+              return;
+            }
+          }
+          // A productive pass may have surfaced only a PREFIX of the tail: loop to
+          // re-read from the advanced cursor before deciding anything.
+          if (batch.progressed) continue;
+        }
+        if (!lifecycleDirty && !terminalSeen) {
           if (pending) continue;
           return;
         }
-        cursor = batch.cursor;
-        terminalSeen ||= batch.terminalSeen;
-        for (const { seq, type, data, terminal } of batch.frames) {
-          // Backpressure: a large replay into a slow client must not balloon
-          // the socket buffer — pause the tail until the kernel drains it
-          // (or the client goes away, which resolves via `close`).
-          if (!res.write(`id: ${seq}\nevent: ${type}\ndata: ${data}\n\n`)) {
-            await new Promise<void>((resolve) => {
-              const done = (): void => {
-                res.off("drain", done);
-                res.off("close", done);
-                resolve();
-              };
-              res.once("drain", done);
-              res.once("close", done);
-            });
+        claimLifecycle();
+        const state = await readLifecycle();
+        if (closed || res.writableEnded || res.destroyed) return cleanup();
+        if (terminalSeen || TERMINAL_STATES.has(state)) {
+          lifecycleDirty = true;
+          if (!pendingTerminalFiles()) {
+            // A materialized run commits SQL terminal state with a file-publication
+            // obligation. Its cleared obligation proves the canonical terminal is
+            // readable after publication. Re-check the file
+            // cursor: only conclude `end` when the file yields nothing new AND a
+            // wakeup is not already pending — otherwise loop and deliver the tail,
+            // whose canonical terminal ends the stream through the branch above.
+            nextBatch = await readBatch();
             if (closed || res.writableEnded || res.destroyed) return cleanup();
-          }
-          if (terminal && !pendingTerminalFiles()) {
+            if (nextBatch.progressed || nextBatch.frames.length > 0 || pending) continue;
             res.write("event: end\ndata: {}\n\n");
             res.end();
             cleanup();
             return;
           }
-        }
-        // A productive pass may have surfaced only a PREFIX of the tail: loop to
-        // re-read from the advanced cursor before deciding anything.
-        if (batch.progressed) continue;
-        const latest = await ctx.opts.daemon.status(rec.id).catch(() => rec);
-        if (closed || res.writableEnded || res.destroyed) return cleanup();
-        if ((terminalSeen || TERMINAL_STATES.has(latest.state)) && !pendingTerminalFiles()) {
-          // A materialized run commits SQL terminal state with a file-publication
-          // obligation. Its cleared obligation proves the canonical terminal is
-          // readable after publication. Re-check the file
-          // cursor: only conclude `end` when the file yields nothing new AND a
-          // wakeup is not already pending — otherwise loop and deliver the tail,
-          // whose canonical terminal ends the stream through the branch above.
-          nextBatch = await readBatch();
-          if (closed || res.writableEnded || res.destroyed) return cleanup();
-          if (nextBatch.progressed || nextBatch.frames.length > 0 || pending) continue;
-          res.write("event: end\ndata: {}\n\n");
-          res.end();
-          cleanup();
-          return;
         }
         if (pending) continue;
         return;
@@ -206,7 +271,15 @@ export async function streamRunEvents(
   // Push: a bus event for this run pokes the tailer immediately; the file
   // remains the single ordered source so push and poll can never disagree.
   unsubscribe = ctx.opts.bus?.subscribe((event) => {
-    if (!closed && event.run_id === (rec.runId ?? rec.id)) void writeAvailable();
+    if (!closed && event.run_id === (runId ?? rec.id)) void writeAvailable();
+  });
+  // A committed change of this job's rows marks its lifecycle for one re-read.
+  // The wake leaves the committing mutation's notification first.
+  unobserve = notices?.((changed) => {
+    if (closed) return;
+    if (changed && !changed.has(rec.id) && !(runId && changed.has(runId))) return;
+    lifecycleDirty = true;
+    queueMicrotask(() => void writeAvailable());
   });
   timer = setInterval(() => void writeAvailable(), ctx.opts.pollMs ?? 250);
   timer.unref?.();

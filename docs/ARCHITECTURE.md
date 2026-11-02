@@ -4275,7 +4275,13 @@ line-number ids; ambiguous legacy/mixed logs conservatively count/scan in finite
 worker jobs. UTF-8 and incomplete-line carry remain across batches. Frames
 carry whole exact events, never arbitrary text fragments. The stream is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
-fallback; `output.ready` is guaranteed to precede the terminal
+fallback. A quiet tail does no I/O: a replay batch goes to the bulk worker only
+while the live writer's in-memory seq is ahead of what the client holds, or
+when no live writer owns the log or a terminal is in view, and the job lifecycle
+is re-read body-free (the `wait-many` observation, falling back to the addressed
+status only when no observation answers) after a post-commit observation notice
+for the job, on every pass when the host publishes no notices, and while a
+terminal waits for its file obligation. `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
 has applied the terminal event provably has the output. The EventLog's
 once-only terminal-preparation hook also builds and validates the immutable
@@ -4376,8 +4382,9 @@ pings can be dropped.
 
 A QUEUED job's per-run stream does not 404: `GET /v2/runs/:id/events` opens the
 SSE response immediately, heartbeats while the job waits for a slot, and binds
-to the run directory when it materializes — a client can subscribe at enqueue
-time and never race the scheduler. `claudexor follow` rides the same contract
+to the run directory when it materializes (it re-reads the job after a
+post-commit notice for it, not on every poll) — a client can subscribe at
+enqueue time and never race the scheduler. `claudexor follow` rides the same contract
 with bounded reconnects (`Last-Event-ID` resume) and exits 1 with "stream
 lost" when the stream ends without a terminal event.
 
