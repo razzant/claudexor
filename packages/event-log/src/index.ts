@@ -133,13 +133,6 @@ export class EventLog {
     return this.deferredTerminal ? { ...this.deferredTerminal } : null;
   }
 
-  flushDeferredTerminal(): RunEvent | null {
-    const pending = this.deferredTerminal;
-    this.deferredTerminal = null;
-    this.deferTerminalEvents = false;
-    return pending ? this.emit(pending.type, pending.payload) : null;
-  }
-
   /**
    * Register the engine's once-only terminal preparation hook. It builds the
    * canonical receipt in memory before the durable authority accepts the
@@ -236,7 +229,8 @@ export class EventLog {
     return this.commitTerminal(terminal, publish);
   }
 
-  /** `flushDeferredTerminal` through `emitTerminal`: the held terminal's bytes are staged first. */
+  /** Commit the terminal held by `deferTerminal()` through `emitTerminal`, so
+   * its bytes are staged first when a staging hook is set. */
   async commitDeferredTerminal(): Promise<RunEvent | null> {
     const pending = this.deferredTerminal;
     this.deferredTerminal = null;
