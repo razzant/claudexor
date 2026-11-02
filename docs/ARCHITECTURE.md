@@ -4970,7 +4970,11 @@ kept only for cold import and an independent frozen copy kept for tests.
   inline stages too. The owner's same-tick preparation then finds the file and
   only registers its directory under that commit's barrier; if the unowned file
   was garbage-collected meanwhile, or staging failed, the owner writes it as
-  before.
+  before. A body staged for a request that is then refused, replayed or held (a
+  stale draft revision, a raced enqueue, a refused turn or promotion, a terminal
+  whose sequence moved while it was staged) has no owner and is not collected
+  until the orphan sweep of the next start reclaims it; this costs disk space
+  only.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the

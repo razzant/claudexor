@@ -30,9 +30,10 @@ export interface JobRecord {
 }
 
 export function jobStateFromResult(result: unknown, aborted: boolean): JobState {
-  // The engine's synchronous terminal commit is the cutoff. A recognizable
-  // lifecycle already reflects any abort present at that boundary, while a
-  // later abort must not rewrite the durable result.
+  // The engine fixes the verdict when it prepares the terminal, before the
+  // terminal's bytes are staged and committed. A recognizable lifecycle already
+  // reflects any abort present by then, while a later abort must not rewrite
+  // the durable result.
   const lifecycle = resultString(result, "lifecycle");
   if (
     lifecycle === "succeeded" ||
