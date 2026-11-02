@@ -142,6 +142,45 @@ export function normalizedTerminalEvents(
   return normalizedEvents;
 }
 
+/**
+ * Whether a per-run log ending with `tail` (all of it when `whole`) will only
+ * need the terminal appended: newline-terminated, its last line a canonical
+ * event of this run, before the terminal's seq and not itself a terminal. A
+ * hint for staging only (the earlier lines are not checked); the commit's full
+ * `normalizedTerminalEvents` pass stays the authority.
+ */
+export function tailExpectsAppend(
+  tail: Buffer,
+  whole: boolean,
+  terminal: RunEvent,
+  terminalSeq: number,
+): boolean {
+  if (tail.length === 0) return whole;
+  if (tail.at(-1) !== 0x0a) return false;
+  const start = tail.lastIndexOf(0x0a, tail.length - 2) + 1;
+  if (start === 0 && !whole) return false;
+  try {
+    const line = new TextDecoder("utf-8", { fatal: true }).decode(
+      tail.subarray(start, tail.length - 1),
+    );
+    const event = RunEventSchema.parse(JSON.parse(line));
+    return (
+      JSON.stringify(event) === line &&
+      event.run_id === terminal.run_id &&
+      event.task_id === terminal.task_id &&
+      typeof event.seq === "number" &&
+      Number.isSafeInteger(event.seq) &&
+      event.seq > 0 &&
+      event.seq < terminalSeq &&
+      !TERMINAL_EVENT_TYPES.has(event.type)
+    );
+  } catch {
+    return false;
+  }
+}
+
+const TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.blocked"]);
+
 function splitLines(bytes: Buffer): Buffer[] {
   const lines: Buffer[] = [];
   let start = 0;

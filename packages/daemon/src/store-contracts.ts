@@ -47,6 +47,11 @@ export interface CommandStorePort {
   prunedScopeRoots(): string[];
   recoverDurableTerminal(id: string): JobRecord | null;
   flushed(): Promise<void>;
+  /** Off-loop staging of the bodies `accept` will own; resolves the creation
+   * time they carry, for `accept` to reuse (stores with file bodies only). */
+  stageAcceptance?(input: AcceptCommand): Promise<string>;
+  /** Off-loop staging of the bodies `update` will own (stores with file bodies only). */
+  stageUpdate?(id: string, patch: Partial<JobRecord>): Promise<void>;
 }
 
 export interface ProjectStorePort {
@@ -149,6 +154,8 @@ export interface ProjectThreadPort {
   turnsFor(id: string): ThreadTurn[];
   sessionsForThread(id: string): Session[];
   createTurn(id: string, prompt: string, input?: CreateTurnInput): ThreadTurn;
+  /** Off-loop staging of a turn prompt body `createTurn` will own (best effort). */
+  stageTurnPrompt?(id: string, prompt: string): Promise<void>;
   findTurnByIdempotency(
     id: string,
     input: NonNullable<CreateTurnInput["idempotency"]>,

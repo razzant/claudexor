@@ -31,8 +31,11 @@ export function threadTurnServices(
         attachments?: ResourceAttachmentRef[];
         idempotency?: { key: string; client: string; request: unknown };
       },
-    ) =>
-      threads.createTurn(id, prompt, {
+    ) => {
+      // A large prompt's body is written off the request thread; the turn
+      // commit then finds it and decides everything else as before.
+      await threads.stageTurnPrompt?.(id, prompt);
+      return threads.createTurn(id, prompt, {
         kind: options.kind as any,
         parentRunId: options.parentRunId,
         answersPlanRunId: options.answersPlanRunId,
@@ -41,7 +44,8 @@ export function threadTurnServices(
         planOverridden: options.planOverridden,
         attachments: resources.resolve(options.attachments),
         idempotency: options.idempotency,
-      }),
+      });
+    },
     findThreadTurnByIdempotency: async (
       id: string,
       idempotency: { key: string; client: string; request: unknown },

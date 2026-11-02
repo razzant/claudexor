@@ -129,8 +129,11 @@ export async function guardAnnouncedRun(
         a.log.setBeforeTerminal(
           (originalType, payload) => {
             try {
-              // Cancellation wins only until the synchronous terminal commit
-              // starts. A later abort cannot rewrite an already-durable success.
+              // Cancellation is decided here, once, when the terminal is
+              // prepared: the verdict frozen at strategy end, or the signal
+              // now for a terminal that drained Delegate work. A later abort,
+              // also one arriving while the prepared bytes are staged, cannot
+              // rewrite it.
               const payloadOutcome = terminalOutcomeFromPayload(payload);
               const terminalOutcome =
                 cancellationDecided() && signal
@@ -518,7 +521,7 @@ export async function guardAnnouncedRun(
           });
         }
       }
-      a.log.emit(terminalEventTypeFor("run.completed", result.facts), {
+      await a.log.emitTerminal(terminalEventTypeFor("run.completed", result.facts), {
         lifecycle: result.facts.lifecycle,
         facts: result.facts,
         reason: result.facts.reason,
