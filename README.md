@@ -963,7 +963,10 @@ points, in the order an agent should discover them:
 2. `claudexor capabilities --json` — the live AgentCapabilityCatalog:
    doctor-backed harness status, model truth, the mutability matrix,
    run-control keys, and the run-apply-state vocabulary. Also served at
-   `GET /v2/agent-capabilities` and by the MCP `claudexor_capabilities` tool.
+   `GET /v2/agent-capabilities` and by the MCP `claudexor_capabilities` tool,
+   which may answer from a recent composition dated by `generatedAt`
+   ([readiness projections](docs/ARCHITECTURE.md#readiness-projections)); the
+   CLI verb composes it live.
 3. `docs/reference/endpoints.json` — the control-API endpoint map with
    request/response schema names; field semantics live in the generated
    JSON Schemas under `packages/schema/generated/`.
