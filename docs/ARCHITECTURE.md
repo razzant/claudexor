@@ -4587,6 +4587,10 @@ SNAPSHOT, disclosed as such in the receipt (`activeRunCheck: "snapshot"`): the
 active-run root set is read once through the in-process command activity
 projection and consumed by the synchronous removal in the same event-loop turn.
 There is no await where enqueue could interleave between check and mutation.
+A run references the project root its accepted request recorded. A run with no
+project, including one whose request omitted the scope, references none, and a
+started, unfinished run whose recorded scope cannot be resolved refuses every
+project removal (`409 active_run_scope_unresolved`).
 The exact opt-in `?trashedThreads=purge` (CLI `claudexor project remove <id>
 --purge-trashed-threads`) removes the project together with the threads already
 in its trash. Any other thread, active or closed, still refuses it
