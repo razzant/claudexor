@@ -1,5 +1,15 @@
 # @claudexor/context
 
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/core@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes

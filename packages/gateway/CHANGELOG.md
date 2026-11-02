@@ -1,5 +1,13 @@
 # @claudexor/gateway
 
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+  - @claudexor/schema@5.0.2
+  - @claudexor/core@5.0.2
+
 ## 5.0.1
 
 ### Patch Changes
