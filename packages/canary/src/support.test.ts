@@ -88,6 +88,30 @@ describe("canary candidate and endpoint ownership", () => {
 });
 
 describe("canary cleanup custody", () => {
+  it.each(["win32", "linux", "darwin"])(
+    "gives %s hooks time for the actual disposal subprocess budgets",
+    async (platformName) => {
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { ...platform, value: platformName });
+      try {
+        vi.resetModules();
+        const { default: config } = await import("../../../../vitest.canary.config.js");
+        vi.mocked(spawnSync)
+          .mockReturnValueOnce(leaseResult(ACTIVE))
+          .mockReturnValueOnce(processResult())
+          .mockReturnValueOnce(leaseResult(ABSENT));
+        makeSandbox().dispose();
+        const subprocessBudget = vi
+          .mocked(spawnSync)
+          .mock.calls.reduce((total, [, , options]) => total + (options?.timeout ?? 0), 0);
+        expect(config.test?.hookTimeout).toBeGreaterThan(subprocessBudget);
+        if (platformName !== "win32") expect(config.test?.hookTimeout).toBe(60_000);
+      } finally {
+        Object.defineProperty(process, "platform", platform);
+        vi.resetModules();
+      }
+    },
+  );
   it.each([
     ["never started or already stopped", ABSENT],
     ["a proven-stale prior owner", STALE],

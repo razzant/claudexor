@@ -13,6 +13,8 @@ export default defineConfig({
     environment: "node",
     passWithNoTests: false,
     testTimeout: 120_000,
-    hookTimeout: 60_000,
+    // Windows disposal may inspect before and after stopping: 65s + 95s + 65s,
+    // plus 15s for local cleanup. Vitest also times synchronous hooks after return.
+    hookTimeout: process.platform === "win32" ? 240_000 : 60_000,
   },
 });
