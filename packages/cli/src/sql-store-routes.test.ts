@@ -257,6 +257,42 @@ describe("SQL state through real control HTTP and SSE", () => {
     expect(resumed.state.text).not.toContain('"revision":2');
   });
 
+  it("binds a queued job's stream through its committed run start instead of polling status", async () => {
+    const f = await fixture({ observe: true });
+    const commands = f.graph.commands.current();
+    commands.accept({
+      id: "job",
+      params: { mode: "agent" },
+      clientId: "fixture",
+      idempotencyKey: "job",
+    });
+    const status = vi.spyOn(f.client, "status");
+    const s = await stream(f, "/v2/runs/job/events");
+    expect(s.response.status).toBe(200);
+    await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(status).toHaveBeenCalledTimes(1);
+    // The run starts: its dir and log exist before the job row names them.
+    const runDir = join(f.root, "run");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    const created = {
+      seq: 1,
+      ts: new Date().toISOString(),
+      run_id: "run",
+      task_id: "task",
+      type: "run.created" as const,
+      payload: {},
+    };
+    writeFileSync(join(runDir, "events.jsonl"), JSON.stringify(created) + "\n");
+    commands.update("job", { state: "running", runId: "run", runDir, taskId: "task" });
+    await vi.waitFor(() => expect(s.state.text).toContain("event: run.created"));
+    expect(status).toHaveBeenCalledTimes(2);
+    commands.update("job", { state: "cancelled", finishedAt: new Date().toISOString() });
+    await vi.waitFor(() => expect(s.state.done).toBe(true));
+    expect(s.state.text).toContain("event: end");
+    expect(status).toHaveBeenCalledTimes(2);
+  });
+
   it("re-reads a quiet stream's lifecycle from committed SQL notices, never the hydrated command", async () => {
     const f = await fixture({ observe: true });
     const runDir = join(f.root, "run");

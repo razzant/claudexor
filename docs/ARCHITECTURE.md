@@ -4288,7 +4288,13 @@ when no live writer owns the log or a terminal is in view, and the job lifecycle
 is re-read body-free (the `wait-many` observation, falling back to the addressed
 status only when no observation answers) after a post-commit observation notice
 for the job, on every pass when the host publishes no notices, and while a
-terminal waits for its file obligation. `output.ready` is guaranteed to precede the terminal
+terminal waits for its file obligation; a read that no source answered is asked
+again on the next pass. A bound run's log exists from `run.created` on, so one
+found missing (reclaimed by retention, or removed) is read again only on a
+change, and once its job is terminal the stream ends with the retryable
+`event: error` (`run_expired_by_retention` when a tombstone names retention,
+else `run_event_not_found`) rather than `end`, because no terminal frame can be
+delivered. `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
 has applied the terminal event provably has the output. The EventLog's
 once-only terminal-preparation hook also builds and validates the immutable

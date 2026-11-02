@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { liveRunEventSeq } from "@claudexor/event-log";
 import type { DaemonRunRecord } from "./run-record.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
@@ -10,6 +10,7 @@ import type {
 } from "./event-replay-batch.js";
 import { thrownProblemCode } from "./problem-response.js";
 import { requestGone } from "./request-liveness.js";
+import { readRunTombstone } from "./run-tombstone.js";
 import type { RunWaitManyHost } from "./run-wait-many.js";
 
 export interface StreamEventsCtx {
@@ -63,6 +64,9 @@ export async function streamRunEvents(
   let cursor: EventReplayCursor | undefined;
   let closed = false;
   let terminalSeen = false;
+  // A bound run's log exists from `run.created` on: one found missing was
+  // removed (retention, or by hand) and is read again only on a change.
+  let logMissing = false;
   // The highest seq this client holds: its resume cursor, then every frame sent.
   let sent = lastEventId;
   const lifetime = new AbortController();
@@ -120,7 +124,9 @@ export async function streamRunEvents(
   const claimLifecycle = () => {
     lifecycleDirty = !notices;
   };
-  const readLifecycle = async (): Promise<string> => {
+  // The job state, or null when no source answered (the next pass asks again);
+  // a terminal state seen at open stays an answer, because it is final.
+  const readLifecycle = async (): Promise<string | null> => {
     if (ctx.opts.runObservations) {
       try {
         const [row] = await ctx.opts.runObservations([rec.id], lifetime.signal);
@@ -128,10 +134,21 @@ export async function streamRunEvents(
       } catch {
         // No body-free answer: the addressed status below decides.
       }
-      if (closed) return rec.state;
+      if (closed) return null;
     }
-    return (await ctx.opts.daemon.status(rec.id).catch(() => rec)).state;
+    try {
+      return (await ctx.opts.daemon.status(rec.id)).state;
+    } catch {
+      return TERMINAL_STATES.has(rec.state) ? rec.state : null;
+    }
   };
+  // A terminal whose log is gone cannot be delivered: say why, retryably.
+  const unreadableLog = () =>
+    Object.assign(new Error("run event log is not available"), {
+      code: readRunTombstone(dirname(eventsPath!))
+        ? "run_expired_by_retention"
+        : "run_event_not_found",
+    });
   const writeAvailable = async () => {
     if (closed) return;
     if (draining) {
@@ -179,16 +196,20 @@ export async function streamRunEvents(
         }
         // The live writer's in-memory seq (no I/O) says whether the file holds
         // anything past what this client already has. A batch already read, a
-        // terminal in view, or a log without a live writer reads the file.
+        // terminal in view, or a present log without a live writer reads the file.
         const live = liveRunEventSeq(eventsPath);
-        if (nextBatch !== undefined || terminalSeen || live === null || live > sent) {
-          const batch = nextBatch ?? (await readBatch());
+        let batch: EventReplayResult | undefined;
+        if (
+          nextBatch !== undefined ||
+          terminalSeen ||
+          (live === null ? !logMissing : live > sent)
+        ) {
+          batch = nextBatch ?? (await readBatch());
           nextBatch = undefined;
           if (closed || res.writableEnded || res.destroyed) return cleanup();
-          if (batch.missing) {
-            if (pending) continue;
-            return;
-          }
+          logMissing = batch.missing === true;
+        }
+        if (batch && !logMissing) {
           cursor = batch.cursor;
           terminalSeen ||= batch.terminalSeen;
           for (const { seq, type, data, terminal } of batch.frames) {
@@ -227,7 +248,8 @@ export async function streamRunEvents(
         claimLifecycle();
         const state = await readLifecycle();
         if (closed || res.writableEnded || res.destroyed) return cleanup();
-        if (terminalSeen || TERMINAL_STATES.has(state)) {
+        if (state === null) lifecycleDirty = true;
+        if (terminalSeen || (state !== null && TERMINAL_STATES.has(state))) {
           lifecycleDirty = true;
           if (!pendingTerminalFiles()) {
             // A materialized run commits SQL terminal state with a file-publication
@@ -239,6 +261,7 @@ export async function streamRunEvents(
             nextBatch = await readBatch();
             if (closed || res.writableEnded || res.destroyed) return cleanup();
             if (nextBatch.progressed || nextBatch.frames.length > 0 || pending) continue;
+            if (nextBatch.missing) throw unreadableLog();
             res.write("event: end\ndata: {}\n\n");
             res.end();
             cleanup();

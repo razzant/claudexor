@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -128,7 +128,8 @@ function fixture(options: { runDir?: boolean; notices?: boolean } = {}) {
     lifecycle = state;
     record.state = state;
   };
-  const open = () => streamRunEvents(ctx, "job-x", 0, req as never, res as never);
+  const open = (lastEventId = 0) =>
+    streamRunEvents(ctx, "job-x", lastEventId, req as never, res as never);
   return { runDir, path, record, ctx, res, counts, writer, notice, setLifecycle, open };
 }
 
@@ -254,5 +255,83 @@ describe("quiet run event stream", () => {
     await f.open();
     await tick(3);
     expect(f.counts).toEqual({ replays: 1, statuses: 0, observations: 2 });
+  });
+  it("resumes from the client's cursor through the live seq without re-reading", async () => {
+    const tick = manualPollTimer();
+    const f = fixture();
+    const log = f.writer();
+    log.emit("run.created");
+    log.emit("harness.event", { text: "one" });
+    log.emit("harness.event", { text: "two" });
+    await f.open(2);
+    expect(seqs(f.res.body)).toEqual([3]);
+    const caughtUp = f.counts.replays;
+    await tick(10);
+    expect(f.counts.replays).toBe(caughtUp);
+
+    log.emit("harness.event", { text: "three" });
+    await settle();
+    await tick(5);
+    expect(seqs(f.res.body)).toEqual([3, 4]);
+    expect(f.counts.replays).toBe(caughtUp + 1);
+    expect(f.counts.statuses).toBe(0);
+  });
+
+  it("asks for the lifecycle again when no source answered the notice's read", async () => {
+    const tick = manualPollTimer();
+    const f = fixture();
+    f.writer().emit("run.created");
+    await f.open();
+    const observe = f.ctx.opts.runObservations!;
+    const status = f.ctx.opts.daemon.status;
+    let failing = true;
+    f.ctx.opts.runObservations = async (ids, signal) => {
+      if (failing) throw new Error("observation unavailable");
+      return observe(ids, signal);
+    };
+    f.ctx.opts.daemon.status = async (id) => {
+      if (!failing) return status(id);
+      failing = false;
+      throw new Error("status unavailable");
+    };
+    // Cancelled with no new output; both reads at its notice fail once.
+    f.setLifecycle("cancelled");
+    f.notice(["job-x"]);
+    await settle();
+    expect(f.res.ended).toBe(false);
+    await tick(1);
+    expect(f.res.ended).toBe(true);
+    expect(f.res.body).toContain("event: end\n");
+  });
+
+  it("reads a missing log only on change and ends its terminal job with the retryable error", async () => {
+    const tick = manualPollTimer();
+    const f = fixture();
+    await f.open();
+    expect(f.counts.replays).toBe(1);
+    await tick(20);
+    expect(f.counts.replays).toBe(1);
+    expect(f.res.ended).toBe(false);
+
+    f.setLifecycle("cancelled");
+    f.notice(["job-x"]);
+    await vi.waitFor(() => expect(f.res.ended).toBe(true));
+    expect(f.res.body).toContain("event: error\n");
+    expect(f.res.body).toContain('"code":"run_event_not_found"');
+    expect(f.res.body).toContain('"retryable":true');
+    expect(f.res.body).not.toContain("event: end\n");
+  });
+
+  it("names retention when a reclaimed run's stream cannot deliver its terminal", async () => {
+    const f = fixture();
+    writeFileSync(
+      join(f.runDir, "tombstone.yaml"),
+      "run_id: run-x\ndeleted_at: 2026-11-01T00:00:00.000Z\nreason: retention\n",
+    );
+    f.setLifecycle("succeeded");
+    await f.open();
+    expect(f.res.ended).toBe(true);
+    expect(f.res.body).toContain('"code":"run_expired_by_retention"');
+    expect(f.res.body).not.toContain("event: end\n");
   });
 });
