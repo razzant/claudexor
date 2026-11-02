@@ -93,7 +93,12 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
     });
     // One of two directories registered, never materialized: synced leaves it alone.
     const finalDir = join(root, "run", "final");
-    writeExternalFile(store, { dir: finalDir, name: "run_facts.yaml", bytes: Buffer.from("x") });
+    writeExternalFile(store, {
+      dir: finalDir,
+      name: "run_facts.yaml",
+      bytes: Buffer.from("x"),
+      purpose: "terminal_receipt",
+    });
     obligations.registerEffect("terminal_files", "partial", finalDir);
     await pass(store);
     await pass(store);
@@ -127,10 +132,16 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
         dir: finalDir,
         name: "run_facts.yaml",
         bytes: Buffer.from("facts"),
+        purpose: "terminal_receipt",
       });
       obligations.registerEffect("terminal_files", "run-2", finalDir);
       if (fail) throw new Error("EIO: telemetry");
-      writeExternalFile(store, { dir: finalDir, name: "telemetry.yaml", bytes: Buffer.from("t") });
+      writeExternalFile(store, {
+        dir: finalDir,
+        name: "telemetry.yaml",
+        bytes: Buffer.from("t"),
+        purpose: "terminal_receipt",
+      });
       obligations.registerEffect("terminal_files", "run-2", finalDir);
       obligations.materialize("terminal_files", "run-2");
     };
@@ -244,7 +255,12 @@ describeStore("effect obligations (SYNTHESIS_R5 §4.6, R5_AMENDMENTS A2)", () =>
     second.registerHandler("terminal_files", (obligation, effects) => {
       seen.push(`${obligation.key}:${obligation.state}`);
       const dir = join(root, "redo", obligation.key);
-      writeExternalFile(store, { dir, name: "run_facts.yaml", bytes: Buffer.from("redone") });
+      writeExternalFile(store, {
+        dir,
+        name: "run_facts.yaml",
+        bytes: Buffer.from("redone"),
+        purpose: "terminal_receipt",
+      });
       effects.register(dir);
     });
     second.registerHandler("archive_fs", () => {

@@ -3209,7 +3209,11 @@ timestamp. Labels cover `store.begin_immediate`, `store.commit`, `store.external
 so clients can parse status from engines that report those synchronous spans.
 Detail and summary report worker queue/projection wall time in `bulk`.
 Scope persistence measures synchronous serialization, not its asynchronous file writes. These
-samples may overlap and do not identify the cause of a delay. `store.commit`
+samples may overlap and do not identify the cause of a delay. A `store.external_write`
+sample that enters the list is also written to the daemon log with its purpose
+(`blob_body`, `terminal_receipt`, `terminal_log`, `import`), byte count and its
+split between metadata calls before the write, the `O_DSYNC` open/write/close,
+and the publishing rename; the status schema is unchanged. `store.commit`
 also exposes lifetime `p50_ms`/`p99_ms` using the same histogram precision.
 Older engines omit the new optional fields. The catalog still points to the
 same `ControlDaemonStatus` response schema.

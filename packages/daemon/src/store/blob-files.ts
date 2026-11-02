@@ -91,6 +91,7 @@ export class BlobFiles {
       name: sha256,
       bytes,
       keepExisting: true,
+      purpose: "blob_body",
     });
     return {
       sha256,

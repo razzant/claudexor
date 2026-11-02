@@ -93,6 +93,7 @@ export class SqlTerminalFiles {
       dir: finalDir,
       name: "run_facts.yaml",
       bytes: Buffer.from(`${JSON.stringify(facts, null, 2)}\n`),
+      purpose: "terminal_receipt",
     });
     effects.register(finalDir);
     const telemetry = (row.payload as { telemetry?: unknown } | null)?.telemetry;
@@ -104,6 +105,7 @@ export class SqlTerminalFiles {
         dir: finalDir,
         name: "telemetry.yaml",
         bytes: Buffer.from(`${JSON.stringify(prepared, null, 2)}\n`),
+        purpose: "terminal_receipt",
       });
       effects.register(finalDir);
     }
@@ -117,7 +119,13 @@ export class SqlTerminalFiles {
       const added = Buffer.from(`${JSON.stringify(event)}\n`);
       if (normalized.equals(Buffer.concat([bytes, added])))
         (this.io.append ?? appendLine)(eventsPath, JSON.stringify(event));
-      else write(this.store, { dir: root, name: "events.jsonl", bytes: normalized });
+      else
+        write(this.store, {
+          dir: root,
+          name: "events.jsonl",
+          bytes: normalized,
+          purpose: "terminal_log",
+        });
     }
     effects.register(root);
   }

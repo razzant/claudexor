@@ -250,6 +250,11 @@ export class EngineStore {
     }
   }
 
+  /** Names a slow external write in the daemon log (`writeExternalFile`). */
+  logSlowWrite(line: string): void {
+    this.options.log?.(line);
+  }
+
   /** A `{g, dir}` registration after a rename/link in `dir` (SYNTHESIS_R5 §4.4). */
   registerExternal(dir: string): number {
     this.assertOpen();

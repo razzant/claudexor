@@ -68,6 +68,18 @@ describe("bounded process timing", () => {
     expect(timing.facts().worstSync[0]!.durationMs).toBe(999);
   });
 
+  it("reports whether a section became one of the 32 worst", () => {
+    const timing = new ProcessTiming();
+    for (let i = 0; i < 32; i++) expect(timing.recordSync("store.commit", 100 + i)).toBe(true);
+    expect(timing.recordSync("store.external_write", 99)).toBe(false);
+    expect(timing.recordSync("store.external_write", 100)).toBe(true);
+    expect(timing.recordSync("store.external_write", Number.NaN)).toBe(false);
+    expect(timing.facts().worstSync.at(-1)).toMatchObject({
+      operation: "store.external_write",
+      durationMs: 100,
+    });
+  });
+
   it("preserves return values and thrown errors, recording both synchronous outcomes", () => {
     const result = {};
     expect(measureSync("scope.persist", () => result)).toBe(result);

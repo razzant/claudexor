@@ -66,7 +66,7 @@ export class ImportContext implements SqlWriteContext {
           return 0;
         },
       },
-      { dir: this.blobsDir, name: sha256, bytes, keepExisting: true },
+      { dir: this.blobsDir, name: sha256, bytes, keepExisting: true, purpose: "import" },
     );
     // Existing immutable bytes are never rewritten, including a resource collision.
     if (!receipt.written) {

@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { processTiming } from "@claudexor/util";
+import { EngineStore } from "./store.js";
 import {
   ensureDirectory,
   externalWriteFlags,
@@ -41,7 +43,10 @@ beforeEach(() => {
   registered = [];
   openSpy.mockClear();
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  vi.restoreAllMocks();
+  rmSync(root, { recursive: true, force: true });
+});
 
 describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
   it("translates the Windows write-through bit without relying on POSIX flag exports", () => {
@@ -65,6 +70,7 @@ describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
       dir,
       name: "run_facts.yaml",
       bytes: Buffer.from("facts"),
+      purpose: "terminal_receipt",
     });
     expect(receipt).toEqual({ path: join(dir, "run_facts.yaml"), generation: 2, written: true });
     expect(readFileSync(receipt.path, "utf8")).toBe("facts");
@@ -83,16 +89,16 @@ describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
 
   it("replaces by default and keeps an existing content-addressed file", () => {
     const dir = join(root, "blobs");
-    const first = writeExternalFile(registry, { dir, name: "abc", bytes: Buffer.from("one") });
+    const body = (text: string) => ({ dir, name: "abc", bytes: Buffer.from(text) });
+    const first = writeExternalFile(registry, { ...body("one"), purpose: "blob_body" });
     const before = statSync(first.path);
-    const replaced = writeExternalFile(registry, { dir, name: "abc", bytes: Buffer.from("two") });
+    const replaced = writeExternalFile(registry, { ...body("two"), purpose: "blob_body" });
     expect(replaced.written).toBe(true);
     expect(readFileSync(replaced.path, "utf8")).toBe("two");
     const kept = writeExternalFile(registry, {
-      dir,
-      name: "abc",
-      bytes: Buffer.from("three"),
+      ...body("three"),
       keepExisting: true,
+      purpose: "blob_body",
     });
     expect(kept.written).toBe(false);
     expect(readFileSync(kept.path, "utf8")).toBe("two");
@@ -108,6 +114,7 @@ describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
       dir: parts,
       name: "u1.part",
       bytes: Buffer.from("bytes"),
+      purpose: "blob_body",
     });
     const linked = linkExternalFile(registry, { source: part.path, dir: blobs, name: "sha" });
     expect(linked.written).toBe(true);
@@ -119,6 +126,77 @@ describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
     expect(existsSync(part.path)).toBe(false);
     expect(registered[g - 1]).toBe(parts);
     expect(unlinkExternalFile(registry, part.path)).toBe(g + 1);
+  });
+
+  it("names the purpose, size and phase split of a write that enters the worst sections", () => {
+    const retained = vi.spyOn(processTiming, "recordSync").mockReturnValue(true);
+    const lines: string[] = [];
+    const logging: ExternalRegistry = { ...registry, logSlowWrite: (line) => lines.push(line) };
+    const bytes = Buffer.alloc(70_000, 7);
+    writeExternalFile(logging, {
+      dir: join(root, "blobs"),
+      name: "d1",
+      bytes,
+      purpose: "blob_body",
+    });
+    writeExternalFile(logging, {
+      dir: join(root, "blobs"),
+      name: "d1",
+      bytes,
+      keepExisting: true,
+      purpose: "blob_body",
+    });
+    expect(retained.mock.calls.map(([operation]) => operation)).toEqual([
+      "store.external_write",
+      "store.external_write",
+    ]);
+    const [written, kept] = lines.map((line) => {
+      expect(line.startsWith("store.external_write {")).toBe(true);
+      return JSON.parse(line.slice("store.external_write ".length)) as Record<string, unknown>;
+    });
+    expect(written).toMatchObject({ purpose: "blob_body", bytes: 70_000, written: true });
+    for (const phase of ["metadata_before_ms", "data_write_ms", "metadata_publish_ms", "total_ms"])
+      expect(written![phase]).toBeTypeOf("number");
+    // The content-addressed fast path never opened a file: all of it is metadata.
+    expect(kept).toMatchObject({ written: false, data_write_ms: 0, metadata_publish_ms: 0 });
+  });
+
+  it("logs nothing for a write outside the worst sections", () => {
+    vi.spyOn(processTiming, "recordSync").mockReturnValue(false);
+    const lines: string[] = [];
+    writeExternalFile(
+      { ...registry, logSlowWrite: (line) => lines.push(line) },
+      {
+        dir: join(root, "final"),
+        name: "run_facts.yaml",
+        bytes: Buffer.from("f"),
+        purpose: "terminal_receipt",
+      },
+    );
+    expect(lines).toEqual([]);
+  });
+
+  it("routes a slow write's line to the store's daemon log", async () => {
+    vi.spyOn(processTiming, "recordSync").mockReturnValue(true);
+    const log = vi.fn();
+    const store = await EngineStore.open({
+      daemonDir: join(root, "daemon"),
+      workerEntry: join(import.meta.dirname, "../../dist/store/flusher-worker.js"),
+      log,
+    });
+    try {
+      writeExternalFile(store, {
+        dir: join(root, "daemon", "final"),
+        name: "telemetry.yaml",
+        bytes: Buffer.from("t"),
+        purpose: "terminal_receipt",
+      });
+    } finally {
+      await store.close();
+    }
+    expect(log.mock.calls.map(([line]) => String(line))).toContainEqual(
+      expect.stringContaining('"purpose":"terminal_receipt"'),
+    );
   });
 
   it("ensureDirectory registers only when it created something", () => {
