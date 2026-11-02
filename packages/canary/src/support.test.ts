@@ -102,7 +102,7 @@ describe("canary cleanup custody", () => {
       Object.defineProperty(process, "platform", { ...platform, value: platformName });
       try {
         vi.resetModules();
-        const { default: config } = await import("../../../../vitest.canary.config.js");
+        const { default: config } = await import("../../../vitest.canary.config.js");
         for (let i = 0; i < sandboxCount; i++) {
           vi.mocked(spawnSync)
             .mockReturnValueOnce(leaseResult(ACTIVE))
