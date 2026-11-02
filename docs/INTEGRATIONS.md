@@ -2007,7 +2007,10 @@ terminal provider error yields a bounded typed `error` whose provider report is
 masked while the model's partial text (`partial_output`) stays exact, followed
 by `usage` and `completed` events, and never yields a message or patch. Ordinary
 `finish_reason: "stop"` and `finish_reason: "length"` remain successful
-completions.
+completions. That provider report, the body of a non-OK HTTP answer other than
+429 and a failed model-catalog read's detail are masked whole and only then cut
+to their bound. These cuts and the cut of the partial text never separate the
+two halves of a surrogate pair.
 
 ### Harness Stream Reference
 
