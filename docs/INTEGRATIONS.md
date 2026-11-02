@@ -256,7 +256,7 @@ decision record, work product, and artifact paths. Terminal daemon state, live
 budget, and event streams come from the daemon/control API, not from
 `inspect`. A failed lookup returns the standard failure envelope. Recognized
 outcomes carry a typed `code`, and only `run_not_found` means the running daemon has
-no such run; an error answer that is not a control problem (for example a
+no such run, in the store its `context.storeId` names when known; an error answer that is not a control problem (for example a
 non-daemon 404 page) has no `code` and names only its HTTP status. The lookup
 validates only the run-detail fields it uses, so additive same-major fields
 elsewhere are tolerated; a run state this CLI build does not know is reported as
@@ -1140,6 +1140,12 @@ Recovery assumes the same registered project root is still available at that
 path. A missing, moved or unmounted root is refused (`project_root_missing`)
 before the replay lookup, so nothing is replayed or started; `claudexor_runs`
 still lists the earlier run.
+
+**Telling absence from another store.** A `no such run` answer speaks for one
+engine store, so it never proves on its own that a run did not start. An MCP or
+CLI launch result names the store that accepted the run as `storeId`: keep it and
+compare it with the store that answered; see
+[the store identity contract](ARCHITECTURE.md#engine-store-identity).
 
 **Recovering a retained task group.** On supporting daemons, public one-shot
 launches accept an optional caller-generated UUID `taskGroupId` (CLI

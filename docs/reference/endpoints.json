@@ -1038,7 +1038,19 @@
       "summary": "Start a run and return its durable handle.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunStartRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlRunStartResponse",
       "error_schema": "ControlProblem"
     },
@@ -1122,7 +1134,19 @@
       "summary": "Record an operator unblock/rerun decision on a run.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunDecisionRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlRunDecisionResponse",
       "error_schema": "ControlProblem"
     },
@@ -1244,7 +1268,19 @@
       "summary": "Retry a run, returning a new durable handle.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlRunRetryResponse",
       "error_schema": "ControlProblem"
     },
@@ -1773,7 +1809,19 @@
       "summary": "Enqueue a new turn on a thread.",
       "auth": "loopback_bearer",
       "request_schema": "ControlThreadTurnRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlThreadTurnResponse",
       "error_schema": "ControlProblem"
     },
@@ -1825,7 +1873,19 @@
       "summary": "Retry a thread turn.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlThreadTurnResponse",
       "error_schema": "ControlProblem"
     },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TaskGroupId } from "./task-group.js";
+import { acceptedReceiptMetadata, TaskGroupId, taskGroupReceiptMetadata } from "./task-group.js";
 import {
   ControlQueuedRunInfo,
   ControlRunRetryResponse,
@@ -17,7 +17,7 @@ import {
   ControlThreadCreateRequest,
   ControlThreadUpdateRequest,
 } from "./control-thread-requests.js";
-import { McpRunToolResult } from "./mcp-run-result.js";
+import { McpRunToolResult, McpThreadTurnResult } from "./mcp-run-result.js";
 
 const taskGroupId = "11111111-1111-4111-8111-111111111111";
 const storeId = "22222222-2222-4222-8222-222222222222";
@@ -69,6 +69,46 @@ describe("retained task group contracts", () => {
     }
   });
 
+  it("lets a thread-turn receipt name its accepting store, with or without a bound run", () => {
+    for (const legacy of [
+      { threadId: "thread", turnId: "turn", jobId: "job", state: "queued" },
+      { threadId: "thread", turnId: "turn", jobId: "job", runId: "run", runDir: "/fixture/run" },
+    ]) {
+      const untagged = ControlThreadTurnResponse.parse(legacy);
+      expect(untagged).not.toHaveProperty("storeId");
+      expect(ControlThreadTurnResponse.parse({ ...legacy, storeId })).toMatchObject({ storeId });
+      expect(ControlThreadTurnResponse.safeParse({ ...legacy, storeId: "" }).success).toBe(false);
+    }
+    expect(
+      McpThreadTurnResult.parse({
+        summary: "queued",
+        threadId: "thread",
+        turnId: "turn",
+        jobId: "job",
+        state: "queued",
+        storeId,
+      }),
+    ).toMatchObject({ storeId });
+  });
+
+  it("copies a group pair or an ordinary receipt's lone store, never half a group", () => {
+    const pair = { taskGroupId, storeId };
+    expect(acceptedReceiptMetadata({ jobId: "job", ...pair })).toEqual(pair);
+    expect(acceptedReceiptMetadata({ jobId: "job", storeId })).toEqual({ storeId });
+    for (const invalid of [
+      { jobId: "job" },
+      { taskGroupId },
+      { taskGroupId: "not-a-uuid", storeId },
+      { storeId: "" },
+      { storeId: 42 },
+      null,
+      "receipt",
+    ])
+      expect(acceptedReceiptMetadata(invalid)).toEqual({});
+    // A problem context is not an accepted handle: a producer's lone key stays out.
+    expect(taskGroupReceiptMetadata({ storeId })).toEqual({});
+  });
+
   it("keeps group metadata outside thread creation, updates, turns and receipts", () => {
     for (const [schema, ordinary] of [
       [ControlThreadCreateRequest, {}],
@@ -85,11 +125,8 @@ describe("retained task group contracts", () => {
     ] as const) {
       expect(schema.safeParse(ordinary).success).toBe(true);
       // A derived non-strict receipt may strip unknown keys; it must never expose them.
-      const tagged = schema.safeParse({ ...ordinary, taskGroupId, storeId });
-      if (tagged.success) {
-        expect(tagged.data).not.toHaveProperty("taskGroupId");
-        expect(tagged.data).not.toHaveProperty("storeId");
-      }
+      const tagged = schema.safeParse({ ...ordinary, taskGroupId });
+      if (tagged.success) expect(tagged.data).not.toHaveProperty("taskGroupId");
     }
     expect(ControlThreadTurnRequest.safeParse({ prompt: "work", taskGroupId }).success).toBe(false);
   });

@@ -6,6 +6,11 @@
         {
           "type": "object",
           "properties": {
+            "storeId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Identity of the durable engine store that accepted this command, stable across restarts. A group member always carries it; an ordinary receipt carries it only for a request sending `X-Claudexor-Store-Identity: 1`, and it stays absent, meaning unknown, when the store has no identity to give."
+            },
             "jobId": {
               "type": "string",
               "description": "Daemon job id backing the run."
@@ -48,6 +53,10 @@
         {
           "type": "object",
           "properties": {
+            "storeId": {
+              "$ref": "#/definitions/McpThreadTurnResult/anyOf/0/properties/storeId",
+              "description": "Identity of the durable engine store that accepted this command, stable across restarts. A group member always carries it; an ordinary receipt carries it only for a request sending `X-Claudexor-Store-Identity: 1`, and it stays absent, meaning unknown, when the store has no identity to give."
+            },
             "jobId": {
               "$ref": "#/definitions/McpThreadTurnResult/anyOf/0/properties/threadId"
             },

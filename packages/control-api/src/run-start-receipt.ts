@@ -1,5 +1,26 @@
-import { ControlQueuedRunInfo, TaskGroupReceipt } from "@claudexor/schema";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  CONTROL_STORE_IDENTITY_HEADER,
+  ControlQueuedRunInfo,
+  ControlRunStartInfo,
+  TaskGroupReceipt,
+} from "@claudexor/schema";
 import type { DaemonRunRecord } from "./run-record.js";
+import { TERMINAL_STATES } from "./sse-shared.js";
+
+/** The request opted in to `storeId`: some shipped same-major clients parse a receipt strictly. */
+export function wantsStoreIdentity(req: IncomingMessage): boolean {
+  return req.headers[CONTROL_STORE_IDENTITY_HEADER] === "1";
+}
+
+/** The store that served the read this answer speaks for, so call this after that read. Absent
+ * means unknown, never another store. */
+export function servingStore(
+  storeId?: () => string | undefined,
+): Partial<Pick<TaskGroupReceipt, "storeId">> {
+  const identity = TaskGroupReceipt.shape.storeId.safeParse(storeId?.());
+  return identity.success ? { storeId: identity.data } : {};
+}
 
 /** A tagged launch is admitted only while the durable store identity it will
  * name exists, so a missing identity refuses before anything is accepted. */
@@ -16,14 +37,16 @@ export function requireTaskGroupStoreIdentity(
   });
 }
 
-/** Membership comes only from the accepted request; embedders without store identity cannot mint it. */
-export function acceptedTaskGroupReceipt(
+/** Membership comes only from the accepted request; embedders without store identity cannot mint
+ * it. An ordinary receipt names its store only on request, and only when the store has an identity. */
+export function acceptedRunReceipt(
   rec: DaemonRunRecord,
   storeId?: () => string | undefined,
+  wantsStoreId = false,
 ): Partial<TaskGroupReceipt> {
   const params =
     rec.params && typeof rec.params === "object" ? (rec.params as Record<string, unknown>) : {};
-  if (params["taskGroupId"] === undefined) return {};
+  if (params["taskGroupId"] === undefined) return wantsStoreId ? servingStore(storeId) : {};
   const receipt = TaskGroupReceipt.safeParse({
     taskGroupId: params["taskGroupId"],
     storeId: storeId?.(),
@@ -85,4 +108,39 @@ export function unboundRunStartResponse(
       },
     },
   };
+}
+
+/** Answer an accepted one-shot job: its bound handle, its queued handle or its pre-run refusal. */
+export async function respondToAcceptedJob(
+  ctx: {
+    waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
+    storeId?: () => string | undefined;
+    json(res: ServerResponse, status: number, body: unknown): void;
+  },
+  req: IncomingMessage,
+  res: ServerResponse,
+  jobId: string,
+): Promise<void> {
+  const rec = await ctx.waitForRunStart(jobId);
+  const metadata = acceptedRunReceipt(rec, ctx.storeId, wantsStoreIdentity(req));
+  if (rec.runId && rec.runDir) {
+    return ctx.json(
+      res,
+      200,
+      ControlRunStartInfo.parse({
+        ...metadata,
+        jobId: rec.id,
+        runId: rec.runId,
+        taskId: rec.taskId,
+        runDir: rec.runDir,
+      }),
+    );
+  }
+  const { status, body } = unboundRunStartResponse(
+    rec,
+    TERMINAL_STATES.has(rec.state),
+    {},
+    metadata,
+  );
+  return ctx.json(res, status, body);
 }

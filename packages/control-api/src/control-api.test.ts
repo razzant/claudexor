@@ -12,6 +12,7 @@ import { BulkExecutor } from "./bulk-executor.js";
 import { lruGet, lruSet } from "./run-list.js";
 import { producedRepoRoot, resolveProducedRoot } from "./artifact-serve-routes.js";
 import { unboundRunStartResponse } from "./run-start.js";
+import { CONTROL_STORE_IDENTITY_HEADER } from "@claudexor/schema";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
 import {
   chmodSync,
@@ -10383,6 +10384,55 @@ describe("DaemonControlApiServer", () => {
       } finally {
         await server.stop();
       }
+    }
+  });
+
+  it("rerun_with_feedback names an ordinary successor's store only for a request that opted in", async () => {
+    const { daemon, record } = fakeDaemon();
+    const store = "22222222-2222-4222-8222-222222222222";
+    record.state = "succeeded";
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
+    const successor: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-rerun", state: "queued" };
+      },
+      async status(id: string) {
+        return id === record.id
+          ? record
+          : { id, state: "running", runId: "run-rerun", runDir: record.runDir };
+      },
+    };
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon: successor,
+      pollMs: 5,
+      storeId: () => store,
+    });
+    const { host, port } = await server.start();
+    try {
+      for (const optIn of [false, true]) {
+        const res = await apiFetch(`http://${host}:${port}/runs/run-d1/decision`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "Idempotency-Key": `decision-rerun-${optIn}`,
+            ...(optIn ? { [CONTROL_STORE_IDENTITY_HEADER]: "1" } : {}),
+          },
+          body: JSON.stringify({ action: "rerun_with_feedback", feedback: "Name the store." }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as Record<string, unknown>;
+        expect(body).toMatchObject({ status: "requeued", newJobId: "job-rerun" });
+        expect(body["storeId"]).toBe(optIn ? store : undefined);
+        expect(body).not.toHaveProperty("taskGroupId");
+      }
+    } finally {
+      await server.stop();
     }
   });
 

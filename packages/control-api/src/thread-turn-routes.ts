@@ -17,6 +17,7 @@ import {
   turnEnqueueProblemResponse,
 } from "./thread-turn-problems.js";
 import type { RunStartNormalizationOptions } from "./run-start.js";
+import { servingStore } from "./run-start-receipt.js";
 import { assertLatestThreadTurn, inspectThreadTurnCreateReplay } from "./thread-recovery.js";
 import { chainThreadMutation } from "./thread-mutation.js";
 import { assertActiveThreadAccessOverride } from "./thread-access-migration.js";
@@ -27,6 +28,9 @@ import {
 
 export interface ThreadTurnRouteCtx {
   json(res: ServerResponse, status: number, body: unknown): void;
+  storeId?: () => string | undefined;
+  /** The request opted in to `storeId`; the strict queued receipt must not surprise older clients. */
+  wantsStoreId?: boolean;
   waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
   readRunArtifactText(runId: string, relPath: string): Promise<string | null>;
   resolveRunArtifactPath(runId: string, relPath: string): Promise<string | null>;
@@ -81,12 +85,14 @@ async function respondToTurnJob(
       threadId,
     });
   }
+  const store = ctx.wantsStoreId ? servingStore(ctx.storeId) : {};
   if (rec.runId && rec.runDir) {
     return ctx.json(
       res,
       200,
       ControlThreadTurnResponse.parse({
         ...ControlRunStartInfo.parse({
+          ...store,
           jobId: rec.id,
           runId: rec.runId,
           taskId: rec.taskId,
@@ -103,6 +109,7 @@ async function respondToTurnJob(
     // inline turn card keys its one-click remedy on the CODE, and a 500 would
     // make embedders retry an unretryable refusal. Infra terminals (no typed
     // code) stay 5xx so genuine transient failures are still retried.
+    const { storeId: _store, ...errorContext } = rec.errorContext ?? {};
     return ctx.json(res, preStartRefusalStatus(rec.errorCode, rec.errorStatus), {
       jobId: rec.id,
       turnId,
@@ -113,17 +120,24 @@ async function respondToTurnJob(
       retryable: rec.errorRetryable ?? true,
       requiredActions: rec.errorRequiredActions ?? [],
       context: {
-        ...(rec.errorContext ?? {}),
+        ...errorContext,
         jobId: rec.id,
         turnId,
         threadId,
+        ...store,
       },
     });
   }
   return ctx.json(
     res,
     202,
-    ControlThreadTurnResponse.parse({ jobId: rec.id, turnId, threadId, state: rec.state }),
+    ControlThreadTurnResponse.parse({
+      ...store,
+      jobId: rec.id,
+      turnId,
+      threadId,
+      state: rec.state,
+    }),
   );
 }
 

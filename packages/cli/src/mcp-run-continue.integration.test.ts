@@ -63,7 +63,12 @@ async function fixture(mode: "agent" | "ask" | "plan") {
   await daemon.start();
   cleanups.push(() => daemon.stop());
   const client = new DaemonClient(join(root, "d.sock"), "fixture");
-  const control = new DaemonControlApiServer({ token: "fixture", daemon: client, pollMs: 5 });
+  const control = new DaemonControlApiServer({
+    token: "fixture",
+    daemon: client,
+    pollMs: 5,
+    storeId: () => sql.store.storeId,
+  });
   const { host, port } = await control.start();
   cleanups.push(() => control.stop());
   vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
@@ -74,7 +79,7 @@ async function fixture(mode: "agent" | "ask" | "plan") {
   const ensure = vi.spyOn(daemonRun, "ensureDaemon");
   const runner = mcpSurfaceRunner();
   const tool = defaultClaudexorTools(runner).find((t) => t.name === "claudexor_run_continue")!;
-  return { tool, runner, observed, params, client, ensure, commands };
+  return { tool, runner, observed, params, client, ensure, commands, storeId: sql.store.storeId };
 }
 
 describe("MCP continuation through daemon-owned admission", () => {
@@ -90,6 +95,10 @@ describe("MCP continuation through daemon-owned admission", () => {
       );
       expect(handle.jobId).toBeTruthy();
       expect(handle.runId).toBeTruthy();
+      // The bound successor's final result names the store that accepted it.
+      expect(f.storeId).toMatch(/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+      expect(handle.storeId).toBe(f.storeId);
+      expect(handle).not.toHaveProperty("taskGroupId");
       // The worker is still running when the MCP call returns.
       expect(await f.client.status(handle.jobId!)).toMatchObject({ state: "running" });
       expect(f.observed).toHaveLength(1);
@@ -100,7 +109,9 @@ describe("MCP continuation through daemon-owned admission", () => {
         continueModelInherited: true,
       });
       const replay = await f.tool.handler(args, {});
-      expect(replay).toMatchObject({ structured: { jobId: handle.jobId, runId: handle.runId } });
+      expect(replay).toMatchObject({
+        structured: { jobId: handle.jobId, runId: handle.runId, storeId: f.storeId },
+      });
       expect(f.observed).toHaveLength(1);
       expect(
         await f.tool.handler({ ...args, idempotencyKey: "other-successor" }, {}),

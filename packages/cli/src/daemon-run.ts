@@ -31,7 +31,8 @@ import {
   ControlRunState,
   TERMINAL_LIFECYCLES,
   taskGroupLaunchMetadata,
-  taskGroupReceiptMetadata,
+  acceptedReceiptMetadata,
+  CONTROL_STORE_IDENTITY_HEADER,
   type TaskGroupReceipt,
 } from "@claudexor/schema";
 import { acceptedPreRunFailure } from "./run-start-acceptance.js";
@@ -347,6 +348,7 @@ export async function enqueueAndAwait(
       headers: {
         Authorization: `Bearer ${addr.token}`,
         "content-type": "application/json",
+        [CONTROL_STORE_IDENTITY_HEADER]: "1",
         ...(opts.idempotencyKey !== undefined ? { "Idempotency-Key": opts.idempotencyKey } : {}),
       },
       body: JSON.stringify(postBody),
@@ -363,7 +365,7 @@ export async function enqueueAndAwait(
       );
     }
     jobId = String(start["jobId"] ?? "");
-    metadata = taskGroupReceiptMetadata(start);
+    metadata = acceptedReceiptMetadata(start);
     runId = typeof start["runId"] === "string" ? (start["runId"] as string) : "";
     runDir = typeof start["runDir"] === "string" ? (start["runDir"] as string) : "";
     // The daemon already waited for binding before answering 202: the

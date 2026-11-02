@@ -27,6 +27,7 @@ export interface DecisionRerunContext {
   serializeThreadMutation<T>(threadId: string, work: () => Promise<T>): Promise<T>;
   waitForRunStart(id: string): Promise<DaemonRunRecord>;
   storeId?: () => string | undefined;
+  wantsStoreId?: boolean;
   appendAudit(record: DaemonRunRecord, payload: Record<string, unknown>): void;
   json(response: ServerResponse, status: number, body: unknown): void;
 }
@@ -143,7 +144,7 @@ export async function rerunWithFeedback(
         ...(turnId ? { turnId } : {}),
       });
     }
-    const metadata = runStart.acceptedTaskGroupReceipt(run, ctx.storeId);
+    const metadata = runStart.acceptedRunReceipt(run, ctx.storeId, ctx.wantsStoreId);
     if (!run.runId && TERMINAL_STATES.has(run.state)) {
       const refusal = runStart.unboundRunStartResponse(
         run,

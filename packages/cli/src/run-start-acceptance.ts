@@ -1,4 +1,4 @@
-import { ControlProblem, TERMINAL_LIFECYCLES } from "@claudexor/schema";
+import { acceptedReceiptMetadata, ControlProblem, TERMINAL_LIFECYCLES } from "@claudexor/schema";
 import type { DaemonRunOutcome } from "./daemon-run.js";
 
 const TERMINAL_STATES: ReadonlySet<string> = TERMINAL_LIFECYCLES;
@@ -15,6 +15,7 @@ export function acceptedPreRunFailure(status: number, body: unknown): DaemonRunO
   if (typeof jobId !== "string" || !jobId || typeof state !== "string") return null;
   if (!TERMINAL_STATES.has(state)) return null;
   return {
+    ...acceptedReceiptMetadata(problem.data.context),
     jobId,
     runId: "",
     runDir: "",

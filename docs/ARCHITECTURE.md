@@ -3276,7 +3276,11 @@ it; an older engine answers 404, which `claudexor doctor` prints as
 unavailable while it prints the summary line and the routes with failures of
 a current engine (`route_health` in `doctor --json`).
 
+#### Engine store identity
+
 `POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
+
+A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup can speak for a store's absence.
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
@@ -5596,7 +5600,8 @@ so a typo'd id cannot launch one; `apply` is server-owned delivery and starts it
 like the acting paths (`agent`/`best-of`/`create`, `decision`). A local retained run
 is shown while the daemon is down, and its files say nothing about whether it is
 still running. Only the run registry's own 404 from a running daemon (the
-run-detail route's `http_404` problem) reports `no such run` (`run_not_found`).
+run-detail route's `http_404` problem) reports `no such run` (`run_not_found`), naming
+the store that answered when it has an identity ([engine store identity](#engine-store-identity)).
 Other recognized outcomes keep typed codes: `invalid_argument` for a malformed id;
 `daemon_unavailable` when no daemon is reachable (runs from other projects were not
 checked) or the connection drops before the whole answer arrives; the daemon's own
@@ -7933,10 +7938,12 @@ code touching one of these areas must honor it or change it explicitly here.
   Some subcommands and pre/post-run paths retain purpose-built one-object
   schemas; their exact bounded residue is tracked as D-7 in `docs/BACKLOG.md`.
   A projector-owned run-scoped failure
-  (inspect/apply/decision) may add a
+  (inspect/apply/decision, or a run verb after admission) may add a
   per-command identifying field such as `runId` alongside those canonical
-  fields, but the projector-owned fields always win over a same-named extra, so
-  the failure shape cannot be forged. Redaction runs BEFORE the bounded-context
+  fields; after a bound launch receipt has returned, a machine-mode run verb
+  also keeps that receipt's `jobId` and `storeId` (or task-group pair) if a later
+  detail read fails. An error while awaiting admission is outside this case. The projector-owned fields always win
+  over a same-named extra, so the failure shape cannot be forged. Redaction runs BEFORE the bounded-context
   truncation, so a secret token straddling the truncation boundary is masked on
   the full string and can never leak as a surviving head fragment. A central category → exit-code table owns the codes: usage /
   validation = 2, operational failure = 1. Typed domain codes and structured

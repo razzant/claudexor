@@ -18,6 +18,7 @@ import { print, printJson, printUsageError } from "./cli-io.js";
 import { controlProblemError, renderCliFailure } from "./cli-error.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
+import { CONTROL_STORE_IDENTITY_HEADER } from "@claudexor/schema";
 
 export async function retryCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const runId = args._[1];
@@ -26,7 +27,11 @@ export async function retryCommand(args: ParsedArgs, json: boolean): Promise<num
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/retry`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${addr.token}`,
+        "content-type": "application/json",
+        [CONTROL_STORE_IDENTITY_HEADER]: "1",
+      },
       body: "{}",
     });
     const data = (await response.json()) as Record<string, unknown>;

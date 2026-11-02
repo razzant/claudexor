@@ -357,7 +357,7 @@ it("the HTTP create handler refuses private controls before replay or enqueue de
       }),
       requestError,
       json: vi.fn(),
-      respondToAcceptedJob: vi.fn(),
+      waitForRunStart: vi.fn(),
     },
     req,
     res,
