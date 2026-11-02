@@ -36,39 +36,23 @@ struct InteractionCard: View {
                 .help(InteractionExpiryPresentation.help(timeoutAt: interaction.timeoutAt))
             }
 
-            ForEach(interaction.questions) { question in
-                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    HStack(spacing: Theme.Spacing.sm) {
-                        if let header = question.header, !header.isEmpty {
-                            Text(header)
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, Theme.Spacing.sm)
-                                .padding(.vertical, Theme.Spacing.xxs)
-                                .background(Theme.accent.opacity(0.14), in: Capsule())
-                                .foregroundStyle(Theme.accent)
-                        }
-                        Text(question.question).font(.callout.weight(.medium))
+            // The harness's questions arrive exactly as asked, however long. The
+            // header and Send stay fixed; the questions scroll inside the same
+            // bounded area as plan question cards, so a long question never
+            // grows the card past it and nothing is cut off.
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    ForEach(interaction.questions) { question in
+                        questionRow(question)
                     }
-                    FlowLayout(spacing: Theme.Spacing.sm) {
-                        ForEach(question.options, id: \.label) { option in
-                            Button {
-                                toggle(question: question, label: option.label)
-                            } label: {
-                                Text(option.label)
-                                    .font(.caption.weight(.medium))
-                                    .padding(.horizontal, Theme.Spacing.md)
-                                    .padding(.vertical, Theme.Spacing.xs)
-                            }
-                            .buttonStyle(.plain)
-                            .selectedChip(active: draft.wrappedValue.selections[question.id, default: []].contains(option.label))
-                            .help(option.description ?? option.label)
-                        }
-                    }
-                    TextField("Or answer in your own words…", text: binding(for: question.id))
-                        .textFieldStyle(.roundedBorder)
-                        .font(.callout)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Room for the text fields' bezels, drawn 1pt outside their frames.
+                .padding(1)
             }
+            .frame(maxHeight: 320)
+            .fixedSize(horizontal: false, vertical: true)
+            .scrollIndicators(.visible)
 
             HStack(spacing: Theme.Spacing.md) {
                 Button {
@@ -91,6 +75,67 @@ struct InteractionCard: View {
         .padding(Theme.Spacing.lg)
         .cardSurface(stroke: true, strokeColor: Theme.status(.attention).opacity(0.5))
         .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func questionRow(_ question: InteractionQuestion) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            // Header beside the question when both fit on one line; otherwise
+            // above it, so neither squeezes the other and both wrap in full.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
+                    headerChip(question.header)
+                    questionText(question.question)
+                }
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    headerChip(question.header)
+                    questionText(question.question)
+                }
+            }
+            FlowLayout(spacing: Theme.Spacing.sm, wrapsWideSubviews: true) {
+                ForEach(question.options, id: \.label) { option in
+                    Button {
+                        toggle(question: question, label: option.label)
+                    } label: {
+                        // Model-authored labels wrap inside the row, an
+                        // exception to the one-line chip rule (DESIGN_SYSTEM §1
+                        // rule 5); the chip-radius rectangle keeps wrapped
+                        // lines inside the fill, where a capsule would not.
+                        Text(option.label)
+                            .font(.caption.weight(.medium))
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, Theme.Spacing.md)
+                            .padding(.vertical, Theme.Spacing.xs)
+                    }
+                    .buttonStyle(.plain)
+                    .selectedChip(active: draft.wrappedValue.selections[question.id, default: []].contains(option.label),
+                                  shape: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                    .help(option.description ?? option.label)
+                }
+            }
+            TextField("Or answer in your own words…", text: binding(for: question.id))
+                .textFieldStyle(.roundedBorder)
+                .font(.callout)
+        }
+    }
+
+    @ViewBuilder
+    private func headerChip(_ header: String?) -> some View {
+        if let header, !header.isEmpty {
+            Text(header)
+                .font(.caption2.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Theme.Spacing.sm)
+                .padding(.vertical, Theme.Spacing.xxs)
+                .background(Theme.accent.opacity(0.14),
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                .foregroundStyle(Theme.accent)
+        }
+    }
+
+    private func questionText(_ text: String) -> some View {
+        Text(text).font(.callout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
     }
 
     private var hasAnyAnswer: Bool {
@@ -159,8 +204,7 @@ enum InteractionAnswerComposer {
                              selections: [String: Set<String>],
                              freeText: [String: String]) -> Bool {
         interaction.questions.contains { q in
-            !selections[q.id, default: []].isEmpty
-                || !(freeText[q.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            !selections[q.id, default: []].isEmpty || answerText(freeText[q.id]) != nil
         }
     }
 
@@ -169,10 +213,16 @@ enum InteractionAnswerComposer {
                          freeText: [String: String]) -> [InteractionAnswerPayload] {
         interaction.questions.compactMap { q -> InteractionAnswerPayload? in
             let labels = Array(selections[q.id, default: []])
-            let text = (freeText[q.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !labels.isEmpty || !text.isEmpty else { return nil }
-            return InteractionAnswerPayload(questionId: q.id, selectedLabels: labels,
-                                            freeText: text.isEmpty ? nil : text)
+            let text = answerText(freeText[q.id])
+            guard !labels.isEmpty || text != nil else { return nil }
+            return InteractionAnswerPayload(questionId: q.id, selectedLabels: labels, freeText: text)
         }
+    }
+
+    /// The typed text exactly as entered, or nil when it is blank: whitespace
+    /// alone answers nothing, but surrounding spaces of a real answer are kept.
+    private static func answerText(_ typed: String?) -> String? {
+        guard let typed, !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return typed
     }
 }

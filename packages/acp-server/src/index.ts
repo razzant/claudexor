@@ -18,6 +18,7 @@ import { runControlsFromMeta, validateRunControls } from "./validate.js";
 import { terminalAuth, type AcpAuthOptions } from "./auth.js";
 import { attachmentInputs } from "./attachments.js";
 import { toolResultUpdate } from "./tool-update.js";
+import { requestInteractionAnswers } from "./interaction-answers.js";
 
 export const ACP_PROTOCOL_VERSION = acp.PROTOCOL_VERSION;
 
@@ -162,7 +163,10 @@ export class AcpServer {
             {
               signal: controller.signal,
               onEvent: (event) => void this.forwardRunEvent(client, params.sessionId, event),
-              onInteraction: (ctx) => this.requestAnswers(client, params.sessionId, ctx),
+              onInteraction: (ctx) =>
+                requestInteractionAnswers(client, params.sessionId, ctx, (text) =>
+                  this.agentMessage(client, params.sessionId, text),
+                ),
             },
           )) as Record<string, unknown>;
           const summary = summarizeResult(result);
@@ -325,126 +329,6 @@ export class AcpServer {
         update: toolResultUpdate(id, tool),
       });
     }
-  }
-
-  private async requestAnswers(
-    client: acp.AgentContext,
-    sessionId: string,
-    ctx: any,
-  ): Promise<any | null> {
-    const request = ctx?.request;
-    const runId = typeof ctx?.run_id === "string" ? ctx.run_id : "";
-    const questions: any[] = Array.isArray(request?.questions) ? request.questions : [];
-    const answers: any[] = [];
-    const unanswerable: string[] = [];
-    for (const [index, question] of questions.entries()) {
-      const rawOptions = Array.isArray(question?.options) ? question.options : [];
-      const options = rawOptions.map((option: any, optionIndex: number) => ({
-        optionId: `opt-${optionIndex + 1}`,
-        name: String(option?.label ?? `option ${optionIndex + 1}`),
-        kind: "allow_once" as const,
-      }));
-      // Option-less (free-text) questions cannot be answered through ACP's
-      // permission mechanism (which is choice-only). NEVER silently skip them:
-      // collect them and disclose as turn text below, naming the documented
-      // answer path, and leave the interaction pending so it stays answerable.
-      if (options.length === 0) {
-        unanswerable.push(String(question?.question ?? `question ${index + 1}`));
-        continue;
-      }
-      const title = String(question?.question ?? "Question");
-      const multi = question?.multi_select === true;
-      if (multi) {
-        // Multi-select: iterate one include/skip permission round per option so
-        // the client can pick MORE THAN ONE label (a single requestPermission
-        // returns exactly one optionId and would collapse the selection).
-        const selectedLabels: string[] = [];
-        for (const option of options) {
-          const toolCallId = `${String(request?.interaction_id ?? "interaction")}:${String(question?.id ?? index)}:${option.optionId}`;
-          await client.notify(acp.methods.client.session.update, {
-            sessionId,
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId,
-              title: `${title} — include "${option.name}"?`,
-              kind: "other",
-              status: "pending",
-            },
-          });
-          const response = (await client.request(acp.methods.client.session.requestPermission, {
-            sessionId,
-            toolCall: { toolCallId, title: `${title} — include "${option.name}"?` },
-            options: [
-              { optionId: "include", name: `Include ${option.name}`, kind: "allow_once" as const },
-              { optionId: "skip", name: `Skip ${option.name}`, kind: "reject_once" as const },
-            ],
-          })) as acp.RequestPermissionResponse;
-          const include =
-            response.outcome.outcome === "selected" && response.outcome.optionId === "include";
-          if (include) selectedLabels.push(option.name);
-          await client.notify(acp.methods.client.session.update, {
-            sessionId,
-            update: { sessionUpdate: "tool_call_update", toolCallId, status: "completed" },
-          });
-        }
-        answers.push({
-          question_id: String(question?.id ?? ""),
-          selected_labels: selectedLabels,
-          free_text: null,
-        });
-        continue;
-      }
-      const toolCallId = `${String(request?.interaction_id ?? "interaction")}:${String(question?.id ?? index)}`;
-      await client.notify(acp.methods.client.session.update, {
-        sessionId,
-        update: {
-          sessionUpdate: "tool_call",
-          toolCallId,
-          title,
-          kind: "other",
-          status: "pending",
-        },
-      });
-      const response = (await client.request(acp.methods.client.session.requestPermission, {
-        sessionId,
-        toolCall: { toolCallId, title },
-        options,
-      })) as acp.RequestPermissionResponse;
-      const outcome = response.outcome;
-      const selected =
-        outcome.outcome === "selected"
-          ? options.find((option: { optionId: string }) => option.optionId === outcome.optionId)
-          : undefined;
-      await client.notify(acp.methods.client.session.update, {
-        sessionId,
-        update: {
-          sessionUpdate: "tool_call_update",
-          toolCallId,
-          status: selected ? "completed" : "failed",
-        },
-      });
-      if (selected) {
-        answers.push({
-          question_id: String(question?.id ?? ""),
-          selected_labels: [selected.name],
-          free_text: null,
-        });
-      }
-    }
-    if (unanswerable.length > 0) {
-      // Honest disclosure (never a silent skip): the free-text question(s) stay
-      // pending on the run; the editor's user answers them via the CLI/API.
-      const runHint = runId ? `\`claudexor follow ${runId}\`` : "`claudexor follow <run>`";
-      const list = unanswerable.map((q, i) => `${i + 1}. ${q}`).join("\n");
-      await this.agentMessage(
-        client,
-        sessionId,
-        `This run is waiting on ${unanswerable.length} free-text question(s) that ACP cannot answer inline (ACP presents choices only):\n\n${list}\n\nAnswer them with ${runHint} or POST /v2/runs/:id/interactions/:id/answer; the run stays paused until then.`,
-      );
-    }
-    return answers.length > 0
-      ? { interaction_id: String(request?.interaction_id ?? ""), answers }
-      : null;
   }
 
   private dropToolCalls(sessionId: string): void {
