@@ -28,6 +28,7 @@ import { redactSecrets, safeInvoke } from "@claudexor/util";
 import {
   attemptInterruption,
   finalizeAttempt,
+  interruptionDetail,
   unrecoveredToolErrorFailure,
   webEvidenceFailure,
   type AttemptOutcomeClass,
@@ -404,7 +405,7 @@ export async function runPlannerAttempt(
     harnessError = `work_report contract: ${planUnwrapped.contractViolation}`;
   }
   if (!harnessError && finalized.outcomeClass === "interrupted") {
-    harnessError = "context capacity exhausted before the plan completed";
+    harnessError = interruptionDetail(finalized.reason);
   }
   const attemptError =
     harnessError ??

@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +14,7 @@ import { ArtifactStore } from "@claudexor/artifact-store";
 import type { HarnessAdapter, spawnProcess } from "@claudexor/core";
 import { QuotaRegistry, createAccountEvidence } from "@claudexor/daemon";
 import { Orchestrator } from "@claudexor/orchestrator";
+import { reviewCandidate } from "@claudexor/review";
 import {
   ConformanceReport,
   CredentialProfile,
@@ -46,11 +54,16 @@ type Behavior =
   | "refuse_words"
   | "refuse_read_first"
   | "refuse_after_progress"
+  | "refuse_transport"
+  | "transport"
+  | "review_clean"
   | "succeed";
 const CREDITS =
   "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.";
 /** Limit words with no typed code, which alone produce today's plain dated cooldown. */
 const LIMIT_WORDS = "You've hit your usage limit.";
+/** Words the transport classifier reads as a broken stream (a typed `transient`). */
+const TRANSPORT_WORDS = "stream disconnected before completion: error sending request";
 const VENDOR = { code: "usage_limit_exceeded", message: CREDITS, source: "codex_rollout" };
 
 const roots: string[] = [];
@@ -69,7 +82,7 @@ function vendor(behavior: Behavior, home: string, threadSeq: () => string): type
       wake?.();
       wake = undefined;
     };
-    const failed = behavior !== "succeed";
+    const failed = behavior !== "succeed" && behavior !== "review_clean";
     const rollout = (): void => {
       const day = join(home, "sessions", "2026", "11", "01");
       mkdirSync(day, { recursive: true });
@@ -120,10 +133,24 @@ function vendor(behavior: Behavior, home: string, threadSeq: () => string): type
               item("item/completed", { ...command, status: "completed", exitCode: 0 }),
             );
           }
-          if (behavior === "succeed") {
-            push(item("item/completed", { type: "agentMessage", id: "answer", text: "done" }), {
+          if (behavior === "succeed" || behavior === "review_clean") {
+            const text = behavior === "succeed" ? "done" : "```json\n[]\n```";
+            push(item("item/completed", { type: "agentMessage", id: "answer", text }), {
               method: "turn/completed",
               params: { threadId: thread, turn: { id: turn, status: "completed", items: [] } },
+            });
+            return;
+          }
+          if (behavior === "refuse_transport" || behavior === "transport") {
+            // One failed turn whose words read as a broken stream; only the first
+            // also carries Codex's typed usage refusal. No rollout record either way.
+            const error = {
+              message: TRANSPORT_WORDS,
+              ...(behavior === "refuse_transport" ? { codexErrorInfo: "usageLimitExceeded" } : {}),
+            };
+            push({
+              method: "turn/completed",
+              params: { threadId: thread, turn: { id: turn, status: "failed", error, items: [] } },
             });
             return;
           }
@@ -187,7 +214,10 @@ function vendor(behavior: Behavior, home: string, threadSeq: () => string): type
   };
 }
 
-function fixture(behaviors: Record<string, (spawn: number) => Behavior>) {
+function fixture(
+  behaviors: Record<string, (spawn: number) => Behavior>,
+  options: { fallbackModel?: string } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "cx-codex-usage-"));
   roots.push(root);
   execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "pipe" });
@@ -216,9 +246,12 @@ function fixture(behaviors: Record<string, (spawn: number) => Behavior>) {
     JSON.stringify({
       runtime: { transient_retry: { max_retries: 2, initial_delay_ms: 1, max_delay_ms: 2 } },
       credential_profiles: profiles,
-      harnesses: { codex: { default_model: "fixture-model" } },
+      harnesses: {
+        codex: { default_model: "fixture-model", fallback_model: options.fallbackModel ?? null },
+      },
     }),
   );
+  const models = ["fixture-model", ...(options.fallbackModel ? [options.fallbackModel] : [])];
   const spawns: Array<{ profile: string; resume: string | null }> = [];
   let threads = 0;
   const adapter: HarnessAdapter = {
@@ -260,7 +293,7 @@ function fixture(behaviors: Record<string, (spawn: number) => Behavior>) {
           implement: true,
           explain: true,
           read_files: true,
-          known_models: ["fixture-model"],
+          known_models: models,
         },
         auth_modes: ["local_session"],
         access_profiles_supported: ["readonly", "workspace_write"],
@@ -283,7 +316,7 @@ function fixture(behaviors: Record<string, (spawn: number) => Behavior>) {
       last_verified_at: new Date().toISOString(),
     }),
     async models() {
-      return [{ id: "fixture-model", label: null, context_window: null, routes: null }];
+      return models.map((id) => ({ id, label: null, context_window: null, routes: null }));
     },
   };
   // The daemon's own quota registry and account-observation composition.
@@ -304,13 +337,13 @@ function fixture(behaviors: Record<string, (spawn: number) => Behavior>) {
     credentialEvidence: daemon.deps.credentialEvidence,
     preProgressRefusals: daemon.deps.preProgressRefusals,
   });
-  const runOnce = async (pinned?: string) => {
+  const runOnce = async (pinned?: string, mode: "agent" | "ask" = "agent") => {
     const events: RunEvent[] = [];
     const before = spawns.length;
     const result = await orchestrator.run({
       repoRoot: root,
-      inPlace: true,
-      mode: "agent",
+      ...(mode === "agent" ? { inPlace: true } : {}),
+      mode,
       prompt: "Fix the fixture.",
       harnesses: ["codex"],
       models: { codex: "fixture-model" },
@@ -342,7 +375,15 @@ function fixture(behaviors: Record<string, (spawn: number) => Behavior>) {
       .snapshots.filter((s) => s.subject.harness === "codex" && s.subject.subject_id === profile)
       .flatMap((s) => s.constraints)
       .filter((c) => c.id === REOPENING_UNKNOWN_COOLDOWN_ID);
-  return { runOnce, cooldown, quota };
+  return {
+    runOnce,
+    cooldown,
+    quota,
+    adapter,
+    spawns,
+    profile: (id: string) => CredentialProfile.parse(profiles.find((p) => p.profile_id === id)),
+    observer: daemon.deps.credentialObserverFactory,
+  };
 }
 
 /**
@@ -672,5 +713,83 @@ describe("Codex typed usage refusal, adapter → orchestrator → daemon (#558, 
     expect(run.spawns.map((s) => s.profile)).toEqual(["a"]);
     expect(run.failure).toMatchObject({ code: "credential_pool_exhausted", resetsAt: null });
     expect(run.failure?.poolAttempts.map((row) => row.vendorFailure)).toEqual([VENDOR]);
+  });
+
+  it("a pinned Ask whose fallback model meets the refusal at setup still records it typed", async () => {
+    const f = fixture({ a: () => "refuse" }, { fallbackModel: "fixture-fallback" });
+    const run = await f.runOnce("a", "ask");
+    // The first try met the refusal; the fallback model's pinned preflight refused before a spawn.
+    expect(run.spawns).toEqual([{ profile: "a", resume: null }]);
+    expect(run.events.some((e) => e.type === "route.fallback.started")).toBe(true);
+    expect(run.failure).toMatchObject({
+      code: null,
+      category: "harness_unavailable",
+      resetsAt: null,
+      quotaRefusal: {
+        basis: "provider_cooldown",
+        constraintId: REOPENING_UNKNOWN_COOLDOWN_ID,
+        usedRatio: null,
+      },
+    });
+    expect(oldOuroborosHealsOnTimer(run.failure!)).toBe(false);
+  });
+});
+
+describe("an ordinary Codex reviewer and the typed usage refusal (#558)", () => {
+  /** One review by account `a` through the fixture's real Codex composition. */
+  async function review(f: ReturnType<typeof fixture>) {
+    const cwd = mkdtempSync(join(tmpdir(), "cx-codex-review-"));
+    roots.push(cwd);
+    const evidenceDir = join(cwd, ".claudexor-review-evidence");
+    mkdirSync(evidenceDir, { recursive: true });
+    const mandatory = ["USER_INTENT", "FORBIDDEN_FINDINGS", "PLAN_ACCEPTED", "DECIDED_TRADEOFFS"];
+    for (const name of [...mandatory.map((n) => `${n}.md`), "TESTS.txt"])
+      writeFileSync(join(evidenceDir, name), "(none)\n");
+    const artifactsDir = join(cwd, "review-artifacts");
+    const before = f.spawns.length;
+    const result = await reviewCandidate({
+      candidateLabel: "Candidate A",
+      diff: "diff --git a a",
+      cwd,
+      evidenceDir,
+      artifactsDir,
+      reviewers: [
+        {
+          adapter: f.adapter,
+          providerFamily: "openai",
+          requestedModel: "fixture-model",
+          authPreference: "subscription",
+          credentialProfile: f.profile("a"),
+        },
+      ],
+      transientRetryPolicy: { maxRetries: 2, initialDelayMs: 0, maxDelayMs: 0 },
+      credentialObserverFactory: f.observer,
+    });
+    const metadata = JSON.parse(
+      readFileSync(join(artifactsDir, "01-codex", "metadata.json"), "utf8"),
+    ) as Record<string, unknown>;
+    return { result, metadata, spawns: f.spawns.slice(before) };
+  }
+
+  it("never replays the refused account when the refusal's words also read as a broken stream", async () => {
+    const f = fixture({ a: () => "refuse_transport" });
+    const { metadata, spawns } = await review(f);
+    expect(spawns).toEqual([{ profile: "a", resume: null }]);
+    expect(metadata).toMatchObject({ status: "failed" });
+    expect(metadata).not.toHaveProperty("transient_retry");
+    // The refusal still reaches the account's quota evidence, as before.
+    expect(f.cooldown("a")).toHaveLength(1);
+  });
+
+  it("control: a broken stream with no typed refusal is still retried on the same account", async () => {
+    const f = fixture({ a: (spawn) => (spawn === 0 ? "transport" : "review_clean") });
+    const { result, metadata, spawns } = await review(f);
+    expect(spawns).toEqual([
+      { profile: "a", resume: null },
+      { profile: "a", resume: null },
+    ]);
+    expect(metadata).toMatchObject({ status: "completed", transient_retry: 1 });
+    expect(result.findings).toEqual([]);
+    expect(f.cooldown("a")).toEqual([]);
   });
 });

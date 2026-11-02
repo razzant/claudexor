@@ -5,7 +5,7 @@ import type {
   PreProgressRefusalObservation,
   QuotaSnapshot,
 } from "@claudexor/schema";
-import { GlobalConfig } from "@claudexor/schema";
+import { GlobalConfig, REOPENING_UNKNOWN_COOLDOWN_ID } from "@claudexor/schema";
 import { rankAccountPool, selectFromAccountPool } from "./account-pool.js";
 
 function row(id: string, overrides: Partial<CredentialProfile> = {}): CredentialProfile {
@@ -482,6 +482,50 @@ describe("account pool selection", () => {
       readyProfileIds: new Set(),
     });
     expect(selection).toEqual({ outcome: "empty", resets_at: null });
+  });
+
+  it("says a row the vendor refused with no reopening time (#558) leaves the spent pool undated", () => {
+    const refused = {
+      subject: {
+        harness: "claude",
+        credential_route: "vendor_native",
+        plan_label: null,
+        subject_id: "a",
+      },
+      constraints: [
+        {
+          id: REOPENING_UNKNOWN_COOLDOWN_ID,
+          label: "Cooldown",
+          used_ratio: null,
+          window_seconds: null,
+          resets_at: null,
+          cooldown_until: "2026-08-18T00:05:00Z",
+        },
+      ],
+      source: "claude_api_retry",
+      observed_at: "2026-08-18T00:00:30Z",
+      freshness: "fresh",
+    } as QuotaSnapshot;
+    const dated = snapshot("b", 1, { resetsAt: "2026-08-18T06:00:00Z" });
+    const pool = (ids: string[], snapshots: QuotaSnapshot[]) =>
+      selectFromAccountPool({
+        ...baseArgs,
+        registry: ids.map((id) => row(id)),
+        snapshots,
+        readyProfileIds: new Set(ids),
+      });
+    expect(pool(["a", "b"], [refused, dated])).toEqual({
+      outcome: "exhausted",
+      resets_at: null,
+      reserveOnly: false,
+      reopening: "unknown",
+    });
+    // Control: a dated window alone keeps its reset and claims no unknown reopening.
+    expect(pool(["b"], [dated])).toEqual({
+      outcome: "exhausted",
+      resets_at: "2026-08-18T06:00:00Z",
+      reserveOnly: false,
+    });
   });
 });
 

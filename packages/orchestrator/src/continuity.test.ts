@@ -269,6 +269,8 @@ describe("continuity summary plan + injection (INV-137, V9c)", () => {
     // recent turn stays verbatim.
     expect(r.packetMarkdown).not.toMatch(/- Turn 1 — user: prompt 1/);
     expect(r.packetMarkdown).toContain("## Recent turns");
+    // Every collapsed turn was answered: nothing is listed beside the summary (#405).
+    expect(r.packetMarkdown).not.toContain("Recorded output of the summarized turns");
   });
 
   it("a STALE summary (boundary moved) is ignored — mechanical one-liners render", () => {
@@ -405,6 +407,33 @@ describe("#405 a turn without a final answer, past the output allowance", () => 
     expect(line1(packet)).toBe(
       `- Turn 1 — user: audit the retry loop · assistant (ended without a final answer): …${"😀".repeat(99)}b (whole output: ${SOURCE})`,
     );
+    expect(packet).not.toMatch(NO_BROKEN_CHAR);
+  });
+
+  it("a summary of the collapsed turns keeps each unfinished turn's line beside it, whatever it says", () => {
+    const priorTurns: ContinuityTurn[] = [
+      unfinished(retainedFile(LONG)),
+      { ...unfinished(`${"😀".repeat(150)}b`), id: "t2", noFinalAnswer: "unknown" },
+      ...Array.from({ length: 5 }, (_, i) => turn(`t${i + 3}`, big, big)),
+    ];
+    const request = req({ priorTurns });
+    const plan = planContinuation(request);
+    expect(plan.collapsedPrefix.map((t) => t.id).slice(0, 3)).toEqual(["t1", "t2", "t3"]);
+    const listed = (packet: string) => packet.split("\n").filter((l) => l.startsWith("- Turn "));
+    // Without a summary the two unfinished turns are these lines; a summary keeps them.
+    const kept = listed(packetOf(priorTurns)).slice(0, 2);
+    expect(kept[0]).toContain(LATEST);
+    expect(kept[0]?.endsWith(` (whole output: ${SOURCE})`)).toBe(true);
+    // A summary cached before #405 says nothing of the partial output.
+    const summary = { upToTurnId: plan.summaryUpToTurnId as string, text: "OLD-SUMMARY: read." };
+    const packet = buildContinuation({ ...request, cachedSummary: summary }).packetMarkdown ?? "";
+    expect(packet).toContain(
+      "## Earlier conversation (summary)\n\nOLD-SUMMARY: read.\n\n" +
+        "Recorded output of the summarized turns that have no final answer (not a completion verdict):\n\n" +
+        `${kept.join("\n")}\n\n## Recent turns\n`,
+    );
+    // The answered collapsed turns stay replaced by the summary.
+    expect(listed(packet)).toEqual(kept);
     expect(packet).not.toMatch(NO_BROKEN_CHAR);
   });
 });

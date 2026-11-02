@@ -250,6 +250,8 @@ export type PoolSelection =
       resets_at: string | null;
       /** Every exhausted row stopped only at the owner's saved reserve. */
       reserveOnly?: boolean;
+      /** A row the vendor refused with no reopening time (#558): no reset is known. */
+      reopening?: "unknown";
     };
 
 /** Select the unpinned-run account from the pool (or report why not). */
@@ -271,5 +273,7 @@ export function selectFromAccountPool(args: Parameters<typeof rankAccountPool>[0
     }
   }
   // As in the pool terminal's fold: one member with no known reopening dates nothing.
-  return { outcome: "exhausted", resets_at: reopeningUnknown ? null : resetsAt, reserveOnly };
+  return reopeningUnknown
+    ? { outcome: "exhausted", resets_at: null, reserveOnly, reopening: "unknown" }
+    : { outcome: "exhausted", resets_at: resetsAt, reserveOnly };
 }

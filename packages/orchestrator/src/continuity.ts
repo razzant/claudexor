@@ -12,11 +12,12 @@
  * collapsed one-liners with real prose: the caller runs `planContinuation` to
  * learn which older turns would collapse (and their boundary turn id — the
  * summary cache key), resolves a summary for that prefix (cache hit or a bounded
- * inline summarization pass), and passes it back as `cachedSummary`. The
- * mechanical one-liner collapse is ALWAYS the fallback, so a missing/failed
- * summary never loses information. Either way `summarized` stays true (the
- * verbatim prefix was condensed); the packet text itself discloses which form
- * was used.
+ * inline summarization pass), and passes it back as `cachedSummary`. A collapsed
+ * turn without a final answer keeps its one-liner beside the summary, whatever
+ * the prose says (#405). The mechanical one-liner collapse is ALWAYS the
+ * fallback, so a missing/failed summary never loses information. Either way
+ * `summarized` stays true (the verbatim prefix was condensed); the packet text
+ * itself discloses which form was used.
  *
  * This module takes fully-resolved structured data (the daemon supplies thread
  * facts; the orchestrator reads prior outputs + git anchor) and returns the
@@ -38,7 +39,8 @@ export interface ContinuityTurn {
   id: string;
   /** The user's message for the turn, exactly as sent (INV-146). */
   prompt: string;
-  /** The turn's primary output text (final/answer.md), "" when none. */
+  /** The turn's primary output text (final/answer.md), "" when none, and ""
+   * for a turn the lane's native session already holds: no packet renders it. */
   outputText: string;
   /** #405: no final answer was recorded, and `outputText` is the turn's retained
    * output, never an answer. `ended`: its run did not succeed; `unknown`: its
@@ -111,7 +113,8 @@ export interface ContinuityRequest {
 export interface ResolvedSummary {
   /** The id of the LAST turn the summary covers (the collapse boundary). */
   upToTurnId: string;
-  /** The summary prose to render in place of the collapsed one-liners. */
+  /** The summary prose to render in place of the collapsed one-liners (an
+   * unfinished turn's line stays beside it). */
   text: string;
 }
 
@@ -210,7 +213,11 @@ function oneLine(text: string, keepEnd = false, source?: string): string {
 
 /** Delta turns for this lane: everything AFTER the checkpoint (all prior when
  * the lane never ran / has no reachable native session to trust). */
-function deltaTurns(req: ContinuityRequest): ContinuityTurn[] {
+export function deltaTurns<T extends { id: string }>(
+  req: Pick<ContinuityRequest, "laneCheckpointTurnId" | "nativeResumeAvailable"> & {
+    priorTurns: T[];
+  },
+): T[] {
   // Without a reachable native session the lane starts blank — carry the whole
   // prior conversation regardless of any stale checkpoint.
   if (!req.nativeResumeAvailable) return req.priorTurns;
@@ -264,9 +271,11 @@ function collapseCount(delta: ContinuityTurn[]): number {
 /**
  * Assemble the packet body from delta turns, collapsing the OLDEST turns while
  * the verbatim total exceeds the budget. When a `summary` covering the collapse
- * boundary is supplied it REPLACES the one-liners with real prose; otherwise the
- * mechanical one-liner collapse renders (always works). Returns the body and
- * whether any collapse happened (`summarized`).
+ * boundary is supplied it REPLACES the one-liners with real prose, except those
+ * of turns without a final answer: generated or cached prose may omit their
+ * output and never names its file, so their lines follow the summary (#405).
+ * Otherwise the mechanical one-liner collapse renders (always works). Returns
+ * the body and whether any collapse happened (`summarized`).
  */
 function renderPacket(
   delta: ContinuityTurn[],
@@ -297,14 +306,20 @@ function renderPacket(
     );
   }
   if (usableSummary) {
-    parts.push(
-      "## Earlier conversation (summary)",
-      "",
-      usableSummary.text.trim(),
-      "",
-      "## Recent turns",
-      "",
-    );
+    parts.push("## Earlier conversation (summary)", "", usableSummary.text.trim(), "");
+    const unfinished: string[] = [];
+    for (let i = 0; i < collapsedCount; i += 1) {
+      if (delta[i].noFinalAnswer) unfinished.push(collapsedEntry(delta[i], i));
+    }
+    if (unfinished.length > 0) {
+      parts.push(
+        "Recorded output of the summarized turns that have no final answer (not a completion verdict):",
+        "",
+        ...unfinished,
+        "",
+      );
+    }
+    parts.push("## Recent turns", "");
     for (let i = collapsedCount; i < delta.length; i += 1) {
       parts.push(verbatimEntry(delta[i], i));
     }

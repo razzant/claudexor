@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { ArtifactStore } from "@claudexor/artifact-store";
 import { runCapture, turnLimitError, type HarnessAdapter } from "@claudexor/core";
 import {
   ConformanceReport,
@@ -19,7 +20,10 @@ import {
   type HarnessEvent,
   type HarnessRunSpec,
 } from "@claudexor/schema";
+import { readThreadSummary, writeThreadSummary } from "@claudexor/workspace";
 import { threadContinuityContext } from "../../cli/src/thread-continuity-context.js";
+import { buildContinuation } from "./continuity.js";
+import { threadContinuityRequest } from "./continuity-facts.js";
 import { Orchestrator } from "./orchestrator.js";
 
 const reapDirs: string[] = [];
@@ -52,16 +56,30 @@ const STEPS = Array.from({ length: 400 }, (_, i) => `step ${i}: read module ${i}
 const LONG_PARTIAL = `${STEPS.join("\n")}\nLATEST-STATE: the deadline check belongs in retry.ts`;
 const PREAMBLE = "Attempts and physical sessions are kept separate.";
 type Ending = "stream_broke" | "turn_cap" | "answered" | "planned";
+/** A long answered turn: three of them after turn 1 outgrow the 24 KiB packet budget. */
+const filler = (kind: "PROMPT" | "ANSWER", n: number) => `FILLER-${kind}-${n} ${"f".repeat(6144)}`;
+const FRESH_SUMMARY = "FRESH-SUMMARY: the earlier turns read the retry modules.";
+/** What a summary cached before #405 says: nothing of the unfinished turn. */
+const CACHED_SUMMARY = "CACHED-SUMMARY: the earlier turns read the retry modules.";
 
-/** Lane A: speaks, then ends the way the case says. */
+/** Lane A: speaks, then ends the way the case says; a filler prompt gets its long answer. */
 function laneA(ending: Ending, speech: string): HarnessAdapter {
   return lane("lane-a", (spec) => {
     const ts = new Date().toISOString();
     const base = { session_id: spec.session_id, ts };
-    const events: HarnessEvent[] = [
-      { ...base, type: "started", payload: { native_session_id: "native-a" } },
-      { ...base, type: "message", text: speech },
-    ];
+    const started: HarnessEvent = {
+      ...base,
+      type: "started",
+      payload: { native_session_id: "native-a" },
+    };
+    const fill = /FILLER-PROMPT-(\d)/.exec(spec.prompt)?.[1];
+    if (fill)
+      return [
+        started,
+        { ...base, type: "message", text: filler("ANSWER", Number(fill)), final: true },
+        { ...base, type: "completed", payload: { exit_code: 0 } },
+      ];
+    const events: HarnessEvent[] = [started, { ...base, type: "message", text: speech }];
     if (ending === "answered" || ending === "planned")
       events.push({ ...base, type: "message", text: "FINAL-ANSWER-ALPHA", final: true });
     if (ending === "stream_broke")
@@ -80,10 +98,7 @@ function laneA(ending: Ending, speech: string): HarnessAdapter {
   });
 }
 
-function lane(
-  id: string,
-  script: (spec: { session_id: string }) => HarnessEvent[],
-): HarnessAdapter {
+function lane(id: string, script: (spec: HarnessRunSpec) => HarnessEvent[]): HarnessAdapter {
   return {
     id,
     async discover() {
@@ -112,19 +127,28 @@ function lane(
 
 /** Two turns of one thread; returns the packet lane B's process was pointed at.
  * `forget` deletes turn 1's named final files: its terminal facts, as when they
- * cannot be read, and its retained output, as when its terminal never wrote it. */
+ * cannot be read, and its retained output, as when its terminal never wrote it.
+ * With `summary`, three long answered turns follow turn 1 on lane A, so lane B's
+ * packet collapses turns 1 and 2 under a summary keyed by turn 2: lane B's own
+ * summary pass writes it (`fresh`), or it was already cached (`cached`). */
 async function nextLaneInput(
   ending: Ending,
   options: {
     forget?: ReadonlyArray<"run_facts.yaml" | "retained-output.md">;
     mode?: "ask" | "plan";
     speech?: string;
+    summary?: "fresh" | "cached";
   } = {},
-): Promise<{ prompt: string; packet: string; firstRunDir: string }> {
+) {
   const repo = await initRepo();
   const received: string[] = [];
+  let summaryPasses = 0;
   const laneB = lane("lane-b", (spec) => {
-    received.push((spec as unknown as { prompt: string }).prompt);
+    // The bounded summary pass (V9c) runs on the switching lane before its turn.
+    const summarizing = spec.prompt.includes("successor agent");
+    if (summarizing) summaryPasses += 1;
+    else received.push(spec.prompt);
+    const text = summarizing ? FRESH_SUMMARY : "answer from lane-b";
     const ts = new Date().toISOString();
     return [
       {
@@ -133,7 +157,7 @@ async function nextLaneInput(
         type: "started",
         payload: { native_session_id: "native-b" },
       },
-      { session_id: spec.session_id, ts, type: "message", text: "answer from lane-b", final: true },
+      { session_id: spec.session_id, ts, type: "message", text, final: true },
       { session_id: spec.session_id, ts, type: "completed" },
     ];
   });
@@ -179,10 +203,21 @@ async function nextLaneInput(
   );
   expect(first.lifecycle === "succeeded").toBe(ending === "answered" || planned);
   for (const name of options.forget ?? []) unlinkSync(join(first.runDir, "final", name));
-  await turn("t2", "lane-b", "NEXT-PROMPT: continue the audit", "ask");
+  if (options.summary) {
+    for (const n of [2, 3, 4]) await turn(`t${n}`, "lane-a", filler("PROMPT", n), "ask");
+    if (options.summary === "cached") writeThreadSummary(repo, "th-partial", "t2", CACHED_SUMMARY);
+  }
+  await turn(options.summary ? "t5" : "t2", "lane-b", "NEXT-PROMPT: continue the audit", "ask");
   const prompt = received.at(-1) ?? "";
   const path = /context for this thread is at: (.+?) — read it/.exec(prompt)?.[1];
-  return { prompt, packet: path ? readFileSync(path, "utf8") : "", firstRunDir: first.runDir };
+  return {
+    prompt,
+    packet: path ? readFileSync(path, "utf8") : "",
+    firstRunDir: first.runDir,
+    summaryPasses,
+    repo,
+    threads: store,
+  };
 }
 
 describe("#405 a turn without a final answer reaches the next lane as unfinished, not lost", () => {
@@ -270,6 +305,103 @@ describe("#405 a turn without a final answer reaches the next lane as unfinished
     expect(packet).toContain("LATEST-STATE: the deadline check belongs in retry.ts");
     expect(packet).toContain(`complete in ${join(firstRunDir, "events.jsonl")}]\n…`);
     expect(packet).not.toContain("ended without a final answer");
+  });
+});
+
+const LEAD =
+  "Recorded output of the summarized turns that have no final answer (not a completion verdict):";
+const turn1Line = (packet: string) => packet.split("\n").find((l) => l.startsWith("- Turn 1 "));
+
+describe("#405 a summary of the collapsed turns keeps an unfinished turn's output and file", () => {
+  it.each([
+    ["fresh", "retained file", []],
+    ["cached", "retained file", []],
+    ["fresh", "event log", ["run_facts.yaml", "retained-output.md"]],
+    ["cached", "event log", ["run_facts.yaml", "retained-output.md"]],
+  ] as const)("%s summary, turn 1 read from its %s", async (summary, from, forget) => {
+    const { packet, firstRunDir, summaryPasses, repo } = await nextLaneInput("stream_broke", {
+      summary,
+      forget,
+      speech: LONG_PARTIAL,
+    });
+    const text = summary === "fresh" ? FRESH_SUMMARY : CACHED_SUMMARY;
+    const [file, note] =
+      from === "event log"
+        ? [join(firstRunDir, "events.jsonl"), "no final answer recorded; outcome could not be read"]
+        : [join(firstRunDir, "final", "retained-output.md"), "ended without a final answer"];
+    expect(packet).toContain(
+      `## Earlier conversation (summary)\n\n${text}\n\n${LEAD}\n\n` +
+        `- Turn 1 — user: SEED-PROMPT: audit the retry loop · assistant (${note}): …`,
+    );
+    expect(turn1Line(packet)).toContain("LATEST-STATE: the deadline check belongs in retry.ts");
+    expect(turn1Line(packet)?.endsWith(` (whole output: ${file})`)).toBe(true);
+    // The answered turn 2 stays replaced by the summary; turns 3 and 4 are verbatim.
+    expect(packet).not.toContain("FILLER-ANSWER-2");
+    expect(packet).toContain("\n\n## Recent turns\n\n### Turn 3\n");
+    expect(packet).toContain("FILLER-ANSWER-4");
+    // Fresh: lane B's one pass wrote the boundary's cache entry. Cached: no pass ran.
+    expect(summaryPasses).toBe(summary === "fresh" ? 1 : 0);
+    expect(readThreadSummary(repo, "th-partial", "t2")).toBe(text);
+  });
+
+  it("a capped Plan turn is kept beside the summary like an Ask turn, with no plan to point at", async () => {
+    const { packet, firstRunDir } = await nextLaneInput("turn_cap", {
+      summary: "fresh",
+      mode: "plan",
+      speech: LONG_PARTIAL,
+    });
+    const file = join(firstRunDir, "final", "retained-output.md");
+    expect(packet).toContain(`${LEAD}\n\n- Turn 1 — user: SEED-PROMPT: audit the retry loop · `);
+    expect(turn1Line(packet)).toContain("assistant (ended without a final answer): …");
+    expect(turn1Line(packet)?.endsWith(` (whole output: ${file})`)).toBe(true);
+    expect(packet).not.toContain("## Active plan");
+  });
+
+  it("control: an answered or planned turn 1 stays replaced by the summary, as before", async () => {
+    for (const ending of ["answered", "planned"] as const) {
+      const { packet } = await nextLaneInput(ending, { summary: "fresh" });
+      expect(packet).toContain(
+        `## Earlier conversation (summary)\n\n${FRESH_SUMMARY}\n\n## Recent turns\n`,
+      );
+      expect(packet).not.toContain(LEAD);
+      expect(turn1Line(packet)).toBeUndefined();
+      expect(packet).not.toContain("FINAL-ANSWER-ALPHA");
+      expect(packet.includes("## Active plan")).toBe(ending === "planned");
+    }
+  });
+});
+
+describe("#405 a prior turn's output is read only for the turns a packet carries", () => {
+  it("a turn the lane's native session holds is never read, and the packet is unchanged", async () => {
+    // t1 ended unfinished on lane A, t2 answered on lane B; the next turn is t3.
+    const { threads, repo } = await nextLaneInput("stream_broke");
+    const ctx = threadContinuityContext({
+      threads,
+      threadId: "th-partial",
+      turnId: "t3",
+      profileId: null,
+    })!;
+    const store = new ArtifactStore(repo);
+    const request = (harness: string, resume: boolean) =>
+      threadContinuityRequest(ctx, { harness, profileId: null }, resume, store, repo);
+    const read = async (harness: string, resume: boolean) =>
+      (await request(harness, resume)).priorTurns.map((t) => t.outputText !== "");
+    // Lane A holds t1 natively and is told t2; lane B holds both; a lane that
+    // cannot resume natively is told, and reads, every turn.
+    expect(await read("lane-a", true)).toEqual([false, true]);
+    expect(await read("lane-b", true)).toEqual([false, false]);
+    expect(await read("lane-b", false)).toEqual([true, true]);
+    expect((await request("lane-b", false)).priorTurns[0]).toMatchObject({
+      noFinalAnswer: "ended",
+      outputSource: expect.any(String),
+    });
+    // What a packet renders does not depend on the turns it never carries.
+    const told = await request("lane-a", true);
+    const everything = await request("lane-a", false);
+    expect(buildContinuation(told)).toEqual(
+      buildContinuation({ ...told, priorTurns: everything.priorTurns }),
+    );
+    expect(buildContinuation(told).packetMarkdown).toContain("answer from lane-b");
   });
 });
 

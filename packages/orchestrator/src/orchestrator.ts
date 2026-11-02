@@ -95,6 +95,7 @@ import {
   candidateRoster,
   candidateStatuses,
   convergenceOutcomeFacts,
+  declaredFailureSpeaks,
   interruptionOf,
   isWorkingCandidate,
   partitionCandidates,
@@ -278,18 +279,8 @@ import {
 } from "./routeContext.js";
 import { resolveAutoReviewerPanel, resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { ensureClaudeBridgeForRun, ensureWriteModeGitBoundary } from "./git-precondition.js";
-import {
-  buildContinuation,
-  type ContinuityDisclosureResult,
-  type ContinuityRequest,
-  type ContinuityTurn,
-} from "./continuity.js";
-import {
-  activePlanPointer,
-  priorTurnOutput,
-  resolveContinuitySummary,
-  workspaceAnchor,
-} from "./continuity-facts.js";
+import { buildContinuation, type ContinuityDisclosureResult } from "./continuity.js";
+import { resolveContinuitySummary, threadContinuityRequest } from "./continuity-facts.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
 import {
   type DeepScanReducerDeps,
@@ -2158,31 +2149,13 @@ export class Orchestrator {
     if (!runInput.threadId || !ctx) return null;
     try {
       const profileId = resolvedProfileId ?? ctx.profileId ?? null;
-      const lane = { harness: harnessId, profileId };
-      const checkpoint = ctx.laneCheckpoints.find(
-        (c) => c.harness === harnessId && (c.profileId ?? null) === profileId,
-      );
-      const headTurnId = ctx.priorTurns.at(-1)?.id ?? null;
-      const priorHeadOwner = headTurnId
-        ? ctx.laneCheckpoints.find((c) => c.turnId === headTurnId)
-        : undefined;
-      const priorHeadLane = priorHeadOwner
-        ? { harness: priorHeadOwner.harness, profileId: priorHeadOwner.profileId ?? null }
-        : null;
-      const priorTurns: ContinuityTurn[] = ctx.priorTurns.map((t) => ({
-        id: t.id,
-        prompt: t.prompt,
-        ...priorTurnOutput(t.runId, store),
-      }));
-      const req: ContinuityRequest = {
-        lane,
-        priorTurns,
-        laneCheckpointTurnId: checkpoint?.turnId ?? null,
+      const req = await threadContinuityRequest(
+        ctx,
+        { harness: harnessId, profileId },
         nativeResumeAvailable,
-        priorHeadLane,
-        activePlan: activePlanPointer(ctx.priorTurns, store),
-        anchor: await workspaceAnchor(repoRoot),
-      };
+        store,
+        repoRoot,
+      );
       // V9c: when the packet would collapse an older prefix, replace the
       // mechanical one-liners with a cached (or freshly summarized) prose
       // summary. Same credential route + scoped lane home a real read-only
@@ -6682,7 +6655,8 @@ export class Orchestrator {
           report: "",
           error: message,
           telemetry,
-          ...(preDeclared.code ? { declaredFailure: preDeclared } : {}), // typed pre-spawn refusal
+          // A typed pre-spawn refusal, a provider refusal with no code of its own included (#558).
+          ...(declaredFailureSpeaks(preDeclared) ? { declaredFailure: preDeclared } : {}),
         });
         attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
         if (opts.deepScan) {

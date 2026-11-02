@@ -1738,7 +1738,9 @@ verdict whatever else blocks the account: another window's reset, a vendor retry
 delay or a vendor reset day keeps its meaning for that window alone and promises
 nothing about the account. Like the generic refusal it names no window, so a
 newer recognized primary read retires it under the reconciliation rules below,
-which permits the next attempt. A vendor-dated window with no such refusal
+which permits the next attempt. No transport retry replays the refused account,
+a reviewer seat's included, even when the refusal's words also read as a broken
+stream. A vendor-dated window with no such refusal
 beside it keeps its existing code and reset. A pinned account refused this way,
 on its own try or at a later preflight, never carries
 `subscription_window_exhausted`, which every reader takes as "waiting cures it"
@@ -1749,7 +1751,8 @@ try ran; the thrown refusal, its `ControlProblem.code` and `resumable.limitCode`
 name the existing term `vendor_limit_rejected`, which is deliberately not a
 `RunFailureCode`, since an old strict reader would drop a record with an unknown
 member. In a pool, such a member counts as cause `unavailable` rather than
-`quota` and leaves the pool's reset unknown even beside a dated member. When no
+`quota` and leaves the pool's reset unknown even beside a dated member, and the
+Accounts `next_up` text for that pool promises no reset. When no
 target survives (all spent/excluded/wrong-kind), the engine emits typed
 `route.profile.rotation_exhausted` with each rejected profile's reason and
 headroom or cooldown evidence (with its earliest known release instant); the
@@ -3680,8 +3683,11 @@ not retry automatically.
   migrated. A timeout or unavailable harness falls back to
   mechanical one-liners of at most 200 UTF-16 code units per field, cut the
   same way; an unfinished turn's line keeps the end of its output and, when
-  cut, names the file holding it whole, so the delta is never lost; the disclosure's
-  `summarized` flag is set either way. A `planRunId` body field implements an approved
+  cut, names the file holding it whole, so the delta is never lost. That line
+  also follows a summary that covers the turn, since generated or cached prose
+  may omit the output and never names its file; the disclosure's
+  `summarized` flag is set either way. A prior turn's output is read only for
+  the turns the packet carries. A `planRunId` body field implements an approved
   plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
   turn) and delivers it to the executor as a server-owned file reference, so the
   agent runs against the frozen plan rather than a bare prompt. `POST /v2/threads/:id/apply` delivers an isolated thread's accumulated
