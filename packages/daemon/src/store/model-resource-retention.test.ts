@@ -2,21 +2,28 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ModelCallRequest, type ModelPayloadRef } from "@claudexor/schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ModelOperations } from "../model-operations.js";
 import { setGlobalGenerationInTx } from "./generations.js";
 import { createPartition } from "./partitions.js";
 import { readResourceRow } from "./resource-rows.js";
 import { createSqlDaemonServices } from "./sql-daemon-services.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const READY = "2026-01-01T00:00:00.000Z";
 const EXPIRES = "2026-01-31T00:00:00.000Z";
 const LATE = "2026-04-01T00:00:00.000Z";
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture() {
@@ -65,9 +72,9 @@ async function fixture() {
     await store.close();
   };
   await open();
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanups.push(async () => {
     await close();
-    rmSync(root, { recursive: true, force: true });
   });
   return {
     get store() {

@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   EngineStore,
   createPartition,
@@ -10,6 +10,7 @@ import {
 } from "@claudexor/daemon";
 import { processTiming } from "@claudexor/util";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 /**
  * Production composition of terminal staging (`createSqlDaemonRuntime` wires
@@ -32,17 +33,23 @@ vi.mock("./run-orchestrator.js", () => ({
 }));
 
 const cleanups: Array<() => void | Promise<void>> = [];
+const removals: Array<() => void> = [];
 const configDir = process.env.CLAUDEXOR_CONFIG_DIR;
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanups.splice(0).reverse()) await fn();
-  if (configDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+  return () => {
+    for (const remove of ownedRemovals) remove();
+    if (configDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+  };
 });
 
 function temp(prefix: string): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
-  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  removals.push(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
 

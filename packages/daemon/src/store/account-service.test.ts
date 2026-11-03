@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CredentialProfile } from "@claudexor/schema";
 import { createAccountEvidence } from "../account-evidence.js";
 import { createPartition } from "./partitions.js";
@@ -15,6 +15,7 @@ import {
 import { createSqlDaemonServices } from "./sql-daemon-services.js";
 import { EngineStore } from "./store.js";
 import { builtWorker } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -115,13 +116,19 @@ CREATE TABLE unclassified(pid INTEGER NOT NULL, seq INTEGER NOT NULL, type TEXT 
 const V1_TABLES = [...V1_DDL.matchAll(/CREATE TABLE (\w+)\(/g)].map((match) => match[1]!);
 
 const cleanups: Array<() => Promise<void> | void> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "cx-account-service-"));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -136,13 +143,13 @@ async function openGraph(root: string, now?: () => Date) {
   if (!global)
     store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
   const graph = createSqlDaemonServices(store, { purgeFiles: async () => [root] });
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    await graph.close();
-    await store.close();
-  };
+  let closing: Promise<void> | undefined;
+  /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+  const close = () =>
+    (closing ??= (async () => {
+      await graph.close();
+      await store.close();
+    })());
   cleanups.push(close);
   return { store, graph, close };
 }

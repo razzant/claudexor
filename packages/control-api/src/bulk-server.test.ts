@@ -4,7 +4,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EventLog } from "@claudexor/event-log";
 import {
   ControlDaemonStatus,
@@ -16,6 +16,7 @@ import type { BulkJob, BulkKind, BulkResults } from "./bulk-protocol.js";
 import { projectBulkJob } from "./bulk-worker.js";
 import { DaemonControlApiServer, type DaemonControlApiOptions } from "./daemon-server.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 vi.mock("node:worker_threads", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:worker_threads")>();
@@ -44,12 +45,16 @@ function latch() {
   return { promise, resolve };
 }
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const release of releases.splice(0)) release();
   for (const socket of sockets.splice(0)) socket.destroy();
   for (const server of servers.splice(0)) await server.stop();
-  vi.restoreAllMocks();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    vi.restoreAllMocks();
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 function event(seq: number, type: string, payload: Record<string, unknown> = {}) {

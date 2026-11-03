@@ -3,20 +3,19 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 import { daemonApi, follow, ok, refused, TERMINAL } from "./mcp-controller-support.js";
-import { mcpStdioClient, type McpStdioClient } from "./mcp-stdio.js";
+import { closeThenDispose, mcpStdioClient, type McpStdioClient } from "./mcp-stdio.js";
 import { cli, makeSandbox, readRunFile, type Sandbox } from "./support.js";
 
 let sb: Sandbox | undefined;
 const clients: McpStdioClient[] = [];
-afterEach(async () => {
-  try {
-    for (const client of clients.splice(0)) await client.close();
-  } finally {
-    sb?.dispose();
-    sb = undefined;
-  }
+afterEachClosed((context) => {
+  // This test's sandbox, taken here: a late close never reaches the next test's.
+  const owned = sb;
+  sb = undefined;
+  return closeThenDispose(context, owned, clients.splice(0));
 });
 
 async function connect(sandbox: Sandbox) {

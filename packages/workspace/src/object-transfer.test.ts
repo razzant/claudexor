@@ -49,7 +49,7 @@ vi.mock("node:fs", async (original) => {
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const git = (cwd: string, args: string[], env: Record<string, string> = {}, input?: string) =>
   execFileSync("git", ["-C", cwd, ...args], { env: { ...ENV, ...env }, input })

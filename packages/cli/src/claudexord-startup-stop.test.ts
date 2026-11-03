@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { inspectDaemonWriterLease } from "@claudexor/daemon";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const sqlite = await import("node:sqlite").catch(() => null);
 const daemonEntry = resolve(import.meta.dirname, "../dist/claudexord.js");
@@ -120,17 +121,18 @@ function diagnostics(entry: OwnedChild): string {
 
 /** Joins exactly these test-owned children (SIGTERM, then SIGKILL, each
  * bounded; a child whose exit was observed is never signalled) and servers.
- * A failed test's diagnostics are read before anything is removed, and a root
- * is removed only after its child's close was observed. A root whose child
- * did not close stays, with a cleanup receipt, and the teardown reports it. */
-async function teardown(
+ * A failed test's diagnostics are read before anything is removed. The returned
+ * tail removes roots only after this close phase finishes within its hook deadline.
+ * An unclosed child keeps its root and a cleanup receipt; real cleanup errors stay red. */
+async function prepareTeardown(
   children: OwnedChild[],
   ownServers: Server[],
   failed: boolean,
   bounds: Bounds = { termMs: 5_000, killMs: 5_000 },
-): Promise<void> {
+): Promise<() => void> {
   const notes: string[] = [];
   const removable: string[] = [];
+  let incomplete = false;
   for (const entry of children) {
     let closed = false;
     for (const [signal, ms] of [
@@ -146,6 +148,7 @@ async function teardown(
       removable.push(entry.root);
       continue;
     }
+    incomplete = true;
     const receipt = join(entry.root, "cleanup-incomplete.json");
     const record = { label: entry.label, pid: entry.child.pid ?? null, bounds };
     writeFileSync(receipt, `${JSON.stringify(record, null, 2)}\n`);
@@ -154,23 +157,38 @@ async function teardown(
   for (const server of ownServers) {
     server.closeAllConnections();
     const shut = new Promise<boolean>((done) => server.close(() => done(true)));
-    if (!(await Promise.race([shut, pause(bounds.killMs).then(() => false)])))
+    if (!(await Promise.race([shut, pause(bounds.killMs).then(() => false)]))) {
+      incomplete = true;
       notes.push("a test-owned server did not close");
-  }
-  for (const root of removable) {
-    try {
-      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    } catch (error) {
-      notes.push(`kept ${root}: removal failed: ${String(error)}`);
     }
   }
-  if (notes.length === 0) return;
   const head = failed ? "test failed; fixture diagnostics:" : "fixture cleanup incomplete:";
-  throw new Error([head, ...notes].join("\n"));
+  if (incomplete) throw new Error([head, ...notes].join("\n"));
+  return () => {
+    for (const root of removable) {
+      try {
+        rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch (error) {
+        notes.push(`kept ${root}: removal failed: ${String(error)}`);
+      }
+    }
+    if (notes.length) throw new Error([head, ...notes].join("\n"));
+  };
 }
 
-afterEach(
-  (context) => teardown(owned.splice(0), servers.splice(0), context.task.result?.state === "fail"),
+/** Direct witness calls exercise the same close and removal phases as the hook. */
+async function teardown(
+  children: OwnedChild[],
+  ownServers: Server[],
+  failed: boolean,
+  bounds?: Bounds,
+): Promise<void> {
+  (await prepareTeardown(children, ownServers, failed, bounds))();
+}
+
+afterEachClosed(
+  (context) =>
+    prepareTeardown(owned.splice(0), servers.splice(0), context.task.result?.state === "fail"),
   30_000,
 );
 

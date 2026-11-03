@@ -23,7 +23,7 @@ import { Orchestrator, type OrchestratorResult, type RunInput } from "./orchestr
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function repository(): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "claudexor-instructed-footer-"));

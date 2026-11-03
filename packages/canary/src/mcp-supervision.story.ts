@@ -12,7 +12,7 @@ let sandbox: Sandbox | undefined;
 afterEach(() => {
   sandbox?.dispose();
   sandbox = undefined;
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function controller(sb: Sandbox) {
   const child = spawn(process.execPath, [CLI, "mcp", "serve"], {

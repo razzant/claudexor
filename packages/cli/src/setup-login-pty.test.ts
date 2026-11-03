@@ -17,7 +17,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("setup login terminal transport resolver", () => {
   it("requires a bounded successful ConPTY probe before returning the exact wrapper", async () => {

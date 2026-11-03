@@ -42,12 +42,21 @@ export function observe(name: string, value: unknown): void {
   observations[name] = value;
 }
 
-export async function closeDaemons(): Promise<void> {
+/** Folders whose test closed its daemons in time: the only ones removed at file end (#376). */
+const closedRoots: string[] = [];
+
+/** The close phase of this fixture's afterEachClosed hook; the tail hands the folders over. */
+export async function closeDaemons(): Promise<() => void> {
+  // This test's folders, taken before its closes: a later test never hands them over.
+  const ownedRoots = reap.splice(0);
   for (const close of closers.splice(0).reverse()) await close();
+  return () => {
+    closedRoots.push(...ownedRoots);
+  };
 }
 
 export function finishFixture(observationsPath?: string): void {
-  for (const dir of reap.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of closedRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
   if (observationsPath) writeFileSync(observationsPath, JSON.stringify(observations, null, 2));
 }
 

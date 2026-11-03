@@ -19,15 +19,16 @@ export async function sourceSqlFixture(root: string) {
   if (!currentGeneration(store, "global"))
     store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
   const graph = createSqlDaemonServices(store, { purgeFiles: async () => [root] });
-  let closed = false;
+  let closing: Promise<void> | undefined;
   return {
     store,
     graph,
-    async close() {
-      if (closed) return;
-      closed = true;
-      await graph.close();
-      await store.close();
+    /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+    close() {
+      return (closing ??= (async () => {
+        await graph.close();
+        await store.close();
+      })());
     },
   };
 }

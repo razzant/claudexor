@@ -43,7 +43,7 @@ describe("resolveHarnessBinary", () => {
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function fakeBin(dir: string, name: string): string {
     mkdirSync(dir, { recursive: true });
@@ -364,7 +364,7 @@ describe("managedRunnerNodeDir (QA-022 grandchild-shell Node anchor)", () => {
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function fakeNode(dir: string): string {
     mkdirSync(dir, { recursive: true });
@@ -472,7 +472,7 @@ describe("Windows npm layout and the package-native image (issue #191)", () => {
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("spells npm's global prefix layout and the embedded npm-cli.js once per platform", () => {
     expect(npmGlobalPackagesDir("/p", "linux")).toBe(join("/p", "lib", "node_modules"));

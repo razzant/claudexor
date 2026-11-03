@@ -18,7 +18,7 @@ import { Orchestrator, type RunInput } from "./orchestrator.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function fixture(): Promise<{ repoRoot: string; cache: string; cacheLink: string }> {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "aux-roots-run-")));

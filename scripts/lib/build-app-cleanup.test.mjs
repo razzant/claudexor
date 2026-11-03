@@ -26,7 +26,7 @@ afterEach(() => {
   for (const root of fixtureRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;

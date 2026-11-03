@@ -19,7 +19,7 @@ afterEach(() => {
   for (const log of logs.splice(0)) log.dispose();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 class Response extends EventEmitter {
   body = "";

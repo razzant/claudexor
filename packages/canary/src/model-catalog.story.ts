@@ -16,7 +16,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 /** A loopback port nothing listens on (port 1 would be refused by fetch's
  * blocked-port list before any socket, which is a different failure). */

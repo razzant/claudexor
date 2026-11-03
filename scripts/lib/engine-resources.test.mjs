@@ -21,7 +21,7 @@ const roots = [];
 const shellTest = existsSync("/bin/bash") ? test : test.skip;
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** Stand-in for scripts/provision-betterleaks.mjs: logs its argv; `--stage`
  * writes a scanner answering `version` with `version`, and

@@ -24,7 +24,7 @@ import { routePromptCacheTtl, withReviewerPromptCacheTtl } from "./prompt-cache-
 const roots: string[] = [];
 afterEach(() => {
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const declaring = {
   id: "cached",

@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
 import { ControlRunStartRequest as PreGroupRunStartRequest } from "./test-support/fixtures/legacy/schema/control.js";
 import { ControlRunStartRequest, RunEvent, type CommandListQuery } from "@claudexor/schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BlobFiles, deleteUnownedInlineInTx } from "./blob-files.js";
 import { SqlCommandStore } from "./commands.js";
 import { applyCommandPruneInTx, SqlCommandPruner } from "./command-prune.js";
@@ -32,18 +32,25 @@ import { parseDecisionMutation } from "../operator-decisions.js";
 import type { JobRecord } from "../job-record.js";
 import { DaemonServer } from "../server.js";
 import type { CommandBackend } from "../command-authority.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 const wire = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 async function fixture() {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-sql-command-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),

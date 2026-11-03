@@ -6,7 +6,7 @@ import {
   JournalCursorError as LegacyCursorError,
 } from "./test-support/fixtures/legacy/journal/index.js";
 import { ControlJournalEvent } from "@claudexor/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import {
   JOURNAL_PAGE_BYTES,
@@ -24,6 +24,7 @@ import { SqlEventLedger } from "./event-store.js";
 import { createPartition, currentGeneration } from "./partitions.js";
 import { appendEvent } from "./retention.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -44,10 +45,12 @@ const journals: DurableJournal[] = [];
 beforeEach(() => {
   root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-cursors-")));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const journal of journals.splice(0)) journal.close();
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function openStore(): Promise<EngineStore> {
   const store = await EngineStore.open({

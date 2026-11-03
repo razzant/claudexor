@@ -65,7 +65,7 @@ describe("claudexor follow", () => {
     if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function writeControlApiInfo(port: number): void {
     const daemonDir = join(dir, "daemon");
@@ -720,7 +720,7 @@ describe("claudexor follow text mode", () => {
     if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("prints the doubled codex answer once on the live stream", async () => {
     const answer = "The bug is in the retry loop.";
@@ -1061,7 +1061,7 @@ describe("follow surfaces typed refusals through the projector (#93 R1)", () => 
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     recordEngineSkew(null);
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function writePointer(content: string): void {
     const daemonDir = join(dir, "daemon");
@@ -1218,7 +1218,7 @@ describe("control-api pointer structural validation (#93 R2)", () => {
     if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function writePointer(content: string): void {
     const daemonDir = join(dir, "daemon");

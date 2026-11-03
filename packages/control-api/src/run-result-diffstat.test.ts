@@ -11,7 +11,7 @@ import { controlRunResult } from "./run-delivery-state.js";
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function run(meta: Record<string, unknown>, attempt?: Record<string, unknown>) {
   const runDir = mkdtempSync(join(tmpdir(), "cx-diffstat-"));

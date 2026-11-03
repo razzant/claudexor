@@ -32,7 +32,7 @@ afterEach(() => {
   vi.mocked(fs.readFileSync).mockImplementation(original.readFileSync);
   vi.mocked(fs.writeFileSync).mockImplementation(original.writeFileSync);
   for (const root of roots.splice(0)) original.rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function digest(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;

@@ -34,7 +34,7 @@ vi.mock("./git-observed.js", async (original) => {
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 beforeEach(() => {
   process.env["CLAUDEXOR_CONFIG_DIR"] = mkdtempSync(join(tmpdir(), "cx-lease-config-"));
   dirs.push(process.env["CLAUDEXOR_CONFIG_DIR"]);

@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   existsSync,
   mkdirSync,
@@ -17,16 +17,23 @@ import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { createNativeHomeRetention } from "./native-home-retention.js";
 import { recordLastRetention, readLastRetention } from "./retention-last-pass.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const close: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const fn of close.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 it.each(["archived-null", "active-null", "dangling", "both", "healthy-and-dangling"])(
   "owns runs/native retirement for %s truthfully",
   async (kind) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "retention-binding-")));
-    close.push(() => rmSync(root, { recursive: true, force: true }));
+    removals.push(() => rmSync(root, { recursive: true, force: true }));
     const before = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = join(root, "engine");
     close.push(() => {

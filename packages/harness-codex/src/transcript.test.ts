@@ -47,7 +47,7 @@ describe("codexTranscriptModel", () => {
       ].join("\n") + "\n",
     );
   });
-  afterAll(() => rmSync(home, { recursive: true, force: true }));
+  afterAll(() => rmSync(home, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("reads the model codex recorded for the matching thread (verified-tier evidence)", () => {
     expect(codexTranscriptModel(home, thread)).toBe("gpt-5.5");
@@ -276,7 +276,7 @@ describe("codexTranscriptVendorFailure", () => {
   let seq = 0;
   afterAll(() => {
     for (const home of homes) rmSync(home, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   /** Install `content` as the rollout of a fresh thread in a fresh CODEX_HOME. */
   function install(content: string): { home: string; thread: string; file: string } {
@@ -578,7 +578,7 @@ describe("bounded rollout reads (#336)", () => {
   const thread = "0199eeee-ffff-7000-8111-222233334444";
   const homes: string[] = [];
   afterEach(() => setRolloutReadLimitsForTests(null));
-  afterAll(() => homes.forEach((home) => rmSync(home, { recursive: true, force: true })));
+  afterAll(() => homes.forEach((home) => rmSync(home, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
   function install(content: string): { home: string; file: string } {
     const home = mkdtempSync(join(tmpdir(), "codex-bounded-"));
     homes.push(home);

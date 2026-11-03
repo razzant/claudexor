@@ -22,7 +22,7 @@ const token = "event-reuse-http";
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const plan = [{ id: "p1", title: "Ранний план", status: "in_progress" }];
 let seq = 0;

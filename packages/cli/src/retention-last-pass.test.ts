@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +10,18 @@ import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { handleMaintenanceRoute } from "../../control-api/src/maintenance-routes.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function receipt() {
   return ControlGcReceipt.parse({
@@ -29,7 +36,7 @@ function receipt() {
 }
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "gc-last-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const sql = await sqlFixture(root);
   cleanup.push(() => sql.close());
   return { root, sql };

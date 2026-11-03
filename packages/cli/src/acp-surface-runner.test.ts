@@ -80,7 +80,7 @@ describe("ACP run-control projection", () => {
 const tempDirs: string[] = [];
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
 

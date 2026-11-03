@@ -54,7 +54,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function row(id: string): CredentialProfile {
   const home = join(root, "profiles", `cursor-${id}`);

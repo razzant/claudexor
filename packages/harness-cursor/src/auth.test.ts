@@ -1672,7 +1672,7 @@ describe("models() under a pinned credential profile (INV-135 x INV-104)", () =>
     if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
     rmSync(configRoot, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
   const fileStoreProfile = {
     profile_id: "valentine",
     harness_id: "cursor",

@@ -60,7 +60,7 @@ function thrownBy(fn: () => unknown): { code?: string; message: string } {
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function temp(name: string): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `claudexor-retained-${name}-`)));

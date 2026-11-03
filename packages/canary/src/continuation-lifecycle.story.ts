@@ -24,7 +24,7 @@ afterEach(() => {
     sandbox.dispose();
     sandbox = undefined;
   }
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function startDaemon(sb: Sandbox): number {
   const result = cli(sb, ["daemon", "start", "--json"], {

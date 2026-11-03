@@ -95,7 +95,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function seedOwner(owner: unknown, path = leasePath): string {
   mkdirSync(path, { mode: 0o700 });

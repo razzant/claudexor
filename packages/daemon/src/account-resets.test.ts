@@ -2,12 +2,19 @@ import { sqlFixture } from "./store/test-support/sql-fixture.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AccountResets, type AccountResetDependencies } from "./account-resets.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0);
   for (const fn of cleanup.splice(0)) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 const request = {
   target: { harness: "claude", profile_id: "claude-default" },
@@ -17,9 +24,9 @@ const request = {
 async function fixture(harness = "claude") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "account-reset-test-")));
   let sql = await sqlFixture(root);
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanup.push(async () => {
     await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   let store = sql.graph.commands.current();
   const binding = {
@@ -77,7 +84,9 @@ describe("direct durable account resets", () => {
     });
     const operations = new AccountResets(f.deps);
     const first = operations.create(f.input);
-    await vi.waitFor(() => expect(f.deps.consume).toHaveBeenCalledOnce());
+    // consume follows the durable intent barrier (one flusher pass, much slower
+    // under disk contention, #441); a 1 s window is not part of the contract.
+    await vi.waitFor(() => expect(f.deps.consume).toHaveBeenCalledOnce(), { timeout: 10_000 });
     const second = operations.create(f.input);
     release();
     const [a, b] = await Promise.all([first, second]);

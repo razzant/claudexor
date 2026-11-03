@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ControlJournalInspection,
   ControlJournalQuarantineReceipt,
@@ -38,6 +38,7 @@ import { SqlPartitionRecovery, type SqlRecoveryOptions } from "./sql-recovery.js
 import { EngineStore } from "./store.js";
 import { SqlUploads } from "./uploads.js";
 import { uploadKeyDigest } from "./upload-binding-retention.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
@@ -83,12 +84,16 @@ beforeEach(async () => {
   );
   projects = new SqlProjectStore(store, blobs, obligations);
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
-  await maintenance?.stop();
-  obligations?.close();
-  await store?.close();
-  rmSync(root, { recursive: true, force: true });
+  // This test's handles, taken before their closes: a late close never reaches the next test's.
+  const [ownedMaintenance, ownedObligations, ownedStore] = [maintenance, obligations, store];
+  await ownedMaintenance?.stop();
+  ownedObligations?.close();
+  await ownedStore?.close();
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 const ledger = (generation = globalGeneration(store)!) =>

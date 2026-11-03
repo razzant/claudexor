@@ -1,18 +1,20 @@
 /** Offline built stdio/HTTP/SQL qualification. AUTHORED ONLY in the source
  * implementation run; the controller runs this after building the candidate. */
-import { afterEach, expect, it } from "vitest";
+import { expect, it } from "vitest";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 import { DeferredMessageReceipt, DeferredMessageReadResult } from "@claudexor/schema";
 import { cli, makeSandbox, type Sandbox } from "./support.js";
-import { mcpStdioClient, type McpStdioClient } from "./mcp-stdio.js";
+import { closeThenDispose, mcpStdioClient, type McpStdioClient } from "./mcp-stdio.js";
 import { TERMINAL, follow, ok, parked, refused, until } from "./mcp-controller-support.js";
 
 let sandbox: Sandbox | undefined;
 let mcp: McpStdioClient | undefined;
-afterEach(async () => {
-  await mcp?.close();
-  mcp = undefined;
-  sandbox?.dispose();
+afterEachClosed((context) => {
+  // This test's sandbox and client, taken here: a late close never reaches the next test's.
+  const owned = { sandbox, clients: mcp ? [mcp] : [] };
   sandbox = undefined;
+  mcp = undefined;
+  return closeThenDispose(context, owned.sandbox, owned.clients);
 });
 
 it("[INV-142:deferred-next-message] edits one reserved draft, dispatches one settled successor and returns held output handles", async () => {

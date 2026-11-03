@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createPartition,
   createSqlDaemonServices,
@@ -17,15 +17,22 @@ import { DaemonControlApiServer } from "@claudexor/control-api";
 import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
 import type { RunTimeLimitRequest, RunTimeLimitSnapshot, TimeLimitMode } from "@claudexor/schema";
 import { createRunTimeLimit } from "./run-time-limit.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-rtl-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: root,
     workerEntry: resolve(import.meta.dirname, "../../daemon/dist/store/flusher-worker.js"),

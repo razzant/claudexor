@@ -72,7 +72,7 @@ afterEach(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 interface Driven {
   child: ChildProcess;

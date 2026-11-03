@@ -35,12 +35,8 @@ const temp = (prefix: string) => {
   dirs.push(dir);
   return dir;
 };
-// Many small repositories; removing them can exceed the default hook timeout
-// on a busy file system.
-afterAll(
-  () => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })),
-  60_000,
-);
+// Many small repositories; removing them can take long on a busy file system.
+afterAll(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function repo(): string {
   const root = temp("claudexor-scan-repo-");

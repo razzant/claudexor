@@ -1,21 +1,28 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setGlobalGenerationInTx } from "./store/generations.js";
 import { createPartition } from "./store/partitions.js";
 import { createSqlDaemonServices } from "./store/sql-daemon-services.js";
 import { EngineStore } from "./store/store.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 describe("the durable delivery journal over the SQL store", () => {
   it("keeps a refusal's code, recovery actions and context, so a replay answers the same", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "delivery-journal-")));
-    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    removals.push(() => rmSync(root, { recursive: true, force: true }));
     const store = await EngineStore.open({
       daemonDir: root,
       workerEntry: resolve(import.meta.dirname, "../dist/store/flusher-worker.js"),

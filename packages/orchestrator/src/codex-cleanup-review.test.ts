@@ -22,7 +22,7 @@ const peer = fileURLToPath(
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("completed Codex verdict through the real read-only result owner", () => {
   it.each(['{"verdict":"PASS"}', '{"verdict":"FAIL","finding":"defect"}'])(

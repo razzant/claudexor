@@ -63,7 +63,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("SetupJobStore global-journal authority", () => {
   it("rebuilds saved, binding and log records from mixed history without copying unrelated payloads", () => {

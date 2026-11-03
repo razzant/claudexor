@@ -47,6 +47,9 @@ interface FixtureRun {
 
 export async function startInteractionDaemon(options: {
   cleanups: Cleanups;
+  /** Takes the fixture root's removal. The caller runs it only after every close in `cleanups`
+   * settled in time (`afterEachClosed`), so a failed or late close keeps the root (#376). */
+  removals: Array<() => void>;
   harnessId: string;
   /** Prompt every started run carries. */
   prompt: string;
@@ -58,7 +61,7 @@ export async function startInteractionDaemon(options: {
   const { cleanups } = options;
   const waitMs = options.waitMs ?? 5_000;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-interaction-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  options.removals.push(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "workspace");
   mkdirSync(workspace);
   const store = await EngineStore.open({

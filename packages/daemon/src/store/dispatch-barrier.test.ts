@@ -8,7 +8,7 @@ import {
   ModelCallResult,
   type ModelPayloadRef,
 } from "@claudexor/schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCodexModelAdapter } from "../../../harness-codex/src/model.js";
 import { CODEX_HTTP_CLIENT_VERSION } from "../../../harness-codex/src/http-client-version.js";
 import { AccountResets } from "../account-resets.js";
@@ -21,15 +21,22 @@ import { Obligations } from "./obligations.js";
 import { createPartition } from "./partitions.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const NOW = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-q2-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),

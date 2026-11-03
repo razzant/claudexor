@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { MaintenanceController } from "./maintenance.js";
 import { runMutation } from "./mutation.js";
 import { putUploadInTx, readUploadRow, payloadRef } from "./resource-rows.js";
@@ -12,6 +12,7 @@ import {
   uploaded,
   type ResourceFixture,
 } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const fixtures: ResourceFixture[] = [];
@@ -32,10 +33,16 @@ function maintenance(f: ResourceFixture) {
   controllers.push(controller);
   return controller;
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a late close or a later test never reaches
+  // another test's.
+  const ownedRoots = roots.splice(0);
+  const ownedFixtures = fixtures.splice(0);
   for (const controller of controllers.splice(0)) await controller.stop();
-  for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const f of ownedFixtures) await f.close();
+  return () => {
+    for (const path of ownedRoots) rmSync(path, { recursive: true, force: true });
+  };
 });
 const settleTick = () => new Promise<void>((resolve) => setImmediate(resolve));
 

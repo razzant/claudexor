@@ -10,7 +10,7 @@ import {
   ModelCallRequest,
   ModelCallResult,
 } from "@claudexor/schema";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DaemonClient } from "../client.js";
 import { ModelOperations } from "../model-operations.js";
 import { DaemonServer } from "../server.js";
@@ -21,6 +21,7 @@ import { payloadRef } from "./resource-rows.js";
 import { createSqlDaemonServices } from "./sql-daemon-services.js";
 import { EngineStore } from "./store.js";
 import { builtWorker, chunks } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 // Native read failures are deterministic even when chmod would be bypassed.
 // The later fault starts only after the response part has been written.
@@ -54,11 +55,17 @@ vi.mock("node:fs", async (original) => {
 });
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   fault.dir = "";
   fault.active = fault.afterWrite = false;
   fault.reads = [];
   for (const close of cleanup.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 const route = {
   source: "codex",
@@ -141,15 +148,15 @@ async function serve(root: string, adapter: ModelAdapter) {
     runner: (input, context) => operations.execute(input, context),
     onCommandTerminal: (record) => operations.onCommandTerminal(record),
   });
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    await server.stop();
-    operations.close();
-    await graph.close();
-    await store.close();
-  };
+  let closing: Promise<void> | undefined;
+  /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+  const close = () =>
+    (closing ??= (async () => {
+      await server.stop();
+      operations.close();
+      await graph.close();
+      await store.close();
+    })());
   cleanup.push(close);
   await server.start();
   return { store, graph, operations, close };
@@ -165,7 +172,7 @@ describe("new model result publication with unavailable legacy upload keys", () 
     "keeps the %s response when the directory fails before internal %s",
     async (kind, stage) => {
       const root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), "cx-pub-")));
-      cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
+      removals.push(() => fs.rmSync(root, { recursive: true, force: true }));
       const dispatch = vi.fn(async (context: ModelAdapterContext) => {
         await context.onDispatch(route);
         // Admission and its durable dispatch barrier have already succeeded.

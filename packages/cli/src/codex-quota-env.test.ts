@@ -22,7 +22,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe.skipIf(process.platform === "win32")("Codex quota from a GUI environment", () => {
   it.each([

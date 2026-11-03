@@ -18,7 +18,7 @@ afterEach(() => {
   if (originalBin === undefined) delete process.env.CLAUDEXOR_AGY_BIN;
   else process.env.CLAUDEXOR_AGY_BIN = originalBin;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function fixture(script: string) {
   const parent = join(claudexorOwnedRoot(), "profiles");

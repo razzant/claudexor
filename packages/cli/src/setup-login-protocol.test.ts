@@ -45,7 +45,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function knownLeader(pid: number): KnownProcessIdentity {
   return {

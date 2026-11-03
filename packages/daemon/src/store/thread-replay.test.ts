@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hashJson } from "@claudexor/util";
 import { BlobFiles } from "./blob-files.js";
 import { setGlobalGenerationInTx } from "./generations.js";
@@ -14,6 +14,7 @@ import { EngineStore } from "./store.js";
 import { findThreadCreationAcross, threadReplayQuery } from "./thread-replay.js";
 import { buildNewThread, threadCreationIdempotency } from "../thread-store-support.js";
 import { applyThreadMutation, prepareThreadMutation } from "./thread-rows.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 let root: string,
   store: EngineStore,
@@ -32,11 +33,13 @@ beforeEach(async () => {
   projects = new SqlProjectStore(store, new BlobFiles(store), obligations);
   router = new SqlProjectRouter(projects);
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   obligations?.close();
   await store?.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 describe("thread creation replay before mutable root admission", () => {

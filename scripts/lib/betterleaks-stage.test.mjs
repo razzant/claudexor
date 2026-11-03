@@ -21,7 +21,7 @@ import { refreshProvenance, stagePlatform, stagedPlatforms } from "./betterleaks
 const roots = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const tarTest = process.platform === "win32" ? test.skip : test;
 

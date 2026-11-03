@@ -23,7 +23,7 @@ import type { RoutedAdapter } from "./orchestrator.js";
 const __dirs: string[] = [];
 afterAll(() => {
   for (const d of __dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** An adapter that emits a single final message (the reducer's raw output). */
 function reducerAdapter(finalText: string): HarnessAdapter {

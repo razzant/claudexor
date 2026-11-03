@@ -49,7 +49,7 @@ afterEach(() => {
   observed.options.length = 0;
   observed.captures.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function spec(
   prompt: string,
   instructions?: string,

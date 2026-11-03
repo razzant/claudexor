@@ -72,7 +72,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 /** The resolver and spawn layer read `process.platform`; report win32 during `run`. */
 async function onWindows<T>(run: () => Promise<T>): Promise<T> {

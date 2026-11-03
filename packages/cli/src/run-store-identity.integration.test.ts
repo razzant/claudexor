@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ajv } from "ajv";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DaemonClient, DaemonServer } from "@claudexor/daemon";
 import { DaemonControlApiServer } from "@claudexor/control-api";
 import {
@@ -29,6 +29,7 @@ import * as daemonRun from "./daemon-run.js";
 import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { projectTerminalRunOutput } from "./terminal-run-output.js";
 import { threadTurnServices } from "./thread-turn-services.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const TOKEN = "store-identity-fixture";
 const BIND = "bind a run";
@@ -37,9 +38,15 @@ const REFUSE = "refuse before a run";
 const REFUSE_ONCE = "refuse once before a run";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 interface EngineOptions {
@@ -52,7 +59,7 @@ interface EngineOptions {
 
 async function engine(options: EngineOptions = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-store-id-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const sql = await sqlFixture(root);
   cleanups.push(() => sql.close());
   const refusedOnce = new Set<string>();

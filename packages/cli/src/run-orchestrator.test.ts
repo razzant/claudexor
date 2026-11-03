@@ -16,7 +16,7 @@ const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const close of cleanup.splice(0).reverse()) close();
   credentialUnusableLedger.noteCredentialChange();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-intake-")));

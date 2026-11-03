@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { payloadRef, readResourceRow, readUploadRow } from "./resource-rows.js";
 import { MaintenanceController } from "./maintenance.js";
 import {
@@ -11,6 +11,7 @@ import {
   uploadRequest,
   type ResourceFixture,
 } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const fixtures: ResourceFixture[] = [];
@@ -25,11 +26,17 @@ async function open(path = root(), clear = true) {
   fixtures.push(f);
   return f;
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a late close or a later test never reaches
+  // another test's.
+  const ownedRoots = roots.splice(0);
+  const ownedFixtures = fixtures.splice(0);
   vi.restoreAllMocks();
   for (const controller of controllers.splice(0)) await controller.stop();
-  for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const f of ownedFixtures) await f.close();
+  return () => {
+    for (const path of ownedRoots) rmSync(path, { recursive: true, force: true });
+  };
 });
 const count = (f: ResourceFixture, table: string) =>
   Number((f.store.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n);

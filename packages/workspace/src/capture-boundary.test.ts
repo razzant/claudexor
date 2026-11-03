@@ -11,7 +11,7 @@ import { WorkspaceManager } from "./manager.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function scratch(parent: string, prefix: string): string {
   const dir = mkdtempSync(join(parent, prefix));

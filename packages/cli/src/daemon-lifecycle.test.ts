@@ -17,7 +17,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("armDaemonLifecycle", () => {
   it("leaves a previous life's pids.json byte-untouched until snapshots are armed; crash-GC consumes it on the normal start (C2)", async () => {

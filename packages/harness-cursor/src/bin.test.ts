@@ -41,7 +41,7 @@ function onPath(...dirs: string[]): (bin: string) => string | null {
 }
 afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 // Pure resolver decisions: no links and nothing executed, so they hold on
 // every platform.

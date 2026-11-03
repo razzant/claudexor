@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ResourceStorePort } from "../store-contracts.js";
 import { ResourceStore as FrozenResourceStore } from "./test-support/fixtures/legacy/daemon/resource-store.js";
 import {
@@ -15,6 +15,7 @@ import { readUploadRow, putResourceInTx, putUploadInTx, readResourceRow } from "
 import type { SqlWriteContext } from "./mutation.js";
 import { lookupIdempotency } from "./idempotency.js";
 import { uploadKeyDigest } from "./upload-binding-retention.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -56,7 +57,9 @@ async function fixture() {
   fixtures.push(f);
   return f;
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.mocked(fs.readdirSync).mockReset();
@@ -64,7 +67,9 @@ afterEach(async () => {
   vi.mocked(fs.openSync).mockReset();
   vi.mocked(fs.closeSync).mockReset();
   for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) fs.rmSync(path, { recursive: true, force: true });
+  return () => {
+    for (const path of ownedRoots) fs.rmSync(path, { recursive: true, force: true });
+  };
 });
 function failure(fn: () => unknown) {
   try {

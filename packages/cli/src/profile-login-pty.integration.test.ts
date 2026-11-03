@@ -1,4 +1,4 @@
-import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
@@ -21,6 +21,7 @@ import { createCursorAdapter } from "@claudexor/harness-cursor";
 import { registerConfigDirProfile } from "./profile-registration.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { createSetupJobManager } from "./setup-jobs.js";
+import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
 
 // This is the built CLI, real terminal, Control API, lifecycle, runner and
 // process-group owner. Only the vendor and socket health facade are fixtures.
@@ -151,8 +152,10 @@ setInterval(() => {
   const profile = registerConfigDirProfile({ harnessId: "cursor", profileId: "work" }).profile;
   const cursor = createCursorAdapter();
   const token = ensureToken();
+  // The daemon's SQL setup store; its engine store lives in daemonDir() and is closed here.
+  const sql = await sqlFixture(root);
   const manager = createSetupJobManager({
-    store: new SetupJobStore(daemonDir()),
+    store: new SqlSetupLifecycleSlot(daemonDir(), sql.graph).current(),
     rootDir: daemonDir(),
     runnerPath: RUNNER,
     monitorPollMs: 20,
@@ -200,7 +203,7 @@ setInterval(() => {
     await until("fixture login drain", () => manager.list({ active: true }).length === 0);
     await Promise.all(clients.map((client) => client.stop()));
     await manager.shutdown();
-    (manager._store as SetupJobStore).journal.close();
+    await sql.close();
     await server.stop();
     await new Promise<void>((resolve) => health.close(() => resolve()));
     for (const key of keys) {

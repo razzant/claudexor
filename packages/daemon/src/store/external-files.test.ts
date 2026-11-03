@@ -75,10 +75,11 @@ beforeEach(() => {
   openSpy.mockClear();
   Object.assign(pool, { flags: [], hold: null, entered: false });
 });
+// Synchronous restore and removal: no deadline (#376, see vitest.setup.ts).
 afterEach(() => {
   vi.restoreAllMocks();
   rmSync(root, { recursive: true, force: true });
-});
+}, 0);
 
 describeStore("external files (SYNTHESIS_R5 §4.4)", () => {
   it("translates the Windows write-through bit without relying on POSIX flag exports", () => {

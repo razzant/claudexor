@@ -40,7 +40,7 @@ const WRITES_DONE = "WRITES_FINISHED";
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function run(opts: {
   mode: "ask" | "agent" | "plan";

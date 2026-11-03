@@ -31,7 +31,7 @@ import { writeRoutingFailureTerminal } from "./routing-failure.js";
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const RESETS_AT = "2026-08-02T18:00:00.000Z";
 

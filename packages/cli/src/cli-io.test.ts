@@ -65,7 +65,7 @@ function runExitTail(body: string) {
 describe("exitAfterOutputFlush", () => {
   afterEach(() => {
     for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("drains >64 KiB after fetch() without a forced exit on Windows (nodejs/node#56645)", () => {
     // The doctor shape: fetch() leaves V8 background work behind, then one large JSON

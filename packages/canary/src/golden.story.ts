@@ -30,7 +30,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("canary golden stories", () => {
   it("[INV-032:modes-canonical] an unknown mode id hard-errors and never silently runs another mode", () => {

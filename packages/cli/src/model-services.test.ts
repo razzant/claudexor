@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CredentialUnusableLedger,
   DaemonClient,
@@ -38,10 +38,17 @@ import { accountObservations } from "./account-observations.js";
 beforeEach(() => accountObservations.invalidate());
 
 import { createModelServices } from "./model-services.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanups.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function model(id = "test-model"): ModelCatalogEntry {
@@ -204,11 +211,11 @@ async function fixture(
     onCommandTerminal: (record) => services.operations.onCommandTerminal(record),
   });
   if (!options.lazy) await server.start();
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanups.push(async () => {
     services.close();
     await server.stop();
     await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   const run = async (
     account: ModelCallRequest["account"] = { mode: "auto" },

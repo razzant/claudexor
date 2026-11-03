@@ -37,7 +37,7 @@ function tempRoot(prefix: string): string {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** Fake credentials are assembled at runtime; no secret-shaped literal lives here. */
 const fakeKey = (fill: string): string => ["sk", fill.repeat(24)].join("-");

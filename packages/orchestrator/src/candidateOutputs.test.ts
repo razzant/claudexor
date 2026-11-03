@@ -32,7 +32,7 @@ const root = (prefix: string) => {
 
 afterEach(() => {
   for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("candidate produced-output persistence", () => {
   it("collects run-owned artifact-child media into the Evidence gallery (F4)", () => {

@@ -18,7 +18,7 @@ import {
   validateRunFactsInvariants,
 } from "@claudexor/schema";
 import { processTiming } from "@claudexor/util";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { BlobFiles } from "./blob-files.js";
 import { SqlCommandPruner } from "./command-prune.js";
@@ -29,6 +29,7 @@ import { createPartition } from "./partitions.js";
 import { storedTerminal } from "./run-events.js";
 import { EngineStore } from "./store.js";
 import { SqlTerminalFiles } from "./terminal-files.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The pool-side writes (the paths they opened, and a gate that holds their
  * data) and the whole-file reads. */
@@ -62,10 +63,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const TIME = "2026-11-02T00:00:00.000Z";
 const dist = (file: string) => resolve(import.meta.dirname, "../../dist/store", file);
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   Object.assign(pool, { hold: null, held: [], wholeReads: [] });
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function facts() {
@@ -129,7 +136,7 @@ function terminal() {
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-terminal-staging-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const runDir = join(root, "run");
   mkdirSync(join(runDir, "final"), { recursive: true });
   writeFileSync(

@@ -37,7 +37,7 @@ function temporaryDirectory(prefix: string): string {
 }
 afterAll(() => {
   for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function runFixture(input: Array<Record<string, any>> = frames) {
   const repo = temporaryDirectory("claudexor-cursor-outcome-");

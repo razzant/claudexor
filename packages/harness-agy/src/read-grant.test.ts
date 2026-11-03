@@ -16,7 +16,7 @@ import { AGY_READ_ANYWHERE_RULE, agySettingsPath, ensureAgyReadGrant } from "./r
 const homes: string[] = [];
 afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function profileHome(settings?: string): string {
   const home = mkdtempSync(join(tmpdir(), "agy-read-grant-"));

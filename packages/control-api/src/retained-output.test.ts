@@ -21,7 +21,7 @@ import {
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function directory(): string {
   const root = mkdtempSync(join(tmpdir(), "cx-retained-http-"));
   roots.push(root);

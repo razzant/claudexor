@@ -41,7 +41,7 @@ beforeEach(() => {
 afterEach(() => {
   deletion.before = async () => {};
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function seed(name = "old", parent = runs): string {
   const path = join(parent, name);
   mkdirSync(join(path, "final"), { recursive: true });

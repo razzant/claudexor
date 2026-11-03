@@ -29,7 +29,7 @@ import type { DaemonRunRecord } from "./run-record.js";
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const at = "2026-10-29T00:00:00.000Z";
 const receipt = {
   tryIndex: 0,
