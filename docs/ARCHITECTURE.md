@@ -2991,6 +2991,33 @@ with host-keyed callers re-reads `--help`, one bounded spawn per alternation),
 and a relative patch PATH entry resolves as the daemon sees it, so a binary
 reachable only through a project-relative entry falls back to the snapshot ladder.
 
+Codex's account rows and per-model effort come from one `model/list` read of the
+installed CLI (`harness-codex/src/effort-probe.ts`): a prompt-free `app-server`
+child with a ten-second bound and no generation, which may fetch the list remotely
+under that home's credential. Discovery, `models()`, processing preparation and a
+run's effort resolution share one cached answer per (`CODEX_HOME`, binary identity),
+at most 64 entries. A live answer lives ten minutes and a failed probe's recorded
+snapshot one minute. There is no single flight, so concurrent reads of an empty
+entry each spawn a child, and probes that overlap with no drop between them keep
+last-answer order, so a slower failed probe can replace a live answer for its
+minute. A login or credential change keeps a home's key while changing its account,
+so the same invalidation owner (`bustCredentialStatusCaches`) drops every entry
+before the configuration and quota reads that can fail, and harness maintenance
+drops them too. A probe running across that drop still answers the caller that
+started it, which asked before the change, so that one call can carry the earlier
+account's rows or ladder into a listing or a run, as a cache hit just before the
+change would. It stores neither its answer nor its failure, so it cannot reach a
+later reader or replace what a newer probe stored. The drop has no scope, and the
+owner runs on every committed settings save and on any harness's login window, so
+the next read of each home spawns a child again. The cache is the daemon process's
+own and nothing re-reads it on a schedule. After a change the daemon does not observe
+(a vendor login or logout it did not run, an account change on the vendor's side), a
+live answer stays until its first read past the ten minutes, an observed invalidation,
+a changed binary or a daemon restart, and no daemon route forces a fresh read. The
+account view's retained observation keeps those rows past the ten minutes on the
+terms stated above for Claude, and a refresh inside them retains the adapter's
+still-cached rows again.
+
 The engine also accepts one raw model generation independently of Agent Runs.
 `ModelAdapter` in core and the model-operation schemas define caller-owned
 messages, function tools, tool choice, generation options, account selection,
