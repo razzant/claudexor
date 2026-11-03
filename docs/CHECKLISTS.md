@@ -139,10 +139,13 @@ pnpm test
 - Account catalog views must be negotiated through the operation catalog. Check
   strict legacy shapes, all enabled account inventories, exact pins, independent
   failures, and original observation/provenance. A union must not manufacture a
-  maximum capability or weaken fresh execution admission. The same holds for
-  `GET /v2/accounts/routing-evidence`: an older engine (404) shows nothing new,
-  any other failure keeps the listing with one diagnostic, and `next_up` stays
-  labelled as the configured default model's verdict.
+  maximum capability or weaken fresh execution admission. First-party reads of
+  `GET /v2/accounts/routing-evidence` are bounded rather than negotiated per query:
+  an older engine (404) shows nothing new, one that rejects an opt-in query (400)
+  is read again without it, once per query, any other failure, a 500 included, is
+  not retried and keeps the listing with one diagnostic, a model-scoped refusal
+  never changes the row's status, and `next_up` stays labelled as the configured
+  default model's verdict.
 - Tool success, web evidence, and tmp/workspace claims must be evidence-based:
   preserve the tool's exact error detail; `tool_result.is_error === true` blocks
   claimed success unless verified recovery exists; a write outside the

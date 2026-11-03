@@ -56,13 +56,19 @@ export const ACCOUNT_RESOURCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlAccountRoutingEvidenceResponse",
     responseKind: "json",
     summary:
-      "Read live model-scoped refusal marks, temporary capability marks, and the durable last-served order; no probe or quota refresh.",
+      "Read live model-scoped refusal marks, temporary capability marks, model-scoped credential refusals, and the durable last-served order; no probe or quota refresh.",
     parameters: [
       queryParam({
         name: "includeCapabilities",
         enum: ["true", "false"],
         description:
           "Add the temporary account x model capability marks (capabilities[]). Omitted or false preserves the legacy response shape for strict clients.",
+      }),
+      queryParam({
+        name: "includeCredentialUnusable",
+        enum: ["true", "false"],
+        description:
+          "Add the registered rows' live model-scoped credential refusals (credentialUnusable[]): dated evidence for one model that never changes the account's status. Omitted or false preserves the earlier response shape for strict clients.",
       }),
     ],
   },
@@ -152,10 +158,11 @@ export async function handleAccountResourceRoute(
 ): Promise<boolean> {
   try {
     if (method === "GET" && path === "/accounts/routing-evidence") {
-      assertOnlyQueryParams(url, ["includeCapabilities"]);
-      const payload = await required(ctx.services?.accountRoutingEvidence)(
-        optionalBooleanQuery(url, "includeCapabilities") === true,
-      );
+      assertOnlyQueryParams(url, ["includeCapabilities", "includeCredentialUnusable"]);
+      const payload = await required(ctx.services?.accountRoutingEvidence)({
+        capabilities: optionalBooleanQuery(url, "includeCapabilities") === true,
+        credentialUnusable: optionalBooleanQuery(url, "includeCredentialUnusable") === true,
+      });
       ctx.json(res, 200, ControlAccountRoutingEvidenceResponse.parse(payload));
       return true;
     }

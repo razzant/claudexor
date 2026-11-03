@@ -84,9 +84,12 @@ struct AccountRowView: View {
         }
         var details: [AlignedRowDetail] = []
         details.append(quotaDetail)
-        // Model-scoped routing evidence: ordering facts, not readiness verdicts.
-        if let refusals = AccountsPresentation.refusalLine(row.refusalMarks) {
-            details.append(AlignedRowDetail(100, refusals, emphasis: .warning))
+        // Model-scoped routing evidence, never a readiness verdict.
+        if let refusals = AccountsPresentation.refusalLine(
+            row.refusalMarks, credentialUnusable: row.credentialUnusable) {
+            // The row's only statement of which model was refused, why and when,
+            // so it wraps instead of truncating; newest first when it is bounded.
+            details.append(AlignedRowDetail(100, refusals, emphasis: .warning, lineLimit: 3))
         }
         if let served = AccountsPresentation.lastServedLine(row.lastService) {
             details.append(AlignedRowDetail(101, served, emphasis: .secondary))

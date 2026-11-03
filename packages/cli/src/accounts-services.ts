@@ -7,10 +7,13 @@ import { noProjectRepoRoot } from "@claudexor/util";
 import type {
   CredentialProfile,
   CredentialProfileStatus,
+  CredentialRoute,
   CredentialUnusableObservation,
+  ModelScopedCredentialUnusable,
 } from "@claudexor/schema";
 import {
   composeCredentialProfileEvidence,
+  modelScopedCredentialUnusable,
   type VendorQuotaObservations,
 } from "@claudexor/orchestrator";
 import { accountPoolsProjection, profileAccountProjection } from "./accounts-projection.js";
@@ -175,22 +178,54 @@ export function createCredentialProfilesService(
   const accountPools = async () => ({
     accountPools: (await buildPollResponse()).accountPools,
   });
+  /** Each registered row's live model-scoped observations, judged with the
+   * evidence its listed status is composed from (`withAccountEvidence`). */
+  const modelScopedCredentialRefusals = (
+    profiles: readonly CredentialProfile[],
+  ): ModelScopedCredentialUnusable[] => {
+    const evidence = {
+      quota: { ...quotaRegistry().read(), honored: accounts.unusable.honored() },
+      unusable: accounts.unusable.live(),
+    };
+    return profiles.flatMap((profile) =>
+      modelScopedCredentialUnusable(profile, {
+        ...evidence,
+        route: profileRoute(profile),
+      })
+        .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at))
+        .map((observation) => ({
+          harness_id: profile.harness_id,
+          profile_id: profile.profile_id,
+          model: observation.model,
+          code: observation.code,
+          detail: observation.detail,
+          observed_at: observation.observed_at,
+          expires_at: observation.expires_at,
+        })),
+    );
+  };
   /** `GET /v2/accounts/routing-evidence`: the live refusal marks, temporary
-   * capability marks and the durable last-served facts of the registered rows.
+   * capability marks, model-scoped credential refusals and the durable
+   * last-served facts of the registered rows.
    * Reads only: no probe, no quota refresh, no store write. Service facts are
    * routing evidence, never a
    * quota or authentication verdict. */
-  const accountRoutingEvidence = async (includeCapabilities = false) => {
+  const accountRoutingEvidence = async (
+    include: { capabilities?: boolean; credentialUnusable?: boolean } = {},
+  ) => {
     const profiles = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
     const registered = new Set(profiles.map((p) => `${p.harness_id}\0${p.profile_id}`));
     return {
-      // Only clients that ask receive the field; strict legacy clients keep the old shape.
-      ...(includeCapabilities
+      // Only clients that ask receive a field; strict legacy clients keep the old shape.
+      ...(include.capabilities
         ? {
             capabilities: accounts.capabilities
               .live()
               .filter((mark) => registered.has(`${mark.harness_id}\0${mark.profile_id}`)),
           }
+        : {}),
+      ...(include.credentialUnusable
+        ? { credentialUnusable: modelScopedCredentialRefusals(profiles) }
         : {}),
       refusals: accounts.refusals
         .live()
@@ -220,7 +255,12 @@ function withAccountEvidence<
       quota,
       unusable,
       model: null,
-      route: entry.profile.credential_kind === "api_key" ? "managed_api_key" : "vendor_native",
+      route: profileRoute(entry.profile),
     }),
   }));
+}
+
+/** The credential route a registered row's runs use. */
+function profileRoute(profile: CredentialProfile): CredentialRoute {
+  return profile.credential_kind === "api_key" ? "managed_api_key" : "vendor_native";
 }

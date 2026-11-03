@@ -539,15 +539,19 @@ never a forecast for another model.
 `GET /v2/accounts/routing-evidence` is the additive, read-only Accounts
 evidence: live pre-progress refusals and each registered account's last service
 per requested model (most recent first), strict, with no probe and no quota
-refresh. Its one query, `includeCapabilities=true`, adds the temporary per-model
-capability marks; without it the response keeps its earlier shape. Clients
-negotiate the route and the query through the operation catalog
-(`get:accounts.routing-evidence`) and keep the legacy listings unchanged. An
-engine without the route answers 404, which first-party clients treat as no new
-data; one without the query rejects it with 400, and first-party clients read
-again without it. Any other failure leaves the listing authoritative with one
-diagnostic. Last service is a routing observation, never a quota or
-authentication verdict.
+refresh. Two opt-in queries extend it: `includeCapabilities=true` adds the
+temporary per-model capability marks, and `includeCredentialUnusable=true` adds
+the model-scoped credential refusals; without them the response keeps its
+earlier shape, and the legacy listings never change. The operation catalog
+(`get:accounts.routing-evidence`) advertises the route and both queries for any
+client that negotiates up front. First-party clients use a bounded read instead:
+the macOS app checks the catalog for the route only, while the CLI and the MCP
+tool read the route directly and treat a 404 as an engine without it (no new
+data). Each asks for its queries and treats a 400 as an engine that predates one,
+reading again without the newest query, at most once per query. No other status is
+retried: a 500 or any other failure leaves the listing authoritative with one
+diagnostic. Last service is a routing observation, never a quota or authentication
+verdict.
 
 The requested `capabilities[]` array lists temporary account/model demotions.
 Each entry includes `harness_id`, `profile_id`, `requested_model`,
@@ -558,6 +562,19 @@ availability or quota. Model operations expose a separate `retryOnOtherAccount`
 signal and, when created with `captureRoutingEvidence=true`, their routing
 receipt; [the host retry contract](MODEL_CAPABILITY_ROUTING.md) describes the one
 allowed correlated re-send and the receipt fields.
+
+The requested `credentialUnusable[]` array lists live typed refusals of one model
+on one registered account: `harness_id`, `profile_id`, `model` (exactly as the run
+requested it), `code`, redacted `detail` (such as the vendor's error category, or
+null), `observed_at` and `expires_at`, most recent first per account. Each entry is
+dated evidence for that model
+only: while it is live, routing refuses that account for exactly that model (a pin
+is refused and automatic selection skips the row), and the account's status,
+Enabled state and order do not change. A credential-wide refusal appears in the
+account's status instead and is never listed here. An entry clears when the
+account later serves exactly that model as the vendor reports it, on a credential
+change, or on expiry; service the vendor reports under another id, such as a dated
+id for a requested alias, leaves it until expiry.
 
 `GET /v2/daemon/route-health` (no parameters; the operation catalog lists it,
 and an older engine answers 404, which a client treats as "unavailable from
@@ -880,7 +897,7 @@ retained readiness observation, with its check time, composed with current
 quota and registry facts; `fresh: true` opts into the expensive atomic snapshot,
 which honors account/route rate-limit cooldowns and retained legacy vendor floors;
 the additive `routingEvidence` carries model-scoped recent refusals, temporary
-per-model capability marks, and last service, absent for an older engine, and a failed evidence read adds one
+per-model capability marks, model-scoped credential refusals, and last service, absent for an older engine, and a failed evidence read adds one
 `routingEvidenceProblem` while the listing stays authoritative),
 `claudexor_runs`, `claudexor_inspect`, `claudexor_run_status`,
 `claudexor_run_result`, `claudexor_run_cancel`, `claudexor_run_time_limit`,

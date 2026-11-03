@@ -59,6 +59,25 @@ export function applicableCredentialUnusable(
   return null;
 }
 
+/** The live model-scoped observations of one row: each is one that a run of
+ * exactly its model on this row would apply. Credential-wide (model null)
+ * observations are excluded; `composeCredentialProfileEvidence` already
+ * composes them into the row status. */
+export function modelScopedCredentialUnusable(
+  status: Pick<CredentialProfileStatus, "harness_id" | "profile_id">,
+  evidence: Omit<CredentialProfileEvidence, "model">,
+): Array<CredentialUnusableObservation & { model: string }> {
+  return (evidence.unusable ?? []).filter(
+    (observation): observation is CredentialUnusableObservation & { model: string } =>
+      observation.model !== null &&
+      applicableCredentialUnusable(status, {
+        ...evidence,
+        unusable: [observation],
+        model: observation.model,
+      }) !== null,
+  );
+}
+
 /** Cheap live composition; the caller caches only the expensive local probe. */
 export function composeCredentialProfileEvidence(
   status: CredentialProfileStatus,

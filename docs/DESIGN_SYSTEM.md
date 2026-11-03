@@ -295,8 +295,10 @@ disciplines call sites kept getting wrong, so they cannot get them wrong again:
   inline badges) + zero or more detail lines. Every detail is rendered
   **single-line** (`AlignedRowText.singleLine` collapses all whitespace/newline
   runs) with `.truncationMode(.tail)`, and the full text is always reachable via
-  `.help`. A detail can therefore never wrap into fragments that interleave the
-  trailing controls. The identity cell absorbs the row's slack
+  `.help`. The one exception is a call site that bounds a wrap for a fact a single
+  truncated line would hide (`lineLimit`, today only the Accounts refusal detail);
+  it wraps inside its own Grid cell. A detail can therefore never wrap into
+  fragments that interleave the trailing controls. The identity cell absorbs the row's slack
   (`.frame(maxWidth: .infinity, alignment: .leading)` +
   `.gridColumnAlignment(.leading)`).
 - **Trailing controls share a column edge via ONE Grid, owned by the container.**
@@ -736,9 +738,20 @@ frequency and volume are. The contracts:
     row adds at most two quiet detail lines from that separate read:
     "Recent refusal · <model>, …" (caution) for its live pre-progress refusal
     marks and "Last served · <model> · <age>; …" for its latest service per
-    requested model, the harness default labelled "default model". They are
-    ordering evidence, not readiness: they never change the status dot, the
-    Enabled control or the row order. The evidence is held apart from the
+    requested model, the harness default labelled "default model". A live typed
+    refusal of one model on the row (`credentialUnusable`, asked for with
+    `includeCredentialUnusable=true`; an engine that answers 400 is read once
+    more without it, and no other failure is retried) leads the same refusal
+    line as a dated observation, "<model> (<vendor reason or typed code>, <age>)",
+    most recent first, and absorbs a pre-progress mark of that same model. So the
+    ordinary row states the model, reason and age, this line alone wraps within
+    the identity cell, to at most three lines; beyond that it truncates and hover
+    help keeps the full text. It never reads as "unavailable", and a
+    credential-wide refusal stays in the readiness status instead. A pre-progress
+    mark and last service only order the pool; a typed refusal makes routing
+    refuse that account for exactly that model until it clears. None of them is
+    readiness: they never change the status dot, the Enabled control or the row
+    order. The evidence is held apart from the
     profile rows, so an Enabled PATCH keeps it; an engine without the read shows
     nothing new; a failed read shows one caption notice and never hides or fails
     the rows. Only the newest read of a location publishes (an older one

@@ -1,0 +1,357 @@
+{
+  "generatedBy": [
+    "claudeApiRetryEvents",
+    "createCredentialExecutionObserver",
+    "createCredentialProfilesService",
+    "DaemonControlApiServer"
+  ],
+  "engineClock": "2099-01-01T12:00:00.000Z",
+  "operations": {
+    "operations": [
+      {
+        "id": "get:accounts.routing-evidence",
+        "method": "GET",
+        "path": "/v2/accounts/routing-evidence",
+        "summary": "Read live model-scoped refusal marks, temporary capability marks, model-scoped credential refusals, and the durable last-served order; no probe or quota refresh.",
+        "auth": "loopback_bearer",
+        "requestSchema": null,
+        "parameters": [
+          {
+            "name": "includeCapabilities",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["true", "false"],
+            "schemaRef": null,
+            "description": "Add the temporary account x model capability marks (capabilities[]). Omitted or false preserves the legacy response shape for strict clients."
+          },
+          {
+            "name": "includeCredentialUnusable",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["true", "false"],
+            "schemaRef": null,
+            "description": "Add the registered rows' live model-scoped credential refusals (credentialUnusable[]): dated evidence for one model that never changes the account's status. Omitted or false preserves the earlier response shape for strict clients."
+          }
+        ],
+        "responseSchema": "ControlAccountRoutingEvidenceResponse",
+        "errorSchema": "ControlProblem",
+        "mutability": "read_only",
+        "idempotency": "natural",
+        "applicability": "global",
+        "responseKind": "json",
+        "completion": "immediate"
+      },
+      {
+        "id": "get:credential-profiles",
+        "method": "GET",
+        "path": "/v2/credential-profiles",
+        "summary": "List credential profiles per harness.",
+        "auth": "loopback_bearer",
+        "requestSchema": null,
+        "parameters": [
+          {
+            "name": "view",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["resources"],
+            "schemaRef": null,
+            "description": "Include typed resources in quota; requires snapshot=true."
+          },
+          {
+            "name": "snapshot",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["true", "false"],
+            "schemaRef": null,
+            "description": "Return one fresh server-authored Accounts snapshot epoch."
+          },
+          {
+            "name": "includeApiKeys",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["true", "false"],
+            "schemaRef": null,
+            "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
+          }
+        ],
+        "responseSchema": "ControlCredentialProfilesQueryResponse",
+        "errorSchema": "ControlProblem",
+        "mutability": "read_only",
+        "idempotency": "natural",
+        "applicability": "global",
+        "responseKind": "json",
+        "completion": "immediate"
+      },
+      {
+        "id": "get:quota",
+        "method": "GET",
+        "path": "/v2/quota",
+        "summary": "Read cached per-profile harness quota snapshots.",
+        "auth": "loopback_bearer",
+        "requestSchema": null,
+        "parameters": [
+          {
+            "name": "requestKind",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["text", "image"],
+            "schemaRef": null,
+            "description": "Availability scope, text when omitted; all scoped constraints remain visible."
+          },
+          {
+            "name": "model",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": null,
+            "schemaRef": null,
+            "description": "Optional model for quota applicability."
+          },
+          {
+            "name": "view",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["resources", "constraint_freshness", "resources_freshness"],
+            "schemaRef": null,
+            "description": "Opt in to typed resources, per-constraint freshness, or resources_freshness combining both with an explicit availability_scope echo. Omitted preserves the legacy shape. Does not refresh quota."
+          },
+          {
+            "name": "includeApiKeys",
+            "location": "query",
+            "required": false,
+            "repeatable": false,
+            "enum": ["true", "false"],
+            "schemaRef": null,
+            "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
+          }
+        ],
+        "responseSchema": "ControlQuotaQueryResponse",
+        "errorSchema": "ControlProblem",
+        "mutability": "read_only",
+        "idempotency": "natural",
+        "applicability": "global",
+        "responseKind": "json",
+        "completion": "immediate"
+      }
+    ]
+  },
+  "credentialProfiles": {
+    "profiles": [
+      {
+        "profile": {
+          "profile_id": "work",
+          "harness_id": "claude",
+          "display_name": "Claude Work",
+          "credential_kind": "config_dir_login",
+          "isolation_locator": "/fixture/profiles/claude-work",
+          "secret_ref": null,
+          "enabled": true,
+          "created_at": null
+        },
+        "status": {
+          "profile_id": "work",
+          "harness_id": "claude",
+          "availability": "available",
+          "verification": "passed",
+          "verification_source": "local_store",
+          "last_verified_at": "2099-01-01T11:59:00.000Z"
+        },
+        "identity": { "email": "work@example.test", "plan": "Max" }
+      },
+      {
+        "profile": {
+          "profile_id": "spare",
+          "harness_id": "claude",
+          "display_name": "Claude Spare",
+          "credential_kind": "config_dir_login",
+          "isolation_locator": "/fixture/profiles/claude-spare",
+          "secret_ref": null,
+          "enabled": true,
+          "created_at": null
+        },
+        "status": {
+          "profile_id": "spare",
+          "harness_id": "claude",
+          "availability": "available",
+          "verification": "passed",
+          "verification_source": "local_store",
+          "last_verified_at": "2099-01-01T11:59:00.000Z"
+        },
+        "identity": { "email": "spare@example.test", "plan": "Pro" }
+      },
+      {
+        "profile": {
+          "profile_id": "org-disabled",
+          "harness_id": "claude",
+          "display_name": "Org Disabled",
+          "credential_kind": "config_dir_login",
+          "isolation_locator": "/fixture/profiles/claude-org-disabled",
+          "secret_ref": null,
+          "enabled": true,
+          "created_at": null
+        },
+        "status": {
+          "profile_id": "org-disabled",
+          "harness_id": "claude",
+          "availability": "available",
+          "verification": "failed",
+          "verification_source": "vendor",
+          "detail": "oauth_org_not_allowed",
+          "last_verified_at": "2099-01-01T11:55:00.000Z"
+        },
+        "identity": null
+      },
+      {
+        "profile": {
+          "profile_id": "logged-out",
+          "harness_id": "claude",
+          "display_name": "Logged Out",
+          "credential_kind": "config_dir_login",
+          "isolation_locator": "/fixture/profiles/claude-logged-out",
+          "secret_ref": null,
+          "enabled": true,
+          "created_at": null
+        },
+        "status": {
+          "profile_id": "logged-out",
+          "harness_id": "claude",
+          "availability": "unavailable",
+          "verification": "not_run",
+          "verification_source": "local_store",
+          "detail": "No credentials in this account's store.",
+          "last_verified_at": null
+        },
+        "identity": null
+      }
+    ],
+    "harnessAccounts": [],
+    "accountPools": [
+      { "harness_id": "claude", "next_up": { "kind": "profile", "profileId": "spare" } }
+    ]
+  },
+  "quota": {
+    "snapshots": [
+      {
+        "subject": {
+          "harness": "claude",
+          "credential_route": "vendor_native",
+          "plan_label": "Max",
+          "subject_id": "work"
+        },
+        "constraints": [
+          {
+            "id": "five_hour",
+            "label": "5-hour session",
+            "used_ratio": 0.42,
+            "window_seconds": 18000,
+            "resets_at": "2099-01-01T15:00:00.000Z",
+            "cooldown_until": null
+          }
+        ],
+        "source": "claude_oauth_usage",
+        "observed_at": "2099-01-01T11:59:00.000Z",
+        "freshness": "fresh"
+      },
+      {
+        "subject": {
+          "harness": "claude",
+          "credential_route": "vendor_native",
+          "plan_label": "Pro",
+          "subject_id": "spare"
+        },
+        "constraints": [
+          {
+            "id": "five_hour",
+            "label": "5-hour session",
+            "used_ratio": 0.08,
+            "window_seconds": 18000,
+            "resets_at": "2099-01-01T16:00:00.000Z",
+            "cooldown_until": null
+          }
+        ],
+        "source": "claude_oauth_usage",
+        "observed_at": "2099-01-01T11:59:00.000Z",
+        "freshness": "fresh"
+      }
+    ],
+    "absences": [],
+    "refreshed_at": null,
+    "resources": []
+  },
+  "routingEvidence": {
+    "optIn": {
+      "credentialUnusable": [
+        {
+          "harness_id": "claude",
+          "profile_id": "work",
+          "model": "claude-opus-5-5",
+          "code": "capability_refused",
+          "detail": "model_not_found",
+          "observed_at": "2099-01-01T11:48:00.000Z",
+          "expires_at": "2099-01-01T12:48:00.000Z"
+        },
+        {
+          "harness_id": "claude",
+          "profile_id": "spare",
+          "model": "claude-sonnet-4-5-20250929",
+          "code": "capability_refused",
+          "detail": "model_not_found",
+          "observed_at": "2099-01-01T11:20:00.000Z",
+          "expires_at": "2099-01-01T12:20:00.000Z"
+        },
+        {
+          "harness_id": "claude",
+          "profile_id": "spare",
+          "model": "claude-haiku-4-5-20251001",
+          "code": "capability_refused",
+          "detail": "model_not_found",
+          "observed_at": "2099-01-01T11:19:00.000Z",
+          "expires_at": "2099-01-01T12:19:00.000Z"
+        }
+      ],
+      "refusals": [
+        {
+          "harness_id": "claude",
+          "profile_id": "work",
+          "requested_model": null,
+          "observed_at": "2099-01-01T11:30:00.000Z",
+          "expires_at": "2099-01-01T12:30:00.000Z"
+        }
+      ],
+      "lastService": [
+        {
+          "harness_id": "claude",
+          "profile_id": "work",
+          "requested_model": null,
+          "observed_at": "2099-01-01T10:00:00.000Z"
+        }
+      ]
+    },
+    "older": {
+      "refusals": [
+        {
+          "harness_id": "claude",
+          "profile_id": "work",
+          "requested_model": null,
+          "observed_at": "2099-01-01T11:30:00.000Z",
+          "expires_at": "2099-01-01T12:30:00.000Z"
+        }
+      ],
+      "lastService": [
+        {
+          "harness_id": "claude",
+          "profile_id": "work",
+          "requested_model": null,
+          "observed_at": "2099-01-01T10:00:00.000Z"
+        }
+      ]
+    }
+  }
+}

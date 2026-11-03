@@ -256,7 +256,10 @@ export interface DaemonControlApiOptions {
       accountReset?: (id: string) => Promise<unknown>;
       refreshQuota?: (input?: ControlQuotaRefreshRequest & ResourceRead) => Promise<unknown>;
       accountPools?: () => Promise<unknown>;
-      accountRoutingEvidence?: (includeCapabilities?: boolean) => Promise<unknown>;
+      accountRoutingEvidence?: (include?: {
+        capabilities?: boolean;
+        credentialUnusable?: boolean;
+      }) => Promise<unknown>;
       rollbackAccountsMigration?: (input: unknown) => Promise<unknown>;
       credentialProfiles?: (input?: { snapshot?: boolean } & ResourceRead) => Promise<unknown>;
       runApplicability?: (input: { repoRoot: string }) => Promise<unknown>;

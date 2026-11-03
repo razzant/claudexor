@@ -716,7 +716,9 @@ describe("claudexor accounts snapshot (read-only agent doorway)", () => {
     }) as never);
     const evidence = { refusals: [], lastService: [] };
     const get = vi.fn(async (path: string) =>
-      path === "/accounts/routing-evidence?includeCapabilities=true" ? evidence : snapshot,
+      path === "/accounts/routing-evidence?includeCapabilities=true&includeCredentialUnusable=true"
+        ? evidence
+        : snapshot,
     );
 
     const code = await accountsCommandWithDeps(
@@ -729,7 +731,7 @@ describe("claudexor accounts snapshot (read-only agent doorway)", () => {
     // Two reads, no probe or mutation: the snapshot and the additive evidence.
     expect(get.mock.calls.map(([path]) => path)).toEqual([
       "/credential-profiles?snapshot=true",
-      "/accounts/routing-evidence?includeCapabilities=true",
+      "/accounts/routing-evidence?includeCapabilities=true&includeCredentialUnusable=true",
     ]);
     expect(JSON.parse(stdout)).toMatchObject({
       quotaEventCursor: "q-1",
@@ -755,7 +757,8 @@ describe("claudexor accounts snapshot (read-only agent doorway)", () => {
     }) as never);
     const code = await accountsCommandWithDeps(parseArgs(["accounts"]), false, {
       daemonGet: async (path: string) =>
-        path === "/accounts/routing-evidence?includeCapabilities=true"
+        path ===
+        "/accounts/routing-evidence?includeCapabilities=true&includeCredentialUnusable=true"
           ? { refusals: [], lastService: [] }
           : {
               ...snapshot,
