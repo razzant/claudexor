@@ -36,7 +36,7 @@ it.each(["archived-null", "active-null", "dangling", "both", "healthy-and-dangli
     removals.push(() => rmSync(root, { recursive: true, force: true }));
     const before = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = join(root, "engine");
-    close.push(() => {
+    removals.push(() => {
       if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = before;
     });
