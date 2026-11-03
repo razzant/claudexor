@@ -20,22 +20,27 @@ import Testing
         model.remoteConnections = [connection]
         model.remoteClients[locationID] = oldClient
 
-        let arrived = RemoteEpochCounter()
+        let (arrivals, arrival) = AsyncStream<Void>.makeStream()
         let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
         RemoteEpochURLProtocol.handler = { request in
             guard request.url?.path == "/v2/threads" else { throw RemoteEpochError.badRequest }
-            arrived.increment()
-            _ = release.wait(timeout: .now() + 5)
+            arrival.yield()
+            // Only the lease swap below releases this response; executor order is not a gate.
+            release.wait()
             return (RemoteEpochURLProtocol.response(for: request), Data(
                 #"{"threads":[{"id":"old-thread","title":"Old","repoRoot":"/old","mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"2026-07-28T00:00:00Z","updatedAt":"2026-07-28T00:00:00Z"}]}"#.utf8))
         }
 
-        let refresh = Task { await model.refreshRemoteThreads(locationID) }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while arrived.value == 0 {
-            try #require(ContinuousClock.now <= deadline, "remote thread load never arrived")
-            await Task.yield()
+        let refresh = Task {
+            await model.refreshRemoteThreads(locationID)
+            arrival.finish()
         }
+        // Wait for the request itself, or for a refresh that ended without sending it,
+        // never for a clock: parallel suites can hold the main actor for seconds (#527).
+        var loadArrived = false
+        for await _ in arrivals { loadArrived = true; break }
+        try #require(loadArrived, "remote thread load never arrived")
 
         model.remoteClients.removeValue(forKey: locationID)
         model.discardRemoteDaemonProjections(at: locationID)
@@ -166,14 +171,6 @@ import Testing
 }
 
 private enum RemoteEpochError: Error { case badRequest }
-
-private final class RemoteEpochCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-
-    var value: Int { lock.withLock { count } }
-    func increment() { lock.withLock { count += 1 } }
-}
 
 private final class RemoteEpochURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler:
