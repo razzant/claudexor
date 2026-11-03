@@ -349,9 +349,10 @@ deferred; they are recorded here now.
   overlap-aware slicing.
 - W-f: Claude/AGY `profiles login` retains its direct scoped vendor terminal
   path. It does not notify the daemon of credential changes, so old readiness,
-  quota absence and refusal evidence can survive a successful or interrupted
-  login. A future migration must preserve their input and vendor-window
-  behavior through the existing setup owner; Cursor already uses that owner.
+  quota absence, refusal evidence and the cached Claude model picker can survive
+  a successful or interrupted login. A future migration must preserve their
+  input and vendor-window behavior through the existing setup owner; Cursor
+  already uses that owner.
 - W-e: Bible INV-137 note wording — the a-b-a continuity proof lives in a
   pnpm-test suite, not the canary golden-story home the note implies.
 - Q-b: quota sources (`claude-oauth-usage.ts`, `codex-quota-source.ts`) live in

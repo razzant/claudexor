@@ -166,5 +166,96 @@ describe("the human doctor output and the configured-model verdict (INV-104)", (
       0,
     );
     expect((JSON.parse(out.join("")) as { route_health: unknown }).route_health).toBeNull();
+    expect(
+      (JSON.parse(out.join("")) as { route_health_problem: unknown }).route_health_problem,
+    ).toBeNull();
+  });
+
+  // #569: the read runs after the other sections are collected; its failure must
+  // not discard them, pass for a healthy or empty week, or blame an older engine.
+  it.each([
+    [
+      "the engine answers 503",
+      () =>
+        new Response('{"code":"route_health_failed","message":"bulk worker restarting"}', {
+          status: 503,
+        }),
+      'control API /daemon/route-health failed (503): {"code":"route_health_failed","message":"bulk worker restarting"}',
+    ],
+    [
+      "the engine's 503 echoes a credential, masked in both forms",
+      () =>
+        // Assembled at runtime so the source holds no credential-shaped literal.
+        new Response(
+          `{"code":"route_health_failed","message":"upstream refused ${"sk-ant-" + "a".repeat(24)}"}`,
+          { status: 503 },
+        ),
+      'control API /daemon/route-health failed (503): {"code":"route_health_failed","message":"upstream refused [redacted]"}',
+    ],
+    [
+      "the connection drops",
+      () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), {
+            code: "ECONNREFUSED",
+          }),
+        });
+      },
+      "fetch failed (connect ECONNREFUSED 127.0.0.1:1)",
+    ],
+    [
+      "the answer does not match its schema",
+      () => jsonResponse({ ...routeHealth, windowDays: 14 }),
+      "the answer did not match its schema (windowDays: Invalid literal value, expected 7)",
+    ],
+  ])("keeps every other section and names the cause when %s", async (_label, health, cause) => {
+    serve({ status: "ok", message: null }, health);
+    expect(await doctorCommand(parseArgs(["doctor", "--harness", "claude"]), false)).toBe(0);
+    const text = out.join("");
+    expect(text).toContain("? git: readiness unavailable from this engine version\n");
+    expect(text).toContain("[ok] claude\n    intents: explain\n    auto-routable: explain\n");
+    expect(text).toContain(`? route health: unavailable — ${cause}\n`);
+    expect(text).not.toContain("route health: unavailable from this engine version");
+    expect(text).not.toContain("route health, last");
+
+    out.length = 0;
+    serve({ status: "ok", message: null }, health);
+    expect(await doctorCommand(parseArgs(["doctor", "--harness", "claude", "--json"]), true)).toBe(
+      0,
+    );
+    const envelope = JSON.parse(out.join("")) as Record<string, unknown>;
+    expect(envelope["harnesses"]).toHaveLength(1);
+    expect(envelope).toHaveProperty("git", null);
+    expect(envelope["route_health"]).toBeNull();
+    expect(envelope["route_health_problem"]).toBe(cause);
+  });
+
+  it("never rounds a failure away, or a partial failure up to every run (#569)", async () => {
+    const route = (harnessId: string, failed: number, runs: number) => ({
+      harnessId,
+      access: "readonly",
+      runs,
+      succeeded: runs - failed,
+      failed,
+      cancelled: 0,
+      other: 0,
+      topFailures: [],
+    });
+    serve({ status: "ok", message: null }, () =>
+      jsonResponse({
+        ...routeHealth,
+        scannedRuns: 402,
+        routes: [route("agy", 200, 201), route("claude", 1, 201)],
+      }),
+    );
+    expect(await doctorCommand(parseArgs(["doctor", "--harness", "claude"]), false)).toBe(0);
+    const text = out.join("");
+    expect(text).toContain(
+      "route health, last 7 days: 402 run(s) over 2 route(s), 2 with failures\n",
+    );
+    expect(text).toContain("    agy readonly: 200/201 failed (>99%)\n");
+    expect(text).toContain("    claude readonly: 1/201 failed (<1%)\n");
+    expect(text).not.toContain("(0%)");
+    expect(text).not.toContain("(100%)");
   });
 });

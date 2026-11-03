@@ -224,8 +224,8 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
     inventory.delete(harness);
     accountObservations.invalidateHarness(harness);
     deps.readiness?.().invalidate(harness);
-    // Keyed by binary path, which an in-place install keeps. (Claude's model
-    // probe cache is package-private; its documented TTL/fresh bypass remain.)
+    // Keyed by binary path, which an in-place install keeps. Claude's picker
+    // keys binary identity separately; no daemon route forces a fresh read.
     clearCodexEffortCache();
   }
 
