@@ -173,7 +173,7 @@ function readCount(record: DaemonRunRecord, relativePath: string): number {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("one request context for complete run projection", () => {
   it.each([true, false])(

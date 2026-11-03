@@ -24,7 +24,7 @@ const base = {
 // `-c` overrides must precede it. `readVerifiedAttachmentBytes` re-hashes the
 // file, so the fixture's sha256/size_bytes must match the bytes exactly.
 const tmpDir = mkdtempSync(join(tmpdir(), "claudexor-codex-instr-"));
-afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
+afterAll(() => rmSync(tmpDir, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const IMG_BYTES = "png";
 const imagePath = join(tmpDir, "shot.png");
 writeFileSync(imagePath, IMG_BYTES);

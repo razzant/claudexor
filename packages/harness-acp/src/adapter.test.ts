@@ -59,7 +59,7 @@ const commands = (path: string) =>
 beforeEach(() => {
   secrets.token = "fixture-managed-token";
 });
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+afterAll(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("ACP adapter over stdio", () => {
   it.each(Object.entries(manifest.fixtures))(

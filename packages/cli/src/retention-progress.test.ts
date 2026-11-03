@@ -9,12 +9,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { scheduleStartupRetention } from "./retention-schedule.js";
 import type { ControlGcReceipt } from "@claudexor/schema";
 import { createRetentionRunner } from "./retention-service.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const hook = vi.hoisted(() => ({
   afterPrepare: undefined as ((name: string) => void) | undefined,
@@ -47,12 +48,14 @@ beforeEach(async () => {
   mkdirSync(process.env.CLAUDEXOR_CONFIG_DIR);
   sql = await sqlFixture(join(root, "sql"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   hook.afterPrepare = undefined;
   await sql.close();
-  if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = before;
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = before;
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 function oldRun(id: string) {
   const path = new ArtifactStore(join(root, "orphan")).createRun(id).root;

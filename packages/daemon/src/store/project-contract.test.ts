@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { setGlobalGenerationInTx } from "./generations.js";
 import { Obligations } from "./obligations.js";
@@ -11,6 +11,7 @@ import { SqlProjectRouter } from "./project-router.js";
 import { applyProjectMutation, SqlProjectStore } from "./projects.js";
 import { EngineStore } from "./store.js";
 import { legacyOracle } from "./test-support/legacy-oracle.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const clock = vi.hoisted(() => ({ at: "2030-01-01T00:00:00.000Z", id: 0 }));
 vi.mock("@claudexor/util", async (importOriginal) => ({
@@ -50,11 +51,13 @@ beforeEach(async () => {
   });
   legacy = new legacyOracle.daemonProjects.ProjectStore(journal);
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   journal?.close();
   obligations?.close();
   await store?.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 function both<T>(fn: (s: Pick<SqlProjectStore, "list" | "relink" | "unregister">) => T): T {
   const start = clock.id,

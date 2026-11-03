@@ -15,7 +15,7 @@ vi.mock("node:fs", async (original) => {
 
 const THREAD = "0199abcd-0000-7111-8222-333344445555";
 const home = realpathSync(mkdtempSync(join(tmpdir(), "codex-rollout-locator-")));
-afterAll(() => rmSync(home, { recursive: true, force: true }));
+afterAll(() => rmSync(home, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 it("finds the newest-day rollout after reading only the directories on its path", () => {
   for (const year of ["2025", "2026"])

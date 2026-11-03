@@ -37,13 +37,20 @@ import {
 import { locateScanner } from "@claudexor/delivery";
 import { DaemonControlApiServer } from "./daemon-server.js";
 import { markRunApplyState } from "./run-delivery-state.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 // INV-062: a delivery the owner refuses for a typed reason answers that reason as
 // the 409's problem code on every route, the way patch_exact_bytes_unavailable
 // does, so a client never parses prose. Real server, real delivery owner.
 const cleanup: (() => Promise<unknown> | void)[] = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 // The fixtures' own Git never reads the operator's global or system config.
@@ -77,7 +84,7 @@ const unrendered = (result: GitObjectResult) => ({
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-refusal-code-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const project = join(root, "project");
   const run = join(root, "run");
   mkdirSync(project);
@@ -205,7 +212,7 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
  * config: `edit` writes the candidate; `rendered` keeps the patch view. */
 async function realResult(f: Fixture, edit: (clone: string) => void, rendered = false) {
   const clone = join(mkdtempSync(join(tmpdir(), "cx-refusal-clone-")), "tree");
-  cleanup.push(() => rmSync(join(clone, ".."), { recursive: true, force: true }));
+  removals.push(() => rmSync(join(clone, ".."), { recursive: true, force: true }));
   await isolatedCloneAdd(f.project, clone, "claudexor/t/a01", f.git("rev-parse", "HEAD"));
   edit(clone);
   const captured = await captureWorkingTreeTransient(clone, "HEAD", [], {
@@ -434,7 +441,7 @@ describe("a refused delivery answers its typed reason as the 409 problem code", 
     // The proof's own filter deletes the branch HEAD came from: the take-back
     // restores the tree, the return to `main` then has nothing to return to.
     const clean = join(mkdtempSync(join(tmpdir(), "cx-refusal-filter-")), "clean.sh");
-    cleanup.push(() => rmSync(join(clean, ".."), { recursive: true, force: true }));
+    removals.push(() => rmSync(join(clean, ".."), { recursive: true, force: true }));
     writeFileSync(
       clean,
       `#!/bin/sh\nenv -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "${f.project}" update-ref -d refs/heads/main 2>/dev/null\nexec tr a-z A-Z\n`,
@@ -501,7 +508,7 @@ describe("a refused delivery answers its typed reason as the 409 problem code", 
     expect((await f.post("/decision", { action: "revert_run" }, "R1")).status).toBe(200);
     // The same fault as above: the take-back restores the tree, HEAD cannot return.
     const clean = join(mkdtempSync(join(tmpdir(), "cx-refusal-filter-")), "clean.sh");
-    cleanup.push(() => rmSync(join(clean, ".."), { recursive: true, force: true }));
+    removals.push(() => rmSync(join(clean, ".."), { recursive: true, force: true }));
     writeFileSync(
       clean,
       `#!/bin/sh\nenv -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "${f.project}" update-ref -d refs/heads/main 2>/dev/null\nexec tr a-z A-Z\n`,
@@ -541,7 +548,7 @@ describe("a refused delivery answers its typed reason as the 409 problem code", 
     // would: HEAD returns to `main`, only `git branch -D` fails.
     const lock = join(f.project, ".git", "refs", "heads", "claudexor", "kept.lock");
     const clean = join(mkdtempSync(join(tmpdir(), "cx-refusal-filter-")), "clean.sh");
-    cleanup.push(() => rmSync(join(clean, ".."), { recursive: true, force: true }));
+    removals.push(() => rmSync(join(clean, ".."), { recursive: true, force: true }));
     writeFileSync(clean, `#!/bin/sh\n: > "${lock}"\nexec tr a-z A-Z\n`);
     chmodSync(clean, 0o755);
     f.git("config", "filter.up.clean", clean);
@@ -767,7 +774,7 @@ describe("a refused delivery answers its typed reason as the 409 problem code", 
       } else await realResult(f, (clone) => writeFileSync(join(clone, "x"), "pr\n"), true);
       // The push fails, and meanwhile the user deletes the branch HEAD came from.
       const hook = join(mkdtempSync(join(tmpdir(), "cx-refusal-remote-")), "receive.sh");
-      cleanup.push(() => rmSync(join(hook, ".."), { recursive: true, force: true }));
+      removals.push(() => rmSync(join(hook, ".."), { recursive: true, force: true }));
       writeFileSync(
         hook,
         `#!/bin/sh\nenv -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "${f.project}" update-ref -d refs/heads/main\nexit 1\n`,

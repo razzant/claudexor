@@ -10,9 +10,11 @@ import { ThreadStore } from "./store/test-support/fixtures/legacy/daemon/threads
 const roots: string[] = [];
 const closable: Array<{ close(): void }> = [];
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const value of closable.splice(0)) value.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function tempRoot(): string {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "claudexor-delegated-thread-")));

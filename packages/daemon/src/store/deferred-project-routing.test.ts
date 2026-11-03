@@ -1,24 +1,31 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 vi.mock("@claudexor/schema", () => import("../../../schema/src/index.js"));
 import { ControlRunStartRequest } from "@claudexor/schema";
 import { sourceSqlFixture } from "./test-support/source-sql-fixture.js";
 import { settleDeferredPredecessor } from "./test-support/deferred-terminal.js";
 import { admitCommandRequest } from "../command-rpc.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 it.each(["unchanged", "relinked", "reassigned"] as const)(
   "promotes only into the current canonical reserved project generation: %s",
   async (change) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-deferred-route-")));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    removals.push(() => rmSync(root, { recursive: true, force: true }));
     const f = await sourceSqlFixture(root);
     cleanup.push(() => f.close());
     const router = f.graph.commands,

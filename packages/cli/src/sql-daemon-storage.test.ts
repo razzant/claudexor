@@ -15,15 +15,22 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BlobFiles, type EngineStore } from "@claudexor/daemon";
 import { ControlUploadCreateRequest } from "@claudexor/schema";
 import { hashJson } from "@claudexor/util";
 import { SqlDaemonStorage } from "./sql-daemon-storage.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 it("keeps physical archive bodies and uploads outside fresh and restarted GC custody", async () => {
@@ -199,7 +206,7 @@ it("keeps physical archive bodies and uploads outside fresh and restarted GC cus
 });
 function fixture() {
   const rootDir = realpathSync.native(mkdtempSync(join(tmpdir(), "sql-storage-owner-")));
-  cleanups.push(() => rmSync(rootDir, { recursive: true, force: true }));
+  removals.push(() => rmSync(rootDir, { recursive: true, force: true }));
   const beforeClose = vi.fn(async () => {}),
     onOpen = vi.fn(),
     onCorrupt = vi.fn(),

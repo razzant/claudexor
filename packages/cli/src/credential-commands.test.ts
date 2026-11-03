@@ -32,7 +32,7 @@ describe("claudexor profiles add (INV-135)", () => {
     else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("registers a config_dir_login profile through the locked global-config owner", async () => {
     const code = await profilesCommand(parseArgs(["profiles", "add", "claude", "work"]), true);
@@ -799,7 +799,7 @@ describe("removeProfileFromRegistry (INV-135 removal owner)", () => {
     else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("removes exactly the named entry and returns it", async () => {
     await profilesCommand(parseArgs(["profiles", "add", "claude", "work"]), true);

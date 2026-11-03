@@ -10,7 +10,7 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** The driver creates only worker threads. Its bounded process group also makes
  * a broken packaged entry harmless on timeout, on Windows as well as POSIX. */

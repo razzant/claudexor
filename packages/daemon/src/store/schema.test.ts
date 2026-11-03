@@ -38,7 +38,7 @@ afterEach(() => {
     }
   }
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 async function connect(name = "engine.sqlite"): Promise<DatabaseSync> {
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(join(root, name));

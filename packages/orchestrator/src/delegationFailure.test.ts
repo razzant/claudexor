@@ -16,7 +16,7 @@ import {
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("uncaptured in-place receipt", () => {
   it("records manual cleanup without a patch, anchor, or false revertability", async () => {

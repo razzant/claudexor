@@ -11,7 +11,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function startedHarnesses(runDir: string): unknown[] {
   return readEvents(runDir)

@@ -12,7 +12,7 @@ import { guardAnnouncedRun, type AnnouncedRunContext } from "./runTerminals.js";
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function fixture(runId: string) {
   const repo = realpathSync(mkdtempSync(join(tmpdir(), "cx-staged-terminal-")));

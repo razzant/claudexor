@@ -47,7 +47,10 @@ import { oneShotRunInput } from "../../cli/src/one-shot-run-input.js";
 import { createInProcessRunScopeCustodian, failedScopeOutcome } from "./runScope.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const WORK_ORDER = "WORK-ORDER-7f3a: build the dashboard";
 const RESET = "2026-10-06T21:00:00.000Z";

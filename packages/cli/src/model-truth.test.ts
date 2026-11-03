@@ -8,7 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 // `--version` to answer; without stubs this suite would silently depend on a
 // dev machine's installs. The manifest hint lists are what is exercised here.
 const stubDir = mkdtempSync(join(tmpdir(), "claudexor-model-truth-"));
-afterAll(() => rmSync(stubDir, { recursive: true, force: true }));
+afterAll(() => rmSync(stubDir, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function stub(name: string, version: string): string {
   const bin = join(stubDir, name);
   writeFileSync(

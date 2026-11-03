@@ -12,7 +12,7 @@ afterEach(() => {
   vi.mocked(fs.renameSync).mockReset();
   vi.mocked(fs.fsyncSync).mockReset();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function fixture() {
   const root = fs.mkdtempSync(join(tmpdir(), "continuation-sources-"));
   roots.push(root);

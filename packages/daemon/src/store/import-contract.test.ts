@@ -33,7 +33,7 @@ const TIME = "2026-10-10T00:00:00.000Z";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 function root() {
   const path = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-import-")));

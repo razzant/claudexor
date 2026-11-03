@@ -19,7 +19,7 @@ import { mergeResources, ageResources, quotaProjectionSignature } from "./quota-
 const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const target = { harness: "codex", profile_id: "codex-default" };
 const sibling = { harness: "codex", profile_id: "other" };
 const at = new Date("2026-10-09T12:00:00Z");

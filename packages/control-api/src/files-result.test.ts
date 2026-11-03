@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,17 +18,29 @@ import {
   retainedSourcesOfRun,
 } from "@claudexor/workspace";
 import { DaemonControlApiServer } from "./daemon-server.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
-const cleanup: Array<() => Promise<unknown>> = [];
-afterEach(async () => {
-  for (const dispose of cleanup.splice(0).reverse()) await dispose();
-});
+const stops: Array<() => Promise<unknown>> = [];
+const removals: Array<() => Promise<unknown>> = [];
+// Stops first, then the fs/promises removals, each under the hook deadline (#376). A stop that
+// fails or settles late keeps this test's root; the removals are taken before the first await.
+afterEachClosed(
+  async () => {
+    const ownedRemovals = removals.splice(0).reverse();
+    for (const stop of stops.splice(0).reverse()) await stop();
+    return async () => {
+      for (const remove of ownedRemovals) await remove();
+    };
+  },
+  undefined,
+  "awaited",
+);
 const digest = (bytes: Uint8Array | string) =>
   `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 async function fixture(big = false, isolation: "envelope" | "live" = "envelope") {
   const root = await mkdtemp(join(tmpdir(), "cx-files-result-"));
-  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  removals.push(() => rm(root, { recursive: true, force: true }));
   const source = join(root, "source"),
     run = join(root, "run");
   await mkdir(source);
@@ -145,7 +157,7 @@ async function fixture(big = false, isolation: "envelope" | "live" = "envelope")
     },
   });
   const { host, port } = await server.start();
-  cleanup.push(() => server.stop());
+  stops.push(() => server.stop());
   const request = (path: string, body?: unknown, key = "fixture-key") =>
     fetch(`http://${host}:${port}/v2/runs/run-files/${path}`, {
       method: body === undefined ? "GET" : "POST",

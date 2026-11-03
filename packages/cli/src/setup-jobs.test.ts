@@ -350,7 +350,7 @@ afterEach(() => {
   if (oldConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
   else process.env.CLAUDEXOR_CONFIG_DIR = oldConfigDir;
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("setup jobs", () => {
   it("prefers an adjacent CommonJS app bundle and falls back to published ESM output", () => {

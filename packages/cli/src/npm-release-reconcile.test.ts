@@ -188,7 +188,7 @@ function expectOnlyReads(calls: Array<{ args: string[] }>) {
 const scratchDirs: string[] = [];
 afterEach(() => {
   for (const dir of scratchDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), "claudexor-npm-reconcile-test-"));

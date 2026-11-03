@@ -160,7 +160,7 @@ test("real OpenCode public adapter refuses workspace_write before a trap binary 
 
 afterEach(() => {
   for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function fixture() {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "claudexor-battery-state-")));

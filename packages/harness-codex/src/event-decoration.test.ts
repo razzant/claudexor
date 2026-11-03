@@ -23,7 +23,7 @@ import { resetRolloutReadStatsForTests, rolloutReadStatsForTests } from "./rollo
 
 const THREAD = "0199ffff-0000-7111-8222-333344445555";
 const homes: string[] = [];
-afterAll(() => homes.forEach((home) => rmSync(home, { recursive: true, force: true })));
+afterAll(() => homes.forEach((home) => rmSync(home, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 beforeEach(() => resetRolloutReadStatsForTests());
 
 const json = (record: unknown) => JSON.stringify(record) + "\n";

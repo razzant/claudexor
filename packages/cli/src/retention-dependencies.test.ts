@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { ControlRunStartRequest, WorkProduct } from "@claudexor/schema";
 import { writeContinuationSources } from "@claudexor/workspace";
@@ -19,6 +19,7 @@ import { admitCommandRequest } from "../../daemon/src/command-rpc.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { continuationForRun } from "./continue-from-run.js";
 import { exactRetryProcessingIntent } from "./retry-processing.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 let root: string;
 let repo: string;
@@ -33,11 +34,13 @@ beforeEach(async () => {
   mkdirSync(repo);
   sql = await sqlFixture(join(root, "sql"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   await sql.close();
-  if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = before;
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = before;
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 const params = () => ({
   mode: "ask",

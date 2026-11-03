@@ -28,7 +28,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("ConPTY one-shot input write completion", () => {
   it("issues one completed record write at a time without queued _writev batching", async () => {

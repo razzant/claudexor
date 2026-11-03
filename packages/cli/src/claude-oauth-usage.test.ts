@@ -694,7 +694,7 @@ describe("claude credential-file store off macOS (Linux quota parity)", () => {
   };
   afterAll(() => {
     for (const dir of __reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
   // Redaction bait is assembled at runtime so no token-like literal ever
   // lands in the source tree (secret-scan CI step, INV-146).
   const bait = ["sk", "ant", "oat01", "b".repeat(24)].join("-");

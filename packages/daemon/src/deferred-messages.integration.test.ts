@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 vi.mock("@claudexor/schema", () => import("../../schema/src/index.js"));
 vi.mock("@claudexor/daemon", () => import("./index.js"));
 import {
@@ -24,12 +24,19 @@ import { SqlDeferredMessages } from "./store/deferred-messages.js";
 import { StoreCorruptError, StoreFullError } from "./store/errors.js";
 import { DaemonLocalClient } from "./daemon-local-client.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const SCOPE_MARKER = "CLAUDEXOR_SCOPE_0123456789abcdef0123456789abcdef";
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function barrier() {
   let release!: () => void;
@@ -50,7 +57,7 @@ async function fixture(
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-deferred-integration-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const sql = await sqlFixture(root);
   cleanups.push(() => sql.close());
   const done = barrier(),

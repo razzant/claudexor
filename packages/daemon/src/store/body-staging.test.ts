@@ -2,24 +2,31 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DaemonServer, type JobRecord } from "@claudexor/daemon";
 import { ControlRunStartRequest, RunProcessScopeOutcome } from "@claudexor/schema";
 import { processTiming } from "@claudexor/util";
 import { settleDeferredPredecessor } from "./test-support/deferred-terminal.js";
 import { sqlFixture } from "./test-support/sql-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 /** Real SQL owners where every external write reports whether it wrote bytes:
  * with each sample treated as slow, the store logs every write's receipt. */
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-body-staging-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const f = await sqlFixture(root);
   cleanup.push(() => f.close());
   vi.spyOn(processTiming, "recordSync").mockReturnValue(true);

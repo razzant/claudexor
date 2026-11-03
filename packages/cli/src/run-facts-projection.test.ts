@@ -55,7 +55,7 @@ const jsonReader = {
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { force: true, recursive: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function emptyFinalDir(): string {
   const root = mkdtempSync(join(tmpdir(), "claudexor-cli-run-facts-"));

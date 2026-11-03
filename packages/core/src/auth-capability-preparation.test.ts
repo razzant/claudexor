@@ -21,7 +21,7 @@ const omission = {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function preparation(spec: HarnessRunSpec, patch: Event = {}): Event {
   return { type: "status", session_id: spec.session_id, ts, effort_resolution: omission, ...patch };

@@ -57,7 +57,7 @@ describe("platform credential-profile cardinality", () => {
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
     vi.restoreAllMocks();
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("allows one enabled Windows agy binding and rejects a second create before mkdir", () => {
     registerConfigDirProfile({ harnessId: "agy", profileId: "a", platform: "win32" });

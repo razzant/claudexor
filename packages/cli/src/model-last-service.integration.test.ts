@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelAdapter } from "@claudexor/core";
 import { createCodexAdapter, parseCodexRateLimitsResponse } from "@claudexor/harness-codex";
 import {
@@ -16,6 +16,7 @@ import {
 } from "@claudexor/schema";
 import { accountObservations } from "./account-observations.js";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 // Production-shaped consumer evidence for the raw-model reader of the durable
 // last-served order (INV-135): a real engine store and SQL services graph,
@@ -29,8 +30,14 @@ const MODEL = "test-model";
 
 beforeEach(() => accountObservations.invalidate());
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanups.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function entry(id: string): ModelCatalogEntry {
@@ -119,10 +126,10 @@ async function daemon() {
       ],
     },
   });
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanups.push(async () => {
     await runtime.stop();
     await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   const routes = runtime.models.routes;
   /** One raw-model call through the daemon's queue: the account its reply came from. */

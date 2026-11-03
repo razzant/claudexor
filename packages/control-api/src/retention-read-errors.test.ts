@@ -6,7 +6,7 @@ import { runKeepReason } from "./retention-candidates.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 it.each(["final/work_product.yaml", "final/delivery_state.yaml", "arbitration/decision.yaml"])(
   "names unreadable %s and confines the hold to its run",
   (name) => {

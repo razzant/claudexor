@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { DaemonControlApiServer } from "@claudexor/control-api";
 import { bindCredentialMutationWindow, runCapture, type HarnessAdapter } from "@claudexor/core";
@@ -35,6 +35,7 @@ import {
 } from "./credential-status-invalidation.js";
 import { projectImmediateRunDetail } from "./mcp-run-projections.js";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 // Production-shaped consumer evidence for per-try attribution and the durable
 // last-served order: a real engine store, the real SQL services graph and SQL
@@ -155,15 +156,22 @@ function stubAdapter(): HarnessAdapter {
 const RUNS_TIMEOUT_MS = 180_000;
 const reap: string[] = [];
 const closers: Array<() => Promise<void>> = [];
-afterEach(async () => {
+/** Folders whose test closed its daemons in time: the only ones removed at file end (#376). */
+const closedRoots: string[] = [];
+afterEachClosed(async () => {
+  // This test's folders, taken before its closes: a later test never hands them over.
+  const ownedRoots = reap.splice(0);
   for (const close of closers.splice(0).reverse()) await close();
   script.behavior = {};
   script.afterStart = {};
   script.spawns = [];
+  return () => {
+    closedRoots.push(...ownedRoots);
+  };
 }, 60_000);
 afterAll(() => {
-  for (const dir of reap.splice(0)) rmSync(dir, { recursive: true, force: true });
-}, 60_000);
+  for (const dir of closedRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 beforeAll(() => {
   script.registry = new Map([["stub", stubAdapter()]]);
 });
@@ -252,15 +260,15 @@ async function openDaemon(root: string) {
     },
   });
   const { host, port } = await control.start();
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    await control.stop();
-    await runtime.stop();
-    await graph.close();
-    await store.close();
-  };
+  let closing: Promise<void> | undefined;
+  /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+  const close = () =>
+    (closing ??= (async () => {
+      await control.stop();
+      await runtime.stop();
+      await graph.close();
+      await store.close();
+    })());
   closers.push(close);
   return { store, graph, runtime, close, base: `http://${host}:${port}` };
 }

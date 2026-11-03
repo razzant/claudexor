@@ -43,7 +43,7 @@ afterEach(() => {
   io.onRead = undefined;
   io.reads = [];
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function temp(): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-list-io-")));
   roots.push(root);

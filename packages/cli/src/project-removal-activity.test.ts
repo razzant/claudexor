@@ -18,10 +18,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { projectRemovalService } from "./project-removal.js";
 import { sqlActivityRecords } from "./sql-daemon-queries.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 let root: string;
 let sql: Awaited<ReturnType<typeof sqlFixture>>;
@@ -33,11 +34,17 @@ beforeEach(async () => {
   sql = await sqlFixture(join(root, "sql"));
 });
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's folder and store, taken before the close: the next test's beforeEach replaces
+  // both, and a late close never reaches its folder or environment.
+  const ownedRoot = root;
+  const ownedSql = sql;
   body?.mockRestore();
-  await sql.close();
-  vi.unstubAllEnvs();
-  rmSync(root, { recursive: true, force: true });
+  await ownedSql.close();
+  return () => {
+    vi.unstubAllEnvs();
+    rmSync(ownedRoot, { recursive: true, force: true });
+  };
 });
 
 function project(name: string) {

@@ -3256,9 +3256,11 @@ catalog (`packages/control-api/src/operation-catalog.ts`) carrying method, path,
 one-line summary, mutability, auth boundary, applicability plane, and
 request/response schema names.
 That catalog is the single source of truth (Zen #4): the daemon serves it at
-`GET /v2/operations`, and `node scripts/gen-endpoints-doc.mjs` derives BOTH the
-canonical inventory below and the machine-readable endpoint map for external
-agents at `docs/reference/endpoints.json` (method, path, mutating flag,
+`GET /v2/operations`. `node scripts/gen-endpoints-doc.mjs` writes two
+projections: the canonical inventory below, from the route guards actually wired
+in the control-API source, and, from the built catalog's descriptors, the
+machine-readable endpoint map for external agents at
+`docs/reference/endpoints.json` (method, path, mutating flag,
 applicability, summary, auth, located parameters, and request/response/error
 schema names referencing the generated JSON
 Schemas in `packages/schema/generated/`). README and INTEGRATIONS link here
@@ -4670,6 +4672,23 @@ by pid and a digest of its token, then preserves that tombstone so a delayed
 contender cannot quarantine a live successor. Acquisition is the only
 quarantine mutator and tombstones have no automatic GC.
 
+Windows daemon leases opt into the kernel birth reader and record FILETIME at
+acquisition, so a reused PID is rejected by exact identity comparison rather
+than treated as a live legacy owner. Core defaults are unchanged. A birth read
+that fails at acquisition still writes a PID-only record with the legacy limits
+below. A recorded birth that cannot be read later stays
+`identity_unavailable` while the pid is present or inaccessible, so it blocks
+instead of proving anything. Existing PID-only records cannot acquire a
+historical identity retrospectively: file timestamps are not process identity
+(a clock correction can reverse their ordering). Their recovery requires the
+independently established operator evidence described under
+[Legacy PID-only writer records](#legacy-pid-only-writer-records); neither age
+nor timestamp ordering authorizes automatic quarantine. Legacy inspection does
+not launch the Windows birth helper. Recorded identities use its existing
+30-second bound. Canary cleanup allows two such reads plus overhead for its
+lease probe and adds that allowance to its `daemon stop` budget, because the
+stop makes the same inspection before its shutdown request.
+
 Above the per-socket lease sits a PERSISTENT root authority for the shared
 data root. Before any store or import work the daemon validates/installs a permanent
 barrier at the canonical default writer address: the lease directory carries
@@ -5111,6 +5130,66 @@ and on POSIX the daemon best-effort chmods the socket 0600 — a chmod failure
 on exotic filesystems is tolerated at startup (the win32 named pipe is not a
 filesystem entry, so no chmod applies there; the bearer token remains the auth
 gate on every platform).
+
+#### Legacy PID-only writer records
+
+A writer record with no `identity` cannot show which process wrote it. While its
+pid is occupied or inaccessible, every start refuses with
+`another claudexor daemon owns <path>`, and `<path>` names that exact generation.
+Once the pid no longer exists, the next start proves the owner missing and moves
+the generation to its tombstone, with nothing to do by hand. There is no recovery
+command and no automatic release, because no safe signal distinguishes that writer
+from whatever now holds its pid.
+
+This section covers only records without `identity`. A record that carries one
+and refuses is held, with no manual step: either its process is alive with that
+birth, or the birth cannot be read (`identity_unavailable`). The next start
+replaces it once that pid is free or its holder's different birth can be read.
+
+Hold by default. Move a record aside only when all three of these hold:
+
+1. `<path>` ends in `active.writer` and its parent directory holds
+   `root-authority-v2.json`.
+2. You have independent positive proof that the writer cannot resume: the pid now
+   belongs to a process whose full command line and parent identify it as
+   something other than a Claudexor daemon. A pid names one live process at a time,
+   so that process being something else means the writer is gone. On Windows, read
+   them with
+   `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Format-List CommandLine,ParentProcessId`;
+   a command line you cannot read proves nothing.
+3. Every launcher that could start a daemon on this root is stopped: the app, a
+   script, a scheduled task. For an externally owned root this decision and the
+   rename belong to its lifecycle owner.
+
+These are not that proof: a failing `claudexor daemon stop` or `status`, or an
+unreachable socket (the lease is taken before the socket binds, so a starting
+daemon shows the same); the image name (one Node cannot be told from another); the
+age of the record, or a process start time later than it (clocks can move
+backward).
+
+With all three established, rename that one directory in place to a new name, and
+keep it:
+
+```powershell
+Rename-Item -LiteralPath "<path>" -NewName "active.writer.operator-backup-<UTC time>"
+```
+
+The rename is reversible: while no daemon runs and `active.writer` is absent, rename
+the backup back and the refusal returns. It keeps the complete owner bytes, and
+leaves the root-authority marker, its floor, `engine.sqlite`, journals and run data
+untouched. Then start the daemon and check `claudexor daemon status`. A new record
+without `identity` means the birth read failed at acquisition, so these limits
+still apply.
+
+Three things are never part of this recovery:
+
+- Deleting `owner.json` alone: the directory that remains refuses every start as
+  `owner_missing`.
+- Renaming, moving or deleting the parent `.writer` directory or
+  `root-authority-v2.json`: that destroys the floor which keeps older runtimes off
+  this root.
+- Ending the recorded pid: it may be an unrelated program, and a record proves no
+  authority to signal it.
 
 ### SQLite engine store
 
@@ -5643,17 +5722,21 @@ action is refused. Cancel is asynchronous. Cancel/timeout sends TERM and, after
 five seconds, KILL only when PID + kernel-start identity still matches; an
 unproven identity is never signalled or called cancelled.
 
-On **win32** the same contract holds through platform-shaped mechanisms, and
-this is the ONLY lane that enables them. Kernel-start comes from the process
-creation time (`GetProcessTimes`, read through the absolute System32
-PowerShell), so a recycled PID compares DIFFERENT exactly as it does on POSIX;
-every other consumer keeps the fail-closed default where a win32 identity stays
-unprovable and no signal is sent. Windows has no process group and no
-cooperative TERM, so both escalation steps are one `taskkill /PID <leader> /T
-/F` of the recorded leader's tree, issued only while that identity still owns
-the PID, and emptiness is the LEADER's identity being gone afterwards — a
-leader-death proof, weaker than the POSIX group-ESRCH proof and recorded as
-such. Native executables and standard npm Node entrypoints use one launch
+On **win32** the same contract holds through platform-shaped mechanisms.
+Kernel-start comes from the process creation time (`GetProcessTimes`, read
+through the absolute System32 PowerShell), so a recycled PID compares DIFFERENT
+exactly as it does on POSIX. This lane and the daemon writer lease are the two
+consumers that enable that birth reader. With a recorded daemon birth,
+`claudexor daemon stop` and an admitted runtime-replacement `claudexord --stop`
+may, after the grace window, force-terminate that one daemon process (not its
+tree) while its birth still matches; a birth that cannot be read withholds the
+signal. Every other consumer keeps the fail-closed default, where a win32
+identity stays unprovable and no signal is sent. For this lane, Windows has no
+process group and no cooperative TERM, so both escalation steps are one
+`taskkill /PID <leader> /T /F` of the recorded leader's tree, issued only while
+that identity still owns the PID, and emptiness is the LEADER's identity being
+gone afterwards — a leader-death proof, weaker than the POSIX group-ESRCH proof
+and recorded as such. Native executables and standard npm Node entrypoints use one launch
 description; Node entrypoints preserve the vendor script and its interpreter
 arguments instead of passing prompt text through a command shell. An unknown
 custom batch file is not silently reinterpreted as a standard npm launcher.

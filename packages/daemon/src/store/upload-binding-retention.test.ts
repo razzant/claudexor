@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hashJson } from "@claudexor/util";
 import { payloadRef, putResourceInTx, readResourceRow } from "./resource-rows.js";
 import {
@@ -17,6 +17,7 @@ import {
   uploadRequest,
   type ResourceFixture,
 } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -39,12 +40,16 @@ async function open(path = root()) {
   fixtures.push(f);
   return f;
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   vi.mocked(fs.readdirSync).mockReset();
   vi.mocked(fs.readFileSync).mockReset();
   for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) fs.rmSync(path, { recursive: true, force: true });
-  clock = Date.parse("2026-10-10T10:00:00Z");
+  return () => {
+    for (const path of ownedRoots) fs.rmSync(path, { recursive: true, force: true });
+    clock = Date.parse("2026-10-10T10:00:00Z");
+  };
 });
 const bindings = (f: ResourceFixture) =>
   Number(

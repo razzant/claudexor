@@ -54,14 +54,14 @@ vi.mock(import("../../workspace/dist/git-transient-capture.js"), async (original
   };
 });
 
-const cleanup: Array<() => Promise<unknown> | void> = [];
-afterEach(async () => {
+const cleanup: Array<() => void> = [];
+afterEach(() => {
   observed.snapshots = [];
   observed.captures = 0;
   observed.afterCapture = undefined;
   observed.refuseCaptures = false;
-  for (const dispose of cleanup.splice(0).reverse()) await dispose();
-});
+  for (const dispose of cleanup.splice(0).reverse()) dispose();
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 const git = (root: string, ...args: string[]) =>
   execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();

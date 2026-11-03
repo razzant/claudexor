@@ -21,7 +21,7 @@ import {
 const reapDirs: string[] = [];
 afterAll(() => {
   for (const dir of reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("claudexord belt self-entry", () => {
   it("dispatches only the exact mcp serve-belt invocation", () => {

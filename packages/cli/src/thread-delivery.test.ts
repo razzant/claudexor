@@ -9,19 +9,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type ProjectThreadPort } from "@claudexor/daemon";
 import { locateScanner } from "@claudexor/delivery";
 import { projectRuntimeDir } from "@claudexor/util";
 import { ensureThreadWorktree } from "@claudexor/workspace";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { applyThreadDiff } from "./thread-delivery.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const dirs: string[] = [];
 const stores: Array<{ close(): Promise<void> }> = [];
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedDirs = dirs.splice(0);
   for (const store of stores.splice(0)) await store.close();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  return () => {
+    for (const dir of ownedDirs) rmSync(dir, { recursive: true, force: true });
+  };
 });
 
 const git = (repo: string, ...args: string[]): string =>

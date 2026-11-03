@@ -8,7 +8,7 @@ import { mergeResources, ageResources } from "./quota-resources.js";
 import { resourceRefreshEvidence } from "./quota-resource-demand.js";
 import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 const cleanups: (() => void)[] = [];
-afterEach(() => cleanups.splice(0).forEach((fn) => fn()));
+afterEach(() => cleanups.splice(0).forEach((fn) => fn()), 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const subject = {
   harness: "cursor",
   credential_route: "vendor_native" as const,

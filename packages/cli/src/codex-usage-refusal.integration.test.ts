@@ -67,7 +67,10 @@ const TRANSPORT_WORDS = "stream disconnected before completion: error sending re
 const VENDOR = { code: "usage_limit_exceeded", message: CREDITS, source: "codex_rollout" };
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** The scripted vendor app-server of one spawn; it also writes that turn's rollout record. */
 function vendor(behavior: Behavior, home: string, threadSeq: () => string): typeof spawnProcess {

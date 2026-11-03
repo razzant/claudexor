@@ -17,7 +17,7 @@ const token = "daemon-token-event-part";
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const SECRET = `ghp_${"a".repeat(36)}`;
 // Multi-byte content forces part boundaries inside characters to back off.

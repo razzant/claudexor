@@ -36,7 +36,10 @@ import { resolveContinuationBody } from "../../control-api/src/run-continuation-
 import { timelineEvents } from "../../control-api/src/run-timeline.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** Real source manifests; runtime probes and task execution alone are controlled.
  * No vendor CLI, daemon, listener or model is started. Git is fixture-local. */

@@ -160,7 +160,7 @@ describe("fsyncDirectory win32 tolerance", () => {
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
     flush.closed.length = 0;
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("tolerates the refused flush on win32 and still closes the handle", () => {
     const dir = refusingDir();
@@ -206,7 +206,7 @@ describe("ensureCanonicalPrivateDirectory win32 chmod tolerance", () => {
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
     flush.closed.length = 0;
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("tolerates the refused directory chmod on win32 and still closes the handle", () => {
     const dir = ownedDir(flush.marker);

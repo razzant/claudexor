@@ -28,7 +28,7 @@ afterEach(() => {
     fixture.log.dispose();
     rmSync(fixture.root, { recursive: true, force: true });
   }
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function gate(id: string): TestCommand {
   return {

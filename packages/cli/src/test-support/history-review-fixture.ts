@@ -10,9 +10,15 @@ import { sqlThreadHistoryReads } from "../sql-thread-history.js";
 export async function historyReviewFixture(prompts = ["hello"]) {
   const root = mkdtempSync(join(tmpdir(), "cx-history-review-"));
   const f = await sqlFixture(root);
+  let closed = false;
+  // onTestFinished runs last-registered first, so this follows the close below. A synchronous
+  // removal has no deadline (#376), and a close that failed or timed out keeps the folder.
+  onTestFinished(() => {
+    if (closed) rmSync(root, { recursive: true, force: true });
+  }, 0);
   onTestFinished(async () => {
     await f.close();
-    rmSync(root, { recursive: true, force: true });
+    closed = true;
   });
   const thread = f.graph.threads.createThread({ title: "review" });
   const pid = f.graph.threads.generationForThread(thread.id)!.pid;

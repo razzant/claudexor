@@ -49,7 +49,7 @@ mkdirSync(ownedTmp, { recursive: true });
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /**
  * Effort discovery is probed in the RUN's resolved env, so an unstubbed adapter

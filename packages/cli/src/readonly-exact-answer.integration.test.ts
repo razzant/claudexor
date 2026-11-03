@@ -11,7 +11,7 @@ import { projectRecoveryRunDetail } from "./mcp-run-projections.js";
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function harness(id: string, reply: string, narration: string): HarnessAdapter {
   return {

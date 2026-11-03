@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ModelAdapter } from "@claudexor/core";
 import {
   ControlModelOperationDetail,
@@ -20,10 +20,17 @@ import { ModelOperations } from "./model-operations.js";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 import { createCodexModelAdapter } from "../../harness-codex/src/model.js";
 import effortFixture from "../../schema/fixtures/effort-resolution.json" with { type: "json" };
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 const request = (content = "own conversation") =>
@@ -101,11 +108,11 @@ async function fixture(
     onCommandTerminal: (record) => operations.onCommandTerminal(record),
   });
   await server.start();
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   cleanup.push(async () => {
     await server.stop();
     operations.close();
     await sql.close();
-    rmSync(root, { recursive: true, force: true });
   });
   const upload = (body = request()): ModelPayloadRef =>
     resources.publishModel(Buffer.from(JSON.stringify(body)));

@@ -10,12 +10,13 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runCliHarness, type CliRunLoopOptions } from "@claudexor/core";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { createClaudeAdapter } from "../../harness-claude/src/index.js";
 import { DECLINE_MESSAGE } from "../../harness-claude/src/interactive.js";
 import { followRun } from "./live.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 import { mcpWire, startInteractionDaemon } from "./test-support/interaction-daemon.js";
 
 type Json = Record<string, any>;
@@ -35,9 +36,15 @@ vi.mock("node:readline/promises", () => ({
 }));
 
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 /**
@@ -115,6 +122,7 @@ async function fixture() {
   const harnessEvents = new Map<string, HarnessEvent[]>();
   const daemon = await startInteractionDaemon({
     cleanups,
+    removals,
     harnessId: "claude",
     prompt: "Ask me first",
     waitMs: 10_000,

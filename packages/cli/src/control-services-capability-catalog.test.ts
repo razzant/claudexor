@@ -76,7 +76,7 @@ describe("GET /v2/agent-capabilities rides the status-projection cache", () => {
     if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("joins concurrent readers to one sweep and serves it inside the window", async () => {
     const svc = services();

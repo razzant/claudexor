@@ -19,7 +19,7 @@ import { handleThreadTurnCreate, type ThreadTurnRouteCtx } from "./thread-turn-r
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("promptCacheTtl request contract", () => {
   it("is an exact optional run and thread-turn control; unknown values fail loudly", () => {

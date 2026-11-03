@@ -34,7 +34,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 // A hermetic Claudexor-owned root so every projectRuntimeDir(...) resolves
 // under a throwaway config dir (never the operator's real ~/.claudexor).

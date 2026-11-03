@@ -77,11 +77,11 @@ export interface ProcessIdentityServiceOptions {
   darwinHelperPath?: string | null;
   runDarwinHelper?: (path: string, pid: number) => ProcessHelperExecution;
   /**
-   * OPT-IN win32 birth-time reader. Absent (the production default) keeps
-   * win32 `unsupported_platform`, so every consumer that fails closed there
-   * today — run capture, the orphan reaper, the daemon writer lease — is
-   * untouched. A lane that needs a Windows identity passes
-   * {@link executeWin32ProcessTimes} explicitly and owns the cost.
+   * OPT-IN win32 birth-time reader. Absent (the default service) keeps win32
+   * `unsupported_platform`, so a consumer that fails closed there today — run
+   * capture, the orphan reaper — is untouched. A lane that needs a Windows
+   * identity passes {@link executeWin32ProcessTimes} explicitly and owns the
+   * cost, as the daemon writer lease does for its records.
    */
   runWin32Reader?: (pid: number) => ProcessHelperExecution;
 }

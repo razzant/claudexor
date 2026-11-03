@@ -41,6 +41,10 @@ const LEASE_PROBE = `
   process.stdout.write(JSON.stringify(observation));
 `;
 
+// Strict inspection of a live Windows owner re-reads its recorded birth through
+// core's reader (30-second cap), twice when the record changes mid-read.
+const WIN32_LEASE_INSPECTION_MS = 65_000;
+
 interface LeaseObservation {
   status: "absent" | "owned" | "unknown";
   path: string;
@@ -62,7 +66,7 @@ export function inspectSandboxLease(env: NodeJS.ProcessEnv, cwd: string): LeaseO
     env,
     cwd,
     encoding: "utf8",
-    timeout: 10_000,
+    timeout: process.platform === "win32" ? WIN32_LEASE_INSPECTION_MS : 10_000,
   });
   if (result.error || result.signal || result.status !== 0) {
     throw new Error(
@@ -96,7 +100,8 @@ export interface Sandbox {
   configDir: string;
   repo: string;
   env: NodeJS.ProcessEnv;
-  dispose: () => void;
+  /** Stops the daemon and proves it inactive, then removes the fixture unless `keepFiles`. */
+  dispose: (options?: { keepFiles?: boolean }) => void;
 }
 
 export function makeSandbox(): Sandbox {
@@ -153,7 +158,7 @@ export function makeSandbox(): Sandbox {
     configDir,
     repo,
     env,
-    dispose: () => {
+    dispose: ({ keepFiles = false } = {}) => {
       if (disposed) return;
       const receipt: Record<string, unknown> = { base, configDir, daemonEntry: DAEMON };
       try {
@@ -166,8 +171,10 @@ export function makeSandbox(): Sandbox {
             env,
             cwd: repo,
             encoding: "utf8",
-            // Covers the engine's own ~20s confirmation budget with slack.
-            timeout: 30_000,
+            // Covers the engine's own ~20s confirmation budget with slack. On
+            // Windows the stop first pins its target with that same inspection,
+            // before any shutdown request, so it also gets that allowance.
+            timeout: 30_000 + (process.platform === "win32" ? WIN32_LEASE_INSPECTION_MS : 0),
           });
           receipt.stop = {
             status: result.status,
@@ -187,6 +194,7 @@ export function makeSandbox(): Sandbox {
           if (!inactiveLease(after))
             throw new Error("writer-lease activity remains live or unknown");
         }
+        if (keepFiles) return;
         rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
         disposed = true;
       } catch (error) {

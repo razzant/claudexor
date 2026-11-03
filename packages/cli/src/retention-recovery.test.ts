@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { WorkProduct } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
@@ -15,6 +15,7 @@ import {
 } from "../../daemon/dist/store/generations.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { sqlActivityRecords } from "./sql-daemon-queries.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 let root: string;
 let before: string | undefined;
@@ -31,11 +32,13 @@ beforeEach(async () => {
   );
   sql = await sqlFixture(join(root, "sql"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   await sql.close();
-  if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = before;
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    if (before === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = before;
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 function oldRun(repoRoot: string, id: string, scope: Record<string, unknown>) {

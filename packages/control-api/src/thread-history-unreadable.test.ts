@@ -20,7 +20,7 @@ afterEach(() => {
     }
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function run(readable: boolean) {
   const runDir = mkdtempSync(join(tmpdir(), "cx-history-unreadable-"));

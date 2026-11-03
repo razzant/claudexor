@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { digestPendingIdentities, interactionKey } from "../interactions.js";
 import type { JobRecord } from "../job-record.js";
 import { applyCommandInTx, prepareCommandRow } from "./command-rows.js";
@@ -11,18 +11,25 @@ import { setGlobalGenerationInTx } from "./generations.js";
 import { SqlInteractionStore } from "./interactions.js";
 import { createPartition } from "./partitions.js";
 import { resourceFixture } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const TIME = "2026-10-22T00:00:00.000Z";
 const EPOCH = "11111111111111111111111111111111";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-observation-query-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const f = await resourceFixture(root, { manualTick: true, now: () => new Date(TIME) });
   cleanup.push(() => f.close());
   const generation = f.store.transaction(() => {

@@ -23,7 +23,7 @@ const tempRoots: string[] = [];
 
 afterEach(() => {
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("run-command pre-daemon machine contract", () => {
   it("renders missing prompts for all five run verbs as exactly one NDJSON failure", () => {

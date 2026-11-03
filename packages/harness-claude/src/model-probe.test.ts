@@ -657,7 +657,7 @@ describe("binary identity on disk", () => {
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function pickerLine(values: string[]): string {
     return JSON.stringify({
@@ -746,7 +746,7 @@ describe("a PATH patch resolves the binary the run would execute", () => {
   });
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function stubDir(name: string, value: string): string {
     const dir = join(root, name);

@@ -1,9 +1,10 @@
 import { closeSync, mkdtempSync, openSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBusyError, StoreCorruptError, StoreFullError } from "./errors.js";
 import { EngineStore, type EngineStoreOptions } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const sqliteAvailable = await import("node:sqlite").then(
   () => true,
@@ -15,9 +16,11 @@ const stores: EngineStore[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-statement-observer-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function open(onCorrupt?: EngineStoreOptions["onCorrupt"]) {
   const store = await EngineStore.open({

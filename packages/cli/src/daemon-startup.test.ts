@@ -12,10 +12,11 @@ import {
   proveRecoveryTransport,
 } from "./daemon-startup.js";
 import { legacyCommandFixture } from "../../daemon/src/store/test-support/legacy-command-fixture.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const dispose of cleanup.splice(0)) dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function tempRoot(name: string): string {
   const path = realpathSync(mkdtempSync(join(tmpdir(), `claudexor-${name}-`)));
   cleanup.push(() => rmSync(path, { recursive: true, force: true }));
@@ -43,8 +44,14 @@ describe("recovery transport proof (issue #165 D5 stage 3)", () => {
     return socketPath;
   }
   const stopServers: Array<() => Promise<void>> = [];
-  afterEach(async () => {
+  afterEachClosed(async () => {
+    // This test's folders, taken before its stops: the file-level hook of a later test never
+    // removes what a failed stop kept.
+    const owned = cleanup.splice(0);
     for (const stop of stopServers.splice(0)) await stop();
+    return () => {
+      for (const dispose of owned) dispose();
+    };
   });
 
   it("accepts a recovery-only socket health report without a control plane", async () => {
@@ -142,8 +149,13 @@ describe("recovery transport proof (issue #165 D5 stage 3)", () => {
 describe("a Stop during the startup transport bind or proof (issue #278)", () => {
   const identity = { version: "3.4.0", sha: "d".repeat(40) };
   const stopAfter: Array<() => Promise<unknown>> = [];
-  afterEach(async () => {
-    for (const stop of stopAfter.splice(0)) await stop().catch(() => undefined);
+  afterEachClosed(async () => {
+    // This test's folders, taken before its stops: a failed or late stop retains them.
+    const owned = cleanup.splice(0);
+    for (const stop of stopAfter.splice(0)) await stop();
+    return () => {
+      for (const dispose of owned) dispose();
+    };
   });
   /** A REAL recovery-only daemon socket server; the test decides when it starts. */
   function recoverySocket(startupBarrier?: () => Promise<void>) {

@@ -38,7 +38,7 @@ afterEach(() => {
   else process.env["CLAUDEXOR_CONFIG_DIR"] = configDir;
   for (const file of unreadable.splice(0)) if (existsSync(file)) chmodSync(file, 0o644);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const ENV = {
   ...process.env,
   GIT_CONFIG_GLOBAL: "/dev/null",

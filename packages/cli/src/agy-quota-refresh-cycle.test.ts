@@ -92,7 +92,7 @@ afterEach(() => {
     else process.env[key] = value;
   }
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 /** Enabled AGY config_dir_login profiles, each with its own HOME. */
 function writeProfiles(ids: readonly string[]): void {

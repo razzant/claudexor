@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DaemonControlApiServer } from "@claudexor/control-api";
 import { uploadQuery } from "./upload-query.js";
 import { uploadServices } from "./upload-services.js";
@@ -11,6 +11,7 @@ import {
   resourceFixture,
   type ResourceFixture,
 } from "../../daemon/src/store/test-support/resource-fixture.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const mocks = vi.hoisted(() => ({ connect: vi.fn(), opened: [] as string[] }));
 vi.mock("./daemon-run.js", () => ({ connectDaemonIfRunning: mocks.connect }));
@@ -27,10 +28,16 @@ vi.mock("./local-document-source.js", async (importOriginal) => {
 });
 
 const cleanup: Array<() => Promise<void> | void> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const step of cleanup.splice(0).reverse()) await step();
-  vi.restoreAllMocks();
-  mocks.opened.length = 0;
+  return () => {
+    for (const remove of ownedRemovals) remove();
+    vi.restoreAllMocks();
+    mocks.opened.length = 0;
+  };
 });
 
 interface Daemon {
@@ -51,19 +58,19 @@ async function daemon(root: string): Promise<Daemon> {
   const address = await server.start();
   const base = `http://${address.host}:${address.port}`;
   mocks.connect.mockResolvedValue({ addr: { baseUrl: base, token: "import-test" } });
-  let stopped = false;
-  const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    await server.stop();
-    await f.close();
-  };
+  let stopping: Promise<void> | undefined;
+  /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+  const stop = () =>
+    (stopping ??= (async () => {
+      await server.stop();
+      await f.close();
+    })());
   cleanup.push(stop);
   return { f, base, storeId: f.store.storeId!, stop };
 }
 function workspace() {
   const root = mkdtempSync(join(tmpdir(), "cx-upload-import-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
 const digest = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;

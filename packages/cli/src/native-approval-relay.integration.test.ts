@@ -1,17 +1,24 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { spawnProcess } from "@claudexor/core";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { runCodexAppServer } from "../../harness-codex/src/app-server-run.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 import { mcpWire, startInteractionDaemon } from "./test-support/interaction-daemon.js";
 
 type Frame = Record<string, unknown>;
 
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 /** A Codex app-server root thread whose turns the test scripts frame by frame. */
@@ -147,6 +154,7 @@ async function fixture() {
   const harnessEvents: HarnessEvent[] = [];
   const daemon = await startInteractionDaemon({
     cleanups,
+    removals,
     harnessId: "codex",
     prompt: "native relay fixture",
     execute: async ({ runId, signal, channel }, workspace) => {

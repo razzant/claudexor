@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import type { HarnessAdapter } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
@@ -17,14 +17,21 @@ import {
 import { projectRuntimeDir } from "@claudexor/util";
 import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 import { Orchestrator, type RunInput } from "./orchestrator.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 // #535 round 8 (P4-F1): config, artifacts and custody are anchored to the
 // project (repoRoot); only the Git working directory is the execution root. A
 // Git result of a delegated run or an isolated thread keeps its objects where
 // delivery and retention look for them, through the real capture and routes.
 const cleanup: Array<() => Promise<unknown> | void> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 const git = (root: string, ...args: string[]) =>
@@ -32,7 +39,7 @@ const git = (root: string, ...args: string[]) =>
 
 function repo(prefix: string, content: string): string {
   const root = mkdtempSync(join(tmpdir(), `cx-custody-${prefix}-`));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   git(root, "init", "-q", "-b", "main");
   writeFileSync(join(root, "file.txt"), content);
   git(root, "add", ".");

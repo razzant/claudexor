@@ -43,7 +43,7 @@ const sameSource = (root: string, packet: RawContextPacket) => {
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** A committed repository; `untracked` files exist only in the worktree. */
 function repo(files: Record<string, string>, untracked: Record<string, string> = {}): string {

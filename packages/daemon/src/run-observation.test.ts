@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "../../artifact-store/src/index.js";
 import * as eventLog from "../../event-log/src/index.js";
 import type { RunWaitManySummary } from "@claudexor/schema";
@@ -18,14 +18,21 @@ import { SqlInteractionStore } from "./store/interactions.js";
 import { runMutation } from "./store/mutation.js";
 import { createPartition } from "./store/partitions.js";
 import { resourceFixture } from "./store/test-support/resource-fixture.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const TIME = "2026-10-22T00:00:00.000Z";
 const STORE = "11111111-1111-4111-8111-111111111111";
 const EPOCH = "11111111111111111111111111111111";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function question(runId: string, id: string, timeoutAt: string | null = null): InteractionContext {
@@ -42,7 +49,7 @@ function question(runId: string, id: string, timeoutAt: string | null = null): I
 
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-run-observation-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const f = await resourceFixture(root, { manualTick: true, now: () => new Date(TIME) });
   cleanup.push(() => f.close());
   const generation = f.store.transaction(() => {

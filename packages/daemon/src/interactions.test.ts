@@ -50,7 +50,7 @@ const TWO_QUESTIONS = {
 afterEach(() => {
   vi.useRealTimers();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("InteractionRegistry disabled expiry", () => {
   it("resolves an aborted request without ending its run or leaving a pending row", async () => {

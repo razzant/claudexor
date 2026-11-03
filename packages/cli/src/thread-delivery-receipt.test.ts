@@ -38,7 +38,7 @@ vi.mock("@claudexor/delivery", async (original) => ({
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("a thread apply's delivery receipt", () => {
   it("survives a stranded HEAD: the strict receipt parses and keeps the way back", async () => {

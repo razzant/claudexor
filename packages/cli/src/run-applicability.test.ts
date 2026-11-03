@@ -15,7 +15,7 @@ const unavailable = {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("run Git applicability", () => {
   it("projects the exact six cells through the canonical workspace predicate", () => {

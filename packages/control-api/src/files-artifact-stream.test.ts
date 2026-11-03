@@ -57,7 +57,7 @@ describe("immutable artifact transfer after a finite manifest lookup", () => {
       }),
     );
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function response() {
     const chunks: Buffer[] = [];

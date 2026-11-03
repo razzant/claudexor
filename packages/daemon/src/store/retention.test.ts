@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { journalFoldPolicy } from "../journal-fold-policy.js";
 import { applyCommandPruneInTx } from "./command-prune.js";
 import { createPartition } from "./partitions.js";
@@ -20,6 +20,7 @@ import {
   terminalCommandCount,
 } from "./retention.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -40,10 +41,12 @@ const journals: DurableJournal[] = [];
 beforeEach(() => {
   root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-retention-")));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const journal of journals.splice(0)) journal.close();
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function openStore(): Promise<EngineStore> {
   const store = await EngineStore.open({

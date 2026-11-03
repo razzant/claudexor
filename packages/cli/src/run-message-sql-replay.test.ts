@@ -9,11 +9,18 @@ import {
   EngineStore,
   setGlobalGenerationInTx,
 } from "@claudexor/daemon";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 const TEXT = "Please inspect the API first.";
@@ -21,7 +28,7 @@ const TEXT = "Please inspect the API first.";
 /** One accepted job behind real control HTTP and the real SQL delivery ledger. */
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sql-message-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../daemon/dist/store/flusher-worker.js"),

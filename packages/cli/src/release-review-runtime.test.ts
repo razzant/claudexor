@@ -20,7 +20,7 @@ const scratch: string[] = [];
 
 afterEach(() => {
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("release review verifier runtime", () => {
   it("bundles the production entry from repo-owned sources only", async () => {

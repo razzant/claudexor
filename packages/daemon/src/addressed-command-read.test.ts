@@ -29,7 +29,7 @@ const BASE_MS = Date.UTC(2026, 8, 15);
 const reaped: string[] = [];
 afterAll(() => {
   for (const dir of reaped.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(name: string): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `cx-addressed-${name}-`)));

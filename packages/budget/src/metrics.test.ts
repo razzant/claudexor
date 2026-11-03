@@ -15,7 +15,7 @@ function temporaryConfig(): string {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("routing cost evidence", () => {
   it("drops incompatible legacy cost before API ranking while retaining other telemetry", () => {

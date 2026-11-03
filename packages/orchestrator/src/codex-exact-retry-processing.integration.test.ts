@@ -20,7 +20,7 @@ afterEach(() => {
   clearCodexEffortCache();
   vi.restoreAllMocks();
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 let cases = 0;
 const reset = () => new Date(Date.now() + 3_600_000).toISOString();

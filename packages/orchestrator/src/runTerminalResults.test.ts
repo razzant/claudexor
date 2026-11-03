@@ -9,7 +9,7 @@ import { writeFailure } from "./runTerminalResults.js";
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function written(failure: Parameters<typeof writeFailure>[2]): RunFailure {
   const root = mkdtempSync(join(tmpdir(), "claudexor-write-failure-"));

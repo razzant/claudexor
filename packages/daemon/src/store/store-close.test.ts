@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 import { FlusherController } from "./flusher.js";
 import { EngineStore } from "./store.js";
 
@@ -17,16 +18,20 @@ let connection: DatabaseSync | undefined;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-store-close-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's handles, taken before its close: a late close never clears the next test's.
+  const [ownedStore, ownedConnection] = [store, connection];
+  store = undefined;
+  connection = undefined;
   vi.restoreAllMocks();
   try {
-    if (store) await store.close();
+    if (ownedStore) await ownedStore.close();
   } finally {
-    if (connection?.isOpen) connection.close();
-    connection = undefined;
-    store = undefined;
-    rmSync(root, { recursive: true, force: true });
+    if (ownedConnection?.isOpen) ownedConnection.close();
   }
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function open() {
   store = await EngineStore.open({

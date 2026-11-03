@@ -23,7 +23,7 @@ const cleanups = [];
 
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 // Stands in for the packaged daemon entry. It selects its root, socket and
 // discovery exactly as the daemon does (userConfigDir, defaultSocketPath,

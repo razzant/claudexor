@@ -12,7 +12,7 @@ import { preserveCaptureSource } from "./captureRefusal.js";
 const dirs: string[] = [];
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const temp = (name: string) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `cx-retention-stage-${name}-`)));
   dirs.push(dir);

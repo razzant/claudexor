@@ -17,7 +17,7 @@ describe("ensureClaudeBridge (D-14 layer 3)", () => {
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("does nothing when there is no AGENTS.md", () => {
     const res = ensureClaudeBridge(dir);
@@ -93,7 +93,7 @@ describe("isGeneratedClaudeBridge (A-3: byte-equality, not marker substring)", (
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("is true only for a byte-identical generated bridge", () => {
     writeFileSync(join(dir, "CLAUDE.md"), CLAUDE_BRIDGE_CONTENT);

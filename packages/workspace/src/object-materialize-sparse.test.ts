@@ -12,7 +12,7 @@ import { materializeTree } from "./object-materialize.js";
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const ENV = {
   ...process.env,
   GIT_CONFIG_GLOBAL: "/dev/null",

@@ -176,7 +176,7 @@ async function waitTerminal(api: ReturnType<typeof requestApi>, jobId: string): 
 let sb: Sandbox;
 afterEach(() => {
   sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("[LIVE-MESSAGE:contract] live messages into a running fake-steerable run", () => {
   it("admits, accepts and delivers one message and journals the three receipts in order", async () => {

@@ -61,7 +61,7 @@ function pathEntryExists(path: string): boolean {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** A fixture's discovery where only its file-reading declaration matters. */
 function readerManifest(id: string) {

@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectRuntimeDir } from "@claudexor/util";
 import { ensureThreadWorktree, git } from "@claudexor/workspace";
 import { threadPurgeEffect, threadPurgeOwner } from "../../../cli/src/thread-purge.js";
@@ -30,6 +30,7 @@ import { SqlProjectStore } from "./projects.js";
 import { SqlPurgeFiles } from "./purge-files.js";
 import { EngineStore } from "./store.js";
 import { sqlFixture } from "./test-support/sql-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 let root: string,
   store: EngineStore,
@@ -52,12 +53,14 @@ beforeEach(async () => {
   await open();
   store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   obligations?.close();
   await store?.close();
-  vi.unstubAllEnvs();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 function tick(): Promise<void> {
   return new Promise((done) => {

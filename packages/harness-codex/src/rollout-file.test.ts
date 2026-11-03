@@ -30,7 +30,7 @@ import {
 
 const THREAD = "0199dddd-eeee-7fff-8000-111122223333";
 const roots: string[] = [];
-afterAll(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterAll(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 afterEach(() => setRolloutReadLimitsForTests(null));
 const scratch = (label: string): string => {
   const dir = mkdtempSync(join(tmpdir(), `codex-rollout-file-${label}-`));

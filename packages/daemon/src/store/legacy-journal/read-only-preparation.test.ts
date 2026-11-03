@@ -25,7 +25,7 @@ import { journalPartitionDirectory } from "./journal-partition.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function fixture(partition = "global", populate = true) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "legacy-reader-")));
   roots.push(root);
