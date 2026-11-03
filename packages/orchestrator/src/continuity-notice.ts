@@ -23,7 +23,7 @@ const CAUSE_PHRASE: Record<ResumableCause, string> = {
   vendor_limit: "a usage limit on the previous account",
   pool_exhausted: "every account's usage limit",
   pinned_limit: "the pinned account's usage limit",
-  transport: "the process died",
+  transport: "an error without a typed cause",
   permission_denied: "a native tool permission was refused (no automatic privilege escalation)",
   context_exhausted: "the context window was exhausted",
   turn_limit: "the max-turns limit set for it was reached",

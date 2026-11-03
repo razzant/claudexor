@@ -314,7 +314,7 @@ export async function failedCandidatesResult(
     facts,
     why_winner: rootCause,
     evidence_facts: runs.flatMap((r) => [
-      `${r.attemptId} ${r.captureRefusal ? "capture incomplete" : "produced no work"}: ${r.errors[0] ?? "unknown"}`,
+      `${r.attemptId} ${r.captureRefusal ? "capture incomplete" : "delivered no accepted result"}: ${r.errors[0] ?? "unknown"}`,
       ...(r.continuationRefusal
         ? [
             `${r.continuationRefusal.attemptId} capture incomplete: ${r.continuationRefusal.refusal.detail}`,

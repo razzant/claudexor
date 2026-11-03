@@ -112,24 +112,61 @@ public struct TranscriptReducer: Sendable {
     /// Wall-clock start of the OPEN thinking segment (from the events' own
     /// `ts`), so the merged block can disclose how long the reasoning ran.
     private var openThinkingStart: Date?
-    /// Block id of the currently-APPENDABLE delta block: a delta continues it
-    /// only while it is still last; a tool/thinking block clears it so the
-    /// next delta starts fresh (correct feed order).
-    private var streamingMessageId: String?
-    /// Block id awaiting its authoritative full flush (W-C4): survives an
-    /// intervening tool block so the complete message reconciles by id instead
-    /// of appending a duplicate (confirm #1). Cleared on reconcile / final.
-    private var pendingFlushId: String?
-    /// Set once a TYPED final message arrives: seals the delta stream so a
-    /// late stray delta never appends after the answer is final (sol #9).
-    private var finalized = false
-    /// Block id of the most recent assistant MESSAGE block — the twin the
-    /// harness emits as ordinary narration immediately before repeating it as
-    /// the typed final (Codex last agent message; Claude/Cursor result). A
-    /// non-empty typed final removes THIS block so Activity never duplicates the
-    /// answer bubble (QA-009). Tracked by id — no prose comparison — and it
-    /// survives an intervening tool/thinking block. Cleared on final.
-    private var messageCandidateId: String?
+    /// One assistant text stream: the journal's identity of a physical try
+    /// (`attempt_id`, `harness_id`, `session_id`), so an earlier try's final never
+    /// seals a later try and concurrent candidates never join. Events without
+    /// them (older engines, other producers) share one legacy stream.
+    private struct StreamKey: Hashable, Sendable {
+        let attempt: String?
+        let harness: String?
+        let session: String?
+
+        init(_ payload: JSONValue) {
+            attempt = payload["attempt_id"]?.stringValue
+            harness = payload["harness_id"]?.stringValue
+            session = payload["session_id"]?.stringValue
+        }
+    }
+
+    /// The message state of ONE stream.
+    private struct StreamState: Sendable {
+        /// Block id of the currently-APPENDABLE delta block: a delta continues it
+        /// only while it is still last; a tool/thinking block clears it so the
+        /// next delta starts fresh (correct feed order).
+        var streamingMessageId: String?
+        /// Block id awaiting its authoritative full flush (W-C4): survives an
+        /// intervening tool block so the complete message reconciles by id instead
+        /// of appending a duplicate (confirm #1). Cleared on reconcile / final.
+        var pendingFlushId: String?
+        /// Set once a TYPED final message arrives: seals the delta stream so a
+        /// late stray delta never appends after the answer is final (sol #9),
+        /// until a typed native turn boundary of the same stream reopens it.
+        var finalized = false
+        /// Block id of the most recent assistant MESSAGE block — the twin the
+        /// harness emits as ordinary narration immediately before repeating it as
+        /// the typed final (Codex last agent message; Claude/Cursor result). A
+        /// non-empty typed final removes THIS block so Activity never duplicates the
+        /// answer bubble (QA-009). Tracked by id — no prose comparison — and it
+        /// survives an intervening tool/thinking block. Cleared on final.
+        var messageCandidateId: String?
+        /// Adapter-issued speech keys (`speech.key`) whose fragments the pending
+        /// block holds: a keyed complete replaces it only when it holds exactly
+        /// that key, so a completion never erases another speech's text.
+        var speechKeys: Set<String> = []
+
+        /// The harness stated that `key`'s text will never be completed: the
+        /// block holding it keeps its text as emitted and takes no later
+        /// fragment, flush or twin removal.
+        mutating func abandon(_ key: String) {
+            guard speechKeys.contains(key) else { return }
+            if messageCandidateId == pendingFlushId { messageCandidateId = nil }
+            streamingMessageId = nil
+            pendingFlushId = nil
+            speechKeys = []
+        }
+    }
+
+    private var streams: [StreamKey: StreamState] = [:]
     /// Engine notices that left the window (evicted, or restored into a full
     /// window and never placed): restoring one again neither re-inserts nor
     /// recounts it. One id per prepared copy of the run, never per event.
@@ -180,6 +217,19 @@ public struct TranscriptReducer: Sendable {
         let evType = payload["type"]?.stringValue
         let seqKey = String(env.seq)
         switch evType {
+        case "status":
+            // A typed native turn boundary (Claude's `native_turn_started`: a
+            // queued live message runs as the next turn of the SAME session)
+            // reopens only that stream: its earlier final no longer seals the
+            // new turn's text, while a late delta before the boundary was
+            // dropped and every other stream keeps its state. Not rendered.
+            if payload["payload"]?["code"]?.stringValue == "native_turn_started" {
+                streams[StreamKey(payload)] = nil
+            } else if payload["speech"]?["op"]?.stringValue == "abandoned",
+                      let speech = payload["speech"]?["key"]?.stringValue {
+                streams[StreamKey(payload)]?.abandon(speech)
+            }
+            return false
         case "thinking":
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
             let eventAt = Self.isoDate(payload["ts"]?.stringValue)
@@ -200,15 +250,20 @@ public struct TranscriptReducer: Sendable {
             // Buffered snapshots remain in the evidence artifact, not a second
             // complete message in the visible transcript (live or replayed).
             if payload["buffered"]?.boolValue == true || payload["payload"]?["buffered"]?.boolValue == true { return false }
+            // Delta, flush and finality state belong to this event's own stream.
+            let key = StreamKey(payload)
+            var stream = streams[key] ?? StreamState()
+            defer { streams[key] = stream }
             // A TYPED final message (claude/cursor result, codex finalized last
             // agent message) IS the answer bubble — never rendered here. It
-            // SEALS the delta stream so a late stray delta cannot append after
+            // SEALS its delta stream so a late stray delta cannot append after
             // the answer is final. Checked BEFORE the non-empty guard so an
             // EMPTY final still seals (review confirm #2).
             if payload["final"]?.boolValue == true {
-                streamingMessageId = nil
-                pendingFlushId = nil
-                finalized = true
+                stream.streamingMessageId = nil
+                stream.pendingFlushId = nil
+                stream.speechKeys = []
+                stream.finalized = true
                 // QA-009: Codex/Claude/Cursor emit the to-be-finalized assistant
                 // message as an ordinary block right before repeating it as this
                 // typed final, so Activity would otherwise show a dim twin of the
@@ -219,21 +274,23 @@ public struct TranscriptReducer: Sendable {
                 // rejected fuzzy row-vs-answer prose heuristic; an EMPTY final has
                 // no twin and only seals (acceptance #2/#6).
                 if let finalText = payload["text"]?.stringValue, !finalText.isEmpty {
-                    removeFinalizedTwin(messageCandidateId, finalText: finalText)
+                    removeFinalizedTwin(stream.messageCandidateId, finalText: finalText)
                 }
-                messageCandidateId = nil
+                stream.messageCandidateId = nil
                 return true
             }
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
+            let speech = payload["speech"]?["key"]?.stringValue
             // Live deltas (W-C4) grow ONE streaming block; after a final the
             // stream is SEALED (a late stray delta is dropped). A delta
             // continues the block only while it is still LAST (out-of-order
             // append would corrupt the feed); otherwise it starts a fresh one.
             // `pendingFlushId` remembers the block awaiting its authoritative
             // full flush EVEN across an intervening tool block (confirm #1).
-            if payload["delta"]?.boolValue == true {
-                if finalized { return false }
-                if let sid = streamingMessageId, blocks.last?.id == sid,
+            // The engine journals the adapter's flag nested (`payload.payload`).
+            if payload["delta"]?.boolValue == true || payload["payload"]?["delta"]?.boolValue == true {
+                if stream.finalized { return false }
+                if let sid = stream.streamingMessageId, blocks.last?.id == sid,
                    case .message(let id, let prev) = blocks.last {
                     let bounded = boundHead(prev + text)
                     textChars += bounded.count - prev.count
@@ -242,24 +299,28 @@ public struct TranscriptReducer: Sendable {
                 } else {
                     let id = "msg-\(seqKey)"
                     append(.message(id: id, text: boundHead(text)))
-                    streamingMessageId = id
+                    stream.streamingMessageId = id
+                    stream.speechKeys = []
                 }
-                pendingFlushId = streamingMessageId
-                messageCandidateId = streamingMessageId
+                if let speech { stream.speechKeys.insert(speech) }
+                stream.pendingFlushId = stream.streamingMessageId
+                stream.messageCandidateId = stream.streamingMessageId
                 return true
             }
             // The complete (non-delta) message REPLACES its delta-built block
             // by id — even after an intervening tool block orphaned it from the
-            // tail (confirm #1) — instead of appending a duplicate paragraph.
-            if let pid = pendingFlushId,
+            // tail (confirm #1) — instead of appending a duplicate paragraph. A
+            // keyed one replaces only a block that holds just its own speech.
+            if let pid = stream.pendingFlushId, speech.map({ stream.speechKeys == [$0] }) ?? true,
                let i = blocks.lastIndex(where: { $0.id == pid }),
                case .message(let id, let prev) = blocks[i] {
                 let bounded = boundHead(text)
                 textChars += bounded.count - prev.count
                 blocks[i] = .message(id: id, text: bounded)
-                pendingFlushId = nil
-                streamingMessageId = nil
-                messageCandidateId = id
+                stream.pendingFlushId = nil
+                stream.streamingMessageId = nil
+                stream.speechKeys = []
+                stream.messageCandidateId = id
                 enforceBudget()
                 return true
             }
@@ -267,7 +328,7 @@ public struct TranscriptReducer: Sendable {
             // the full text lives in the run's artifacts.
             let oneShotId = "msg-\(seqKey)"
             append(.message(id: oneShotId, text: boundHead(text)))
-            messageCandidateId = oneShotId
+            stream.messageCandidateId = oneShotId
             return true
         case "tool_call":
             let tool = payload["tool"]
@@ -468,10 +529,12 @@ public struct TranscriptReducer: Sendable {
         // next thinking event starts a new segment (and a new timer). Any
         // non-message block likewise closes the open streaming message.
         if case .thinking = block {} else { openThinkingStart = nil }
-        // A non-message block ends the APPENDABLE delta stream (the next delta
+        // A non-message block ends every APPENDABLE delta stream (the next delta
         // is a new message), but `pendingFlushId` survives so a later complete
         // flush still reconciles the pre-tool block by id (confirm #1).
-        if case .message = block {} else { streamingMessageId = nil }
+        if case .message = block {} else {
+            for key in streams.keys { streams[key]?.streamingMessageId = nil }
+        }
         blocks.append(block)
         textChars += chars(of: block)
         enforceBudget()

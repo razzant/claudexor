@@ -309,7 +309,7 @@ import {
 } from "./attemptFinalize.js";
 import {
   resolveWorkReportEnvelope,
-  unwrapWorkReportEnvelope,
+  unwrapAttemptAnswer,
   type ResolvedWorkReportEnvelope,
   type WorkReportEnvelopeMode,
 } from "./workReportEnvelope.js";
@@ -2654,7 +2654,6 @@ export class Orchestrator {
           clearFileBackedContext();
         }
 
-        if (telemetry.requestRefusal) break;
         const newTransients = telemetry.transientFailures.slice(transientStart);
         // #31: the centralized retry gate reads the classified `retryable` verdict.
         const sawRetryable = newTransients.some((f) => f.retryable);
@@ -2741,8 +2740,9 @@ export class Orchestrator {
     }
     // D-16: answer.md persists only the deliverable. A3: an errored attempt
     // with no typed final contributes no answer material (acceptedTryOutput).
-    const unwrapped = unwrapWorkReportEnvelope(
+    const unwrapped = unwrapAttemptAnswer(
       acceptedTryOutput(answer, harnessErrored),
+      harnessErrored && !answer.hasFinal(),
       workReportMode,
       { sideToolReport: telemetry.sideToolWorkReport ?? undefined },
     );
@@ -6821,7 +6821,6 @@ export class Orchestrator {
             if (!recordAdapterThrow(telemetry, err)) break;
           }
 
-          if (telemetry.requestRefusal) break;
           const newTransients = telemetry.transientFailures.slice(transientStart);
           const sawRetryable = newTransients.some((f) => f.retryable);
           const sawTypedLimit = telemetry.rateLimits.length > rateLimitStart;
@@ -6886,8 +6885,9 @@ export class Orchestrator {
       attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
       // D-16: the deliverable is the report. A3: an errored attempt with no
       // typed final contributes no report material (acceptedTryOutput).
-      const roUnwrapped = unwrapWorkReportEnvelope(
+      const roUnwrapped = unwrapAttemptAnswer(
         acceptedTryOutput(answer, harnessError !== null),
+        harnessError !== null && !answer.hasFinal(),
         readonlyWorkMode,
         { sideToolReport: telemetry.sideToolWorkReport ?? undefined },
       );

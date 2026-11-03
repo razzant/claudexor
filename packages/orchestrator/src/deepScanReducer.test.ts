@@ -296,6 +296,57 @@ describe("runDeepScanReducer WorkReport contract parity (D-16)", () => {
     if (vetoed.status === "failed") expect(vetoed.error).toMatch(/needs_input/);
   });
 
+  it("an errored reducer with fragments and no accepted final is a failure with no footer verdict", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-deepscan-"));
+    __dirs.push(root);
+    const store = new ArtifactStore(root, { claudexorDir: join(root, "runtime") });
+    const paths = store.createRun("run-reducer");
+    const log = new EventLog(paths.eventsPath, "run-reducer", "task-reducer");
+    async function* run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+      const s = spec.session_id;
+      yield { type: "started", session_id: s, ts: nowIso() };
+      for (const text of [
+        "Merged ",
+        "synthesis.\n\n```json\n",
+        '{"work_report":{"state":"completed","required_inputs":[]}}',
+        "\n```",
+      ])
+        yield { type: "message", session_id: s, ts: nowIso(), text, payload: { delta: true } };
+      yield { type: "error", session_id: s, ts: nowIso(), error: "terminal failure after text" };
+      yield { type: "completed", session_id: s, ts: nowIso() };
+    }
+    const adapter = { id: "fake-reducer", run, review: run, cancel: () => Promise.resolve() };
+    const attemptTelemetries: Parameters<typeof runDeepScanReducer>[1]["attemptTelemetries"] = [];
+    try {
+      const result = await runDeepScanReducer(
+        makeDeps({
+          active: true,
+          source: "validated",
+          hasCallerSchema: false,
+          channel: "instructed_fence",
+          instruction: "…",
+        }),
+        {
+          taskId: "task-reducer",
+          goal: "merge the scout reports",
+          routed: { adapter } as unknown as RoutedAdapter,
+          scoutReports: [],
+          ledger: new BudgetLedger({ kind: "unlimited" }),
+          log,
+          paths,
+          attemptTelemetries,
+        },
+      );
+      expect(result.status).toBe("failed");
+      expect(attemptTelemetries[0]?.telemetry.outcome?.workState).toEqual({
+        state: "unverified",
+        source: "validated",
+      });
+    } finally {
+      log.dispose();
+    }
+  });
+
   it("does not infer required web from a live reducer policy", async () => {
     const fixture = makeFiniteFixture();
     const attemptTelemetries: Parameters<typeof runDeepScanReducer>[1]["attemptTelemetries"] = [];

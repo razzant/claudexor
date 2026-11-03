@@ -1,5 +1,5 @@
-import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import type { HarnessEvent, ToolKind, ToolRef, VendorFailureEvidence } from "@claudexor/schema";
+import { nowIso, redactSecrets } from "@claudexor/util";
 
 type Json = any;
 
@@ -110,9 +110,17 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
       // a completed tool call — and, for a write-named tool, a file change
       // that never happened (Ф0 review #1).
     } else if (typeof step.text_delta === "string" && step.text_delta) {
-      // agent_response chunks: completed narration segments (not display
-      // deltas — no payload.delta). The typed final comes from `result`.
-      events.push({ type: "message", session_id: sessionId, ts, text: step.text_delta });
+      // agent_response text is a stream FRAGMENT: across recorded tries every
+      // typed final equals the exact concatenation of its narration frames,
+      // across steps and tools, whitespace-only and repeated frames included.
+      // Kept verbatim as non-final evidence; finality comes only from `result`.
+      events.push({
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: step.text_delta,
+        payload: { delta: true },
+      });
     }
     // user_input / checkpoint / finish / unknown / future types: recognized
     // lifecycle no-ops. Step usage is deliberately NOT emitted: the recorded
@@ -166,11 +174,15 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
         });
       }
     } else {
-      events.push({
+      // A non-SUCCESS result is failure evidence, never answer material: the
+      // model's own text rides exact, non-final retained evidence; the
+      // vendor's status and error ride the error as its typed diagnostic.
+      events.push(...nonSuccessEvidence(r, sessionId, ts), {
         type: "error",
         session_id: sessionId,
         ts,
         error: summarize(r.error) || `agy terminal status ${status || "unknown"}`,
+        payload: { vendor_failure: agyVendorFailure(status, r.error) },
       });
     }
     if (usage) events.push({ type: "usage", session_id: sessionId, ts, usage });
@@ -178,6 +190,50 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
   }
 
   return null;
+}
+
+/** The `response` and object `structured_output` of a non-SUCCESS result,
+ * verbatim, as buffered (retained, never final or displayed) messages. */
+function nonSuccessEvidence(r: Json, sessionId: string, ts: string): HarnessEvent[] {
+  const texts = [
+    typeof r.response === "string" && r.response.trim() ? r.response : null,
+    r.structured_output !== null && typeof r.structured_output === "object"
+      ? JSON.stringify(r.structured_output)
+      : null,
+  ];
+  return texts.flatMap((text, index) =>
+    text === null
+      ? []
+      : [
+          {
+            type: "message" as const,
+            session_id: sessionId,
+            ts,
+            text,
+            payload: {
+              buffered: true,
+              non_success_result: true,
+              ...(index === 1 ? { structured_output: true } : {}),
+            },
+          },
+        ],
+  );
+}
+
+/** The result's own terminal status (machine-readable, verbatim) and its error
+ * words. Opaque evidence: nothing branches on either (VendorFailureEvidence). */
+function agyVendorFailure(status: string, error: unknown): VendorFailureEvidence {
+  const words =
+    typeof error === "string"
+      ? error
+      : error === undefined || error === null
+        ? ""
+        : summarize(error);
+  return {
+    code: status && status.length <= 128 ? status : null,
+    message: words.trim() ? redactSecrets(words).slice(0, 4000) : null,
+    source: "agy_result",
+  };
 }
 
 /** Tools that MUTATE the workspace. The regex catches the vendor's naming

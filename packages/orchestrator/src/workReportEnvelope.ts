@@ -320,6 +320,31 @@ export function unwrapWorkReportEnvelope(
 }
 
 /**
+ * The ONE owner of what a settled attempt's answer can attest, shared by the
+ * Agent, Ask, Plan and reducer lanes: an attempt that errored without ever
+ * accepting a typed final has no work report to validate, so no footer or
+ * envelope verdict (footer_missing, a contract violation) is derived from text
+ * that never became an answer. The route keeps its own source and the work
+ * state stays unverified without a reason; the given text is still the lane's
+ * deliverable evidence. Every other attempt runs the route's unwrap.
+ */
+export function unwrapAttemptAnswer(
+  answerText: string,
+  noAcceptedFinal: boolean,
+  mode: WorkReportEnvelopeMode,
+  opts: { sideToolReport?: unknown } = {},
+): UnwrappedAnswer {
+  if (mode.active && noAcceptedFinal)
+    return {
+      deliverable: answerText,
+      workReport: null,
+      source: mode.source,
+      contractViolation: null,
+    };
+  return unwrapWorkReportEnvelope(answerText, mode, opts);
+}
+
+/**
  * The instructed fence (cursor, agy, acp): the model was ASKED for a trailing
  * fenced `{work_report}` block; nothing constrains it natively, so a missing or
  * broken footer is a disclosed `unverified` work_state with a typed reason,

@@ -54,7 +54,15 @@ export class PoolAttemptEvidence {
 
   begin(spec: HarnessRunSpec, tryIndex: number): void {
     const gate = spec.extra[DISPATCH];
-    const open: OpenTry = { spec, tryIndex, error: null, at: null, foreign: false, gate };
+    const open: OpenTry = {
+      spec,
+      tryIndex,
+      error: null,
+      at: null,
+      vendor: null,
+      foreign: false,
+      gate,
+    };
     this.open = open;
     spec.extra[DISPATCH] = () => {
       open.dispatched = true;
@@ -161,7 +169,9 @@ export function terminalPoolAttempts(
  * The ONE human rendering of a pool failure, shared by every failure terminal
  * (failure.yaml `safeMessage`, `run.failed` error, summary.md and the returned
  * summary): the terminal's own message, then each failed try with its account
- * and its own error text. The structured list rides beside it unchanged.
+ * and its own error text. The structured list rides beside it unchanged. Only
+ * the failure record may then name retained output, after this text's first
+ * line (`namingRetainedOutput`); the other three keep it as is.
  */
 export function withPoolAttempts(message: string, attempts: readonly PoolAttemptFailure[]): string {
   if (attempts.length === 0) return message;

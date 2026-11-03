@@ -94,7 +94,8 @@ export interface ContinuedTryContext {
   /** Index of the try that just settled; the successor is `tryIndex + 1`. */
   tryIndex: number;
   uncertainInput: string | null;
-  retainedOutput: string;
+  /** The attempt's retained assistant output, read only when a packet needs it. */
+  retainedOutput: () => string;
   /** History quality of the capsule's session (a packet-born session stays partial). */
   sessionMemory: RunContinuityReceipt["memory"];
 }
@@ -158,6 +159,12 @@ export async function composeContinuedTry(
     },
     targetCwd: base.cwd,
     retainedOutput: ctx.retainedOutput,
+    // The whole projection the packet's bounded section cuts, beside its index.
+    retainedOutputFile: join(
+      deps.attemptDir,
+      "continuation",
+      `retained-output-try${ctx.tryIndex + 1}.md`,
+    ),
     diffStat: facts.currentDiff ? diffStatFromPatch(facts.currentDiff) : null,
     completed,
   });

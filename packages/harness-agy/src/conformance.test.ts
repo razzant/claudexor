@@ -49,6 +49,26 @@ describe("agy adapter conformance fixtures", () => {
         expect(stats.errors).toBe(1);
         expect(stats.messages).toBe(0);
       }
+      if (name === "fragment-error-run.jsonl") {
+        // Synthetic: fragments concatenate exactly (whitespace and repeats kept)
+        // to the vendor response, which stays retained evidence beside one
+        // typed error carrying the vendor's own status and words.
+        const fragments = events
+          .filter((e) => e.type === "message" && e.payload?.["delta"] === true)
+          .map((e) => e.text)
+          .join("");
+        const evidence = events.filter(
+          (e) => e.type === "message" && e.payload?.["buffered"] === true,
+        );
+        expect(evidence.map((e) => e.text)).toEqual([fragments]);
+        expect(fragments).toBe("Checking the file.\nhaha done\n");
+        expect(stats.errors).toBe(1);
+        expect(events.find((e) => e.type === "error")?.payload?.["vendor_failure"]).toEqual({
+          code: "ERROR",
+          message: "synthetic terminal failure after streamed text",
+          source: "agy_result",
+        });
+      }
       if (name.startsWith("session-resume")) {
         // The vendor conversation id is surfaced for INV-137 lane resume.
         const started = events.find((e) => (e as { type?: string }).type === "started") as

@@ -3649,7 +3649,7 @@ not retry automatically.
   recorded in this run once: earlier tries of the exhausted attempt and that
   try's other narration and earlier native-turn finals, whatever their words,
   never the report's own block with its keyed fragments and exact adjacent
-  forms), and its
+  forms, or the unkeyed streamed blocks it exactly repeats), and its
   receipt names the attempt of this run that carries its
   latest work, else the planned predecessor. An attempt's own model (a fallback model or budget
   downgrade) is never replaced by an inherited one; synthesis and repair never
@@ -6861,8 +6861,10 @@ non-zero exit. This is a label, not a policy: retry, account rotation, cooldown
 and credential verdicts read exactly the inputs they read for a crash.
 
 Vendor failure evidence: where a vendor keeps its own machine-readable failure
-record, the adapter reads it after the process exited and attaches it to that
-same `completed` payload as `vendor_failure`. Codex is the one producer: its
+record, the adapter reads it and attaches it to that same `completed` payload as
+`vendor_failure`. Claude reads its stdout API-error result (`claude_stdout`) and
+AGY its terminal non-`SUCCESS` `result` (the result's own `status` as the code,
+its error words, `agy_result`). Codex reads its
 session rollout's last `task_complete.error` (`codex_error_info` + message), read
 fail-soft from the run's own `CODEX_HOME` and bound to the turn this process ran
 (the record must be the last completion, match the last started turn when the
@@ -6949,10 +6951,37 @@ block even for equal words. A frame whose adapter names the keyed run it joins
 (Claude's `text_runs_joined` frame, `payload.joined_speech_keys`) makes those
 blocks one block only when they are the try's last blocks in that order, none
 complete or final, and the frame's text is exactly theirs joined; otherwise
-every block stays as recorded. Other unkeyed text collapses only exact adjacent
-delta/flush/final repetitions of the try's last text block (so Claude's unkeyed
-`result` is the final form of the block it repeats), and a block holding a
-typed final is closed, so the next native turn's text stays its own block. A missing WorkReport still means an
+every block stays as recorded. Other unkeyed text collapses only exact
+repetitions. An exact adjacent delta/flush/final repetition of the try's last
+text block is that block's final form (so Claude's unkeyed `result` is the final
+form of the block it repeats). By the rule the reviewer parser input shares
+(`StreamEcho`), an adjacent unkeyed complete message (after a fragment or a
+buffered snapshot, or itself buffered or a typed final) byte-identical to the
+unkeyed fragments since the previous complete message, from the start of one
+run of fragments across tool calls and other events, adds no block: its text
+stays in the streamed blocks as recorded (an Antigravity result repeating its
+whole turn, an ACP final the text after its last tool). A suffix that begins
+inside one uninterrupted run is not a repetition, and keyed text resets the
+rule, so it is never joined to unkeyed words. A block holding a typed final is
+closed, so the next native turn's text stays its own block. A whitespace-only
+block (a fragment between tool calls) stays exact inside a section that has
+visible text; whitespace alone is no retained output.
+When the run FAILED, the announced file
+is then named by the failure record the terminal wrote (`final/failure.yaml`):
+in its existing `logRefs` (run-relative, beside `runDir`), the record's address
+for it, and in a notice that it is retained text, not an accepted final answer,
+inserted right after the `safeMessage`'s first line and before the rest of the
+original message (such as its account attempts). The cause keeps that first
+line, so route health still groups failures by it, and a reader that bounds the
+message meets the complete notice only if the cause line and notice together
+fit its bound. The record is replaced atomically (a temporary file and a rename): if that fails,
+the announced output stands, the original record stays whole and the run log
+gets its own status. A
+terminal-facts failure record written after the publication names the
+announced file the same way, after its own cause. Only the failure record
+carries the notice: the `run.failed` error and both summaries keep their text,
+and the native cause keeps its own fields (pool attempts, vendor failure). A
+cancellation keeps its own message. A missing WorkReport still means an
 unverified work state (a contract failure on the native channels, a disclosed
 `unverified` on the instructed fence); no additional generation is performed to
 repair the format.
@@ -6967,7 +6996,17 @@ existing backpressure and client display bounds remain in force.
 Retained output is also a source of the in-run EVIDENCE INDEX: when an
 attempt continues on a fresh session (`packet` carrier), the successor's
 prompt carries the retained assistant output beside the original work order,
-the admitted steering messages, the tool-call index and the diff stat.
+the admitted steering messages, the tool-call index and the diff stat. In-run,
+that output is this projection over the current attempt's own events, read when
+the packet rung is reached (malformed records disclosed): every physical
+session exact, identity-rejected sessions left out, earlier good tries kept,
+and a constrained final's machine-readable envelope added when its display copy
+does not show it. The section stays bounded; the complete text is kept beside
+the index (`continuation/retained-output-tryN.md`, later attempts' `try0`) and
+named in the references that survive truncation. A `continueFrom` packet names
+the predecessor's own `final/retained-output.md`. A native carrier (same or
+moved session) gets no such file: it relies on the vendor's own history, whose
+retention of interrupted text is unverified.
 
 The announced-run guard materializes and announces retained output before the
 existing terminal preparation fence, including deferred terminals. RunFacts
@@ -7034,6 +7073,12 @@ is an ordinary accepted draft. A valid `needs_input`/`incomplete` report still
 becomes a `work_state` veto on every channel; on the instructed fence it also
 outranks an unusable historical `output` slot. The canary
 `[INV-116:work-report-contract]` pins the native-channel failure.
+An attempt that errored without ever accepting a typed final has no report to
+validate on any channel: one owner (`unwrapAttemptAnswer`, shared by Agent, Ask,
+Plan and the deep-scan reducer) gives it `{state: unverified, source: <the
+route's>}` with no reason — never `footer_missing` or a `work_report_contract`
+verdict derived from text that never became an answer — and the finalizer
+reports `absent` only for a route that carries no transport.
 
 Claude API-error results retain the originating attempt's vendor message and
 nullable machine code as opaque failure evidence. A native stdout error result
@@ -7063,7 +7108,15 @@ request refusal with the reported value and stops the same paths, also when
 that frame contradicts the scoped tool policy: each further launch could send
 a paid request before its own startup frame is read. A tool-policy
 contradiction alone stays an ordinary pre-progress failure, and an absent
-field is disclosed as unknown; neither is a refusal. `capability_profile.input_limits` declares the
+field is disclosed as unknown; neither is a refusal. Antigravity's own stderr
+machine record of a failed headless turn (`AGY_ERROR: {json}`, printed before
+it exits 3) whose last line in a try that voiced its failure says exactly
+`retryable: false` is the `vendor_not_retryable` request refusal with the
+record's `error_id`. It fails the run as `harness_error` and stops the same
+paths and the in-run continuation, after progress too. Any other value, a
+missing field, an unreadable record, the same words in model output, or a
+warning a session continued past is no refusal; the vendor's failure words stay
+opaque evidence and the record does not establish the failure's cause. `capability_profile.input_limits` declares the
 verified native turn-text bound only on the observed CLI version. The catalog's
 `inputLimits` entry's `askPromptBudget` subtracts shared thread-pointer framing for ordinary
 ASK initial attempts (`prompt-framing.ts`), including thread turns. Other shapes
@@ -7146,8 +7199,9 @@ continuation facts verbatim; a long-lived strict reader of an older version
 drops such receipts (MCP: the whole `continuity` list) until it is updated.
 When moving is unavailable, the carrier is `packet` (a fresh session whose
 prompt is the original prompt plus the bounded evidence index; owner answer
-1B) — never a fresh replay; a transport death (errored, not aborted, not a
-typed refusal, not context exhaustion) resumes the same session on the same
+1B) — never a fresh replay; an untyped error (`transport`: errored, not
+aborted, not a typed refusal, not context exhaustion — no proof that a process
+died or the network failed) resumes the same session on the same
 account (`native`), or `packet` once a typed fact (locate miss, identity
 mismatch, adapter rejection, no session ever reported) proved the native
 carrier unusable, bounded by
@@ -7173,15 +7227,18 @@ unspecified model to its attested id only when the route lists that id; observed
 display labels are never sent as model ids. An input whose delivery is uncertain (a try that died
 before its first `started`, a steering message admitted but not echoed) rides the notice
 as a reference to reconcile, never a blind replay. Pinned accounts, `fail` /
-`ask` policies and a spent pool end typed. Thread session/checkpoint publication
+`ask` policies and a spent pool end typed. A typed request refusal ends the
+attempt with no retry, continuation or rotation, after its try settles like any
+other: its progress still counts as acted work and its cause is `other`. Thread session/checkpoint publication
 follows an accepted handshake; mismatched sessions and sessions whose recorded
 history is not full (packet-born, or a successor's partial or unknown one) never
 replace the lane binding. A packet continuation updates the thread disclosure to `packet`,
 including a preceding lane switch. The next turn hydrates that lane through the
-existing thread packet. Retained assistant evidence spans all accepted tries;
-identity-mismatched tries contribute no assistant output, and their stream stops
-at the mismatch. The evidence index pairs tool results by try and tool-use id
-within each attempt. An edit is completed by its tool result or by a typed
+existing thread packet. Retained assistant evidence spans every try of the
+attempt, exact per physical session (see Retained output); identity-mismatched
+tries contribute no assistant output, and their stream stops at the mismatch.
+The evidence index pairs tool results by try and tool-use id within each
+attempt. An edit is completed by its tool result or by a typed
 `completed` frame (the tool reference's `phase`: Codex items per path, AGY
 steps keyed by their recorded step index); completion is not success, so a non-ok outcome is
 shown beside it. A result that names its tool but no earlier call (OpenCode's
@@ -7445,9 +7502,37 @@ candidate evidence packet as `DIFF.patch` with `DIFF_SUMMARY.md` and digest
 sidecars. The process prompt is concise and points the reviewer to those files;
 it must not embed large full diffs in argv. Per-reviewer telemetry records
 requested model/effort, observed model/source, route proof, timing, raw
-normalized stream or transcript, parsed JSON blocks, and parse errors. These
-artifacts are local run evidence (reviewer text exact, diagnostics masked), not
-public documentation.
+normalized stream or transcript, parsed JSON blocks, and parse errors. In
+`transcript.md` stream fragments join exactly and every complete message
+(whole, buffered or the typed final) has its own line. The findings parser reads
+that text without an exact repetition, by the retained-output rule
+(`StreamEcho`, unkeyed text only; text a speech key identifies is parsed as
+captured, except that the fragments of a speech the harness states abandoned,
+such as Claude's text before an API retry, leave the parser input and stay in
+`transcript.md`): such a complete message is parsed once, its streamed copy starting
+its own line where its run began, while a final that differs from its draft is
+parsed as well. Every complete fence is read; when none holds a review
+payload, one structural pass over every line-start `[` and `{` first finds the
+top-level spans (a value and the values glued after it with only spaces or tabs
+between; one that never closes runs to the end), so a line start inside a span,
+of either bracket, is never a payload of its own, and no candidate bound drops
+that structure. The newest parseable top-level span (arrays before objects) is
+read with its glued payloads (a `[]` draft glued to its answer), else a complete
+one-line payload; one glued payload that is incomplete, unparseable or past 64
+counts as a malformed item, as does a one-line payload inside a span the reader
+could not read, so that reviewer is not healthy. The reading is malformed too
+when, after the first payload read (a closed fence or value before it is an
+example or a draft and is not counted), the text holds another value that opens like
+JSON (`[{`, `[[`, `["`, `[]`, `{"`, `{}`) and is not an exact copy of one read:
+another answer, JSON of the wrong schema, an object or an empty answer beside
+findings, a fence that does not parse, a value that closes on the wrong bracket,
+a value that never closes after opening like JSON or a line, or more such values
+than the bound examines. Findings read
+are kept beside that verdict. Bracketed prose (`[x]`, `[1]`, `[see …]`) passes,
+and exact copies of the answer pass; words cannot tell an example in trailing
+prose from a late answer, so a JSON-looking example also leaves the reviewer
+unhealthy, never clean. These artifacts are local run evidence (reviewer text
+exact, diagnostics masked), not public documentation.
 
 The engine computes reviewer candidate membership once before panel fan-out.
 For a Git-backed source it is the union of tracked files, untracked files not
@@ -8573,6 +8658,8 @@ code touching one of these areas must honor it or change it explicitly here.
   remains available. Complete small previews retain their existing behavior.
   Explicit directory file-manifest capture is separate; its typed refusal carries
   the capture cause and any available partial-payload cleanup diagnostic.
+  Capture and review scratch removal awaits each child operation before returning
+  or failing, so a failed recursive removal cannot keep deleting into a later capture.
   No truncated exact Git patch is delivered. Cursor NDJSON frames remain uncapped.
 - Isolated-thread worktrees are pinned by persistent `claudexor/thread-*`
   branches. The stored SHA is a checked cache; successful apply advances the

@@ -117,9 +117,11 @@ export interface FinalizeAttemptResult {
  *   3. a valid needs_input/incomplete report ⇒ veto (lifecycle stays, run is
  *      non-applyable, exit non-zero) — a `completed` claim NEVER overrides a
  *      harness error / failed gate / missing evidence;
- *   4. otherwise the disclosed work_state: completed, or unverified — with the
- *      route's own source and the typed reason when an INSTRUCTED footer was
- *      missing or broken, `absent` when the route carries no transport.
+ *   4. otherwise the disclosed work_state: completed, or unverified — always
+ *      with the route's own source (`absent` only when the route carries no
+ *      transport), plus the typed reason when an INSTRUCTED footer was missing
+ *      or broken. An errored attempt with no accepted final keeps its route's
+ *      source and gets no footer reason (`unwrapAttemptAnswer`).
  */
 export function finalizeAttempt(input: FinalizeAttemptInput): FinalizeAttemptResult {
   const completed = input.workReport?.state === "completed";
@@ -167,7 +169,7 @@ export function finalizeAttempt(input: FinalizeAttemptInput): FinalizeAttemptRes
     harnessErrored: input.harnessErrored,
     workState: {
       state: report?.state === "completed" ? "completed" : "unverified",
-      source: report || unverified ? input.workReportSource : "absent",
+      source: input.workReportSource,
       ...(unverified ? { unverified_reason: unverified.reason } : {}),
     },
     reason: null,

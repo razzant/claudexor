@@ -534,7 +534,10 @@ it.each(["refusal", "stop"] as const)(
     expect(f.result.lifecycle).not.toBe("succeeded");
     expect(f.result.spendUsd).toBe(0.125);
     if (end === "refusal") {
-      expect(f.afterTry).not.toHaveBeenCalled(); // Final-only entrance.
+      // Refusal still settles acted work before stopping; never spawn a retry.
+      expect(f.afterTry).toHaveBeenCalledTimes(1);
+      expect(f.afterTry).toHaveBeenCalledWith(expect.objectContaining({ requestRefused: true }));
+      expect(f.executions).toHaveLength(1);
       expect(RunFailure.parse(yaml(join(f.result.runDir, "final/failure.yaml")))).toMatchObject({
         code: "input_too_large",
         captureFailure: { causeCode: "EIO" },

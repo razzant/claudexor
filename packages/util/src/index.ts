@@ -8,6 +8,7 @@ export * from "./runtime-manifest.js";
 export * from "./retry-delay.js";
 export * from "./problem-safety.js";
 export * from "./patch-objects.js";
+export * from "./stream-echo.js";
 import { sensitiveResourcePolicy } from "./sensitive-resource.js";
 import { createHash, randomUUID } from "node:crypto";
 import {

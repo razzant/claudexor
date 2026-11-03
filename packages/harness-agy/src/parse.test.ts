@@ -81,6 +81,86 @@ describe("parseAgyEvent", () => {
     expect(out![0]).toMatchObject({ type: "error", error: "authentication failed or timed out" });
   });
 
+  it("types text_delta as an exact non-final fragment: whitespace-only and repeated frames kept", () => {
+    const frames = ["Hel", "lo", " ", "\n", "ha", "ha", "\t\n"];
+    const out = frames.flatMap((text_delta, index) =>
+      parseAgyEvent(
+        {
+          event: "step_update",
+          step_update: { step_index: index, step_type: "agent_response", text_delta },
+        },
+        SID,
+      )!,
+    );
+    expect(out).toEqual(
+      frames.map((text) =>
+        expect.objectContaining({ type: "message", text, payload: { delta: true } }),
+      ),
+    );
+    expect(out.some((event) => event.final)).toBe(false);
+    // An empty frame carries nothing.
+    expect(parseAgyEvent({ event: "step_update", step_update: { text_delta: "" } }, SID)).toEqual(
+      [],
+    );
+  });
+
+  it("keeps a non-SUCCESS result's response and object structured_output as exact non-final evidence", () => {
+    const response = "Partial:\n\n  kept exactly  \n";
+    const structured = { output: "x", work_report: { state: "completed" } };
+    const out = parseAgyEvent(
+      {
+        event: "result",
+        result: {
+          status: "ERROR",
+          response,
+          structured_output: structured,
+          error: "  vendor   words\nkept  ",
+          usage: { input_tokens: 3, output_tokens: 1 },
+        },
+      },
+      SID,
+    )!;
+    expect(out.map((event) => event.type)).toEqual(["message", "message", "error", "usage"]);
+    expect(out[0]).toMatchObject({
+      text: response,
+      payload: { buffered: true, non_success_result: true },
+    });
+    expect(out[0]!.payload).not.toHaveProperty("structured_output");
+    expect(out[1]).toMatchObject({
+      text: JSON.stringify(structured),
+      payload: { buffered: true, non_success_result: true, structured_output: true },
+    });
+    expect(out.some((event) => event.final)).toBe(false);
+    // The display error stays the bounded summary; the vendor's words ride verbatim.
+    expect(out[2]).toMatchObject({
+      error: "vendor words kept",
+      payload: {
+        vendor_failure: {
+          code: "ERROR",
+          message: "  vendor   words\nkept  ",
+          source: "agy_result",
+        },
+      },
+    });
+  });
+
+  it("records the vendor's own status as an opaque code; no status is no code", () => {
+    const vendor = (result: Record<string, unknown>) =>
+      parseAgyEvent({ event: "result", result }, SID)!.find((event) => event.type === "error")!
+        .payload?.["vendor_failure"];
+    expect(vendor({ status: "CANCELLED" })).toEqual({
+      code: "CANCELLED",
+      message: null,
+      source: "agy_result",
+    });
+    expect(vendor({ error: { code: 14, message: "unavailable" } })).toEqual({
+      code: null,
+      message: '{"code":14,"message":"unavailable"}',
+      source: "agy_result",
+    });
+    expect(vendor({ status: "S".repeat(129), error: "e" })).toMatchObject({ code: null });
+  });
+
   it("pairs ACTIVE/DONE tool steps as call/result and flags writes as file changes", () => {
     const active = parseAgyEvent(
       {

@@ -15,7 +15,6 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import {
-  appendLine,
   engineBuildIdentity,
   ensureDir,
   newId,
@@ -31,9 +30,9 @@ import {
   extractJsonBlocks,
   parseFindingsDetailed,
   parseSealedReviewEnvelopeDetailed,
-  sealedReviewTranscriptChunk,
   type ReviewerInfo,
 } from "./findings.js";
+import { ReviewerTextProjection } from "./reviewerText.js";
 import {
   buildReviewPrompt,
   CHANGED_PATHS_FILE,
@@ -72,6 +71,7 @@ import { ReviewerCostKnowledge } from "./reviewerCostKnowledge.js";
 import { ReviewerSpendAccumulator, type PartialReviewerSpend } from "./reviewerSpendAccumulator.js";
 import { WorkspaceManager } from "@claudexor/workspace";
 import {
+  appendTranscript,
   cleanupReviewerWorkspace,
   createReviewerArtifactContext,
   emitReviewerProgress,
@@ -793,6 +793,8 @@ async function collectReviewerOutput(
     );
     currentIter = iter;
     let text = "";
+    const partialPrefix = partialText;
+    const reviewerText = new ReviewerTextProjection();
     let sawTransient = false;
     // #558: a typed refusal naming no reopening time is never replayed on the same account.
     let refusedAccount = false;
@@ -874,17 +876,15 @@ async function collectReviewerOutput(
       if (sealed && ev.type === "message" && ev.final === true) {
         sealedMessageEvents.push(persistedEvent);
       }
-      if (ev.type === "message" && ev.text && ev.payload?.["auth_switched"] !== true) {
-        const safeText = sealedReviewTranscriptChunk(persistedEvent);
-        if (safeText !== null) {
-          if (!sealed) {
-            text += safeText;
-            partialText += safeText;
-          }
-          // Keep the long-running transcript visibly active for monitors. For
-          // sealed reviews, clean completion replaces these progress bytes with
-          // the exact typed-final projection used by the parser and sealer.
-          appendLine(artifact.transcriptPath, safeText);
+      const chunk = reviewerText.next(persistedEvent);
+      if (chunk !== null) {
+        // Keep the long-running transcript visibly active for monitors. A clean
+        // sealed completion replaces these progress bytes with the exact
+        // typed-final projection used by the sealed parser and sealer.
+        appendTranscript(artifact.transcriptPath, chunk.transcript);
+        if (!sealed) {
+          text = chunk.parsed;
+          partialText = partialPrefix + text;
         }
       }
       if (ev.observed_model) {

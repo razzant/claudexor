@@ -84,6 +84,55 @@ describe("AGY native permission evidence", () => {
     expect(out.at(-1)!.type).toBe("completed");
     expect(out[0]).not.toHaveProperty("tool");
   });
+  it("threads the try's voiced vendor failure onto the ONE completed (zero exit included)", async () => {
+    const vendor = { code: "ERROR", message: "words", source: "agy_result" };
+    const errored = event({ type: "error", error: "words", payload: { vendor_failure: vendor } });
+    const out = await replay([
+      errored,
+      event({ payload: { exit_code: 0, harness_reported_error: true } }),
+    ]);
+    expect(out.filter((e) => e.type === "completed")).toHaveLength(1);
+    expect(out.filter((e) => e.type === "error")).toHaveLength(1);
+    expect(out.at(-1)).toMatchObject({
+      type: "completed",
+      payload: { exit_code: 0, harness_reported_error: true, vendor_failure: vendor },
+    });
+    for (const completed of [
+      event({ aborted: true, payload: { exit_code: 0, harness_reported_error: true } }),
+      event({ payload: { exit_signal: "SIGKILL", harness_reported_error: true } }),
+      event({ payload: { exit_code: 0 } }),
+    ]) {
+      const kept = await replay([errored, completed]);
+      expect(kept.at(-1)!.payload?.["vendor_failure"]).toBeUndefined();
+    }
+    // A later typed final supersedes the earlier failure.
+    const superseded = await replay([
+      errored,
+      event({ type: "message", text: "answer", final: true }),
+      event({ payload: { exit_code: 0, harness_reported_error: true } }),
+    ]);
+    expect(superseded.at(-1)!.payload?.["vendor_failure"]).toBeUndefined();
+  });
+
+  it("a stream without its terminal result is one honest error; aborted or already-failed tries get none", async () => {
+    const fragment = event({ type: "message", text: "partial", payload: { delta: true } });
+    const out = await replay([fragment, event({ payload: { exit_code: 0 } })]);
+    expect(out.map((e) => e.type)).toEqual(["message", "error", "completed"]);
+    expect(out[1]!.error).toContain("agy ended without its terminal result");
+    expect(out[1]).not.toHaveProperty("permission_denial");
+    for (const ended of [
+      [fragment, event({ aborted: true })],
+      [fragment, event({ payload: { aborted: true } })],
+      [fragment, event({ type: "error", error: "exited 1" }), event({ payload: { exit_code: 1 } })],
+      [event({ type: "message", text: "final", final: true }), event({})],
+    ]) {
+      const kept = await replay(ended);
+      expect(
+        kept.filter((e) => e.type === "error" && e.error?.includes("terminal result")),
+      ).toHaveLength(0);
+    }
+  });
+
   it("retains a later/partial answer and the refusal without claiming that the tool succeeded", async () => {
     const answer = event({ type: "message", text: "A useful partial answer", final: true });
     const out = await replay([
@@ -140,5 +189,107 @@ describe("AGY native permission evidence", () => {
       );
       expect(out.some((e) => e.type === "status" || e.type === "error")).toBe(false);
     }
+  });
+});
+
+describe("AGY explicit not-retryable record (vendor stderr `AGY_ERROR` line)", () => {
+  // Neutral synthetic records in the vendor's documented shape; no recorded words or ids.
+  const record = (fields: Record<string, unknown>) => `AGY_ERROR: ${JSON.stringify(fields)}`;
+  const failed = (stderr_tail: string, extra: Record<string, unknown> = {}) => [
+    event({ type: "error", error: "agy terminal status ERROR" }),
+    event({ payload: { stderr_tail, exit_code: 3, harness_reported_error: true, ...extra } }),
+  ];
+  const refusals = (out: HarnessEvent[]) => out.filter((e) => e.request_refusal);
+
+  it("an explicit retryable:false on a failed try is the vendor's typed refusal", async () => {
+    const out = await replay(
+      failed(
+        `warning: earlier line\n${record({ short_error: "fixture refusal words", retryable: false, error_id: "fixture-id-1" })}`,
+      ),
+    );
+    expect(refusals(out)).toEqual([
+      expect.objectContaining({
+        type: "error",
+        error: "agy marked the failed request not retryable: fixture refusal words",
+        request_refusal: {
+          kind: "vendor_not_retryable",
+          source: "agy_stderr",
+          error_id: "fixture-id-1",
+        },
+      }),
+    ]);
+    expect(out.at(-1)).toMatchObject({ type: "completed", payload: { exit_code: 3 } });
+  });
+
+  /** Live stderr lines, then the try's completion with its replayed `tail`. */
+  async function live(lines: readonly string[], tail = "") {
+    const completion = createAgyNativeCompletion();
+    for (const line of lines) completion.observeStderr(line);
+    const out = [];
+    for await (const e of completion.wrap(
+      (async function* () {
+        yield* failed(tail);
+      })(),
+    ))
+      out.push(e);
+    return refusals(out);
+  }
+  const no = record({ short_error: "x", retryable: false });
+  const yes = record({ short_error: "x", retryable: true });
+  const unreadable = 'AGY_ERROR: {"short_error":"x","retryable":false';
+
+  it("the last line with the marker decides, read live or from the replayed tail", async () => {
+    expect(await live([no, yes])).toEqual([]);
+    expect(await live([yes, no])).toHaveLength(1);
+    expect(await replay(failed(`${yes}\n${no}`)).then(refusals)).toHaveLength(1);
+    expect(await replay(failed(`${no}\n${yes}`)).then(refusals)).toEqual([]);
+  });
+
+  it("a later unreadable record makes the verdict unknown; other lines change nothing", async () => {
+    // Live, and in the replayed tail: an earlier `false` does not survive it.
+    expect(await live([no, unreadable])).toEqual([]);
+    expect(await live([no, "AGY_ERROR: [false]"])).toEqual([]);
+    expect(await replay(failed(`${no}\n${unreadable}`)).then(refusals)).toEqual([]);
+    // Lines without the marker after it, live or replayed, keep the refusal.
+    expect(await live([no, "warning: retrying later", "_ERROR: {}"])).toHaveLength(1);
+    expect(await replay(failed(`${no}\nwarning: unrelated line`)).then(refusals)).toHaveLength(1);
+    // A replayed tail whose lines lost the marker (cut) or hold no record keeps
+    // the live verdict, either way.
+    expect(await live([no], "...rror: {}\nwarning")).toHaveLength(1);
+    expect(await live([yes], "warning only")).toEqual([]);
+    // The same last record seen live and again in the tail counts once.
+    expect(await live([no], no)).toHaveLength(1);
+  });
+
+  it.each([
+    ["retryable true", record({ short_error: "x", retryable: true })],
+    ["no retryable field (the minimal form)", record({ short_error: "x" })],
+    ["a non-boolean retryable", record({ short_error: "x", retryable: "false" })],
+    ["malformed JSON", 'AGY_ERROR: {"short_error":"x","retryable":false'],
+    ["a cut tail without the marker", '_ERROR: {"short_error":"x","retryable":false}'],
+    ["an array", "AGY_ERROR: [false]"],
+    ["text after the marker on another word", `note ${record({ retryable: false })}`],
+  ])("%s decides nothing", async (_label, line) => {
+    expect(refusals(await replay(failed(line)))).toEqual([]);
+  });
+
+  it("is read only from stderr of a try that voiced its failure, never from model text", async () => {
+    const line = record({ short_error: "x", retryable: false });
+    // Model text carrying the same line is answer material, not a vendor record.
+    expect(
+      refusals(
+        await replay([
+          event({ type: "message", text: line, final: true }),
+          event({ payload: { exit_code: 0 } }),
+        ]),
+      ),
+    ).toEqual([]);
+    // A warning the session continued past (no voiced error), an abort, a signal kill.
+    for (const payload of [
+      { stderr_tail: line, exit_code: 0 },
+      { stderr_tail: line, exit_code: 3, harness_reported_error: true, aborted: true },
+      { stderr_tail: line, harness_reported_error: true, exit_signal: "SIGKILL" },
+    ])
+      expect(refusals(await replay([event({ payload })]))).toEqual([]);
   });
 });

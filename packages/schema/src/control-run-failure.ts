@@ -62,6 +62,10 @@ export const RunFailureCode = z
     /* The vendor's own startup frame reported a credential source other than
      * the session login a subscription route requires (Grok `apiKeySource`). */
     "credential_source_unconfirmed",
+    /* The vendor's own machine record of the failed request marked it not
+     * retryable (Antigravity's stderr `AGY_ERROR` line, `retryable: false`):
+     * no retry, continuation or account rotation follows. */
+    "vendor_not_retryable",
     /* Active scoped-HOME/evidence refusals plus the historical confinement
      * decoder code. Attempt-loop failures must be listed here or
      * `declaredFailure` drops them to `code: null` and the terminal states less

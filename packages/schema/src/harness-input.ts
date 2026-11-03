@@ -44,9 +44,19 @@ export const HarnessRequestRefusal = z
         .max(80)
         .describe("Redacted credential source the vendor's startup frame reported."),
     }),
+    z.object({
+      kind: z.literal("vendor_not_retryable"),
+      source: z.literal("agy_stderr"),
+      error_id: z
+        .string()
+        .min(1)
+        .max(128)
+        .nullable()
+        .describe("The vendor's own error id from the same record, verbatim; null when absent."),
+    }),
   ])
   .describe(
-    "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence.",
+    "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes and an explicit vendor not-retryable verdict carry their own evidence.",
   );
 export type HarnessRequestRefusal = z.infer<typeof HarnessRequestRefusal>;
 

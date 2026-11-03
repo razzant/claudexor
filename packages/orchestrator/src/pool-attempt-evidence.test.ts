@@ -203,6 +203,32 @@ describe("PoolAttemptEvidence (per-try account attribution)", () => {
     expect(third!.vendorFailure).toBeNull();
   });
 
+  it("takes each try's vendor failure from its own settled terminal, a zero exit included", () => {
+    const evidence = new PoolAttemptEvidence("agy", "a01");
+    const completed = (vendor_failure?: unknown): HarnessEvent => ({
+      type: "completed",
+      session_id: "ses",
+      ts: "2026-10-13T08:00:00.000Z",
+      payload: {
+        exit_code: 0,
+        harness_reported_error: true,
+        ...(vendor_failure ? { vendor_failure } : {}),
+      },
+    });
+    dispatched(evidence, spec("a"), 0);
+    evidence.observe(error("first"));
+    evidence.observe(completed({ code: "ERROR", message: "first", source: "agy_result" }));
+    evidence.settle(failed());
+    dispatched(evidence, spec("a"), 1);
+    evidence.observe(error("second"));
+    evidence.observe(completed());
+    evidence.settle(failed());
+    expect(evidence.snapshot().map((row) => row.vendorFailure)).toEqual([
+      { code: "ERROR", message: "first", source: "agy_result" },
+      null,
+    ]);
+  });
+
   it("a malformed event time falls back to the settlement clock instead of failing", () => {
     const evidence = new PoolAttemptEvidence(
       "stub",

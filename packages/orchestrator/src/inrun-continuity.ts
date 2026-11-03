@@ -86,7 +86,7 @@ export class InRunContinuity {
    * native carrier keeps its predecessor's recorded quality. */
   private sessionMemory: RunContinuityReceipt["memory"];
   private threadSwitch: { harness: string; profileId: string | null } | null = null;
-  private readonly retainedOutput = new RetainedAttemptOutput();
+  private readonly retainedOutput: RetainedAttemptOutput;
   /** Carrier of the try that just settled (null = the first try or a fresh replay). */
   private settledCarrier: RunContinuityReceipt["carrier"] | null = null;
   private unstartedInputs: UncertainInput[] = [];
@@ -96,6 +96,7 @@ export class InRunContinuity {
   constructor(private readonly deps: InRunContinuityDeps) {
     this.poolEvidence =
       deps.poolEvidence ?? new PoolAttemptEvidence(deps.adapter.id, deps.attemptId);
+    this.retainedOutput = new RetainedAttemptOutput(deps.runDir, deps.attemptId);
     this.capsule = readSessionCapsule(deps.attemptDir);
     this.acted = deps.seed?.acted === true;
     this.pending = deps.seed?.continued ?? null;
@@ -233,7 +234,7 @@ export class InRunContinuity {
   /** Decide what the attempt does after a settled try. */
   async afterTry(facts: TryFacts): Promise<AfterTryVerdict> {
     this.poolEvidence.settle(facts);
-    this.retainedOutput.add(facts.answer, facts.harnessErrored, this.tryIdentity);
+    this.retainedOutput.add(facts.runSpec.session_id, facts.answer, this.tryIdentity);
     const accepted = acceptedTryOutput(facts.answer, facts.harnessErrored);
     this.acted ||=
       accepted.length > 0 ||
@@ -294,7 +295,7 @@ export class InRunContinuity {
     workState: WorkState | null | undefined;
   }): Promise<RunResumable | null> {
     // A continued try whose attempt ended on a loop exit that skipped
-    // `afterTry` (a request or processing refusal) still owes its receipt.
+    // `afterTry` (a processing refusal) still owes its receipt.
     this.emitReceipt(input.runSpec);
     await this.relocate(input.runSpec);
     const vetoed =
@@ -438,8 +439,8 @@ export class InRunContinuity {
     );
   }
 
-  /** The process died after progress: the same account resumes its session
-   * (bounded), or re-briefs once a typed fact rejected that session. With no
+  /** An untyped error ended a try after progress: the same account resumes its
+   * session (bounded), or re-briefs once a typed fact rejected it. With no
    * session recorded at all (the harness never reported one) the same account
    * continues on a new session re-briefed by the evidence index (owner 1B),
    * under the same bound. */
@@ -550,7 +551,7 @@ export class InRunContinuity {
           this.unstartedInputs,
           carriedRunAttempts(this.deps),
         ),
-        retainedOutput: this.retainedOutput.text(),
+        retainedOutput: () => this.retainedOutput.text(),
         sessionMemory: this.sessionMemory,
       },
       facts,
