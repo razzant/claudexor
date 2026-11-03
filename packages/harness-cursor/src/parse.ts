@@ -8,6 +8,7 @@ import type {
 } from "@claudexor/schema";
 import { commandOutcomeLabel, InputTokenUsage } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
+import { CursorBackgroundShells } from "./background-shells.js";
 import { applyCursorVendorLimit } from "./retry-signals.js";
 import { classifyCursorToolResult } from "./tool-result.js";
 
@@ -87,6 +88,8 @@ interface CursorParserState {
    * (applies_to_models): the run's REQUESTED model when the caller passed it,
    * else the init frame's observed model. Null = unknown → account-scoped. */
   scopeModel: string | null;
+  /** Background handoffs a later completion notification refines (#546). */
+  backgroundShells: CursorBackgroundShells;
 }
 
 /**
@@ -134,6 +137,7 @@ export function createCursorParser(
     lastCompleteAssistant: null,
     fallbackPlan: null,
     scopeModel: requestedModel ?? null,
+    backgroundShells: new CursorBackgroundShells(),
   };
   return (obj: Json, sessionId: string): HarnessEvent[] | null => {
     const out = parseCursorEventStateful(
@@ -167,6 +171,7 @@ export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] |
     lastCompleteAssistant: null,
     fallbackPlan: null,
     scopeModel: null,
+    backgroundShells: new CursorBackgroundShells(),
   });
 }
 
@@ -210,6 +215,9 @@ function parseCursorEventStateful(
       },
     ];
   }
+
+  if (type === "system" && obj.subtype === "task_notification")
+    return state.backgroundShells.completion(obj, sessionId, ts);
 
   if (type === "user") {
     const content = obj.message?.content;
@@ -339,6 +347,7 @@ function parseCursorEventStateful(
       content_summary: detail || undefined,
       ...facts,
     };
+    state.backgroundShells.observe(tool, obj.session_id);
     const outcomeLabel = commandOutcomeLabel(tool.command_outcome);
     const events: HarnessEvent[] = [
       {

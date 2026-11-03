@@ -9,6 +9,7 @@ import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
 import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
+  commandOutcomeLabel,
   DecisionRecord,
   AccessProfile,
   EFFORT_HINT_HELP,
@@ -1084,6 +1085,17 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
       const toolWarnings = inspectToolRecords
         .filter((record) => !record.blocking)
         .map(({ attemptId, tool, target, summary }) => ({ attemptId, tool, target, summary }));
+      // #546: a vendor's word about a command, read apart from both lists above.
+      const reportedCommands = telemetry
+        ? telemetry.attempts.flatMap((a) =>
+            (a.reported_command_outcomes?.recent ?? []).flatMap((row) => {
+              const report = commandOutcomeLabel(row.command_outcome);
+              return report
+                ? [{ attemptId: a.attempt_id, tool: row.tool, target: row.target, report }]
+                : [];
+            }),
+          )
+        : [];
       const artifacts = listCliArtifacts(paths.root).filter((p) => !p.endsWith("/"));
       const outputReadyState =
         runFacts?.presentation?.state ??
@@ -1108,6 +1120,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           failure,
           toolErrors,
           toolWarnings,
+          reportedCommands,
           primaryOutput: primary,
           decision,
           work_product: workProduct,
@@ -1219,6 +1232,21 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
         for (const err of toolWarnings.slice(-8))
           print(
             `  - ${err.attemptId} ${err.tool}: ${err.summary}${err.target ? ` (${err.target})` : ""}`,
+          );
+      }
+      if (reportedCommands.length) {
+        // The attempts' true counts; the list below prints the last eight.
+        const total = (telemetry?.attempts ?? []).reduce(
+          (sum, a) => sum + (a.reported_command_outcomes?.total ?? 0),
+          0,
+        );
+        const shown = Math.min(reportedCommands.length, 8);
+        print(
+          `reported command outcomes (not tool errors${total > shown ? `; showing ${shown} of ${total}` : ""}):`,
+        );
+        for (const row of reportedCommands.slice(-8))
+          print(
+            `  - ${row.attemptId} ${row.tool}: ${row.report}${row.target ? ` (${row.target})` : ""}`,
           );
       }
       if (primary?.text.trim()) {

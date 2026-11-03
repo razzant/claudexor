@@ -1,8 +1,35 @@
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
+import { COMMAND_OUTCOME_REFINED } from "@claudexor/schema";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 
-/** Replay the engine's timer notices, without inventing ACP-local timer state. */
+/**
+ * The stored harness events ACP streams: tool activity, i.e. calls, results and
+ * #546 completion refinements (X1). Narration and thinking stay out: the turn's
+ * answer reaches the client once, when the turn ends.
+ */
+function acpToolActivity(row: unknown): boolean {
+  const event = row as { type?: unknown; payload?: Record<string, any> } | null;
+  const kind = event?.payload?.["type"];
+  return (
+    event?.type === "harness.event" &&
+    (kind === "tool_call" ||
+      kind === "tool_result" ||
+      (kind === "status" && event.payload?.["payload"]?.["code"] === COMMAND_OUTCOME_REFINED))
+  );
+}
+
+/** One stored run event, or null for a line that is not JSON; such a row is not forwarded. */
+function storedRow(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+/** Replay the engine's timer notices and the run's tool activity to ACP, from the
+ * run's own event stream, without inventing ACP-local timer or tool state. */
 export class AcpTimeLimitFeed {
   private readonly abort = new AbortController();
   private task: Promise<void> | undefined;
@@ -44,7 +71,7 @@ export class AcpTimeLimitFeed {
       type: "surface.warning",
       payload: {
         message:
-          "Live time-limit updates unavailable; inspect the run's events with claudexor follow.",
+          "Live tool and time-limit updates unavailable; inspect the run's events with claudexor follow.",
       },
     });
   }
@@ -74,6 +101,9 @@ export class AcpTimeLimitFeed {
             const event = JSON.parse(data);
             if (event.type === "control.applied" && event.payload?.control?.kind === "time_limit")
               this.emit(event);
+          } else if (type === "harness.event" && data) {
+            const row = storedRow(data);
+            if (acpToolActivity(row)) this.emit(row);
           }
           type = "";
           data = "";
@@ -81,7 +111,10 @@ export class AcpTimeLimitFeed {
         else if (type === "control.applied" && line.startsWith("data:")) {
           data += `${line.slice(5).trimStart()}\n`;
           if (data.length > 32_000) throw new Error("Timer event too large");
-        }
+        } else if (type === "harness.event" && line.startsWith("data:"))
+          // The Control API writes each stored row as one line, so a frame holds
+          // exactly one row: nothing accumulates across lines.
+          data = line.slice(5).trimStart();
       }
       if (!this.abort.signal.aborted) throw new Error("Run events disconnected");
     } finally {

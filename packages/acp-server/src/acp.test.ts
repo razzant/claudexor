@@ -5,6 +5,7 @@ import { PassThrough, Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { describe, expect, it } from "vitest";
+import { AcpEvents } from "../../harness-acp/src/events.js";
 import { ACP_PROTOCOL_VERSION, AcpServer, type RunnerFn } from "./index.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -846,9 +847,9 @@ describe("AcpServer official SDK projection", () => {
   });
 
   // #450: ACP v1 has two terminal tool statuses, completed ("completed
-  // successfully") and failed. A command still running in a background shell,
-  // timed out, or in an unknown state must not read as completed, and must
-  // still get a terminal update: no later frame for that call will arrive.
+  // successfully") and failed. A command handed to a background shell, timed
+  // out, or in an unknown state must not read as completed, and must still get
+  // a terminal update: no later frame for that call is guaranteed to arrive.
   it("closes unconfirmed command results as failed with their typed state, never completed", async () => {
     const shell = (useId: string, extra: Record<string, unknown>) => ({
       type: "harness.event",
@@ -903,7 +904,7 @@ describe("AcpServer official SDK projection", () => {
     );
     expect(results.get("bg")?.status).toBe("failed");
     expect(JSON.stringify(results.get("bg")?.content)).toContain(
-      "Moved to background after 30s · still running · shell 3 · pid 4242",
+      "Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242",
     );
     expect(results.get("bg")?._meta).toEqual({ claudexor: { commandOutcome: handoff } });
     expect(results.get("timeout")?.status).toBe("failed");
@@ -919,5 +920,273 @@ describe("AcpServer official SDK projection", () => {
     expect(results.get("legacy")?.status).toBe("completed");
     expect(results.get("failed")?.status).toBe("failed");
     expect(results.get("failed")?.content).toBeUndefined();
+  });
+
+  // #546: a later `command_outcome_refined` status (the vendor reported the
+  // end of a background command, without an exit code) updates the SAME closed
+  // call. ACP: "All fields except the tool call ID are optional - only changed
+  // fields need to be included", and `content` is "Replace the content
+  // collection". `status` is omitted, so `failed` stands: never reopened, never
+  // `completed`, and never a second result.
+  describe("a background completion reported after the call closed", () => {
+    const tool = { name: "shell", kind: "command", use_id: "bg", target: "sleep 45" };
+    const handoff = { state: "backgrounded", background_reason: "requested", shell_id: "3" };
+    const reported = (completion_status: string) => ({
+      ...handoff,
+      state: "completion_reported",
+      completion_status,
+    });
+    const call = (useId = "bg") => ({
+      type: "harness.event",
+      payload: { type: "tool_call", tool: { ...tool, use_id: useId } },
+    });
+    const result = (extra: Record<string, unknown>, useId = "bg") => ({
+      type: "harness.event",
+      payload: { type: "tool_result", tool: { ...tool, use_id: useId, status: "ok", ...extra } },
+    });
+    const refinement = (
+      commandOutcome: unknown,
+      useId = "bg",
+      code = "command_outcome_refined",
+    ) => ({
+      type: "harness.event",
+      payload: {
+        type: "status",
+        text: "engine text",
+        tool: { ...tool, use_id: useId, command_outcome: commandOutcome },
+        payload: { code },
+      },
+    });
+    const replay = async (events: unknown[]) =>
+      withClient(
+        async (_params, hooks) => {
+          for (const event of events) hooks?.onEvent?.(event);
+          return { summary: "done", status: "succeeded" };
+        },
+        async (agent, received) => {
+          await agent.request(acp.methods.agent.session.prompt, {
+            sessionId: "refined-session",
+            prompt: [{ type: "text", text: "work" }],
+          });
+          return received;
+        },
+      );
+    const forCall = (updates: acp.SessionNotification[], id = "bg") =>
+      updates
+        .map((note) => note.update)
+        .filter((update) => "toolCallId" in update && update.toolCallId === id) as Array<
+        Record<string, unknown>
+      >;
+
+    it.each([
+      ["success", ""],
+      ["error", " (error)"],
+      ["aborted", " (aborted)"],
+    ])("replaces its content and _meta for a %s report and keeps failed", async (status, word) => {
+      const updates = await replay([
+        call(),
+        result({ command_outcome: handoff }),
+        refinement(reported(status)),
+      ]);
+      const [opened, closed, refined, ...rest] = forCall(updates);
+      expect(rest).toEqual([]);
+      expect(opened).toMatchObject({ sessionUpdate: "tool_call", status: "in_progress" });
+      expect(closed).toMatchObject({ sessionUpdate: "tool_call_update", status: "failed" });
+      expect(JSON.stringify(closed?.["content"])).toContain(
+        "Handed off to background; completion not observed · shell 3",
+      );
+      expect(refined).toEqual({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "bg",
+        content: [
+          {
+            type: "content",
+            content: {
+              type: "text",
+              text: `Completion reported${word}; exit code unknown · handed off to background · shell 3`,
+            },
+          },
+        ],
+        _meta: { claudexor: { commandOutcome: reported(status) } },
+      });
+      expect(refined).not.toHaveProperty("status");
+      // What a client that applies partial updates ends up holding.
+      const held = Object.assign({}, closed, refined);
+      expect(held["status"]).toBe("failed");
+      expect(JSON.stringify(held["content"])).not.toContain("completion not observed");
+    });
+
+    it("gives Claudexor's own ACP client no second result", async () => {
+      const updates = await replay([
+        call(),
+        result({ command_outcome: handoff }),
+        refinement(reported("success")),
+      ]);
+      const client = new AcpEvents("client-session");
+      const events = forCall(updates).flatMap((update) => client.update(update));
+      expect(events.map((event) => event.type)).toEqual(["tool_call", "tool_result"]);
+      expect(events[1]?.tool?.status).toBe("error");
+    });
+
+    it("sends nothing for a report that names no handoff of this session", async () => {
+      const updates = await replay([
+        call("open"),
+        refinement(reported("success"), "open"),
+        call("exit"),
+        result({ exit_code: 0, command_outcome: { state: "exited" } }, "exit"),
+        refinement(reported("success"), "exit"),
+        call("slow"),
+        result({ command_outcome: { state: "timed_out", timeout_ms: 30000 } }, "slow"),
+        refinement(reported("success"), "slow"),
+        refinement(reported("success"), "never-announced"),
+      ]);
+      expect(forCall(updates, "open").map((u) => u["sessionUpdate"])).toEqual(["tool_call"]);
+      expect(forCall(updates, "exit")).toHaveLength(2);
+      expect(forCall(updates, "exit")[1]?.["status"]).toBe("completed");
+      expect(forCall(updates, "slow")).toHaveLength(2);
+      expect(forCall(updates, "never-announced")).toEqual([]);
+    });
+
+    it("sends one update for a duplicate and none for an exit claim or an unknown status", async () => {
+      const once = await replay([
+        call(),
+        result({ command_outcome: handoff }),
+        refinement(reported("success")),
+        refinement(reported("error")),
+      ]);
+      expect(forCall(once)).toHaveLength(3);
+      expect(JSON.stringify(forCall(once)[2]?.["_meta"])).toContain(
+        '"completion_status":"success"',
+      );
+
+      const refused = await replay([
+        call(),
+        result({ command_outcome: handoff }),
+        refinement({ state: "exited" }),
+        refinement(reported("paused")),
+        refinement(reported("success"), "bg", "live_input_delivered"),
+      ]);
+      expect(forCall(refused)).toHaveLength(2);
+      expect(JSON.stringify(refused)).toContain("completion not observed");
+      expect(JSON.stringify(refused)).not.toContain("Completion reported");
+    });
+
+    it("keeps each ACP session's calls apart", async () => {
+      const updates = await withClient(
+        async (params, hooks) => {
+          if ((params as { sessionId?: string }).sessionId === "one") {
+            hooks?.onEvent?.(call());
+            hooks?.onEvent?.(result({ command_outcome: handoff }));
+          } else {
+            hooks?.onEvent?.(refinement(reported("success")));
+          }
+          return { summary: "done", status: "succeeded" };
+        },
+        async (agent, received) => {
+          for (const sessionId of ["one", "two"])
+            await agent.request(acp.methods.agent.session.prompt, {
+              sessionId,
+              prompt: [{ type: "text", text: "work" }],
+            });
+          return received;
+        },
+      );
+      expect(forCall(updates)).toHaveLength(2);
+      expect(JSON.stringify(updates)).not.toContain("Completion reported");
+    });
+
+    // X2: a native id is unique only within the try that issued it, while ACP
+    // needs a call id unique in its session. A stored run event names its run
+    // and try, so its ACP call does too, from open through close to refinement.
+    const tried = (
+      attempt: string,
+      session: string,
+      event: { payload: Record<string, unknown> },
+      run = "run-1",
+    ) => ({
+      ...event,
+      run_id: run,
+      payload: { ...event.payload, attempt_id: attempt, harness_id: "cursor", session_id: session },
+    });
+    const callIds = (updates: acp.SessionNotification[]) => [
+      ...new Set(
+        updates
+          .map((note) => note.update)
+          .flatMap((update) => ("toolCallId" in update ? [update.toolCallId] : [])),
+      ),
+    ];
+
+    it("keeps two tries that reuse a native id apart, and a report reaches only its own try", async () => {
+      const first = (event: { payload: Record<string, unknown> }) => tried("a01", "ses-1", event);
+      const second = (event: { payload: Record<string, unknown> }) => tried("a02", "ses-2", event);
+      const updates = await replay([
+        first(call()),
+        second(call()),
+        first(result({ command_outcome: handoff })),
+        second(result({ command_outcome: { ...handoff, shell_id: "4" } })),
+        // A third try that handed nothing off: its report reaches no call.
+        tried("a03", "ses-3", refinement(reported("error"))),
+        second(refinement({ ...reported("aborted"), shell_id: "4" })),
+        first(refinement(reported("success"))),
+      ]);
+      expect(callIds(updates)).toEqual(["run-1/a01/ses-1/bg", "run-1/a02/ses-2/bg"]);
+      const steps = (id: string) => forCall(updates, id).map((update) => update["sessionUpdate"]);
+      expect(steps("run-1/a01/ses-1/bg")).toEqual([
+        "tool_call",
+        "tool_call_update",
+        "tool_call_update",
+      ]);
+      expect(steps("run-1/a02/ses-2/bg")).toEqual([
+        "tool_call",
+        "tool_call_update",
+        "tool_call_update",
+      ]);
+      expect(JSON.stringify(forCall(updates, "run-1/a01/ses-1/bg")[2]?.["content"])).toContain(
+        "Completion reported; exit code unknown · handed off to background · shell 3",
+      );
+      expect(JSON.stringify(forCall(updates, "run-1/a02/ses-2/bg")[2]?.["content"])).toContain(
+        "Completion reported (aborted); exit code unknown · handed off to background · shell 4",
+      );
+      expect(JSON.stringify(updates)).not.toContain("(error)");
+    });
+
+    it("gives each turn its own call ids and forgets a turn's handoffs when it ends", async () => {
+      const turns = [
+        [
+          tried("a01", "ses-1", call(), "run-1"),
+          tried("a01", "ses-1", result({ command_outcome: handoff }), "run-1"),
+        ],
+        [
+          // The first turn's report, arriving after that turn ended: no call.
+          tried("a01", "ses-1", refinement(reported("success")), "run-1"),
+          tried("a01", "ses-2", call(), "run-2"),
+          tried("a01", "ses-2", result({ command_outcome: handoff }), "run-2"),
+          tried("a01", "ses-2", refinement(reported("success")), "run-2"),
+        ],
+      ];
+      let turn = 0;
+      const updates = await withClient(
+        async (_params, hooks) => {
+          for (const event of turns[turn++] ?? []) hooks?.onEvent?.(event);
+          return { summary: "done", status: "succeeded" };
+        },
+        async (agent, received) => {
+          for (const _turn of turns)
+            await agent.request(acp.methods.agent.session.prompt, {
+              sessionId: "two-turns",
+              prompt: [{ type: "text", text: "work" }],
+            });
+          return received;
+        },
+      );
+      expect(callIds(updates)).toEqual(["run-1/a01/ses-1/bg", "run-2/a01/ses-2/bg"]);
+      const steps = (id: string) => forCall(updates, id).map((update) => update["sessionUpdate"]);
+      expect(steps("run-1/a01/ses-1/bg")).toEqual(["tool_call", "tool_call_update"]);
+      expect(steps("run-2/a01/ses-2/bg")).toEqual([
+        "tool_call",
+        "tool_call_update",
+        "tool_call_update",
+      ]);
+    });
   });
 });

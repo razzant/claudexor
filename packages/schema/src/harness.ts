@@ -732,8 +732,11 @@ export const HarnessEvent = z
         "True on the harness's typed final-answer message (vendor terminal result); mid-run narration never sets it.",
       ),
     ...HarnessSpeechEventFields,
-    /** Typed tool info; set on `tool_call` and `tool_result` events. */
-    tool: ToolRef.optional().describe("Typed tool info; set on tool_call and tool_result events."),
+    /** Typed tool info; set on `tool_call` and `tool_result` events, and on the
+     * `command_outcome_refined` status that refines an earlier call (#546). */
+    tool: ToolRef.optional().describe(
+      "Typed tool info; set on tool_call and tool_result events, and on a status event with payload.code command_outcome_refined, where it names the earlier call (use_id) and carries its refined command_outcome.",
+    ),
     /** Set on `interaction_requested` events. */
     interaction: InteractionRequest.optional().describe("Set on interaction_requested events."),
     patch_envelope: RawGitPatchEnvelope.optional().describe(

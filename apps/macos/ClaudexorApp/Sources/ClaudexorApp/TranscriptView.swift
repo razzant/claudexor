@@ -115,10 +115,10 @@ struct TranscriptView: View, Equatable {
 /// One tool call/result row (W-C6/W4.4): a kind icon + short humane title
 /// lead — ONE line, no chevron; the full output lives in the run inspector.
 /// A FAILED tool carries its error summary as a second dimmed line (its
-/// status is the information); an UNCONFIRMED command (#450: still running
-/// in a background shell, timed out, or unknown) carries its typed state as a
-/// secondary line under the caution glyph; everything else stays a single
-/// quiet row.
+/// status is the information); an UNCONFIRMED command (#450/#546: handed to a
+/// background shell, timed out, a completion reported without an exit code,
+/// or unknown) carries its typed state as a secondary line under the caution
+/// glyph; everything else stays a single quiet row.
 struct ToolRow: View {
     let tool: ToolBlock
 
@@ -146,23 +146,27 @@ struct ToolRow: View {
     }
 
     /// The typed command state in the engine's words (schema
-    /// `commandOutcomeLabel`, the ACP/timeline owner): one vocabulary.
+    /// `commandOutcomeLabel`, the ACP/timeline owner): one vocabulary. A
+    /// handoff never claims the command is still running; a reported
+    /// completion keeps the exit code unknown and the handoff as history (#546).
     static func commandNote(_ outcome: ToolBlock.CommandOutcome?) -> String {
-        guard let outcome, outcome.state == .timedOut || outcome.state == .backgrounded else {
+        guard let outcome, [.timedOut, .backgrounded, .completionReported].contains(outcome.state) else {
             return "Command outcome not reported"
         }
         let handle = [outcome.shellId.map { "shell \($0)" }, outcome.pid.map { "pid \($0)" }].compactMap { $0 }
         let seconds = outcome.timeoutMs.map { TurnCard.durationLabel(seconds: ($0 + 500) / 1000) }
-        let lead: [String]
         if outcome.state == .timedOut {
-            lead = [seconds.map { "Timed out after \($0)" } ?? "Timed out", "exit status unknown"]
-        } else if outcome.backgroundReason == .timeout, outcome.timeoutMs != 0 {
-            lead = [seconds.map { "Moved to background after \($0)" } ?? "Moved to background after its timeout",
-                    "still running"]
-        } else {
-            lead = ["Running in background"]
+            return ([seconds.map { "Timed out after \($0)" } ?? "Timed out", "exit status unknown"] + handle)
+                .joined(separator: " · ")
         }
-        return (lead + handle).joined(separator: " · ")
+        let after = outcome.backgroundReason == .timeout && outcome.timeoutMs != 0
+            ? seconds.map { " after its \($0) timeout" } ?? " after its timeout" : ""
+        if outcome.state == .backgrounded {
+            return (["Handed off to background\(after); completion not observed"] + handle).joined(separator: " · ")
+        }
+        let vendor = outcome.completionStatus.flatMap { $0 == .success ? nil : " (\($0.rawValue))" } ?? ""
+        return (["Completion reported\(vendor); exit code unknown", "handed off to background\(after)"] + handle)
+            .joined(separator: " · ")
     }
 
     /// The failed tool's honest reason (bounded by the reducer upstream).
