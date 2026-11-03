@@ -124,7 +124,7 @@ struct RunEvidenceView: View {
                     }
                 } label: { Label(retrying ? "Retrying…" : "Retry Exact", systemImage: "arrow.clockwise") }
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .tint(Theme.accentSolid)
                 .disabled(retrying)
                 .help("Create a new attempt from the immutable original request and run a fresh preflight.")
                 Button {
@@ -223,6 +223,7 @@ struct RunEvidenceView: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Theme.accentSolid)
                 .disabled(
                     runningAgain
                     || runAgainPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

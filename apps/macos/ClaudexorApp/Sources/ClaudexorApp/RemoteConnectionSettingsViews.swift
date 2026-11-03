@@ -337,14 +337,15 @@ private struct RemoteConnectionSettingsRow: View {
     /// The documented Connections status ladder (DESIGN_SYSTEM §5): muted for
     /// Offline, accent while Connecting/Installing, warning for Needs
     /// authentication, success for Connected, danger for Failed — always a dot
-    /// PLUS its label, never a bare color.
+    /// PLUS its label, never a bare color. A dot fill, so status tones use
+    /// `statusFill`.
     private func statusColor(_ state: RemoteConnectionState) -> SwiftUI.Color {
         switch state {
         case .offline: Color.secondary
         case .connecting, .installing: Theme.accent
-        case .needsInteraction: Theme.status(.caution)
-        case .connected: Theme.status(.positive)
-        case .failed: Theme.status(.negative)
+        case .needsInteraction: Theme.statusFill(.caution)
+        case .connected: Theme.statusFill(.positive)
+        case .failed: Theme.statusFill(.negative)
         }
     }
 }

@@ -139,6 +139,14 @@ Harness-family palette (functional color-coding of candidates/findings/routes):
   `harness/agy` and `harness/codex` are the palette's closest pair; agy is pushed toward
   blue and clears AA against `surface/raised` in both themes (6.4:1 dark, 5.1:1 light),
   and no surface ever conveys harness identity by hue alone.
+  A harness without its own hue (OpenRouter, GitHub Copilot, any future id) has separate
+  text and fill colours. Its chip tints, strokes and dots (`Theme.harnessFill`) use
+  `accentSolid`, which reads only 2.6:1 as Dark text. Its text, `harness/fallback`, is the
+  brand steel-blue, lifted in Dark Mode and deepened in Light Mode: 6.3:1 dark and 7.4:1
+  light against `surface/raised`, and at least 5.3:1 dark and 5.7:1 light inside its 13–18%
+  chips on that surface (#545). Those are solid-surface figures. A capsule on a translucent
+  card or on the composer glass sits over whatever the wallpaper puts behind the glass, so its
+  contrast moves with the wallpaper; the ink keeps headroom above 4.5:1 for that reason.
   Used for candidate chips, race lanes, route-proof, per-harness budget, and harness dots.
   These are the ONLY place we use multiple strong hues.
 
@@ -150,6 +158,12 @@ Status semantics (shared across badges, pipeline, lists):
   `status/exhausted` (red/blocked blend), `status/not-converged` (amber),
   `status/unknown` (neutral warning).
 - Always pair color with a glyph + label (never color alone — accessibility).
+- A status colour (`Theme.status`) is the tone's foreground: label text, glyphs and the
+  tinted chips that carry that text. Solid status dots and severity bars use
+  `Theme.statusFill`, which is the same colour except for `status/blocked` in Light
+  Mode: its dots and bars keep the vivid amber, which reads 2.8:1 as text on white,
+  while its text uses a deeper amber ink that clears 4.5:1 on every light surface token
+  and inside its own 10–14% chip tint (#545). Dark Mode uses one amber for both.
 
 **Color discipline (the one rule that keeps it from looking "mixed").** Strong hues are
 *budgeted*: harness hues appear only in harness UI, status hues only on state, and
@@ -916,8 +930,13 @@ views in the shared design-system files; screens compose them.
   3. ONE persistent RECEIPT row — status glyph · harness identity · quiet state
      word · outcome/attention chip when present · live elapsed · cash-$ · the
      tool/file counter «9 tools · 3 files» · an expand chevron. Attention states
-     raise ONE loud chip only when they exist ("Needs your answer" > the red
-     terminal label); success carries no chip. The WHOLE receipt row is the
+     raise ONE loud chip only when they exist ("Needs your answer" > "Needs
+     input"/"Incomplete" for a succeeded run whose attested `work_state` is
+     unfinished, whatever its reason > "Needs you" for a review decision > the
+     red terminal label); success carries no chip. The status dot follows: caution
+     for unfinished work, a blocked review or failed checks, decided or not,
+     neutral beside a reason this build has no words for, which the state word
+     spells from its code. The WHOLE receipt row is the
      click target → it toggles the inline activity transcript (auto-expanded
      while the run is active, collapsed after unless the user pins it: progress
      never disappears, it becomes the log). A trailing "workspace" affordance
@@ -1258,7 +1277,9 @@ views in the shared design-system files; screens compose them.
   - "Override needs-human" → `override_needs_human`, destructive-styled with
     an explicit confirmation dialog (it unblocks apply past a needs-human
     escalation; a mutated patch invalidates the override).
-  Apply is offered through the server-gated apply bar once unblocked. The
+  On unfinished work (an attested `needs_input` or `incomplete` `work_state`) the
+  engine refuses both risk decisions before it looks at review or checks, so the
+  bar offers only Rerun. Apply is offered through the server-gated apply bar once unblocked. The
   unblocked state is server-derived (a persisted decision from ANY surface
   collapses the bar) — never a local accept/unblock flag. The turn's
   apply-state is shown honestly: `applied` is green and includes **not reviewed**
@@ -1667,6 +1688,11 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   prominent action). SOLID `accentSolid` capsule + white text (NOT system
   `.glassProminent`, which can vanish on light-mode glass); dims to
   `accentSolid.opacity(0.35)` when disabled.
+- **System prominent buttons** (`.borderedProminent`) always carry
+  `.tint(Theme.accentSolid)`. Their label is white, so the fill must be the solid fill
+  token: in a key window white reads 6.4:1 on it in Light and 4.6:1 in Dark, against
+  5.5:1 and 3.1:1 on the window's root tint `Theme.accent`, which stays the
+  tint/link colour (#545).
 - **`ComposerInputCopy` — composer copy truth (QA-012).** The composer's
   placeholder + accessibility strings key ONLY on whether a thread is selected,
   and tell the truth about what Send does: a DRAFT reads "…the first message
@@ -1808,7 +1834,11 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   ONE capsule with two menu segments. The harness segment (brand mark + label + chevron `Menu`)
   switches the thread's sticky primary harness (a change applies from the next turn); the
   account segment shows the thread's pinned profile or the stable label "Automatic"; the shared
-  AccountsSurface owns the computed next-up disclosure. Picking pins the thread's credential profile
+  AccountsSurface owns the computed next-up disclosure. Both segment labels use the primary
+  label colour, applied as each Menu's `.tint`: a borderless `Menu` draws its label in the
+  tint and ignores `foregroundStyle`, so without it the labels drew the root accent. The
+  harness identity rides the monochrome brand mark, the name and the family-fill capsule; a
+  pin reads semibold beside its pin glyph. Picking pins the thread's credential profile
   (the per-thread override — the accounts popover owns the global Enabled set that next-up routing
   draws from). Inside an Auto pool the harness segment is a preference, not an explicit
   selection: the request carries only `primaryHarness`, and when the engine runs another harness
@@ -1840,7 +1870,9 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   optional leading SF Symbol `.imageScale(.small)`, optional trailing count `.caption2`
   semibold secondary; padding horizontal `Spacing.md` / vertical `Spacing.sm`; selected fill
   via `selectedChip(active:tint:)`. `tint` defaults to `accent`; pass a status/severity color
-  ONLY when the chip *is* that status/severity. The row that hosts the chips
+  ONLY when the chip *is* that status/severity. A harness chip passes its text colour as
+  `tint` and `fill: family.fill`, which draws the selected background and outline. The
+  row that hosts the chips
   owns the gutter (token spacing, not per-chip margins). Never hand-roll a chip
   with a different font/padding.
 - **Toolbar.** There is exactly ONE window toolbar, defined in `RootView`

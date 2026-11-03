@@ -29,23 +29,47 @@ enum TurnPresentation {
         var tone: OutcomePresentation.Tone
     }
 
-    /// The ONE loud chip, driven by the honest v3 axes: a pending question, a
-    /// review gate awaiting your decision, or a failure-shaped terminal (named
-    /// by its typed reason when present). Quiet states return nil. `refusal` =
-    /// the chip of a request the engine refused before sending (typed
-    /// `RunFailure.code`, see `RunFacts.refusal`): the generic failed reason
-    /// would misname it.
+    /// The ONE loud chip, driven by the honest v3 axes: a pending question,
+    /// unfinished work the model attested (`unfinishedWork`, the run's
+    /// `unfinishedWorkLabel`; it leads a review gate as in the engine's label
+    /// and required actions), a review gate awaiting your decision, or a
+    /// failure-shaped terminal (named by its typed reason when present). Quiet
+    /// states return nil. `refusal` = the chip of a request the engine refused
+    /// before sending (typed `RunFailure.code`, see `RunFacts.refusal`): the
+    /// generic failed reason would misname it.
     static func attention(
         phase: RunPhase, reason: String?, reviewNeedsDecision: Bool, waitingOnUser: Bool,
-        refusal: String? = nil
+        unfinishedWork: String?, refusal: String? = nil
     ) -> Attention? {
         if waitingOnUser { return Attention(text: "Needs your answer", tone: .warning) }
+        if let unfinishedWork { return Attention(text: unfinishedWork, tone: .warning) }
         if reviewNeedsDecision { return Attention(text: "Needs you", tone: .warning) }
         if phase.isFailureShaped {
             if let refusal { return Attention(text: refusal, tone: .failure) }
             return Attention(text: RunReasonLabel.label(reason) ?? phase.label, tone: .failure)
         }
         return nil
+    }
+
+    /// The receipt row's chip for `run`, from the run's own facts.
+    static func attention(for run: TaskRun) -> Attention? {
+        attention(
+            phase: run.phase, reason: run.outcomeFacts?.reason,
+            reviewNeedsDecision: run.reviewNeedsDecision, waitingOnUser: run.waitingOnUser,
+            unfinishedWork: run.unfinishedWorkLabel,
+            refusal: RunFacts.refusal(run)?.chip)
+    }
+
+    /// The receipt row's line for `run`, from the run's own facts.
+    static func statusLine(for run: TaskRun) -> StatusLine {
+        statusLine(
+            phase: run.phase, reason: run.outcomeFacts?.reason,
+            harnesses: run.harnesses, n: run.n,
+            isRace: run.mode == .bestOfN,
+            retryLabel: run.phase.isActive ? run.retryStatus?.label : nil,
+            reviewNeedsDecision: run.reviewNeedsDecision,
+            waitingOnUser: run.waitingOnUser,
+            unfinishedWork: run.unfinishedWorkLabel)
     }
 
     static func statusLine(
@@ -56,7 +80,8 @@ enum TurnPresentation {
         isRace: Bool,
         retryLabel: String?,
         reviewNeedsDecision: Bool,
-        waitingOnUser: Bool
+        waitingOnUser: Bool,
+        unfinishedWork: String?
     ) -> StatusLine {
         let identity: String?
         let family: HarnessFamily?
@@ -75,7 +100,7 @@ enum TurnPresentation {
         // waiting-active run, where "Needs your answer" outranks "Working…".
         let stateWord: String?
         if attention(phase: phase, reason: reason, reviewNeedsDecision: reviewNeedsDecision,
-                     waitingOnUser: waitingOnUser) != nil {
+                     waitingOnUser: waitingOnUser, unfinishedWork: unfinishedWork) != nil {
             stateWord = nil
         } else if phase.isActive {
             stateWord = retryLabel ?? "Working…"

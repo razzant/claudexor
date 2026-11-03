@@ -42,7 +42,24 @@ import Testing
             pickerHarness: "claude",
             pickerModel: "opus"
         )
-        #expect(draft.hasPinnedReviewerJSON)
+        #expect(draft.hasStructuredOnlyReviewerJSON)
+    }
+
+    /// #571: a processing preference, like a pin, has no compact spelling, so a
+    /// structured panel carrying one stays valid and owns the raw text.
+    @Test func structuredProcessingPreferenceIsValidAndOwnsTheRawText() {
+        let preference = ComposerReviewDraft(
+            reviewerText: #"[{"harness":"codex","processingPreference":"fast"}]"#,
+            pickerHarness: "claude"
+        )
+        #expect(preference.hasValidReviewerJSON)
+        #expect(preference.hasStructuredOnlyReviewerJSON)
+        let compactExpressible = ComposerReviewDraft(reviewerText: #"[{"harness":"codex","model":"gpt-5.5"}]"#)
+        #expect(compactExpressible.hasValidReviewerJSON)
+        #expect(!compactExpressible.hasStructuredOnlyReviewerJSON)
+        let outOfContract = ComposerReviewDraft(reviewerText: #"[{"harness":"codex","processingPreference":"turbo"}]"#)
+        #expect(!outOfContract.hasValidReviewerJSON)
+        #expect(!outOfContract.hasStructuredOnlyReviewerJSON)
     }
 
     @Test func validPinnedReviewerJSONOwnsSendValidityDespiteCommas() {

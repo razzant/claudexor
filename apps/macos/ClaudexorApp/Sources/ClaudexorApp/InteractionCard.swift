@@ -65,7 +65,7 @@ struct InteractionCard: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .tint(Theme.accentSolid)
                 .disabled(sending || !hasAnyAnswer)
                 if let errorMessage {
                     Text(errorMessage).font(.caption).foregroundStyle(Theme.status(.negative)).textSelection(.enabled)

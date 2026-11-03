@@ -71,8 +71,8 @@ struct HarnessChip: View {
         .foregroundStyle(selected && available ? family.color : .secondary)
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, 5)
-        .background(family.color.opacity(selected && available ? 0.16 : 0.0), in: Capsule())
-        .overlay(Capsule().stroke(selected && available ? family.color.opacity(0.45) : Theme.separator, lineWidth: 1))
+        .background(family.fill.opacity(selected && available ? 0.16 : 0.0), in: Capsule())
+        .overlay(Capsule().stroke(selected && available ? family.fill.opacity(0.45) : Theme.separator, lineWidth: 1))
         .opacity(available ? 1 : 0.62)
         .accessibilityLabel("\(family.label) harness\(selected ? ", selected" : "")\(available ? "" : ", unavailable")")
         .help(available ? "\(family.label) harness\(selected ? " is selected." : ".")" : "\(family.label) harness is unavailable for this route.")
@@ -83,7 +83,7 @@ struct HarnessDot: View {
     let family: HarnessFamily
     var size: CGFloat = 8
     var body: some View {
-        Circle().fill(family.color).frame(width: size, height: size)
+        Circle().fill(family.fill).frame(width: size, height: size)
             .accessibilityLabel(family.label)
     }
 }
@@ -179,7 +179,7 @@ struct EmptyStateView: View {
             Text(message).font(.subheadline).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center).frame(maxWidth: 380)
             if let actionTitle, let action {
-                Button(actionTitle, action: action).buttonStyle(.borderedProminent).tint(Theme.accent)
+                Button(actionTitle, action: action).buttonStyle(.borderedProminent).tint(Theme.accentSolid)
             }
         }
         .padding(Theme.Spacing.xxl)
@@ -283,6 +283,8 @@ struct FilterChip: View {
     var count: Int?
     let isActive: Bool
     var tint: Color = Theme.accent
+    /// The selected background and outline, when they differ from the text `tint`.
+    var fill: Color?
     let action: () -> Void
 
     var body: some View {
@@ -301,7 +303,7 @@ struct FilterChip: View {
             .foregroundStyle(isActive ? tint : .secondary)
             .padding(.horizontal, Theme.Spacing.md)
             .padding(.vertical, Theme.Spacing.sm)
-            .selectedChip(active: isActive, tint: tint)
+            .selectedChip(active: isActive, tint: fill ?? tint)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

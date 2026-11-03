@@ -73,7 +73,10 @@ struct HarnessFamily: RawRepresentable, Identifiable, Hashable {
     // Vendor iconography is owned solely by `HarnessIcon` (M9-UX item 5): a real
     // brand mark where we ship one, else ONE shared generic glyph. No per-family
     // SF-Symbol placeholder lives on the model any more.
+    /// The harness's text colour: labels and chip text.
     var color: Color { Theme.harness(rawValue) }
+    /// Its chip tints, strokes and dots (`Theme.harnessFill`).
+    var fill: Color { Theme.harnessFill(rawValue) }
     /// Setup and runtime use the same canonical harness id. The retired `raw`
     /// alias must never reappear at a client boundary.
     var setupHarnessId: String { rawValue }
@@ -181,7 +184,7 @@ enum RunPhase: String, CaseIterable, Identifiable, Hashable {
 /// Human label for a typed terminal `RunReason` (RunOutcomeFacts.reason), projected
 /// verbatim from the engine and never composed client-side beyond this display mapping.
 enum RunReasonLabel {
-    static func label(_ reason: String?) -> String? {
+    static func known(_ reason: String?) -> String? {
         switch reason {
         case "harness_failed": return "Harness failed"
         case "no_changes": return "No changes"
@@ -197,7 +200,13 @@ enum RunReasonLabel {
         case "wall_clock_exceeded": return "Time limit reached"
         case "turn_limit_reached": return "Turn limit reached"
         case "crash_interrupted": return "Interrupted"
+        case "context_capacity_exhausted": return "Context capacity exhausted"
+        case "work_report_contract": return "No valid work report"
         case "user_cancelled": return "Cancelled"
+        case "host_cancelled": return "Stopped by host"
+        case "owner_task_gone": return "Owner task gone"
+        case "input_required": return workStateLabel("needs_input")
+        case "work_incomplete": return workStateLabel("incomplete")
         default: return nil
         }
     }

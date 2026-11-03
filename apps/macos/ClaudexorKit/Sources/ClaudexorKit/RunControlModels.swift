@@ -35,14 +35,22 @@ public struct ApplyResultInfo: Codable, Sendable, Equatable, Hashable {
     public let targetPreimageSha: String
 }
 
+/// Advisory service preference for the selected model (schema `ProcessingPreference`).
+/// A value outside this set fails decoding instead of being dropped.
+public enum ProcessingPreference: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
+    case standard, fast, economy
+}
+
 public struct ReviewerPanelEntry: Codable, Sendable, Equatable, Hashable {
     public var harness: String
     public var model: String?
     public var effort: String?
     public var credentialProfileId: String?
+    /// This reviewer's own processing preference; nil sends no field.
+    public var processingPreference: ProcessingPreference?
 
     private enum CodingKeys: String, CodingKey, StrictCodingKey {
-        case harness, model, effort, credentialProfileId
+        case harness, model, effort, credentialProfileId, processingPreference
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,14 +60,16 @@ public struct ReviewerPanelEntry: Codable, Sendable, Equatable, Hashable {
         model = try container.decodeIfPresent(String.self, forKey: .model)
         effort = try container.decodeIfPresent(String.self, forKey: .effort)
         credentialProfileId = try container.decodeIfPresent(String.self, forKey: .credentialProfileId)
+        processingPreference = try container.decodeIfPresent(ProcessingPreference.self, forKey: .processingPreference)
     }
 
     public init(harness: String, model: String? = nil, effort: String? = nil,
-                credentialProfileId: String? = nil) {
+                credentialProfileId: String? = nil, processingPreference: ProcessingPreference? = nil) {
         self.harness = harness
         self.model = model
         self.effort = effort
         self.credentialProfileId = credentialProfileId
+        self.processingPreference = processingPreference
     }
 }
 

@@ -19,14 +19,17 @@ enum Severity: String, CaseIterable, Hashable {
         case .nit: return "sparkle"
         }
     }
-    var color: Color {
+    /// DESIGN_SYSTEM §2.2: blocker→failed, major→blocked, minor→running, nit→neutral.
+    var tone: StatusTone {
         switch self {
-        case .blocker: return Theme.status(.negative)
-        case .major: return Theme.status(.caution)
-        case .minor: return Theme.status(.info)
-        case .nit: return .secondary
+        case .blocker: return .negative
+        case .major: return .caution
+        case .minor: return .info
+        case .nit: return .neutral
         }
     }
+    /// The severity label and glyph colour; the card's bar uses `statusFill(tone)`.
+    var color: Color { Theme.status(tone) }
     var rank: Int { Self.allCases.firstIndex(of: self) ?? 9 }
 }
 

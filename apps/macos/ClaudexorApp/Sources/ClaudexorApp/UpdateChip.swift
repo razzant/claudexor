@@ -101,6 +101,7 @@ struct UpdateChip: View {
                     Spacer(minLength: 0)
                     Button("Install") { Task { await model.installRuntimeUpdate() } }
                         .buttonStyle(.borderedProminent)
+                        .tint(Theme.accentSolid)
                         .controlSize(.mini)
                         .help("Download, verify, and install engine v\(update.version) in place")
                     Button("View release") { openURL(update.url.flatMap(URL.init) ?? Self.releaseURL) }

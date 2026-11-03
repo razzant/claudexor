@@ -59,7 +59,7 @@ struct HarnessPoolSection: View {
         // synthesize a "<glyph>.slash" (no such SF Symbol → blank icon): disabled
         // dimming + the hover reason convey unavailability.
         return FilterChip(label: family.label, iconImage: HarnessIconImage.image(for: family),
-                          isActive: descriptor.included, tint: family.color) { toggle(family) }
+                          isActive: descriptor.included, tint: family.color, fill: family.fill) { toggle(family) }
             .disabled(entry.lane != .auto)
             .help(descriptor.help)
             .accessibilityValue(descriptor.accessibilityValue)
@@ -79,7 +79,8 @@ struct HarnessPoolSection: View {
                     let descriptor = HarnessPoolPresentation.manualOnlyChipDescriptor(
                         entry.family.rawValue, pool: pool, reason: reason)
                     FilterChip(label: entry.family.label, iconImage: HarnessIconImage.image(for: entry.family),
-                               isActive: descriptor.included, tint: entry.family.color) { toggle(entry.family) }
+                               isActive: descriptor.included, tint: entry.family.color,
+                               fill: entry.family.fill) { toggle(entry.family) }
                         .help(descriptor.help)
                         .accessibilityValue(descriptor.accessibilityValue)
                 }

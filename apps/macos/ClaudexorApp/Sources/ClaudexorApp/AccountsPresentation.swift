@@ -12,11 +12,12 @@ import Foundation
 enum AccountReadiness: Int, Comparable {
     case unavailable = 0, unknown = 1, ready = 2
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    /// The readiness DOT fill (trigger dot and row dot), never text.
     var color: Color {
         switch self {
-        case .ready: return Theme.status(.positive)
-        case .unknown: return Theme.status(.caution)
-        case .unavailable: return Theme.status(.negative)
+        case .ready: return Theme.statusFill(.positive)
+        case .unknown: return Theme.statusFill(.caution)
+        case .unavailable: return Theme.statusFill(.negative)
         }
     }
 }

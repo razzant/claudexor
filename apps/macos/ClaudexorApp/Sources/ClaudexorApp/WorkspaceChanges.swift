@@ -163,7 +163,7 @@ struct RunDiffSection: View {
                         Button("Apply as branch") { apply(mode: "branch") }
                         Spacer()
                     }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
                 }
                 if run.revertable && !applied {
                     Button(reverting ? "Reverting…" : "Revert") { revert() }

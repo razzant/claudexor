@@ -1,5 +1,32 @@
 import Foundation
 
+extension RunReasonLabel {
+    /// What a surface shows for a typed reason. A reason this build has no words
+    /// for (a newer engine's) is spelled from its code: it still qualifies the
+    /// terminal, so it never collapses into the bare lifecycle word.
+    static func label(_ reason: String?) -> String? {
+        known(reason) ?? reason.flatMap { code -> String? in
+            let words = code.replacingOccurrences(of: "_", with: " ").trimmingCharacters(in: .whitespaces)
+            return words.isEmpty ? nil : words.prefix(1).uppercased() + words.dropFirst()
+        }
+    }
+
+    /// A reason this build has no words for.
+    static func isUnrecognized(_ reason: String?) -> Bool {
+        reason != nil && known(reason) == nil
+    }
+
+    /// The engine's words for an unfinished `work_state` (status-projection
+    /// `runOutcomeLabel`); nil for completed, unverified, absent or future work.
+    static func workStateLabel(_ state: String?) -> String? {
+        switch state {
+        case "needs_input": return "Needs input"
+        case "incomplete": return "Incomplete"
+        default: return nil
+        }
+    }
+}
+
 extension TaskRun {
     /// The effective review presentation. Terminal facts outrank mutable live
     /// progress; active and legacy runs retain their last evidence projection.
@@ -18,6 +45,38 @@ extension TaskRun {
                 && ($0.review == "blocked" || $0.checks == "failed")
         } ?? (effectiveReviewVerdict == .findings)
         return blocked && operatorDecisionAction == nil
+    }
+
+    /// "Needs input" / "Incomplete" while the engine's non-overridable
+    /// `needsOperatorInput` holds: the lifecycle succeeded but the attested
+    /// work_state is unfinished, whatever reason arbitration recorded. Kept
+    /// apart from `reviewNeedsDecision`: no operator decision resolves it.
+    var unfinishedWorkLabel: String? {
+        guard phase.isTerminal, let facts = outcomeFacts, facts.needsOperatorInput else { return nil }
+        return RunReasonLabel.workStateLabel(facts.workState?.state)
+    }
+
+    /// The one word for a compact row: the unfinished work, else the typed reason,
+    /// else the lifecycle. The same words the receipt row uses.
+    var terminalWord: String {
+        guard phase.isTerminal else { return phase.label }
+        return unfinishedWorkLabel ?? RunReasonLabel.label(outcomeFacts?.reason) ?? phase.label
+    }
+
+    /// The status dot's tone: the lifecycle's, with a succeeded one qualified.
+    var terminalTone: StatusTone {
+        phase == .succeeded ? succeededTone : phase.tone
+    }
+
+    /// How a succeeded run reads, for its dot and its outcome banner: success
+    /// only when nothing qualifies it. Unfinished work, a blocked review or failed
+    /// checks (decided or not) and a result applied past a blocked review are a
+    /// caution; a reason this build cannot read stays neutral.
+    var succeededTone: StatusTone {
+        if unfinishedWorkLabel != nil || reviewNeedsDecision
+            || outcomeFacts?.review == "blocked" || outcomeFacts?.checks == "failed"
+            || applyState == "applied_review_blocked" { return .caution }
+        return RunReasonLabel.isUnrecognized(outcomeFacts?.reason) ? .neutral : .positive
     }
 
     /// Human-readable effective access, including an explicit upgrade receipt.

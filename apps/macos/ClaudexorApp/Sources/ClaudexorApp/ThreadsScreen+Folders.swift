@@ -154,7 +154,7 @@ struct ThreadFolderDialogs: ViewModifier {
                 }
                 Button(editor.renaming == nil ? "Create" : "Rename") { submit() }
                     .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
+                    .tint(Theme.accentSolid)
                     .disabled(name == nil)
             }
         }
