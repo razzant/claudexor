@@ -70,13 +70,19 @@ struct LocalRuntimeLifecycleCompletionSnapshot: Sendable, Equatable {
 
 /// A queued launcher must present this at the actual spawn boundary, after its
 /// asynchronous probe. Releasing the exact lease cancels pending spawn work.
-struct LocalRuntimeLaunchPermit: Sendable {
+public struct LocalRuntimeLaunchPermit: Sendable {
     fileprivate let owner: LocalRuntimeLifecycleOwner
     fileprivate let lease: LocalRuntimeLifecycleLease
     fileprivate let deadline: ContinuousClock.Instant
 
-    func perform(_ spawn: () -> Bool) -> Bool {
+    public func perform(_ spawn: () -> Bool) -> Bool {
         owner.performLaunch(lease, before: deadline, spawn: spawn)
+    }
+
+    /// Returns once a spawn this owner already admitted has finished. Past the
+    /// deadline or the lease's release, no later spawn can be admitted either.
+    func waitForAdmittedSpawn() {
+        owner.waitForAdmittedSpawn()
     }
 }
 
@@ -119,6 +125,10 @@ public final class LocalRuntimeLifecycleOwner: @unchecked Sendable {
             // Exact release cannot interleave between validation and Process.run.
             return spawn()
         }
+    }
+
+    fileprivate func waitForAdmittedSpawn() {
+        lock.withLock {}
     }
 
     func claim(

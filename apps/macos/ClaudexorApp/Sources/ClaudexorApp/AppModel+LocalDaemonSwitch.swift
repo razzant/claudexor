@@ -38,6 +38,10 @@ extension AppModel {
         // published offer. Each caller decides what its own boundary keeps.
         if result == .deferredForLifecycle { return .unobserved }
         localDaemonBuildSwitch = nil
+        switch result {
+        case .replaced, .returned: localSuccessorPending = true
+        default: break
+        }
         // A fresh lifecycle observation must not authorize publishing the older
         // caller's handshake, even when both builds speak a compatible protocol.
         switch result {
@@ -117,7 +121,7 @@ extension AppModel {
             return .resume(generation: generation)
         case let .failOffline(notice):
             enterHardOffline()
-            localDaemonReconciliationNotice = notice
+            publishLocalLifecycleFailure(notice)
         case .reconnect:
             localDaemonReconciliationNotice = nil
             client = nil

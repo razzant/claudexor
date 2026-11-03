@@ -921,7 +921,23 @@ frequency and volume are. The contracts:
   A queued button action retains its displayed pair and cannot adopt a later
   poll's offer. If replacement proof fails, canonical offline cleanup retires
   stale projections and discovery keeps waiting for a late engine without a
-  second fallback launch.
+  second fallback launch. When the selected runtime did not come up and the
+  previous build was restarted from its saved copy (see ARCHITECTURE), the
+  notice names both builds, says the previous engine was restarted (never
+  restored) and when the selected one is tried again: at that engine's exit,
+  after a reopen for a newer version, or through this button for a build of the
+  same version. Passive polls and Reconnect keep it, and this button stays
+  limited to builds of one version. When no engine serves after such a failure,
+  including an engine this app started that stopped answering before it was
+  used, the Offline placeholder shows the reason, says that Claudexor keeps
+  checking but will not start an engine on its own, and offers **Retry**, the
+  same action as Reconnect; an ordinary outage keeps the automatic-reconnect
+  wording. One `LocalEngineRetry` owner decides that offer for both surfaces:
+  when remote connections or cached remote threads keep the thread screen, the
+  sidebar notice is shown whole with the same explanation and a mini Retry. A
+  restarted copy that answers only in recovery mode shows Connecting with the
+  reason and the exact operator stop for the app's own engine root, selectable
+  for Terminal; Retry appears once that engine is gone.
   Installation disables it with an explanatory tooltip. It never grants a
   downgrade or makes passive polling switch builds. Newer or unorderable serving
   versions retain the compatible connection with an explanatory notice.

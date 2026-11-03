@@ -8402,9 +8402,70 @@ the closure.
   to atomically prove idle and fence admission; busy or unknown activity keeps
   the compatible daemon alive and visibly defers reconciliation. A successful
   replacement retires the old client and re-reads
-  discovery before hydrating;
-  any failure after lifecycle work begins goes offline rather than reusing an
-  ambiguous process. An installed selection's probe must also equal the pointer's
+  discovery before hydrating. Before the stop, the reconciler `--probe`s the
+  saved copies that may still hold the serving build exactly: the contained
+  `versions/<version>` closure first, then the app-bundled script. A copy counts
+  only when its probe, under the app's current Node and with a nominal
+  20-second stage timeout, names that exact build; otherwise no saved copy could
+  be verified. If the selected
+  runtime then does not come up (its launch files are missing or no exact
+  handshake arrives within the boot window), a verified copy starts only when
+  nothing can run beside it. The launcher only schedules a spawn, behind its
+  heap probe, so each launch here carries a lifecycle permit that expires with
+  its poll and no queued spawn can run later. The target is stopped by exact
+  identity, which proves absence or the live owner's exit and refuses a live or
+  unknown writer-lease owner. That stop also passes before a booting child has
+  taken the lease, so the child this app launched must have exited too. The
+  restarted copy counts only with the previous exact identity and normal
+  admission. From the first stop, a failed replacement's stage timeouts add up
+  to about 245 seconds (30 to stop, 90 to boot, 30 to stop the target, 5 for its
+  child to exit, 90 for the copy to answer), after saved-copy probes with a
+  nominal budget of 40 seconds (20 for each copy); the app keeps its existing
+  connection state until the result arrives. These are budgets, not physical
+  bounds. At its timeout a stop or probe
+  child only receives SIGTERM and is then waited for, along with anything still
+  holding its output; a handshake in flight keeps its own request timeout; and a
+  spawn is an OS call made under the lifecycle lock, which reading the launch
+  handle waits for. Such a child or call holds the transaction, and its lease,
+  for as long as it lasts. This
+  return writes no pointer and lasts until that engine exits, when the launcher
+  starts its own selection again. Until then passive polls never stop a
+  compatible engine for that target, including after a first stop that could
+  not be confirmed. A reopened app reconciles afresh: a newer selected version
+  is replaced again once work is idle, while a build of the same version stays
+  until the explicit same-version switch, which also retries it in place. A
+  handshake proves the restarted daemon, not its helpers: the Browser MCP,
+  delegation belt, CLI entry, process-identity helper and publication scanner
+  resolve from that script's location, under the app's current Node, when used,
+  so the app reports a restart, never a restore. A different identity answering
+  the start, or the exact target answering only in recovery mode, is never
+  rolled back. If an engine this app started and saw answering stops answering
+  before any connection adopts it, the loop's start was already spent, so that
+  is reported as a lifecycle failure too. Without a verified saved copy, with
+  launch files missing, when an engine may still be running, when the saved
+  copy does not answer, or when such a started engine is lost, the app goes
+  Offline with that reason and an explicit Retry instead of reusing an
+  ambiguous process or starting an engine by itself. Retry is the Reconnect
+  connection, which may start the launcher's selection once. When remote
+  connections or cached remote threads keep the thread screen, the sidebar
+  shows the complete reason and the same Retry. A saved copy that answers only
+  in recovery mode (an older engine may not open data a newer one already
+  migrated; see [Upgrade backup and restore](#upgrade-backup-and-restore))
+  keeps the socket and writer lease, which the exact stop refuses and which
+  Reconnect or a reopen cannot take back. After about one pause Offline, the app
+  shows Connecting with that reason and the operator stop for its own root:
+  `CLAUDEXOR_CONFIG_DIR='<root>' CLAUDEXOR_DAEMON_SOCK=''
+  '<app>/Contents/Resources/node' '<app>/Contents/Resources/claudexor.bundle.cjs'
+  daemon stop`, with the root the app's discovery reads and the CLI it ships
+  (`claudexor` on `PATH` when the bundle has neither). The socket is explicit
+  too: the app's own `CLAUDEXOR_DAEMON_SOCK` when it has one, otherwise empty,
+  which the engine reads as that root's default socket, as did the engine the
+  app launched, so a Terminal's own override cannot send the stop elsewhere.
+  Operator shutdown is not gated by recovery admission and
+  deletes no stored data. Once that engine is gone the app is Offline with
+  Retry; the app itself never stops an engine it cannot identify as idle. That
+  notice is this session's memory: a reopened app shows plain Connecting, and
+  the same command still applies. An installed selection's probe must also equal the pointer's
   exact `{version,engineSha}` authority; the signed bundled selection uses its
   stamped probe as authority. The three-second identity poll retries deferred
   work when the daemon becomes idle. Reconciliation and in-app installation
