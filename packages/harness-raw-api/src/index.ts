@@ -18,7 +18,9 @@ import {
   HarnessUnavailableError,
   abortSignalFromSpec,
   catalogRowFor,
+  chosenModel,
   dispatchModelCatalog,
+  missingRouteModel,
   parseUnifiedDiff,
 } from "@claudexor/core";
 import {
@@ -46,6 +48,7 @@ import {
   estimateMessageTokens,
   finalWindowRefusal,
   imageInputDisclosure,
+  patchIntent,
   rawApiMessages,
   rawApiRequestCapacity,
   rawContextDisclosure,
@@ -54,15 +57,16 @@ import {
 /** A stalled remote endpoint must not hang a run forever. */
 const RAW_API_TIMEOUT_MS = 180_000;
 const RAW_API_TRANSIENT_STATUS = new Set([408, 502, 503, 504]);
-const RAW_API_ENABLED_INTENTS = [
-  "implement",
-  "plan",
-  "spec",
+// A remote endpoint reads no files, so no change review (INV-042): `plan`/`spec`
+// stay for work that claims no project; run admission refuses a project (#137).
+const RAW_API_ENABLED_INTENTS = ["implement", "plan", "spec", "synthesize", "explain"] as const;
+const RAW_API_DISABLED_INTENTS = [
+  "create_from_scratch",
+  "repair",
   "review",
-  "synthesize",
-  "explain",
+  "verify",
+  "audit",
 ] as const;
-const RAW_API_DISABLED_INTENTS = ["create_from_scratch", "repair", "verify", "audit"] as const;
 const ALL_RAW_API_INTENTS = [...RAW_API_ENABLED_INTENTS, ...RAW_API_DISABLED_INTENTS] as const;
 
 function buildPatchEnvelope(
@@ -109,7 +113,11 @@ export interface RawApiConfig {
   providerUsageCostUnit?: "usd";
   baseUrl?: string;
   keyEnv?: string;
+  /** The operator's model for this instance when a run and Settings name none. */
   defaultModel?: string;
+  /** The variable that can make that choice: each instance reads only its own, the
+   * default instance `CLAUDEXOR_RAWAPI_MODEL`. Nothing is chosen on its behalf (#395). */
+  modelEnv?: string;
   /** Request-time routing suffixes this provider accepts on a listed id (#145);
    * declared by the registry instance, surfaced as `model_routing_variants`. */
   routingVariants?: readonly ModelRoutingVariant[];
@@ -130,7 +138,16 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
     config.baseUrl ?? process.env.CLAUDEXOR_RAWAPI_BASE_URL ?? "https://api.openai.com/v1";
   const keyEnv =
     config.keyEnv ?? (process.env.CLAUDEXOR_RAWAPI_KEY ? "CLAUDEXOR_RAWAPI_KEY" : "OPENAI_API_KEY");
-  const defaultModel = config.defaultModel ?? process.env.CLAUDEXOR_RAWAPI_MODEL ?? "gpt-4o-mini";
+  const modelEnv = config.modelEnv ?? (id === "raw-api" ? "CLAUDEXOR_RAWAPI_MODEL" : undefined);
+  const configuredModel = chosenModel(config.defaultModel);
+  const envModel = modelEnv ? chosenModel(process.env[modelEnv]) : null;
+  const instanceChoice = configuredModel
+    ? { model: configuredModel, source: "the instance configuration" }
+    : envModel && modelEnv
+      ? { model: envModel, source: modelEnv }
+      : null;
+  const requestModel = (spec: HarnessRunSpec) =>
+    chosenModel(spec.model_hint) ?? instanceChoice?.model ?? null;
   const routingVariants = config.routingVariants ?? [];
   const refusedVariants = config.refusedVariants ?? [];
   const instance = { id, baseUrl, keyEnv };
@@ -138,6 +155,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
 
   const adapter: HarnessAdapter = {
     id,
+    modelRequirement: { instanceChoice, ...(modelEnv ? { env: modelEnv } : {}) },
 
     async discover(): Promise<HarnessManifest> {
       if (!apiKey()) {
@@ -161,7 +179,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           implement: true,
           implementation_transport: "git_patch_envelope",
           create_from_scratch: false,
-          review: true,
+          review: false,
           verify: false,
           synthesize: true,
           read_files: false,
@@ -272,6 +290,17 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
             detail: "key available (unproven without isolated smoke)",
           },
           { id: "isolated_smoke", status: "skip", detail: "doctor does not spend paid API calls" },
+          instanceChoice
+            ? {
+                id: "instance_model",
+                status: "pass",
+                detail: `model ${instanceChoice.model} from ${instanceChoice.source}`,
+              }
+            : {
+                id: "instance_model",
+                status: "skip",
+                detail: `no instance model: a run or harness.${id}.default_model must name one`,
+              },
         ],
         enabled_intents: RAW_API_ENABLED_INTENTS,
         disabled_intents: RAW_API_DISABLED_INTENTS,
@@ -290,8 +319,10 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
       return read.status === "listed" ? read.models : [];
     },
 
-    rawRequestCapacity: (spec, catalog) =>
-      rawApiRequestCapacity(spec, spec.model_hint ?? defaultModel, routingVariants, catalog),
+    rawRequestCapacity: (spec, catalog) => {
+      const model = requestModel(spec);
+      return model ? rawApiRequestCapacity(spec, model, routingVariants, catalog) : null;
+    },
 
     async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       // INV-135 strict profile routing: one resolution with the catalog read
@@ -310,7 +341,18 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         return;
       }
       const { key } = credential;
-      const model = spec.model_hint ?? defaultModel;
+      const model = requestModel(spec);
+      // The engine refuses a missing model first; a direct dispatch stops here too.
+      if (!model) {
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          error: missingRouteModel(adapter, null) ?? `${id} needs a model`,
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+        return;
+      }
       // The model is only REQUESTED here; the observed model comes from the response.
       yield {
         type: "started",
@@ -321,13 +363,26 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         ...(profile ? { credential_profile_id: profile.profile_id } : {}),
         payload: { requested_model: model },
       };
+      const packet = spec.raw_context_packet;
+      if (patchIntent(spec) && !packet) {
+        // Nothing can come back as a patch without its packet: not worth a request.
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          error: `${id} ${spec.intent} requires a RawContextPacket`,
+          refusal_code: "raw_patch_missing_evidence",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+        return;
+      }
       try {
         const specSignal = abortSignalFromSpec(spec);
         const timeoutSignal = AbortSignal.timeout(RAW_API_TIMEOUT_MS);
         const signal = specSignal ? AbortSignal.any([specSignal, timeoutSignal]) : timeoutSignal;
         const messages = rawApiMessages(spec);
-        const budget = spec.raw_context_packet?.budget;
-        if (budget && (spec.intent === "implement" || spec.intent === "synthesize")) {
+        const budget = packet?.budget;
+        if (budget && patchIntent(spec)) {
           // #147 backstop: the packet was sized for this request; a request that
           // grew past that KNOWN window afterwards is refused before sending.
           const estimated = estimateMessageTokens(messages);
@@ -430,41 +485,31 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           };
           return;
         }
-        if (spec.intent === "implement" || spec.intent === "synthesize") {
-          if (!spec.raw_context_packet) {
+        if (packet && patchIntent(spec)) {
+          let patchEnvelope: RawGitPatchEnvelope | null = null;
+          try {
+            patchEnvelope = buildPatchEnvelope(parsed.text, packet);
+          } catch {
+            // A provider stop at its output limit is the typed truncation cause.
+            const cut = parsed.finish_reason === "length";
             yield {
               type: "error",
               session_id: spec.session_id,
               ts: nowIso(),
-              error: `${id} ${spec.intent} requires a RawContextPacket`,
-              refusal_code: "raw_patch_missing_evidence",
+              error: `${id} ${spec.intent} response was not a complete Git patch proposal JSON object${cut ? " (the provider stopped at its output limit: finish_reason length)" : ""}`,
+              refusal_code: "raw_patch_truncated",
+              ...(cut ? { payload: { finish_reason: "length" } } : {}),
             };
-          } else {
-            let patchEnvelope: RawGitPatchEnvelope | null = null;
-            try {
-              patchEnvelope = buildPatchEnvelope(parsed.text, spec.raw_context_packet);
-            } catch {
-              // A provider stop at its output limit is the typed truncation cause.
-              const cut = parsed.finish_reason === "length";
-              yield {
-                type: "error",
-                session_id: spec.session_id,
-                ts: nowIso(),
-                error: `${id} ${spec.intent} response was not a complete Git patch proposal JSON object${cut ? " (the provider stopped at its output limit: finish_reason length)" : ""}`,
-                refusal_code: "raw_patch_truncated",
-                ...(cut ? { payload: { finish_reason: "length" } } : {}),
-              };
-            }
-            if (patchEnvelope) {
-              // INV-146: secret-like content in the proposal is not a refusal;
-              // the engine keeps and saves the exact bytes.
-              yield {
-                type: "patch_produced",
-                session_id: spec.session_id,
-                ts: nowIso(),
-                patch_envelope: patchEnvelope,
-              };
-            }
+          }
+          if (patchEnvelope) {
+            // INV-146: secret-like content in the proposal is not a refusal;
+            // the engine keeps and saves the exact bytes.
+            yield {
+              type: "patch_produced",
+              session_id: spec.session_id,
+              ts: nowIso(),
+              patch_envelope: patchEnvelope,
+            };
           }
         } else if (parsed.text) {
           yield { type: "message", session_id: spec.session_id, ts: nowIso(), text: parsed.text };

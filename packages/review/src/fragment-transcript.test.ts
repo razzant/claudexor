@@ -65,7 +65,7 @@ function reviewer(
         display_name: id,
         kind: "local_cli",
         provider_family: family,
-        capabilities: { review: true, structured_output: true },
+        capabilities: { read_files: true, review: true, structured_output: true },
       });
     },
     async doctor() {
@@ -178,7 +178,7 @@ function agyReviewer(
         display_name: "agy",
         kind: "local_cli",
         provider_family: "google",
-        capabilities: { review: true },
+        capabilities: { read_files: true, review: true },
       });
     },
     async doctor() {
@@ -343,7 +343,7 @@ function streamingReviewer(
         display_name: "fenced",
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { review: true, structured_output: true },
+        capabilities: { read_files: true, review: true, structured_output: true },
       });
     },
     async doctor() {
@@ -472,7 +472,7 @@ function acpReviewer(updates: readonly unknown[]): ReviewerSpec {
         display_name: "copilot",
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { review: true },
+        capabilities: { read_files: true, review: true },
       });
     },
     async doctor() {
@@ -677,7 +677,7 @@ function claudeReplayReviewer(abandoned: readonly [string, string], answer: stri
         display_name: "claude",
         kind: "local_cli",
         provider_family: "anthropic",
-        capabilities: { review: true },
+        capabilities: { read_files: true, review: true },
       });
     },
     async doctor() {

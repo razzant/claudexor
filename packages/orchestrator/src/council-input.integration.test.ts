@@ -63,6 +63,7 @@ function planner(id: string, member: Member, calls: HarnessRunSpec[]): HarnessAd
         kind: "local_cli",
         provider_family: "openai",
         capabilities: {
+          read_files: true,
           plan: true,
           work_report_transport: channel === "instructed_fence" ? "validated" : "constrained",
           json_schema_output: channel !== "instructed_fence",

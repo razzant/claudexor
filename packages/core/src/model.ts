@@ -15,6 +15,28 @@ import type {
   ModelCatalogObservation,
 } from "./adapter.js";
 
+/** A model somebody chose, byte-identical; a blank string was never a choice. */
+export function chosenModel(model: string | null | undefined): string | null {
+  return model && model.trim() ? model : null;
+}
+
+/** The refusal of a route that must name a model and has none (#395), with what
+ * repairs it once; null when the route has a model or its vendor chooses one. */
+export function missingRouteModel(
+  adapter: Pick<HarnessAdapter, "id" | "modelRequirement">,
+  requested: string | null | undefined,
+): string | null {
+  const requirement = adapter.modelRequirement;
+  if (!requirement || requirement.instanceChoice || chosenModel(requested)) return null;
+  const { id } = adapter;
+  return (
+    `${id} needs a model and none is selected; nothing was sent. ` +
+    `List its models with \`claudexor models --harness ${id}\`, then save one once with ` +
+    `\`claudexor settings set harness.${id}.default_model <model>\`, pass it for this run` +
+    `${requirement.env ? `, or set ${requirement.env}` : ""}.`
+  );
+}
+
 /** A route-scoped producer is queried only for a known supported route.
  * Undeclared producers retain legacy behavior; failed producers never fall back. */
 export function hasModelInventoryForRoute(

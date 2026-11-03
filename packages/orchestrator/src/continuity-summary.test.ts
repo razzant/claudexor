@@ -158,6 +158,29 @@ describe("summarizeThreadPrefix (INV-137, V9c)", () => {
     expect(text).toBeNull();
   });
 
+  it("names the lane's own model only when it is given one (#395)", async () => {
+    const seen: Array<string | null | undefined> = [];
+    const lane: HarnessAdapter = {
+      ...manifestFor("recording"),
+      async *run(spec) {
+        seen.push(spec.model_hint);
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts } as never;
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: "ok",
+          final: true,
+        } as never;
+        yield { type: "completed", session_id: spec.session_id, ts } as never;
+      },
+    };
+    await summarizeThreadPrefix(params(lane, { model: "vendor/lane" }));
+    await summarizeThreadPrefix(params(lane));
+    expect(seen).toEqual(["vendor/lane", null]);
+  });
+
   it("returns null for an empty prefix (nothing to summarise)", async () => {
     const text = await summarizeThreadPrefix(params(summarizingLane("lane-a", "x"), { turns: [] }));
     expect(text).toBeNull();

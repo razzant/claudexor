@@ -24,5 +24,5 @@ export { type RunScopeCustodian } from "./runScope.js";
 
 export { resolveCandidateHarnessIds } from "./route-admission.js";
 export { effectiveHarnessPool } from "./run-input-resolution.js";
-export { resolveRunInputDefaults } from "./run-input-resolution.js";
+export { registryInstanceModel, resolveRunInputDefaults } from "./run-input-resolution.js";
 export { captureRunDefaults, executionRunConfig } from "./run-defaults.js";

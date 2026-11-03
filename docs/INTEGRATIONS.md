@@ -718,7 +718,7 @@ semantics are defined once in
 [ARCHITECTURE](ARCHITECTURE.md#7-control-api).
 
 Terminal state may include diagnostic non-success states such as
-`stuck_no_progress` (the same result repeated while a required gate still failed).
+`stuck_no_progress` (the same accepted result repeated while a required gate still failed).
 A run's code result is exact Git objects of any size (`work_product.meta.git_result`,
 digest v1). When it is too large to render as one patch (judged by an estimate
 computed from the changed files' blob sizes, so a small edit of a very large file counts too,
@@ -2026,7 +2026,10 @@ maps its typed policy onto those native surfaces and records observed tool
 evidence rather than relying on final-answer claims.
 
 Raw API, including the built-in OpenRouter instance, uses non-streaming Chat
-Completions HTTP JSON rather than a native CLI stream. Its terminal semantics
+Completions HTTP JSON rather than a native CLI stream. It reads no project files:
+it serves Ask without a project and Agent implementation through a Git patch
+packet, and it does not plan a project or review changes, which belong to harnesses
+that read files themselves. Its terminal semantics
 are pinned by adapter unit tests, not a recorded stream fixture: an explicit
 terminal provider error yields a bounded typed `error` whose provider report is
 masked while the model's partial text (`partial_output`) stays exact, followed
@@ -2686,8 +2689,8 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_HOME_SCOPED` | orchestrator / review (internal child env) | `1` when the harness runs under a scoped native-state HOME (delegated, read-only and reviewer sessions). A fact for the model, not containment. |
 | `CLAUDEXOR_OPERATOR_HOME` | orchestrator / review (internal child env) | The operator's own home directory, captured from the daemon's unscoped env before HOME is rebased, so a scoped session knows where host caches live instead of searching for them. Set only together with `CLAUDEXOR_HOME_SCOPED`; `PLAYWRIGHT_BROWSERS_PATH` is exported alongside when the operator's Playwright cache exists and no explicit value (including `0`) was set. |
 | `CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE` | Claude adapter (internal child env) | Marker for the capability-declared macOS Keychain bridge in a disposable Claude-only HOME (`ready` / `unavailable`). Users never set it; generic scoped homes and other harnesses do not receive it (INV-067). |
-| `CLAUDEXOR_RAWAPI_BASE_URL` / `CLAUDEXOR_RAWAPI_KEY` / `CLAUDEXOR_RAWAPI_MODEL` | raw-api adapter | OpenAI-compatible endpoint, key, and model for the raw-API route. |
-| `CLAUDEXOR_OPENROUTER_BASE_URL` / `CLAUDEXOR_OPENROUTER_MODEL` | openrouter route | Base URL and default model for the built-in OpenRouter raw-API instance (key: `OPENROUTER_API_KEY`). |
+| `CLAUDEXOR_RAWAPI_BASE_URL` / `CLAUDEXOR_RAWAPI_KEY` / `CLAUDEXOR_RAWAPI_MODEL` | raw-api adapter | OpenAI-compatible endpoint, key, and optional operator model for the raw-API route, used below a run's model and `harnesses.raw-api.default_model`. |
+| `CLAUDEXOR_OPENROUTER_BASE_URL` / `CLAUDEXOR_OPENROUTER_MODEL` | openrouter route | Base URL and optional operator model for the built-in OpenRouter raw-API instance (key: `OPENROUTER_API_KEY`), used below a run's model and `harnesses.openrouter.default_model`. Neither route has a built-in model: with no choice at all it refuses `model_selection_required` before sending anything. |
 | `CLAUDEXOR_CONTROL_PORT` | daemon | Pin the control-API port (default: OS-assigned loopback port). |
 | `CLAUDEXOR_NO_CONTROL_API` | daemon | Start the daemon without the HTTP control API (socket only). A recovery-required startup verdict overrides it and binds the control API anyway — the `/recovery/*` surface is the recovery plane's point — and the override is disclosed in the daemon log. |
 | `CLAUDEXOR_DAEMON_SOCK` | daemon | Override the daemon's UNIX socket path. |

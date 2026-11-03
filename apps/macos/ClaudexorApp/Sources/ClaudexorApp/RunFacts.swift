@@ -82,8 +82,9 @@ enum RunFacts {
     }
 
     /// A request the engine refused before sending it, keyed by the typed
-    /// `RunFailure.code` (#147 raw context, #393 missing or rejected key). The
-    /// engine's message stays the complete source; this only names the refusal.
+    /// `RunFailure.code` (#147 raw context, #393 missing or rejected key, #395 no
+    /// model chosen). The engine's message stays the complete source; this only
+    /// names the refusal.
     struct Refusal: Equatable {
         /// The chat failure card's heading.
         let title: String
@@ -108,10 +109,36 @@ enum RunFacts {
             named = ("mandatory context files are unavailable", "mandatory files unavailable")
         case "model_catalog_unavailable":
             named = ("the API key is missing or was rejected", "API key missing or rejected")
+        case "model_selection_required":
+            named = ("no model is selected for this harness", "no model selected")
         default:
             return nil
         }
         return Refusal(title: "\(lead): \(named.title)", fact: "\(lead): \(named.fact)", chip: lead)
+    }
+
+    /// A raw patch, or the evidence it needs, the engine refused, keyed by the
+    /// typed `RunFailure.code` (#551). The code names what is wrong, never
+    /// whether a request was sent or paid (a patch intent without its packet is
+    /// refused before any request, the rest after an answer), so this heading
+    /// claims neither and is no `refusal`. The engine's message stays the
+    /// complete source.
+    static func patchRefusalTitle(code: String?) -> String? {
+        let what: String
+        switch code {
+        case "raw_patch_apply_failed": what = "it does not apply to the candidate"
+        case "raw_patch_outside_scope": what = "it touches a path outside its packet"
+        case "raw_patch_stale_preimage": what = "it edits a file version its packet did not hold"
+        case "raw_patch_path_traversal": what = "it names an invalid path"
+        case "raw_patch_binary_unsupported": what = "binary changes are not accepted"
+        case "raw_patch_truncated": what = "the answer was not a complete patch"
+        case "raw_patch_missing_evidence": what = "its packet or evidence is missing"
+        case "raw_patch_digest_mismatch": what = "its bytes do not match their digest"
+        case "raw_patch_base_mismatch": what = "the candidate is not the tree its packet described"
+        case "raw_patch_requires_isolation": what = "it can only apply in an isolated copy"
+        default: return nil
+        }
+        return "Patch refused: \(what)"
     }
 
     static func refusal(_ task: TaskRun) -> Refusal? {

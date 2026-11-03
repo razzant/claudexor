@@ -359,6 +359,7 @@ export const RouteDropStage = z
     "access",
     "web",
     "attachment",
+    "model",
   ])
   .describe("The routing stage at which an auto-pool lane was dropped.");
 export type RouteDropStage = z.infer<typeof RouteDropStage>;

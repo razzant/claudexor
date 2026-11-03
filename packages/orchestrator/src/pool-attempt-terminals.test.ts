@@ -108,7 +108,7 @@ function cleanReviewer(id: string, providerFamily: ProviderFamily): ReviewerSpec
           display_name: id,
           kind: "local_cli",
           provider_family: providerFamily,
-          capabilities: { review: true },
+          capabilities: { review: true, read_files: true },
         });
       },
       async doctor() {
@@ -143,7 +143,7 @@ function approvingReviewer(id: string, providerFamily: ProviderFamily): Reviewer
           kind: "local_cli",
           provider_family: providerFamily,
           access_profiles_supported: ["readonly"],
-          capabilities: { review: true, known_models: [model] },
+          capabilities: { review: true, read_files: true, known_models: [model] },
         });
       },
       async *run(spec) {

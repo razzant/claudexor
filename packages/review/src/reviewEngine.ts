@@ -51,6 +51,7 @@ import {
 } from "./reviewerWorkspace.js";
 export { extractDiffPostimagePaths as __testExtractDiffPostimagePaths } from "./reviewerWorkspace.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
+import { requireReadingReviewers } from "./reviewerFileReading.js";
 import type {
   ReviewerArtifactContext,
   ReviewCandidateResult,
@@ -190,6 +191,7 @@ function reviewerInfo(
 }
 
 export async function reviewCandidate(input: ReviewCandidateInput): Promise<ReviewCandidateResult> {
+  await requireReadingReviewers(input.reviewers);
   const sourceRoot = resolve(input.cwd);
   const sourceExists = existsSync(sourceRoot);
   const canonicalSourceRoot = sourceExists ? realpathSync(sourceRoot) : sourceRoot;
@@ -773,7 +775,7 @@ async function collectReviewerOutput(
 
   const consumeOnce = async (nativeTry: number): Promise<ReviewerOutput> => {
     if (isCancelled()) throw new Error("Reviewer cancelled before dispatch");
-    const prepared = await prepareReviewerRunSpec(reviewer.adapter, runSpec, reviewer.catalog);
+    const prepared = await prepareReviewerRunSpec(reviewer.adapter, runSpec);
     runSpec = prepared.spec;
     recordPreparedEffort(artifact, runSpec.session_id, prepared.effort, ignoredSettings, runSpec);
     if (isCancelled()) throw new Error("Reviewer cancelled before dispatch");

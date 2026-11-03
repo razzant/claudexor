@@ -38,6 +38,13 @@ export class ModelCatalogUnavailableError extends HarnessUnavailableError {
     super(message);
   }
 }
+/** A route whose request must name a model has none (#395). Refused before anything
+ * is sent; choosing a model repairs it, and no other model or route stands in. */
+export class ModelSelectionRequiredError extends HarnessUnavailableError {
+  readonly code = "model_selection_required";
+  readonly category = "config_error";
+  readonly retryable = false;
+}
 /** A final-route effort preference cannot be placed; changing routes cannot repair it. */
 export class EffortPreferenceRejectedError extends ClaudexorError {
   readonly code = "effort_preference_rejected";

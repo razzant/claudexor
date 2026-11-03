@@ -125,7 +125,12 @@ export function writeFailure(
                       "Reduce context.mandatory_files in the project's .claudexor/config.yaml",
                       "Or use a harness that reads project files itself",
                     ]
-                  : (failure.nextActions ?? [])),
+                  : failure.code === "model_selection_required"
+                    ? [
+                        "List the route's models with `claudexor models --harness <id>`",
+                        "Save one once with `claudexor settings set harness.<id>.default_model <model>`, or pass it for this run",
+                      ]
+                    : (failure.nextActions ?? [])),
         ...(failure.captureFailure ? (failure.nextActions ?? []) : []),
       ]),
     ],

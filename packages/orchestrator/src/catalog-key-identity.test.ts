@@ -90,7 +90,6 @@ function route(profile: CredentialProfile | null) {
     providerFamily: "unknown",
     baseUrl,
     keyEnv: KEY_ENV,
-    defaultModel: "vendor/m",
   });
   const routed: ModelGovernedRoute = {
     adapter,
