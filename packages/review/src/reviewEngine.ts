@@ -52,6 +52,7 @@ import {
 } from "./reviewerWorkspace.js";
 export { extractDiffPostimagePaths as __testExtractDiffPostimagePaths } from "./reviewerWorkspace.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
+import { requireReadingReviewers } from "./reviewerFileReading.js";
 import type {
   ReviewerArtifactContext,
   ReviewCandidateResult,
@@ -190,6 +191,7 @@ function reviewerInfo(
 }
 
 export async function reviewCandidate(input: ReviewCandidateInput): Promise<ReviewCandidateResult> {
+  await requireReadingReviewers(input.reviewers);
   const sourceRoot = resolve(input.cwd);
   const sourceExists = existsSync(sourceRoot);
   const canonicalSourceRoot = sourceExists ? realpathSync(sourceRoot) : sourceRoot;
@@ -773,7 +775,7 @@ async function collectReviewerOutput(
 
   const consumeOnce = async (nativeTry: number): Promise<ReviewerOutput> => {
     if (isCancelled()) throw new Error("Reviewer cancelled before dispatch");
-    const prepared = await prepareReviewerRunSpec(reviewer.adapter, runSpec, reviewer.catalog);
+    const prepared = await prepareReviewerRunSpec(reviewer.adapter, runSpec);
     runSpec = prepared.spec;
     recordPreparedEffort(artifact, runSpec.session_id, prepared.effort, ignoredSettings, runSpec);
     if (isCancelled()) throw new Error("Reviewer cancelled before dispatch");
@@ -875,16 +877,14 @@ async function collectReviewerOutput(
       if (ev.type === "message" && ev.text && ev.payload?.["auth_switched"] !== true) {
         const safeText = sealedReviewTranscriptChunk(persistedEvent);
         if (safeText !== null) {
-          if (sealed) {
-            // Keep the long-running transcript visibly active for monitors. A
-            // clean completion replaces these progress bytes with the exact
-            // typed-final projection used by the sealed parser and sealer.
-            appendLine(artifact.transcriptPath, safeText);
-          } else {
+          if (!sealed) {
             text += safeText;
             partialText += safeText;
-            appendLine(artifact.transcriptPath, safeText);
           }
+          // Keep the long-running transcript visibly active for monitors. For
+          // sealed reviews, clean completion replaces these progress bytes with
+          // the exact typed-final projection used by the parser and sealer.
+          appendLine(artifact.transcriptPath, safeText);
         }
       }
       if (ev.observed_model) {

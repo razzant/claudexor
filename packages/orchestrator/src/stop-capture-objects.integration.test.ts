@@ -363,7 +363,7 @@ describe("Stop over #535 object results (#337 x #535)", () => {
             kind: "local_cli",
             provider_family: "openai",
             access_profiles_supported: ["readonly"],
-            capabilities: { review: true, known_models: [model] },
+            capabilities: { review: true, read_files: true, known_models: [model] },
           });
         },
         async doctor() {

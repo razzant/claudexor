@@ -39,6 +39,7 @@ function openRouter(dispatched: HarnessRunSpec[]): HarnessAdapter {
     providerFamily: "unknown",
     baseUrl: "http://127.0.0.1:9/never",
     keyEnv: "CLAUDEXOR_TEST_OPENROUTER_KEY",
+    defaultModel: "vendor/operator-choice",
   });
   adapter.models = async () => [];
   adapter.run = async function* (spec) {

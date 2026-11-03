@@ -98,7 +98,7 @@ export function buildRegistry(opts: RegistryOptions = {}): AdapterRegistry {
       ...openRouterInstance(),
       providerFamily: "unknown",
       providerUsageCostUnit: "usd",
-      defaultModel: process.env.CLAUDEXOR_OPENROUTER_MODEL ?? "openai/gpt-5.5",
+      modelEnv: "CLAUDEXOR_OPENROUTER_MODEL",
       routingVariants: OPENROUTER_ROUTING_VARIANTS,
       refusedVariants: OPENROUTER_REFUSED_VARIANTS,
     }),

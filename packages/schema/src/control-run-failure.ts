@@ -40,6 +40,24 @@ export const RunFailureCode = z
      * cause, never reported as absent. Other failed reads forward the model
      * unverified on the same key (#393, owner decision A). */
     "model_catalog_unavailable",
+    /* A route whose request must name a model (#395) has no run, saved or
+     * instance choice: nothing was sent, and no other model or route stands in. */
+    "model_selection_required",
+    /* A raw patch, or the evidence it needs, the engine refused (#551). The code
+     * names what is wrong, never whether a request was sent or paid: a patch
+     * intent without its packet is refused before any request, the others after
+     * an answer. The attempt's own usage evidence says what was sent, and the
+     * category says who can repair it. */
+    "raw_patch_requires_isolation",
+    "raw_patch_missing_evidence",
+    "raw_patch_digest_mismatch",
+    "raw_patch_base_mismatch",
+    "raw_patch_path_traversal",
+    "raw_patch_outside_scope",
+    "raw_patch_stale_preimage",
+    "raw_patch_binary_unsupported",
+    "raw_patch_truncated",
+    "raw_patch_apply_failed",
     "vendor_cli_too_old",
     /* The vendor's own startup frame reported a credential source other than
      * the session login a subscription route requires (Grok `apiKeySource`). */

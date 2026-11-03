@@ -3,6 +3,7 @@ import { inheritContinuationBody, prepareRunStart } from "@claudexor/control-api
 import {
   captureRunDefaults,
   executionRunConfig,
+  registryInstanceModel,
   resolveRunInputDefaults,
   type DelegationBudgetAuthority,
 } from "@claudexor/orchestrator";
@@ -59,6 +60,7 @@ export function createDeferredStartPreparation(deps: {
       const resolved = resolveRunInputDefaults(oneShotRunInput(request), {
         config,
         registryIds: registry.keys(),
+        instanceModel: registryInstanceModel(registry),
       });
       return CapturedRunStart.parse({
         ...request,

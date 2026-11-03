@@ -30,7 +30,7 @@ import {
   estimateEffectiveAuthRoute,
   knownModelIdsForRoute,
 } from "@claudexor/schema";
-import type { HarnessAdapter, ModelCatalogObservation } from "@claudexor/core";
+import type { HarnessAdapter } from "@claudexor/core";
 import {
   HarnessUnavailableError,
   ModelCatalogUnavailableError,
@@ -39,7 +39,7 @@ import {
   validateModelOnUnreadCatalog,
 } from "@claudexor/core";
 import { WorkspaceManager } from "@claudexor/workspace";
-import type { ReviewerSpec } from "@claudexor/review";
+import { CANNOT_READ_EVIDENCE, admitFileReader, type ReviewerSpec } from "@claudexor/review";
 import { reviewerEffortVerdict } from "./reviewerEffort.js";
 import {
   listModelIdsWithRetry,
@@ -191,6 +191,12 @@ export async function resolveExplicitReviewerPanel(
             `reviewer harness '${entry.harness}' is a fake harness and cannot be used in reviewer panels`,
           );
         }
+        // After the account and any doctor probe above; before the doctor verdict and any model check.
+        if (!admitFileReader(adapter, manifest)) {
+          throw new HarnessUnavailableError(
+            `reviewer harness '${entry.harness}' ${CANNOT_READ_EVIDENCE}`,
+          );
+        }
         if (status.status !== "ok") {
           const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
           throw new HarnessUnavailableError(
@@ -313,7 +319,6 @@ export async function resolveExplicitReviewerPanel(
           authPreference,
           processingPreference: entry.processingPreference,
           ...(deps.resolveReviewerProfile ? { credentialProfile, profilePinned } : {}),
-          catalog: requestedModel ? modelInventory.get(inventoryKey)?.read : undefined,
         });
         break;
       }
@@ -361,6 +366,10 @@ export async function resolveAutoReviewerPanel(
       }
       if (m.kind === "fake") {
         discloseAutoSkip(deps, adapter.id, "fake harness");
+        continue;
+      }
+      if (!admitFileReader(adapter, m)) {
+        discloseAutoSkip(deps, adapter.id, `it ${CANNOT_READ_EVIDENCE}`);
         continue;
       }
       if (seen.has(m.provider_family)) continue;
@@ -424,7 +433,6 @@ export async function resolveAutoReviewerPanel(
         // STRICT: the auto panel skips a family whose truth source does not
         // list the model, at zero cost. It does NOT inherit the explicit panel's
         // advisory forward (INV-104): nobody asked for this family by name.
-        let catalog: ModelCatalogObservation | undefined;
         if (requestedModel) {
           const route = credentialProfile
             ? credentialProfileAuthRoute(credentialProfile)
@@ -458,7 +466,6 @@ export async function resolveAutoReviewerPanel(
             discloseAutoSkip(deps, adapter.id, inventory.reason);
             continue familyLoop;
           }
-          catalog = inventory.read;
           // Locked: automatic selection never spawns on a guess, whatever the
           // harness declares, so absence is judged authoritative here.
           const check = validateModel(
@@ -505,7 +512,6 @@ export async function resolveAutoReviewerPanel(
           requestedEffort,
           authPreference,
           ...(deps.resolveReviewerProfile ? { credentialProfile, profilePinned: false } : {}),
-          catalog,
         });
         break;
       }

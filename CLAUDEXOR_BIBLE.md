@@ -331,8 +331,15 @@ invariant or operator decision before proceeding.
   orchestrator tests;
   `packages/orchestrator/src/inrun-continuity.integration.test.ts`.
 - **INV-047** A repeated identical diff against a still-failing required
-  gate is reported honestly as `stuck_no_progress`, never success. verify:
-  until-clean stuck test.
+  gate is reported honestly as `stuck_no_progress`, never success. Only
+  accepted results count toward that repetition: a round whose patch was
+  refused with a typed model-correctable code applied nothing, so it neither
+  repeats nor resets the accepted results' history, and its own failure is
+  that refusal. The next ordinary revise round may correct it within the run's
+  existing limits; no retry allowance is added. A state-integrity refusal
+  (isolation, evidence, digest, base) still ends convergence. verify:
+  until-clean stuck test; the INV-047 cases in
+  `packages/cli/src/raw-api-rounds.integration.test.ts`.
 - **INV-048** Interactive FLOW-CONTROL tools are not work tools: a declined
   or timed-out `AskUserQuestion`/`ExitPlanMode` is a benign timeline event,
   never a blocking tool error; an ANSWERED interaction flows through the

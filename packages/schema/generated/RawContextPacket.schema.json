@@ -113,11 +113,13 @@
         },
         "base_commit_sha": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The run's delivery base commit; every round of a run names the same one."
         },
         "base_tree_sha": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The exact tree this request describes and its patch applies to: the delivery base's tree on a first round, afterwards the candidate an earlier round left."
         },
         "readable_files": {
           "type": "array",
@@ -131,12 +133,12 @@
               },
               "mode": {
                 "type": "string",
-                "description": "Git object mode at the bound base tree."
+                "description": "Git object mode in the packet's exact tree."
               },
               "blob_oid": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Git blob oid at the bound base tree."
+                "description": "Git blob oid in the packet's exact tree."
               },
               "content_hash": {
                 "$ref": "#/definitions/RawContextPacket/properties/packet_hash"

@@ -43,7 +43,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "Base-tree blob oid, or null only when the path is absent in the base tree."
+                "description": "Blob oid in the packet's exact tree, or null only when that tree lacks the path."
               }
             },
             "required": [

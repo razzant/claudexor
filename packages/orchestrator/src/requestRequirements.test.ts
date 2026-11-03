@@ -280,13 +280,22 @@ describe("RequestRequirementsResolver project-read admission (#133)", () => {
     );
   });
 
-  it("admits Ask without a project, a file-reading route, and every other intent", () => {
+  it.each(["plan", "spec"] as const)("refuses a project %s the same way (#137)", (intent) => {
+    expect(resolver.projectReadRefusal(intent, project, remote([intent], false))).toBe(
+      "openrouter (cannot read project files: ask without a project or choose a harness that reads files)",
+    );
+  });
+
+  it("admits work without a project, a file-reading route, and an intent that reads nothing", () => {
     const noProject = { repoRoot: noProjectRepoRoot() };
+    for (const intent of ["explain", "plan", "spec"] as const) {
+      expect(resolver.projectReadRefusal(intent, noProject, remote([intent], false))).toBeNull();
+      expect(resolver.projectReadRefusal(intent, project, remote([intent], true))).toBeNull();
+    }
+    // A patch producer's packet carries what it reads; its implement is untouched.
     expect(
-      resolver.projectReadRefusal("explain", noProject, remote(["explain"], false)),
+      resolver.projectReadRefusal("implement", project, remote(["implement"], false)),
     ).toBeNull();
-    expect(resolver.projectReadRefusal("explain", project, remote(["explain"], true))).toBeNull();
-    expect(resolver.projectReadRefusal("plan", project, remote(["plan"], false))).toBeNull();
   });
 
   it("leaves a route whose doctor does not enable explain to the capability refusal", () => {

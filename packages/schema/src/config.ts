@@ -369,7 +369,9 @@ export const GlobalConfig = z
               .string()
               .nullable()
               .default(null)
-              .describe("Per-harness default model; null = the harness's own default."),
+              .describe(
+                "Per-harness default model; null = the harness's own default, or no model on a route whose request must name one.",
+              ),
             effort: EffortHint.nullable()
               .default(null)
               .describe("Default reasoning effort for the harness; null = harness default."),

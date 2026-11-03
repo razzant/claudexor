@@ -224,9 +224,9 @@ struct TurnCard: View {
                 // the workspace Outcome facts (INV-093 honest outcome).
                 applyStateLine(run)
                 // Inline failure card: a terminal-FAILED turn with nothing to show,
-                // or a request the engine refused before sending (#147/#393) — its
-                // collapsed transcript would otherwise hide why nothing ran.
-                if isSilentFailure(run) || RunFacts.refusal(run) != nil { failureCard(run) }
+                // or a typed refusal (#147/#393/#551) that an earlier round's output
+                // or a collapsed transcript would otherwise leave unexplained.
+                if isSilentFailure(run) || TurnFailureCard.namesRefusal(run) { failureCard(run) }
             } else if let refusal = turn.enqueueError {
                 TurnRefusalCard(turn: turn, refusal: refusal, target: target)
             } else if historyRow?.runStatus == "not_retained" {

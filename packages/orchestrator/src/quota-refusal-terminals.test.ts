@@ -50,7 +50,7 @@ const reviewer: ReviewerSpec = {
         display_name: "unused reviewer",
         kind: "local_cli",
         provider_family: "openai",
-        capabilities: { review: true },
+        capabilities: { review: true, read_files: true },
       });
     },
     async doctor() {
@@ -315,6 +315,7 @@ describe("pinned typed limit terminals carry the quota basis", () => {
         profiles: ["a", "b"],
         pinned: "a",
         capabilities: {
+          read_files: true,
           plan: true,
           work_report_transport: "constrained",
           json_schema_output: true,

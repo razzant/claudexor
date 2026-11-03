@@ -33,6 +33,9 @@ __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
+// The route invents no model (#395): this suite is the operator who chose one.
+process.env.CLAUDEXOR_RAWAPI_MODEL = "operator/chosen";
+
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
   for await (const item of iter) out.push(item);
@@ -1606,4 +1609,131 @@ describe("raw-api diagnostics are masked whole, then bounded without splitting a
       expect(error.transient).toEqual({ kind: "service_unavailable", retry_delay_ms: null });
     }
   });
+});
+
+describe("raw-api names only a model somebody chose (#395)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  const fetchMock = vi.fn(async () => new Response("{}", { status: 500 }));
+  const spec = (fields: Record<string, unknown> = {}) =>
+    HarnessRunSpec.parse({
+      session_id: "model-choice",
+      intent: "explain",
+      prompt: "x",
+      cwd: "/repo",
+      access: "readonly",
+      external_context_policy: "auto",
+      tool_permission_policy: { web: "auto", allow: [], deny: [] },
+      ...fields,
+    });
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OPENAI_API_KEY = "sk-test";
+    delete process.env.CLAUDEXOR_RAWAPI_MODEL;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it.each([null, "", "   "])(
+    "a %j model hint with no instance choice requests nothing",
+    async (hint) => {
+      const adapter = createRawApiAdapter();
+      const events = await collect(adapter.run(spec({ model_hint: hint })));
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(events.map((event) => event.type)).toEqual(["error", "completed"]);
+      expect(events[0]?.error).toContain("raw-api needs a model and none is selected");
+      expect(events[0]?.error).toContain("CLAUDEXOR_RAWAPI_MODEL");
+      expect(adapter.rawRequestCapacity!(spec({ model_hint: hint }), [])).toBeNull();
+    },
+  );
+
+  it("each instance reads only its own variable, and an instance argument comes first", () => {
+    process.env.CLAUDEXOR_RAWAPI_MODEL = "operator/raw";
+    process.env.CLAUDEXOR_OTHER_MODEL = "operator/other";
+    expect(createRawApiAdapter().modelRequirement).toEqual({
+      instanceChoice: { model: "operator/raw", source: "CLAUDEXOR_RAWAPI_MODEL" },
+      env: "CLAUDEXOR_RAWAPI_MODEL",
+    });
+    expect(createRawApiAdapter({ id: "named" }).modelRequirement).toEqual({ instanceChoice: null });
+    expect(
+      createRawApiAdapter({ id: "named", modelEnv: "CLAUDEXOR_OTHER_MODEL" }).modelRequirement
+        ?.instanceChoice,
+    ).toEqual({ model: "operator/other", source: "CLAUDEXOR_OTHER_MODEL" });
+    expect(
+      createRawApiAdapter({ defaultModel: "operator/arg" }).modelRequirement?.instanceChoice,
+    ).toEqual({ model: "operator/arg", source: "the instance configuration" });
+    process.env.CLAUDEXOR_RAWAPI_MODEL = "   ";
+    expect(createRawApiAdapter().modelRequirement?.instanceChoice).toBeNull();
+  });
+
+  it("the doctor says whether the instance chose a model, and spends nothing to say it", async () => {
+    const check = async (adapter: ReturnType<typeof createRawApiAdapter>) =>
+      (await adapter.doctor({ cwd: "/repo" })).checks.find((row) => row.id === "instance_model");
+    expect(await check(createRawApiAdapter())).toEqual({
+      id: "instance_model",
+      status: "skip",
+      detail: "no instance model: a run or harness.raw-api.default_model must name one",
+    });
+    process.env.CLAUDEXOR_RAWAPI_MODEL = "operator/raw";
+    expect(await check(createRawApiAdapter())).toEqual({
+      id: "instance_model",
+      status: "pass",
+      detail: "model operator/raw from CLAUDEXOR_RAWAPI_MODEL",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("raw-api declares only what a remote endpoint can do (#137)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  beforeEach(() => {
+    process.env.OPENAI_API_KEY = "sk-test";
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("reads no files and reviews no change; Ask and implementation stay declared", async () => {
+    const adapter = createRawApiAdapter();
+    const manifest = await adapter.discover();
+    expect(manifest.capabilities).toMatchObject({
+      read_files: false,
+      review: false,
+      plan: true,
+      implement: true,
+    });
+    const report = await adapter.doctor({ cwd: "/repo" });
+    expect(report.enabled_intents).toEqual(["implement", "plan", "spec", "synthesize", "explain"]);
+    expect(report.disabled_intents).toContain("review");
+  });
+
+  it.each(["implement", "synthesize"] as const)(
+    "a %s without its packet is refused before the request, not after paying for it",
+    async (intent) => {
+      const fetchMock = vi.fn(async () => new Response("{}", { status: 500 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const events = await collect(
+        createRawApiAdapter({ defaultModel: "operator/arg" }).run(
+          HarnessRunSpec.parse({
+            session_id: "packetless",
+            intent,
+            prompt: "x",
+            cwd: "/repo",
+            access: "readonly",
+            external_context_policy: "auto",
+            tool_permission_policy: { web: "auto", allow: [], deny: [] },
+          }),
+        ),
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(events.find((event) => event.type === "error")?.refusal_code).toBe(
+        "raw_patch_missing_evidence",
+      );
+      expect(events.at(-1)?.type).toBe("completed");
+    },
+  );
 });

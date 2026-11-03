@@ -1,11 +1,9 @@
 /**
  * How the reviewer panels read a reviewer's live model inventory: the explicit
- * panel's read with one retry and the automatic panel's zero-cost read. Each
- * answer keeps the typed catalog read behind it, whose credential the review
- * request then sends (#393 x #147): no second read, the same checked key.
+ * panel's read with one retry and the automatic panel's zero-cost read.
  */
 import type { AuthPreference, CredentialProfile, ModelInventoryAbsence } from "@claudexor/schema";
-import type { HarnessAdapter, ModelCatalogFailure, ModelCatalogObservation } from "@claudexor/core";
+import type { HarnessAdapter, ModelCatalogFailure } from "@claudexor/core";
 import {
   HarnessUnavailableError,
   modelCatalogFailureText,
@@ -21,8 +19,6 @@ export type AutoModelInventory =
       ids: Set<string>;
       source: "api" | "manifest";
       catalogRead: boolean;
-      /** The typed read behind the ids, which carries the key it checked. */
-      read?: ModelCatalogObservation;
     }
   | { status: "unknown"; reason: string };
 
@@ -47,7 +43,6 @@ export async function readAutoModelInventory(
       ids,
       source: "api",
       catalogRead: !read.failSoft,
-      ...(read.failSoft ? {} : { read }),
     };
   } catch (error) {
     return { status: "unknown", reason: `inventory unavailable: ${safeErrorMessage(error)}` };
@@ -75,10 +70,7 @@ export async function listModelIdsWithRetry(
     requestedModel: string;
     absence: ModelInventoryAbsence;
   },
-): Promise<
-  | { ids: Set<string>; catalogRead: boolean; read?: ModelCatalogObservation }
-  | { failure: ModelCatalogFailure; read: ModelCatalogObservation }
-> {
+): Promise<{ ids: Set<string>; catalogRead: boolean } | { failure: ModelCatalogFailure }> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -89,11 +81,11 @@ export async function listModelIdsWithRetry(
         ...(input.credentialProfile ? { credentialProfile: input.credentialProfile } : {}),
       });
       if (read.status === "unavailable") {
-        if (attempt === 1) return { failure: read.failure, read };
+        if (attempt === 1) return { failure: read.failure };
         throw new Error(modelCatalogFailureText(read.failure));
       }
       const ids = new Set(read.models.map((m) => m.id));
-      if (!read.failSoft) return { ids, catalogRead: true, read };
+      if (!read.failSoft) return { ids, catalogRead: true };
       if (ids.size === 0) {
         if (input.absence === "advisory") return { ids, catalogRead: false };
         throw new Error("model inventory was empty");

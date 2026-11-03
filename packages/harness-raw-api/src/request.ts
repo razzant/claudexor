@@ -17,7 +17,7 @@ export const RAW_API_IMAGE_TOKEN_ESTIMATE = 1_600;
 type Content = string | Array<Record<string, unknown>>;
 type Message = { role: "system" | "user"; content: Content };
 
-function patchIntent(spec: HarnessRunSpec): boolean {
+export function patchIntent(spec: Pick<HarnessRunSpec, "intent">): boolean {
   return spec.intent === "implement" || spec.intent === "synthesize";
 }
 
@@ -27,6 +27,7 @@ function patchPrompt(prompt: string, packetJson: string): string {
     prompt,
     "",
     'Produce the requested change only by returning one JSON object: {"patch":"<complete textual git unified diff>"}.',
+    "The patch applies to readable_files exactly as given here: they are the candidate as it stands now, including any earlier revision.",
     "Touch existing files only from editable_paths. New paths are allowed only below creatable_roots.",
     "Do not calculate hashes or preimage evidence; the trusted local adapter derives them. Do not use Markdown fences or add prose. Binary patches are unsupported.",
     "RAW_CONTEXT_PACKET:",

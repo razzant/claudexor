@@ -418,7 +418,7 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Per-harness default model; null = the harness's own default."
+                "description": "Per-harness default model; null = the harness's own default, or no model on a route whose request must name one."
               },
               "effort": {
                 "anyOf": [

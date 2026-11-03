@@ -4,6 +4,7 @@ import {
   AccessProfileIncompatibleError,
   AuxiliaryWritableRootsUnsupportedError,
   HarnessUnavailableError,
+  ModelSelectionRequiredError,
   type AdapterRegistry,
 } from "@claudexor/core";
 import type { HarnessStatus } from "@claudexor/gateway";
@@ -29,6 +30,8 @@ export function assertCandidatePoolAvailable(
     throw new AccessProfileIncompatibleError(
       `no harness can enforce the requested access profile (${details})`,
     );
+  if (droppedLanes.length > 0 && droppedLanes.every((lane) => lane.stage === "model"))
+    throw new ModelSelectionRequiredError(details);
   throw new HarnessUnavailableError(
     `no harness can perform '${intent}' for this mode${details ? ` (skipped: ${details})` : ""}`,
   );

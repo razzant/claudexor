@@ -108,7 +108,7 @@ function reviewer(
           kind: "local_cli",
           provider_family: providerFamily,
           access_profiles_supported: ["readonly"],
-          capabilities: { review: true, known_models: [model] },
+          capabilities: { review: true, read_files: true, known_models: [model] },
         });
       },
       async doctor() {

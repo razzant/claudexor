@@ -1,6 +1,6 @@
 import { loadConfig } from "@claudexor/config";
 import type { OrchestratorDeps, RunInput } from "./orchestrator.js";
-import { resolveRunInputDefaults } from "./run-input-resolution.js";
+import { registryInstanceModel, resolveRunInputDefaults } from "./run-input-resolution.js";
 import { executionRunConfig } from "./run-defaults.js";
 import { resolveEngineReview } from "./candidateReview.js";
 import type { AccessProfile, ModeKind } from "@claudexor/schema";
@@ -161,6 +161,7 @@ export function prepareRunAdmission(
   let resolved = resolveRunInputDefaults(input, {
     config: executionRunConfig(input.repoRoot, deps.executionDefaults),
     registryIds: deps.registry.keys(),
+    instanceModel: registryInstanceModel(deps.registry),
     routingGoal: deps.routingGoal,
   });
   const parsedMode = ModeKindSchema.safeParse(resolved.mode ?? "agent");
