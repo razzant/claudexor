@@ -21,10 +21,12 @@
  * and the Claude model picker cache are dropped with the Claude auth-status LKG;
  * all three are this process's caches, so a change another process makes
  * (the direct profile login above) is not observed here.
+ * The Codex model and effort catalog goes with them, under the same limit.
  */
 import { loadConfig } from "@claudexor/config";
 import { invalidateDoctorCache } from "@claudexor/core";
 import { clearClaudeAuthStatusCache, clearClaudeModelProbeCache } from "@claudexor/harness-claude";
+import { clearCodexEffortCache } from "@claudexor/harness-codex";
 import { clearCursorStatusCache } from "@claudexor/harness-cursor";
 import type { AccountEvidence, QuotaRegistry } from "@claudexor/daemon";
 import type { AuthReadinessService } from "@claudexor/gateway";
@@ -50,6 +52,9 @@ export function bustCredentialStatusCaches(
   // The Claude picker is cached per profile scope, whose key a login, logout or
   // new secret keeps while changing the account behind it (#572).
   clearClaudeModelProbeCache();
+  // The Codex catalog is cached per home, whose key a login or new credential
+  // keeps while changing the account behind it (#610).
+  clearCodexEffortCache();
   // Cursor reuses a recent positive status answer; a mutation must re-ask.
   clearCursorStatusCache();
   // The quota poller's remembered vendor rejections are credential state too:
