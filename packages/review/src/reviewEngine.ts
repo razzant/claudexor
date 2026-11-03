@@ -877,16 +877,14 @@ async function collectReviewerOutput(
       if (ev.type === "message" && ev.text && ev.payload?.["auth_switched"] !== true) {
         const safeText = sealedReviewTranscriptChunk(persistedEvent);
         if (safeText !== null) {
-          if (sealed) {
-            // Keep the long-running transcript visibly active for monitors. A
-            // clean completion replaces these progress bytes with the exact
-            // typed-final projection used by the sealed parser and sealer.
-            appendLine(artifact.transcriptPath, safeText);
-          } else {
+          if (!sealed) {
             text += safeText;
             partialText += safeText;
-            appendLine(artifact.transcriptPath, safeText);
           }
+          // Keep the long-running transcript visibly active for monitors. For
+          // sealed reviews, clean completion replaces these progress bytes with
+          // the exact typed-final projection used by the parser and sealer.
+          appendLine(artifact.transcriptPath, safeText);
         }
       }
       if (ev.observed_model) {
