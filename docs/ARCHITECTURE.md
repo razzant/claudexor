@@ -1100,8 +1100,8 @@ Claude's native `auth status` probe keeps that distinction under transient
 child-process or Keychain transport failure: concurrent reads of one exact
 `(binary, config-dir)` store share one bounded probe, a retry stays inside the
 original ten-second budget, and a positive result may be reused only as a
-typed, process-local stale observation for at most one minute. Claudexor-handled
-logout, login, profile, or secret mutations clear that observation (including
+typed, process-local stale observation for at most one minute. Daemon-observed
+login, profile, or secret mutations clear that observation (including
 an in-flight probe); an external vendor login/logout may remain visible for the
 bounded grace window. Stale evidence is never reported as a fresh passed login
 and does not alter profile selection or paid-route policy: an already explicit
@@ -2961,7 +2961,29 @@ hint rows alone, reported as `source: manifest` with its frozen `verifiedAgainst
 stamp, not a live `api` claim. One cached single-flight capture per scope and
 binary identity (realpath, inode, size, mtime; `harnessBinaryIdentity` in core)
 lives an hour, a failure a minute, so an in-place CLI update is re-read without a
-daemon restart. The `--help` effort memo, the readonly-flag probe and the
+daemon restart. A login, logout or credential change keeps a profile's scope key
+while changing its account, so every credential invalidation the daemon observes
+(setup-job login windows, profile and secret mutations, the accounts-migration
+rollback) drops every cached answer before configuration and quota reads that
+can fail. A capture that began earlier stores nothing and leaves
+a newer capture in place. A credential profile whose secret is missing answers the
+hint rows without a probe or a cache read. The same invalidation owner
+(`bustCredentialStatusCaches`) runs on every committed settings save, whatever it
+changed, and on any harness's login window, and the clear has no scope, so the
+credential-free binary answer goes too: the next read
+of each scope spawns one prompt-free `initialize` child again (ten-second bound,
+no generation; a profile scope's child also runs the vendor bootstrap its rows come
+from). The cache is the daemon process's own and nothing re-reads it on a
+schedule. After a change the daemon does not observe (BACKLOG W-f, a vendor
+logout), `models()` keeps the previous rows until its first call past the hour, an
+observed invalidation, a changed binary or a daemon restart; its `fresh` bypass
+serves only a direct adapter caller, since no daemon models route accepts it and
+no production read passes it. The account view adds a retained observation of its
+own with no expiry (`accountObservations`): it keeps those rows past the hour until
+an observed invalidation, harness maintenance, an explicit Accounts refresh
+(`snapshot=true`), a changed profile row or a restart discards it, and a refresh
+inside the hour retains the adapter's still-cached rows again.
+The `--help` effort memo, the readonly-flag probe and the
 `--version` read behind the snapshot-trust gate use the same identity and follow
 a run's PATH patch, so every question about "the binary this run executes" asks
 that binary. Two stated bounds: the memo is one slot (a patched run alternating
@@ -3401,7 +3423,13 @@ over the cap degrades its run the same way. No threshold or alarm is derived
 from the counts. The operation catalog lists the read, so a client discovers
 it; an older engine answers 404, which `claudexor doctor` prints as
 unavailable while it prints the summary line and the routes with failures of
-a current engine (`route_health` in `doctor --json`).
+a current engine (`route_health` in `doctor --json`). Doctor reads it after
+its other sections, and any other failure (an HTTP error, a lost connection,
+an answer that does not match the schema) keeps those sections and prints
+route health as unavailable with that masked cause (`route_health: null` and
+`route_health_problem` in `doctor --json`; the problem is null after a 404 or
+an answer). A route line keeps its counts; its rounded failed share reads
+`<1%` or `>99%` where rounding alone would show 0% or 100%.
 
 #### Engine store identity
 

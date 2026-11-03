@@ -38,8 +38,9 @@
  *
  * One cached single-flight capture per (scope, binary identity): concurrent
  * callers share one child, a caller's abort never reaches it, answers live for
- * an hour, failures for a minute, and a binary that changes on disk is
- * re-probed on the next call without a daemon restart.
+ * an hour, failures for a minute, a binary that changes on disk is re-probed on
+ * the next call without a daemon restart, and an observed credential change
+ * drops every answer (`clearClaudeModelProbeCache`).
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -330,10 +331,19 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 const pending = new Map<string, Promise<HarnessModel[]>>();
 
-/** Drop every cached answer and forget in-flight probes (tests). A login or
- * logout changes the account half of a profile scope, and nothing calls this
- * on that path today: such a profile can serve its previous rows for up to
- * the hour-long TTL, and `fresh: true` on the query is the bypass. */
+/** Drop every cached answer and forget in-flight probes. A login, logout or
+ * credential change keeps a profile's scope key while changing its account,
+ * so the daemon's credential invalidation calls this; a capture that started
+ * earlier then neither stores its answer nor removes a newer flight (both
+ * check `pending` identity). That invalidation also runs on every settings save
+ * and this clear has no scope, so the binary answer goes too and the next read
+ * of each scope spawns one prompt-free probe again. The cache belongs to this
+ * process and nothing re-reads it on a schedule: after a change made by another
+ * process (a direct vendor login or logout) the rows stay until the first call
+ * past the TTL, an observed clear, a changed binary or a restart. `fresh`
+ * bypasses the cache only for a direct adapter caller; no daemon models route
+ * accepts it, and the daemon's account view retains its own copy of these rows
+ * past the TTL (docs/ARCHITECTURE.md). */
 export function clearClaudeModelProbeCache(): void {
   cache.clear();
   pending.clear();

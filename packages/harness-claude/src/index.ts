@@ -90,6 +90,7 @@ import {
 import { createClaudeLiveInput, type ClaudeLiveInput } from "./live-input.js";
 import { withClaudeInstructionsFile } from "./instructions-file.js";
 import { CLAUDE_MODEL_INVENTORY, probeClaudeModels } from "./model-probe.js";
+export { clearClaudeModelProbeCache } from "./model-probe.js";
 import { claudePersistence } from "./continuity.js";
 
 export const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter(

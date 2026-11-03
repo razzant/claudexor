@@ -36,7 +36,7 @@ import { accountsCommand, profilesCommand, secretsCommand } from "./credential-c
 import { CLI_DAEMON_LAUNCH_SOURCES, launchDetachedDaemon } from "./daemon-launch.js";
 import { reportDaemonStartReady } from "./daemon-start-report.js";
 import { daemonLoopLine, daemonStoreLine } from "./daemon-status-report.js";
-import { readRouteHealth, routeHealthLines } from "./doctor-route-health.js";
+import { readRouteHealthSection, routeHealthLines } from "./doctor-route-health.js";
 import {
   authSourceAvailability,
   checksSummary,
@@ -309,14 +309,16 @@ export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<nu
     );
   const git = parsedGit.success ? (parsedGit.data ?? null) : null;
   const advisory = atRiskNodeAdvisory();
-  // Additive like `git`: an older engine (404) reports null, not a failure.
-  const routeHealth = await readRouteHealth(daemonGet);
+  // Additive like `git`: an older engine (404) reports null, not a failure; any
+  // other failure is named and never costs the sections above (#569).
+  const routeHealth = await readRouteHealthSection(daemonGet);
   if (json) {
     printJson({
       harnesses: response.harnesses,
       git,
       node_advisory: advisory,
-      route_health: routeHealth,
+      route_health: routeHealth.health,
+      route_health_problem: routeHealth.problem,
     });
     return 0;
   }
@@ -347,7 +349,7 @@ export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<nu
       print(`    model: ${status.configuredModel ?? ""} — ${status.configuredModelCheck.message}`);
     }
   }
-  for (const line of routeHealthLines(routeHealth)) print(line);
+  for (const line of routeHealthLines(routeHealth.health, routeHealth.problem)) print(line);
   if (advisory) print(`advisory: ${advisory}`);
   return 0;
 }

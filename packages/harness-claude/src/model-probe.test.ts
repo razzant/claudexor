@@ -624,6 +624,47 @@ describe("cache", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("a probe that started before a clear neither stores its answer nor drops the probe started after it (#572)", async () => {
+    const answer = (value: string) =>
+      JSON.stringify({
+        type: "control_response",
+        response: {
+          subtype: "success",
+          request_id: CLAUDE_INIT_REQUEST_ID,
+          response: { models: [{ value, displayName: value, resolvedModel: value }] },
+        },
+      }) + "\n";
+    const accounts = [answer("old-account"), answer("new-account")];
+    const releases: Array<() => void> = [];
+    const runCapture = async () => {
+      const stdout = accounts[releases.length] ?? "";
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return capture(stdout);
+    };
+    const deps = { runCapture, binaryIdentity: identity };
+    const live = (rows: Awaited<ReturnType<typeof probeClaudeModels>>) =>
+      rows.filter((r) => r.origin === "live").map((r) => r.id);
+
+    const before = probeClaudeModels({ cwd: "/repo" }, deps);
+    // The credential changes while that child runs; the next caller probes anew.
+    clearClaudeModelProbeCache();
+    const after = probeClaudeModels({ cwd: "/repo" }, deps);
+    expect(releases).toHaveLength(2);
+    releases[0]?.();
+    // The caller that asked before the change still gets that answer...
+    expect(live(await before)).toEqual(["old-account"]);
+    // ...but it is neither cached nor allowed to drop the newer flight: the
+    // next caller joins that flight instead of reading or spawning anything.
+    const joined = probeClaudeModels({ cwd: "/repo" }, deps);
+    expect(releases).toHaveLength(2);
+    releases[1]?.();
+    expect(live(await after)).toEqual(["new-account"]);
+    expect(live(await joined)).toEqual(["new-account"]);
+    // A probe after a clear caches normally.
+    expect(live(await probeClaudeModels({ cwd: "/repo" }, deps))).toEqual(["new-account"]);
+    expect(releases).toHaveLength(2);
+  });
+
   it("an already-aborted caller never spawns", async () => {
     const { calls, runCapture } = fakeCapture(PICKER_2_1_280);
     const cancelled = new AbortController();

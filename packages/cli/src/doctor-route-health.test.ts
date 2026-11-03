@@ -82,6 +82,18 @@ describe("doctor route-health lines", () => {
       "? route health: unavailable from this engine version",
     ]);
   });
+
+  it("keeps the counts and rounds a share only where rounding cannot erase or invent failures (#569)", () => {
+    const line = (failed: number, runs: number) =>
+      routeHealthLines({
+        ...health,
+        routes: [{ ...codex, runs, succeeded: runs - failed, failed, cancelled: 0 }],
+      })[1];
+    expect(line(1, 201)).toBe("    codex full: 1/201 failed (<1%)");
+    expect(line(1, 200)).toBe("    codex full: 1/200 failed (1%)");
+    expect(line(199, 200)).toBe("    codex full: 199/200 failed (>99%)");
+    expect(line(201, 201)).toBe("    codex full: 201/201 failed (100%)");
+  });
 });
 
 describe("doctor route-health read", () => {
