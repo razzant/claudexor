@@ -54,7 +54,8 @@ import { runStopIfRequested } from "./runtime-replacement-stop.js";
 import { createSqlDaemonExecutors } from "./sql-daemon-runtime.js";
 import { SqlDaemonStorage } from "./sql-daemon-storage.js";
 import * as sqlReads from "./sql-daemon-queries.js";
-import { threadPurgeEffect } from "./thread-purge.js";
+import { startupPurgeEffect } from "./thread-purge.js";
+import { laneCredentialStores } from "./thread-export-services.js";
 import { accountResetServices } from "./account-reset-services.js";
 type Graph = ReturnType<typeof createSqlDaemonServices>;
 
@@ -202,7 +203,7 @@ export async function main(): Promise<void> {
       rootDir: daemonDir(),
       advanceFloor: () => authority.advanceFloor(),
       graph: {
-        purgeFiles: threadPurgeEffect(noProjectRepoRoot()),
+        purgeFiles: startupPurgeEffect(noProjectRepoRoot(), laneCredentialStores, abort.signal),
         log,
         refreshers: quotaRefreshers((record) => log(`quota.observation ${JSON.stringify(record)}`)),
         subjects: quotaSubjectUniverseFromConfig,

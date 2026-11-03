@@ -19,6 +19,9 @@ import type {
   RunObservationRecord,
   Session,
   Thread,
+  ThreadExportDigestEntry,
+  ThreadRetireRequest,
+  ThreadRetirementOperation,
   ThreadTurn,
   TaskGroupPageQuery,
   TaskGroupPage,
@@ -32,6 +35,8 @@ import type { OperatorDecisionRecord, RecordedOperatorDecision } from "./operato
 import type { CreateThreadInput, CreateTurnInput, UpdateThreadInput } from "./threads.js";
 import type { JournalQuarantineRequest } from "./journal-recovery-operation.js";
 import type { JournalEventPage, JournalEventPageRequest } from "./store/cursors.js";
+import type { ThreadClosure } from "./store/thread-closure.js";
+import type { RetirementRefusal } from "./store/thread-retirement.js";
 export interface ProfileContinuityResult {
   sessions: number;
   checkpoints: number;
@@ -164,6 +169,24 @@ export interface ProjectThreadPort {
   trashThread(id: string): Thread;
   restoreThread(id: string): Thread;
   purgeThread(id: string): Thread;
+  retireThread(
+    id: string,
+    request: ThreadRetireRequest,
+    acceptedLane: readonly ThreadExportDigestEntry[],
+  ): Thread;
+  retirementOperation(id: string, operationId: string): ThreadRetirementOperation | null;
+  settleRetirement(
+    id: string,
+    operationId: string,
+    refusal: RetirementRefusal | null,
+  ): ThreadRetirementOperation;
+  /** An observation from the store's read-only snapshot, off the writer's thread;
+   * retirement reads the closure again inside its transaction. `signal` ends the wait. */
+  threadClosure(id: string, signal?: AbortSignal): Promise<ThreadClosure | null>;
+  /** The thread row and its store without the closure; null for no such thread. */
+  threadRecord(id: string): { storeId: string; thread: Thread } | null;
+  threadClosureDocument(id: string, key: string): Buffer | null;
+  threadCleanup(id: string): { reason: string | null } | null;
   setThreadWorktree(
     id: string,
     path: string,

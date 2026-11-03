@@ -12,6 +12,7 @@ import type {
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso } from "@claudexor/util";
 import { runFakeInteractive } from "./interactive.js";
+import { fakeSessionExport, recordFakeSession } from "./native-session.js";
 import { FAKE_TURN_ID, FakeLiveInput } from "./live-input.js";
 import { FAKE_DOCUMENT_INPUT, runFakeDocument } from "./documents.js";
 
@@ -261,6 +262,7 @@ async function* runFake(
       // id, HOME, cwd entry names) and a sha256 per line of the prompt it
       // actually received, so tests prove exact delivery without echoing it.
       const resumed = spec.resume_session_id ?? null;
+      recordFakeSession(nativeSessionId!, spec.prompt);
       let entries: string[] = [];
       try {
         entries = readdirSync(spec.cwd).sort();
@@ -533,6 +535,7 @@ export function createFakeHarness(kind: FakeKind, opts: FakeOptions = {}): Harne
   const live = LIVE_INPUT_KINDS.has(kind) ? new FakeLiveInput() : null;
   return {
     id: kind,
+    nativeSessionExport: fakeSessionExport,
     async discover(): Promise<HarnessManifest> {
       return buildManifest(kind, provider);
     },

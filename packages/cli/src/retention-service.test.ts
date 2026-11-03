@@ -447,6 +447,34 @@ describe("expired trash purge in the retention pass (owner decision E2)", () => 
     expect(purged).toEqual(["t-locked"]);
   });
 
+  it("hands the purge owner the pass's own cancellation signal, for an unfinished purge and for expired trash", async () => {
+    const root = projectWithThreadDirs("t-unfinished");
+    const isolated = { repo: { root }, workspace: { mode: "isolated" } };
+    const bindings = deps({
+      projectRoots: [root],
+      healthyRoots: [root],
+      threads: [
+        { id: "t-unfinished", run_ids: [], state: "purged", ...isolated },
+        { id: "t-expired", run_ids: [], state: "trashed", purge_after: past, ...isolated },
+      ],
+      records: [],
+    });
+    const owner = bindings.purgeThread;
+    const seen: Array<{ id: string; signal: AbortSignal | undefined }> = [];
+    const receipt = await createRetentionRunner({
+      ...bindings,
+      purgeThread: async (id, signal) => {
+        seen.push({ id, signal });
+        return owner(id);
+      },
+    })({ dry_run: false, trash_purge_report: true });
+    expect(receipt.purge_leftovers).toEqual(["t-unfinished"]);
+    expect(receipt.purged_threads).toEqual(["t-expired"]);
+    expect(seen.map(({ id }) => id)).toEqual(["t-unfinished", "t-expired"]);
+    expect(seen[0]!.signal).toBeInstanceOf(AbortSignal);
+    expect(seen[1]!.signal).toBe(seen[0]!.signal);
+  });
+
   it("dry run lists an unfinished purge without deleting; a finished purge is left alone", async () => {
     const root = projectWithThreadDirs("t-leftover");
     const purged: string[] = [];

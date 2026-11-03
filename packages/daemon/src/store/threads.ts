@@ -201,8 +201,11 @@ export class SqlThreadStore {
     if (
       !this.store.prepare("SELECT 1 FROM effect_obligation WHERE kind='purge_fs' AND key=?").get(id)
     ) {
+      // A retired thread's accepted inventory cleared with its cleanup, so nothing
+      // that reappeared since was exported: this cleanup holds every such byte.
+      const held = thread.retirement ? { retirement: thread.retirement, acceptedLane: [] } : {};
       runMutation(this.store, () =>
-        this.obligations.create("purge_fs", id, this.generation.pid, { thread }),
+        this.obligations.create("purge_fs", id, this.generation.pid, { thread, ...held }),
       );
     }
     return thread;

@@ -28,7 +28,11 @@ export class RetentionReferenceReader {
   };
 
   thread(row: ThreadRow): Thread | undefined {
-    if (!this.retained(row.pid) || row.state === "purged") return;
+    if (!this.retained(row.pid)) return;
+    if (row.state === "purged") {
+      this.purgedLane(row);
+      return;
+    }
     const thread = this.read("thread", row, () => Thread.parse(decodeBody(row)));
     if (thread.state !== row.state || thread.id !== row.id)
       throw new Error(
@@ -43,6 +47,23 @@ export class RetentionReferenceReader {
     thread.run_ids.forEach(this.add);
     this.add(thread.head_run_id);
     return thread;
+  }
+
+  /** A purge obligation still open owns its lane: only the purge owner removes
+   * it, after rechecking what a conditional retirement accepted; the orphan
+   * sweep must not delete those bytes first. */
+  private purgedLane(row: ThreadRow): void {
+    if (
+      !this.store
+        .prepare("SELECT 1 FROM effect_obligation WHERE kind='purge_fs' AND key=?")
+        .get(row.id)
+    )
+      return;
+    const thread = this.read("thread", row, () => Thread.parse(decodeBody(row)));
+    const root = thread.repo?.root ?? noProjectRepoRoot();
+    const lanes = this.lanes.get(root) ?? new Set<string>();
+    lanes.add(thread.id);
+    this.lanes.set(root, lanes);
   }
 
   turn(row: TurnRow, owner = this.owner(row.thread_id)): void {

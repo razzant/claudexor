@@ -59,6 +59,7 @@ import { remoteFilesystemServices } from "./remote-filesystem.js";
 import { projectRunApplicability } from "./run-applicability.js";
 import { threadTurnServices } from "./thread-turn-services.js";
 import { threadPurgeOwner, type ThreadPurgeDurability } from "./thread-purge.js";
+import { laneCredentialStores, threadExportService } from "./thread-export-services.js";
 import { projectRemovalService } from "./project-removal.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
@@ -136,6 +137,7 @@ export function controlServices(
     threads,
     NO_PROJECT_ROOT,
     purgeDurability,
+    laneCredentialStores,
   );
   return {
     preflightRunRequirements,
@@ -237,6 +239,7 @@ export function controlServices(
     trashThread: async (id: string) => threads.trashThread(id),
     restoreThread: async (id: string) => threads.restoreThread(id),
     purgeThread,
+    threadExport: threadExportService(threads, lazyResources, finishPurge, hasPurgeLeftovers),
     applyThread: async (id: string, opts: ThreadApplyOptions) => applyThreadDiff(threads, id, opts),
     listTrust: listTrustService,
     updateTrust: updateTrustService,

@@ -1,6 +1,12 @@
 import { existsSync, renameSync, statSync } from "node:fs";
 import { dirname } from "node:path";
-import { Thread as ThreadSchema, type Thread } from "@claudexor/schema";
+import {
+  Thread as ThreadSchema,
+  type Thread,
+  type ThreadExportDigestEntry,
+  type ThreadRetirementAcceptance,
+} from "@claudexor/schema";
+import { safeProblemMessage } from "@claudexor/util";
 import type { PurgeRepositoryRecord } from "@claudexor/workspace";
 import type { EngineStore } from "./store.js";
 import type { Obligations, ObligationHandler } from "./obligations.js";
@@ -11,6 +17,13 @@ export interface PurgeFilesPayload {
   /** The repository holding the thread's worktree registration and branch,
    * recorded by an attempt before Git's first change in it. */
   repository?: PurgeRepositoryRecord;
+  /** A conditional retirement's acceptance. */
+  retirement?: ThreadRetirementAcceptance;
+  /** The lane entries that acceptance read from disk: every attempt deletes only
+   * a lane whose remaining entries are among these, byte for byte. */
+  acceptedLane?: readonly ThreadExportDigestEntry[];
+  /** Why the last attempt left this retirement's cleanup open. */
+  lastError?: string;
 }
 /** The obligation keeps the repository an attempt resolved until it clears,
  * so every retry, startup replay included, deletes and syncs in that one. */
@@ -18,6 +31,8 @@ export interface PurgeRepositoryCustody {
   readonly recorded: PurgeRepositoryRecord | null;
   /** Durable before it resolves; the effect deletes nothing in Git earlier. */
   record(repository: PurgeRepositoryRecord): Promise<void>;
+  /** A retirement's accepted lane entries; present exactly for a retirement. */
+  readonly acceptedLane?: readonly ThreadExportDigestEntry[];
 }
 /** Uses the CLI/workspace's existing purge owner; it reports touched parents. */
 export type PurgeFilesEffect = (
@@ -41,25 +56,35 @@ export class SqlPurgeFiles {
         throw new Error("purge obligation does not name its thread");
       // Covers the decision committed before this call, also after restart.
       await this.store.synced(this.store.mark());
-      const dirs = await perform(thread, {
-        recorded: recordedRepository(payload.repository),
-        record: (repository) => this.recordRepository(thread.id, payload, repository),
-      });
+      let current = payload;
+      const update = async (patch: Partial<PurgeFilesPayload>) => {
+        current = { ...current, ...patch };
+        await this.updatePayload(thread.id, current);
+      };
+      let dirs: readonly string[];
+      try {
+        dirs = await perform(thread, {
+          recorded: recordedRepository(payload.repository),
+          record: (repository) => update({ repository }),
+          ...(payload.retirement ? { acceptedLane: acceptedLaneOf(payload) } : {}),
+        });
+      } catch (error) {
+        if (payload.retirement)
+          await update({ lastError: safeProblemMessage(error) }).catch(() => undefined);
+        throw error;
+      }
+      if (current.lastError) await update({ lastError: undefined });
       for (const dir of new Set(dirs)) effects.register(dir);
     };
   }
 
-  private async recordRepository(
-    id: string,
-    payload: PurgeFilesPayload,
-    repository: PurgeRepositoryRecord,
-  ): Promise<void> {
+  private async updatePayload(id: string, payload: PurgeFilesPayload): Promise<void> {
     runMutation(this.store, (tx) => {
       const recorded = tx
         .prepare(
           "UPDATE effect_obligation SET payload=? WHERE kind='purge_fs' AND key=? AND state='pending'",
         )
-        .run(Buffer.from(JSON.stringify({ ...payload, repository })), id);
+        .run(Buffer.from(JSON.stringify(payload)), id);
       if (Number(recorded.changes) === 0) throw new Error(`no pending purge obligation ${id}`);
     });
     await this.store.synced(this.store.mark());
@@ -104,6 +129,22 @@ export class SqlPurgeFiles {
     );
     this.obligations.materialize("purge_fs", id);
   }
+}
+
+/** A retirement's cleanup without a readable lane inventory deletes nothing. */
+function acceptedLaneOf(payload: PurgeFilesPayload): readonly ThreadExportDigestEntry[] {
+  const entries = payload.acceptedLane as unknown;
+  if (
+    Array.isArray(entries) &&
+    entries.every(
+      (entry) =>
+        typeof entry?.itemId === "string" &&
+        typeof entry?.sha256 === "string" &&
+        Number.isSafeInteger(entry?.sizeBytes),
+    )
+  )
+    return entries as ThreadExportDigestEntry[];
+  throw new Error("retirement cleanup has no readable accepted lane inventory; nothing deleted");
 }
 
 /** An unreadable record stays a refusal: dropping it would ask the project path. */

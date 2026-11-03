@@ -164,4 +164,13 @@ const codexNativeHomeLifetime: NativeHomeLifetime = {
 export const codexPersistence = {
   continuity: codexContinuity,
   nativeHomeLifetime: codexNativeHomeLifetime,
+  nativeSessionExport: {
+    storeRoot: codexStoreHome,
+    // By exact thread id. Only `sessions` is shown by this adapter's own rollout
+    // contract so far. No real on-disk fixture, and no real `.zst` frame, proves them.
+    sessionLocations: { sessions: 4, archived_sessions: 4, shell_snapshots: 1 },
+    laneCredentialStores: [".codex/auth.json"],
+    formatEvidence: null,
+    outOfClosure: [],
+  },
 };

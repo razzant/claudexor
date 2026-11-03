@@ -1049,6 +1049,8 @@ invariant or operator decision before proceeding.
   to finish that history before it serves Stop, admission or an attention read.
   verify: `packages/control-api/src/bulk-worker-isolation.test.ts`
   ("serves admission, inbox attention and control requests, then stops while a real bulk worker is blocked");
+  `packages/cli/src/thread-retirement.integration.test.ts`
+  ("serves health, admission, inbox attention and Stop while an export's read holds the worker");
   `packages/control-api/src/bulk-server.test.ts`;
   `packages/control-api/src/bulk-executor.test.ts`.
 - **INV-123** Dead code is deleted, not allowlisted (justified, dated

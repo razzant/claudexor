@@ -111,5 +111,6 @@ export * from "./account-routing-evidence.js";
 export * from "./host-binding.js";
 
 export * from "./thread-history.js";
+export * from "./thread-export.js";
 export * from "./deferred-message.js";
 export * from "./captured-run-start.js";

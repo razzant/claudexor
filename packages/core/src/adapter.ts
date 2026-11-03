@@ -300,6 +300,9 @@ export interface HarnessAdapter {
   continuity?: HarnessContinuityCapability;
   /** Adapter owns its native store format and safe retirement boundary. */
   nativeHomeLifetime?: NativeHomeLifetime;
+  /** Where one exact session's material lives, for a thread's exact export. Absent
+   * leaves every session of this harness a named gap that cannot retire. */
+  nativeSessionExport?: NativeSessionExport;
   /**
    * The HOME this adapter's vendor child actually receives for `spec` when the
    * adapter replaces the engine-scoped HOME with a named account's own
@@ -308,6 +311,42 @@ export interface HarnessAdapter {
    * `spec.env.HOME`.
    */
   childHome?(spec: HarnessRunSpec): string | null;
+}
+
+/** A recorded session's reach. It never extends to another version or entry. */
+export interface NativeSessionFormatEvidence {
+  fixture: string;
+  /** Exact vendor versions recorded; a session's own transcript must name only these. */
+  vendorVersions: readonly string[];
+  /** The platforms a session was actually recorded on; no other host's copy qualifies. */
+  platforms: readonly NodeJS.Platform[];
+  /** The store-relative JSONL transcript a recorded entry of this session belongs
+   * with (the transcript itself for the transcript), or null when the recording
+   * never held such an entry. A copy holding an entry without its transcript is
+   * missing required material; the transcript is read for its versions and store
+   * references. Entries the recording held without one stay optional. */
+  transcriptOf(rel: string, nativeSessionId: string): string | null;
+  /** The transcript's top-level vendor-version field; null for a format that has none. */
+  versionField: string | null;
+}
+
+/** An adapter's declaration of its on-disk session material. Export reads only
+ * these locations, by exact session id, and copies bytes it never interprets. */
+export interface NativeSessionExport {
+  /** The store this env selects: a named profile's or the default native one. */
+  storeRoot(env: EnvMap): string | null;
+  /** Store directories holding session-bound entries, with those entries' depth
+   * below each (`todos/<sid>` is 1, `projects/<cwd>/<sid>.jsonl` is 2). */
+  sessionLocations: Readonly<Record<string, number>>;
+  /** Exact credential stores a lane's HOME can hold, relative to it. Never opened. */
+  laneCredentialStores: readonly string[];
+  /** What a recorded real on-disk session proves about this layout, and no more:
+   * those vendor versions and those entries. Anything else stays a named
+   * `native_format_unqualified` gap: its bytes are preserved, and the thread
+   * cannot retire. Null means no such session has been recorded. */
+  formatEvidence: NativeSessionFormatEvidence | null;
+  /** Known vendor state no record binds to a session, named on every manifest. */
+  outOfClosure: readonly { source: string; reason: string }[];
 }
 
 /** A registry of available adapters keyed by harness id. */

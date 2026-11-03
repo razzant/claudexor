@@ -18,10 +18,11 @@
  * purge until they are gone and never loops on a directory it cannot own.
  */
 import type { ProjectThreadPort } from "@claudexor/daemon";
-import type { Thread } from "@claudexor/schema";
+import type { Thread, ThreadExportDigestEntry } from "@claudexor/schema";
 import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { projectRuntimeDir } from "@claudexor/util";
+import { verifyLaneRemoval } from "@claudexor/control-api";
+import { ownedProjectRuntimeDir, projectRuntimeDir } from "@claudexor/util";
 import {
   purgeThreadLanes,
   purgeThreadWorktree,
@@ -34,7 +35,12 @@ import {
 export interface ThreadPurgeRepository {
   readonly recorded: PurgeRepositoryRecord | null;
   record(repository: PurgeRepositoryRecord): Promise<void>;
+  /** A retirement's accepted lane entries: only their bytes may be deleted. */
+  readonly acceptedLane?: readonly ThreadExportDigestEntry[];
 }
+
+/** The lane's exact credential stores for its HOME; null when undeclared. */
+export type LaneCredentialStores = (laneSegment: string) => readonly string[] | null;
 
 export interface ThreadPurgeDurability {
   complete(
@@ -47,22 +53,29 @@ export function threadPurgeOwner(
   threads: Pick<ProjectThreadPort, "getThread" | "purgeThread">,
   noProjectRoot: string,
   durability?: ThreadPurgeDurability,
+  laneStores?: LaneCredentialStores,
 ) {
   const isolatedRoot = (thread: Thread): string | null =>
     thread.repo && thread.workspace.mode === "isolated" ? thread.repo.root : null;
   const lanesRoot = (thread: Thread): string => thread.repo?.root ?? noProjectRoot;
-  const perform = threadPurgeEffect(noProjectRoot);
-  /** Deletes the directories of a committed purge, given its pre-purge record. */
-  const finishPurge = async (thread: Thread): Promise<void> => {
-    if (durability) await durability.complete(thread.id, perform);
-    else await perform(thread);
+  const perform = threadPurgeEffect(noProjectRoot, laneStores);
+  /** Deletes the directories of a committed purge, given its pre-purge record.
+   * `signal` stops a retirement's lane verification; the cleanup then stays open. */
+  const finishPurge = async (thread: Thread, signal?: AbortSignal): Promise<void> => {
+    const attempt = (record: Thread, repository?: ThreadPurgeRepository) =>
+      perform(record, repository, signal);
+    if (durability) await durability.complete(thread.id, attempt);
+    else await attempt(thread);
   };
   return {
-    purgeThread: async (id: string) => {
+    /** `signal` is the caller's Stop, for a caller that has one (the retention pass
+     * does; the purge route passes none). It ends a retirement's lane verification
+     * and leaves the cleanup pending, never undoing the acceptance. */
+    purgeThread: async (id: string, signal?: AbortSignal) => {
       const thread = threads.getThread(id);
       if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
       const purged = threads.purgeThread(id);
-      await finishPurge(thread);
+      await finishPurge(thread, signal);
       return purged;
     },
     finishPurge,
@@ -83,10 +96,34 @@ export function threadPurgeOwner(
  * actually asked, which a moved repository's worktree names, not the
  * recorded project root's; the obligation's `repository` keeps it for every
  * retry until the obligation clears. */
-export function threadPurgeEffect(noProjectRoot: string) {
-  return async (thread: Thread, repository?: ThreadPurgeRepository): Promise<string[]> => {
+export function threadPurgeEffect(noProjectRoot: string, laneStores?: LaneCredentialStores) {
+  return async (
+    thread: Thread,
+    repository?: ThreadPurgeRepository,
+    signal?: AbortSignal,
+  ): Promise<string[]> => {
     const root = thread.repo?.root ?? noProjectRoot;
     const parents = [join(projectRuntimeDir(root), "lanes")];
+    // A conditional retirement deletes only lane bytes its export holds. On every
+    // attempt, a retry after a partial deletion included, each entry still on
+    // disk must be one acceptance read, byte for byte; one already gone is
+    // expected. Anything else stays, and the cleanup stays pending with why.
+    if (thread.retirement && !repository?.acceptedLane)
+      throw Object.assign(
+        new Error(
+          `thread ${thread.id} was retired, but no accepted lane inventory reached its cleanup`,
+        ),
+        { code: "thread_lane_changed" },
+      );
+    const laneUnchanged = repository?.acceptedLane
+      ? await verifyLaneRemoval(
+          thread.id,
+          ownedProjectRuntimeDir(root, "lanes", thread.id),
+          laneStores ?? (() => null),
+          repository.acceptedLane,
+          signal,
+        )
+      : null;
     if (thread.repo && thread.workspace.mode === "isolated") {
       const gitDir = await purgeThreadWorktree(thread.repo.root, thread.id, {
         worktreeRecorded: thread.workspace.worktree_path !== null,
@@ -97,9 +134,35 @@ export function threadPurgeEffect(noProjectRoot: string) {
       if (gitDir)
         parents.push(gitDir, join(gitDir, "worktrees"), join(gitDir, "refs", "heads", "claudexor"));
     }
+    // No await between this recheck and the deletion.
+    const changed = laneUnchanged?.();
+    if (changed)
+      throw Object.assign(
+        new Error(
+          `thread ${thread.id} lane entry ${changed} changed while its cleanup was verified`,
+        ),
+        { code: "thread_lane_changed" },
+      );
     purgeThreadLanes(root, thread.id);
     return [...new Set(parents.map(survivingDirectory))];
   };
+}
+
+/**
+ * The effect the daemon registers with its storage graph. A start replays every open
+ * purge obligation through it with no signal of its own, and the daemon's Stop waits for
+ * that replay, so it is built over that Stop: the Stop ends a retirement's lane
+ * verification here as everywhere else, and the obligation stays open for the next start.
+ * `stop` is required, so a registration that nothing can end is not written by omission.
+ */
+export function startupPurgeEffect(
+  noProjectRoot: string,
+  laneStores: LaneCredentialStores,
+  stop: AbortSignal,
+) {
+  const perform = threadPurgeEffect(noProjectRoot, laneStores);
+  return (thread: Thread, repository?: ThreadPurgeRepository): Promise<string[]> =>
+    perform(thread, repository, stop);
 }
 
 function survivingDirectory(path: string): string {
