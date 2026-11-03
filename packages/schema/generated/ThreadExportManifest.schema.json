@@ -1,0 +1,461 @@
+{
+  "$ref": "#/definitions/ThreadExportManifest",
+  "definitions": {
+    "ThreadExportManifest": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "exportId": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Identity of this closure, inventory and gap list."
+        },
+        "closureDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Identity of the closure's engine records alone."
+        },
+        "threadState": {
+          "type": "string",
+          "enum": [
+            "active",
+            "closed",
+            "trashed",
+            "purged"
+          ],
+          "description": "Thread lifecycle state: active, closed, trashed for recovery, or terminally purged."
+        },
+        "headRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workspaceMode": {
+          "type": "string",
+          "enum": [
+            "in_place",
+            "isolated",
+            "delegated"
+          ],
+          "description": "Per-thread workspace mode: in_place mutates the live project tree directly (the default); isolated keeps a persistent git worktree per thread that apply merges into the project; delegated runs every turn in one caller-owned workspace bound at creation, which Claudexor never applies to the project or deletes."
+        },
+        "coverage": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial"
+          ],
+          "description": "complete exactly when gaps is empty."
+        },
+        "retirable": {
+          "type": "boolean",
+          "description": "Retirement can be requested for this manifest."
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "closure_not_quiescent",
+                  "closure_awaiting_decision",
+                  "closure_partition_unavailable",
+                  "command_record_not_retained",
+                  "run_directory_missing",
+                  "run_files_expired",
+                  "run_tree_unreadable",
+                  "run_observations_unreadable",
+                  "attachment_unavailable",
+                  "native_session_unattributed",
+                  "native_session_unsupported",
+                  "native_format_unqualified",
+                  "native_session_missing",
+                  "native_session_unreadable",
+                  "native_projection_failed",
+                  "lane_unreadable",
+                  "lane_credentials_undeclared",
+                  "isolated_worktree_present"
+                ]
+              },
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The exact run, session, path or lane this gap names."
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "code",
+              "subject",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "disclosures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "harness": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "harness",
+              "source",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Known vendor state outside this export because no record binds it to these sessions. Named so it is never mistaken for covered; it does not block retirement."
+        },
+        "closure": {
+          "type": "object",
+          "properties": {
+            "turns": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "turnId": {
+                    "$ref": "#/definitions/ThreadExportManifest/properties/threadId"
+                  },
+                  "ordinal": {
+                    "$ref": "#/definitions/ThreadExportManifest/properties/headRevision"
+                  },
+                  "runId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "promptSha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "turnId",
+                  "ordinal",
+                  "runId",
+                  "promptSha256"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "runs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "jobId": {
+                    "type": "string"
+                  },
+                  "runId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "threadId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "turnId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "continueFrom": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "delegatedFrom": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "jobId",
+                  "runId",
+                  "state",
+                  "kind",
+                  "threadId",
+                  "turnId",
+                  "continueFrom",
+                  "delegatedFrom"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "turns",
+            "runs"
+          ],
+          "additionalProperties": false
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "harness": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nativeSessionId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "exported",
+                  "missing",
+                  "unsupported",
+                  "unqualified",
+                  "unreadable"
+                ]
+              },
+              "provenance": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "attempt_event",
+                        "run_event",
+                        "reviewer_stream",
+                        "session_capsule",
+                        "run_resumable",
+                        "thread_session"
+                      ]
+                    },
+                    "runId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "attemptId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "profileId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Null when the record names no profile."
+                    },
+                    "cwd": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "runId",
+                    "attemptId",
+                    "profileId",
+                    "cwd"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "copies": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "storeKey": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "profileId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "storeKey",
+                    "profileId"
+                  ],
+                  "additionalProperties": false
+                },
+                "description": "Every store holding material of this exact session."
+              }
+            },
+            "required": [
+              "harness",
+              "nativeSessionId",
+              "status",
+              "provenance",
+              "copies"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "itemId": {
+                "type": "string",
+                "pattern": "^i[0-9a-f]{32}$"
+              },
+              "plane": {
+                "type": "string",
+                "enum": [
+                  "sql",
+                  "run",
+                  "native",
+                  "lane",
+                  "resource",
+                  "projection"
+                ],
+                "description": "sql: engine records; run: the run tree; native: vendor session material; lane: the thread's lane directory (what retirement deletes); resource: attachment bytes; projection: decoded text of a compressed original, kept beside it."
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Relative POSIX path: the item's complete name and, with its plane, its identity; distinct copies stay distinct. A volume may be unable to name it, so a consumer may keep the bytes elsewhere and record that place."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "file",
+                  "symlink",
+                  "special",
+                  "credential_store"
+                ],
+                "description": "file: exact bytes to transfer. symlink: recorded, never followed. special: a FIFO or socket, recorded. credential_store: an exact engine or vendor credential path, never opened or exported."
+              },
+              "sizeBytes": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ThreadExportManifest/properties/headRevision"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "mtimeMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "sha256": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Known before transfer for engine records, attachments, projections and symlink text; otherwise the transfer's ETag."
+              },
+              "projectionOf": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The itemId this projection decodes."
+              },
+              "linkTarget": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A symlink's own text; its target is never read."
+              }
+            },
+            "required": [
+              "itemId",
+              "plane",
+              "path",
+              "kind",
+              "sizeBytes",
+              "mtimeMs",
+              "sha256",
+              "projectionOf",
+              "linkTarget"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "storeId",
+        "threadId",
+        "exportId",
+        "closureDigest",
+        "threadState",
+        "headRevision",
+        "workspaceMode",
+        "coverage",
+        "retirable",
+        "gaps",
+        "disclosures",
+        "closure",
+        "sessions",
+        "items"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

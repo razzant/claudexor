@@ -35,8 +35,10 @@ export interface RetentionRunnerDeps {
     | Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>
     | Promise<Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>>;
   /** The ONE thread purge owner (thread-purge.ts): journals the purge, then
-   * deletes the isolated worktree/branch and every lane home of the thread. */
-  purgeThread: (id: string) => Promise<unknown>;
+   * deletes the isolated worktree/branch and every lane home of the thread.
+   * `signal` is the pass's own cancellation: it ends a retirement's lane
+   * verification, and that cleanup then stays pending for the next pass. */
+  purgeThread: (id: string, signal?: AbortSignal) => Promise<unknown>;
   /** Whether a directory that owner deletes is still on disk for the thread. */
   hasPurgeLeftovers: (thread: Thread) => boolean;
 }
@@ -71,7 +73,7 @@ async function finishPurgeLeftovers(
     if (signal?.aborted) break;
     if (!deps.hasPurgeLeftovers(thread)) continue;
     try {
-      if (!dryRun) await deps.purgeThread(thread.id);
+      if (!dryRun) await deps.purgeThread(thread.id, signal);
       finished.push(thread.id);
     } catch (error) {
       errors.push(
@@ -110,7 +112,7 @@ async function purgeExpiredTrash(
       continue;
     }
     try {
-      if (!dryRun) await deps.purgeThread(thread.id);
+      if (!dryRun) await deps.purgeThread(thread.id, signal);
       purged.push(thread.id);
     } catch (error) {
       errors.push(

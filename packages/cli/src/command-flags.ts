@@ -139,6 +139,18 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("state", "<state>", "task-group-runs: filter retained members by lifecycle"),
   valueFlag("cursor", "<cursor>", "Opaque cursor from the prior returned page"),
   valueFlag("expected-store-id", "<id>", "Refuse a different durable store"),
+  valueFlag("out", "<dir>", "thread export: new or empty directory to copy the exact closure into"),
+  valueFlag(
+    "export",
+    "<dir>",
+    "thread-retire: the verified export directory this retirement binds",
+  ),
+  valueFlag(
+    "operation-id",
+    "<id>",
+    "thread-retire, thread retirement: the one retirement operation",
+  ),
+  booleanFlag("abandon", "thread-retire: settle an unanswered operation so it can never accept"),
   valueFlag("targets-json", "<array>", "runs-wait: JSON array of {runId, seen?} targets (1..1000)"),
   valueFlag(
     "wait-ms",

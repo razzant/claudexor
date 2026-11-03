@@ -1,0 +1,94 @@
+{
+  "$ref": "#/definitions/ThreadExportReceipt",
+  "definitions": {
+    "ThreadExportReceipt": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "exportId": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "closureDigest": {
+          "$ref": "#/definitions/ThreadExportReceipt/properties/exportId"
+        },
+        "contentDigest": {
+          "$ref": "#/definitions/ThreadExportReceipt/properties/exportId"
+        },
+        "laneDigest": {
+          "$ref": "#/definitions/ThreadExportReceipt/properties/exportId"
+        },
+        "coverage": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "retirable": {
+          "type": "boolean"
+        },
+        "transferred": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "itemId": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "The item's complete manifest path."
+              },
+              "placedAt": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Where in this bundle the bytes are, when its volume cannot name `path`. Absent: at `path`."
+              },
+              "sizeBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sha256": {
+                "$ref": "#/definitions/ThreadExportReceipt/properties/exportId"
+              }
+            },
+            "required": [
+              "itemId",
+              "path",
+              "sizeBytes",
+              "sha256"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "schemaVersion",
+        "storeId",
+        "threadId",
+        "exportId",
+        "closureDigest",
+        "contentDigest",
+        "laneDigest",
+        "coverage",
+        "retirable",
+        "transferred"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

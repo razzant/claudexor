@@ -1700,6 +1700,40 @@
     },
     {
       "method": "GET",
+      "path": "/v2/threads/:id/export",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read the exact closure inventory of a thread: engine records, run trees, native session material and its lane, with every named gap. Never writes.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Refuse the read when the engine serves another store."
+        }
+      ],
+      "response_schema": "ThreadExportManifest",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads/:id/export/:id/items/:id",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Stream one manifest item's exact bytes; ETag carries their sha256. A restart or eviction rebuilds the inventory; a changed item, or an export the current inventory no longer answers, is refused.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": null,
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
       "path": "/v2/threads/:id/history",
       "mutating": false,
       "applicability": "thread",
@@ -1787,6 +1821,61 @@
       "request_schema": null,
       "parameters": [],
       "response_schema": "ControlThread",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/retire",
+      "mutating": true,
+      "applicability": "thread",
+      "summary": "Conditionally accept this exact export's retirement: purge the thread at once if its closure is finished and its bytes still match, binding one outcome to the operation.",
+      "auth": "loopback_bearer",
+      "request_schema": "ThreadRetireRequest",
+      "parameters": [],
+      "response_schema": "ThreadRetirement",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/retire/abandon",
+      "mutating": true,
+      "applicability": "thread",
+      "summary": "Settle an unanswered retirement operation: it can never accept after this answers; an already accepted one reports so.",
+      "auth": "loopback_bearer",
+      "request_schema": "ThreadRetireAbandonRequest",
+      "parameters": [],
+      "response_schema": "ThreadRetirement",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads/:id/retirement",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read a thread's retirement state and, when addressed, one operation's bound outcome. Also answers for a purged thread.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "operationId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "The operation whose outcome to read."
+        },
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Refuse the read when the engine serves another store."
+        }
+      ],
+      "response_schema": "ThreadRetirement",
       "error_schema": "ControlProblem"
     },
     {

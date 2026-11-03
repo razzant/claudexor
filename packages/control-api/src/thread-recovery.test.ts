@@ -176,3 +176,53 @@ describe("thread recovery admission", () => {
     ).rejects.toMatchObject({ code: "thread_turn_already_bound", status: 409 });
   });
 });
+
+describe("a purged thread's recovery", () => {
+  it("refuses an unaccepted recovery turn of a purged thread before anything is admitted", async () => {
+    const list = vi.fn(async () => []);
+    const createThreadTurn = vi.fn();
+    await expect(
+      resolveThreadRecoveryTurn(
+        { list },
+        {
+          findThreadTurnByIdempotency: async () => ({ id: "tn-orphan" }),
+          createThreadTurn,
+          threadDetail: async () => ({
+            thread: { state: "purged" },
+            sessions: [],
+            turns: [{ id: "tn-orphan", run_id: null }],
+          }),
+        },
+        source,
+        "th-1",
+        "retry",
+        {},
+        idempotency,
+        async () => null,
+      ),
+    ).rejects.toMatchObject({ code: "thread_purged", status: 409, retryable: false });
+    expect(list).not.toHaveBeenCalled();
+    expect(createThreadTurn).not.toHaveBeenCalled();
+  });
+
+  it("still returns the turn of a recovery the engine accepted before the purge", async () => {
+    const threadDetail = vi.fn();
+    await expect(
+      resolveThreadRecoveryTurn(
+        { list: vi.fn() },
+        {
+          findThreadTurnByIdempotency: async () => ({ id: "tn-original" }),
+          createThreadTurn: vi.fn(),
+          threadDetail,
+        },
+        source,
+        "th-1",
+        "retry",
+        {},
+        idempotency,
+        async () => ({ id: "job-original" }),
+      ),
+    ).resolves.toEqual({ id: "tn-original" });
+    expect(threadDetail).not.toHaveBeenCalled();
+  });
+});

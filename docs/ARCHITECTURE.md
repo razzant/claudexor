@@ -3562,9 +3562,14 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/threads/:id`
 - `PATCH /v2/threads/:id`
 - `POST /v2/threads/:id/apply`
+- `GET /v2/threads/:id/export`
+- `GET /v2/threads/:id/export/:id/items/:id`
 - `GET /v2/threads/:id/history`
 - `POST /v2/threads/:id/purge`
 - `POST /v2/threads/:id/restore`
+- `POST /v2/threads/:id/retire`
+- `POST /v2/threads/:id/retire/abandon`
+- `GET /v2/threads/:id/retirement`
 - `POST /v2/threads/:id/trash`
 - `POST /v2/threads/:id/turns`
 - `GET /v2/threads/:id/turns/:id/prompt`
@@ -3818,7 +3823,9 @@ not retry automatically.
   (`trashedAt`, `purgeAfter`); a trashed thread refuses edits and new turns, and
   a turn already running finishes normally. `restore` returns it to its
   pre-trash state until `purgeAfter` (afterwards `410 thread_trash_expired`).
-  `purge` requires trash (`409 thread_not_trashed`) and answers `409
+  ([Conditional retirement](#thread-export-and-conditional-retirement) is the one
+  path that purges without Trash, against an exact export.) `purge` requires trash
+  (`409 thread_not_trashed`) and answers `409
   thread_busy` while ANY turn of the thread is queued or running, because an
   Ask/Plan turn can run inside the lane home purge deletes; trash and restore
   delete nothing and never refuse a busy thread. What purge deletes and keeps
@@ -4264,6 +4271,152 @@ replays do not. A new mounted receipt remains selectable while that roster is
 catching up. Full prompt parts are fetched only by explicit Copy/Show actions.
 Initial loading, loaded-empty and failed history remain distinct from a new draft
 conversation.
+
+### Thread export and conditional retirement
+
+`GET /v2/threads/:id/export` reads one thread's exact closure and writes nothing.
+The closure is the thread, its turns, sessions and checkpoints, plus the command
+graph reached from them through `continue_from` and `delegated_from` in both
+directions, with those commands' interactions, decisions, deferred messages and
+terminal records. Its manifest (`ThreadExportManifest`) lists each item once:
+engine records as JSON documents (`sql`), run trees (`run`), attachment bytes
+(`resource`), the thread's lane directory (`lane`) and vendor session material
+(`native`), and a `projection` plane holding decoded text beside each `.jsonl.zst`
+original. Native sessions come from every try's recorded `started` event in any
+journal of the run tree, attempt capsules, the resumable record and session rows;
+a capsule alone only knows the latest try. A session's material is found by its
+exact id, by name, inside the locations its adapter declares for each store of
+that harness; nothing else in a store is listed, no file is opened to attribute
+it, and no path is taken from tool text. Distinct copies stay distinct items. A
+link is recorded by its own text and never followed, a FIFO or socket is recorded,
+and an exact credential store a lane's adapter declares is named, never opened.
+There is no content or name masking of anything else (INV-146).
+
+Anything the export cannot carry or prove is a named gap, and a gap makes the
+export `partial`: unfinished work or a pending interaction, deferred message,
+final-file effect or operator decision anywhere in the closure, a command the
+thread names but retention already removed, a closure command in a partition this
+engine does not serve, a missing, expired or unreadable run tree, an attachment
+whose bytes are missing or resized, an unreadable start record or a start record
+in a journal line over the 8 MiB read bound, a session held in no store, an account
+store that cannot be resolved or read (it may hold any session, so a complete copy
+elsewhere does not settle it), a harness with no declared format, a corrupt
+compressed part, an unreadable lane, a lane whose harness declares no credential
+stores, or an isolated worktree. An adapter's
+`formatEvidence` names what one recorded real on-disk session proves, and no more:
+exact vendor versions, the platforms it was recorded on, the entries it exercised and
+the transcript each belongs with. A copy holding an entry without the transcript it
+belongs with is `native_session_missing`; a sidecar such as spilled tool output may
+itself be absent. A session outside that reach is `native_format_unqualified` with the
+reason named: a host platform no recording was made on, another version anywhere in its
+transcript, an entry the recording never held, a transcript row that is not a UTF-8 JSON
+record or is over the read bound (what it names cannot be checked), a value in its own
+transcript naming a store path the export does not carry, or any copy in a lane home,
+even beside a copy in a store. Store paths are matched lexically by the host platform's
+path rules: on Windows either separator and any letter case, elsewhere only `/` after
+the exact store root; those rules read a transcript and qualify nothing. Its bytes are
+preserved and the thread cannot retire. Claude is recorded for 2.1.316's transcript and
+spilled tool output on Darwin; Codex has no recording, and neither has any other harness,
+so a new vendor version or host platform needs a new recording. `disclosures` name known
+vendor state no record binds to a session, so it is never mistaken for covered.
+
+`GET /v2/threads/:id/export/:id/items/:id` (export, then item) streams one item's exact bytes
+with its sha256 in `ETag`, reading the inode the inventory saw and refusing it if
+it changed. A transfer is bound to the current inventory's identity, not to process
+memory: the same inventory yields the same `exportId` and item ids, so after a
+restart or an eviction the next read rebuilds it and continues. The daemon holds
+the inventories of at most 32 threads, each with its whole manifest, its item map and
+its source map, for its lifetime: the bound counts threads, not bytes, and its memory cost is
+not measured. An inventory observes the closure at its start and again at its end, and the
+two digests must agree. Both observations run on the store's one maintenance worker, in its
+FIFO with the integrity check, orphan sweep and `VACUUM INTO`: each is one read-only WAL
+snapshot, begun after the request and proving its store identity first, so the closure's
+SQL scan does not occupy the request thread; a queued one waits behind that work. Record
+documents are read on the request thread, one per turn, between the two observations. The
+routes yield between reads. Stop ends a journal or transcript read before its next
+256 KiB chunk and the caller's wait for a closure observation once the control thread
+handles the signal; neither path turns cancellation into a named gap (INV-145).
+An export read cancelled by Stop answers
+503 `daemon_stopping` (retryable, `reconnect`); a client that left is answered nothing.
+Stop ends the wait, not a worker read already running: that read keeps the worker until it
+ends and its answer is dropped, a queued one leaves the queue, and only the store's own stop
+ends the worker. A failed or interrupted worker read answers 503 `store_maintenance_failed`
+or `store_maintenance_unavailable` (retryable) and is never read again on the request
+thread. What stays on the request thread is receiving each observation and building,
+validating and serializing the manifest: in one measurement at 3,360 closure commands and
+3,661 items, the longest pause per manifest was 14–16 ms, against 69–78 ms with the
+observations on the writer; how much of it is receiving and decoding the observations was
+not isolated. These are examples from one machine, not bounds; they grow with the closure.
+An item's `path` is its complete
+name and, with its plane, its identity, whatever its length; where a consumer keeps the
+bytes is its own, by item id if its volume cannot name that path.
+`claudexor thread export` is the in-repo consumer ([its bundle](INTEGRATIONS.md#mcp)); a
+bundle without its `receipt.json` never finished.
+
+`POST /v2/threads/:id/retire` is the one conditional path from `active`, `closed`
+or `trashed` straight to `purged`; it is not Trash and leaves ordinary purge exactly
+as it was. It serializes on the thread's mutation chain, rebuilds the inventory,
+reads every exported byte from disk again and compares both digests the caller
+computed from what it received (`threadExportDigest`), then commits. The store
+rechecks the closure inside the transaction that writes the purge, its `purge_fs`
+obligation and the operation's outcome, so any admission that committed first is
+seen and any later one finds a purged thread. That recheck is the one closure read
+left on the request thread, by design: exact and inside the deciding transaction, it
+costs in proportion to the closure, once per decision, refused or accepted (in one
+measurement 0.8–1.6 ms at 26 closure commands and 35–43 ms at 3,360: examples, not
+bounds). INV-145 covers the observations, not this decision. Neither a global write
+counter nor `head_revision` stands in for it: unrelated writes leave a closure's digest
+as it was, while a related interaction, continuation or delegated child changes it
+without moving `head_revision`. A purged thread, retired or purged
+from Trash, admits no new work: the command store refuses a command that names it
+(409 `thread_purged`, not retryable) in the transaction that would accept it, and turn
+creation, refused-turn retry, Exact Retry and decision rerun answer the same before they
+record anything, each after its own accepted-command replay lookup, so a command the
+thread accepted still answers its replay. Trash, restore, history and export of a purged
+thread answer 410 `thread_purged`. Delivering a run's retained result (apply,
+discard, Revert, a live message's receipt) is not new work: those `delivery`
+commands are admitted as before the purge, while the result is retained. A
+`continueFrom` of a closure's standalone child admitted after the purge is new work
+outside the bundle. Acceptance is
+recorded on the purged thread, and its cleanup obligation keeps the lane entries
+acceptance re-read (item id, sha256, size). Deleting stays with the one purge owner:
+on every attempt, a retry after a deletion that stopped part way included, each lane
+entry still on disk must be one of those, byte for byte, and a last synchronous pass
+right before the deletion confirms none changed since it was hashed; an accepted
+entry already gone is expected, and a declared credential store is removed unread.
+A changed or new entry leaves the lane in place and the cleanup pending with that
+reason, retried by the retention pass and at startup. Stop ends an attempt between
+entries, whether the retire request, a retention pass or a start's replay of the open
+cleanup made it, and leaves it open the same way, never undoing the acceptance. A lane that
+reappears after the cleanup cleared was never exported: purging the thread again
+holds it under the retirement with no accepted entries, so none of its bytes is
+deleted and the reason is shown, while ordinary purge still deletes such leftovers;
+the orphan lane sweep leaves
+any thread with an open purge obligation alone. `accepted_pending_removal` and
+`removed` are separate states: `removed`
+means the obligation cleared after its durability barrier and no directory the
+owner deletes remains. Run trees, session rows, native sessions outside the lane
+and a delegated workspace are not deleted; runs lose the thread's protection and
+follow ordinary retention.
+
+Each `operationId` has one outcome, bound in the transaction of its decision through
+the idempotency store: a repeat returns it and evaluates nothing, and a definite
+refusal (its problem context says settled) spends the operation, so a delayed duplicate cannot
+accept afterwards. `POST /v2/threads/:id/retire/abandon` fences an unanswered
+operation the same way, and reports an acceptance if one already happened.
+`GET /v2/threads/:id/retirement` with `operationId` reads that outcome from the
+thread row, its open cleanup and the operation's binding alone, never the closure;
+`operation: null` settles nothing, because a request still in flight may yet
+decide it. The read and a repeat of a bound operation use the row's own partition, so
+they still answer after the thread's project was removed; a new decision needs a served
+partition, so a new operation there answers 404 and binds nothing. A Stop that arrives before acceptance decides nothing, also during the
+last record it reads. Catalog
+presence of the retire route is the feature marker. Limits: a writer outside the
+engine that changes a run-tree, attachment or native byte after its final re-hash
+and before the commit is not seen, whatever it does to inode, size or mtime; those
+bytes are never deleted by retirement. Lane entries are checked again before
+deletion, and a lane writer that keeps an entry's inode, size and mtime between the
+last synchronous pass and the deletion it precedes is not seen.
 
 ### Plan lifecycle (typed open questions → readiness → Implement freezes the plan)
 

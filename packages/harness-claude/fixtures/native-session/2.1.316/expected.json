@@ -1,0 +1,24 @@
+{
+  "nativeSessionId": "00000000-0000-4000-8000-000000000316",
+  "present": [
+    {
+      "rel": "projects/-fixture-cwd/00000000-0000-4000-8000-000000000316.jsonl",
+      "sizeBytes": 15953,
+      "sha256": "bb75fcb839d8c3589cea3d4b8b369daf49bb0c0a8a44dad953a372cb440d8510"
+    },
+    {
+      "rel": "projects/-fixture-cwd/00000000-0000-4000-8000-000000000316/tool-results/spilled.txt",
+      "sizeBytes": 2,
+      "sha256": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+    }
+  ],
+  "emptyDirectories": ["session-env/00000000-0000-4000-8000-000000000316"],
+  "absentInRecording": [
+    "subagents",
+    "file-history",
+    "todos",
+    "debug",
+    "tasks",
+    "non-empty session-env"
+  ]
+}

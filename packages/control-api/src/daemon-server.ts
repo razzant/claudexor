@@ -1,4 +1,5 @@
 import { handleThreadHistoryRoute, type ThreadHistoryServices } from "./thread-history-routes.js";
+import { handleThreadExportRoute, type ThreadExportRouteServices } from "./thread-export-routes.js";
 import { liveRunEventSeq } from "@claudexor/event-log";
 import {
   readPatch,
@@ -207,7 +208,7 @@ export interface DaemonControlApiOptions {
     Partial<ModelRouteServices> &
     Partial<ResourceRouteServices> &
     Partial<MaintenanceRouteServices> &
-    Partial<ProjectRouteServices> & {
+    Partial<ProjectRouteServices & ThreadExportRouteServices> & {
       harnesses?: (input?: {
         fresh?: boolean;
         includeFakes?: boolean;
@@ -741,6 +742,7 @@ export class DaemonControlApiServer {
       handleRunWaitManyRoute,
       handleTaskGroupRunsRoute,
       handleThreadHistoryRoute,
+      handleThreadExportRoute,
       handleResourceRoute,
       handleModelRoute,
       handleMaintenanceRoute,
@@ -2115,6 +2117,7 @@ export class DaemonControlApiServer {
       json: (res, status, body) => this.json(res, status, body),
       requestError: (res, error) => this.requestError(res, error),
       requiredIdempotencyKey: runStart.requiredIdempotencyKey,
+      stopping: this.stopSignal.signal,
       runIdempotentDelivery: (input) => runIdempotentDelivery(this.opts.services, input),
       readPatch,
       applyGateError: (record, patch, projectRoot) =>

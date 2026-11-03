@@ -146,6 +146,11 @@ const MCP_TO_CLI = {
 
 // BOOLEAN CLI strategy flags -> how MCP expresses them (or a reason).
 const BOOLEAN_FLAG_MAP = {
+  abandon: {
+    mcp: null,
+    reason:
+      "thread-retire fences one unanswered operation; retirement is a host decision over the control API, never an MCP tool",
+  },
   "browser-redirect": {
     mcp: null,
     reason:
@@ -223,6 +228,11 @@ const BOOLEAN_FLAG_MAP = {
 // CLI run-control flags with NO MCP argument: each needs a stated reason.
 // (Non-run-control CLI flags — subcommand plumbing — are structurally exempt.)
 const CLI_ONLY_EXEMPT = {
+  out: "thread export bundle directory; a local filesystem copy, and hosts speak the export routes directly",
+  export:
+    "thread-retire's verified bundle directory; retirement is a host decision over the control API, not an inference run argument",
+  "operation-id":
+    "thread-retire's one bound operation, read back by thread retirement; not an inference run argument",
   "request-json":
     "upload-create/upload-finalize request body; separate lifecycle tools, not an inference run argument",
   "host-binding-json":

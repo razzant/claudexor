@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RUN_WAIT_MANY_REQUEST_BYTES, RunWaitManyInput } from "@claudexor/schema";
-import { readLifetime, requestGone } from "./request-liveness.js";
+import { readLifetime, requestGone, stoppingProblem } from "./request-liveness.js";
 import { observeRunAttention, type RunWaitManyHost } from "./run-wait-many.js";
 
 interface RunWaitManyRouteContext {
@@ -55,7 +55,12 @@ export async function handleRunWaitManyRoute(
     if (requestGone(req, res)) return true;
     // Only a stopping server aborts a live request's wait. Tokens are
     // level-triggered, so repeating the wait elsewhere loses nothing.
-    if (result.wakeReason === "aborted") ctx.requestError(res, stoppingError(), 500);
+    if (result.wakeReason === "aborted")
+      ctx.requestError(
+        res,
+        stoppingProblem("daemon is stopping; repeat the wait after reconnecting"),
+        500,
+      );
     else ctx.json(res, 200, result);
   } catch (error) {
     if (!requestGone(req, res)) ctx.requestError(res, error, 500);
@@ -63,13 +68,4 @@ export async function handleRunWaitManyRoute(
     lifetime.dispose();
   }
   return true;
-}
-
-function stoppingError(): Error {
-  return Object.assign(new Error("daemon is stopping; repeat the wait after reconnecting"), {
-    code: "daemon_stopping",
-    status: 503,
-    retryable: true,
-    requiredActions: ["reconnect"],
-  });
 }

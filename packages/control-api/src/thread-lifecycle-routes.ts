@@ -6,9 +6,12 @@ import {
   ControlThread,
   ControlThreadApplyRequest,
   ControlThreadApplyResponse,
+  ThreadRetireAbandonRequest,
+  ThreadRetireRequest,
 } from "@claudexor/schema";
 import type { DaemonControlApiOptions, DaemonRunRecord } from "./daemon-server.js";
 import { projectThread } from "./thread-projection.js";
+import { readLifetime } from "./request-liveness.js";
 import type { ThreadTurnRouteCtx } from "./thread-turn-routes.js";
 import type { verifyAndDeliver } from "@claudexor/delivery";
 import {
@@ -25,6 +28,7 @@ export interface ThreadLifecycleRouteCtx {
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown): void;
   requiredIdempotencyKey(req: IncomingMessage): string;
+  stopping?: AbortSignal;
   runIdempotentDelivery<T>(input: {
     params: unknown;
     key: string;
@@ -114,6 +118,56 @@ export async function handleThreadLifecycleRoutes(
       true,
       res,
     );
+    return true;
+  }
+
+  const retireMatch = /^\/threads\/([^/]+)\/retire$/.exec(path);
+  const abandonMatch = /^\/threads\/([^/]+)\/retire\/abandon$/.exec(path);
+  if ((method === "POST" && retireMatch) || (method === "POST" && abandonMatch)) {
+    const threadExport = ctx.services?.threadExport;
+    if (!threadExport) {
+      ctx.json(res, 501, { error: "thread retirement is not supported by this build" });
+      return true;
+    }
+    const threadId = decodeURIComponent((retireMatch ?? abandonMatch)![1] as string);
+    const lifetime = readLifetime(req, res, ctx.stopping);
+    // The same per-thread chain as every thread mutation: a repeated operation
+    // waits for one still in flight, then finds its bound outcome.
+    await chainThreadMutation(ctx.turnCtx.threadTurnChains, threadId, async () => {
+      try {
+        const raw = await ctx.readBody(req);
+        const abandon = abandonMatch ? ThreadRetireAbandonRequest.parse(raw) : null;
+        const retire = abandon ? null : ThreadRetireRequest.parse(raw);
+        try {
+          ctx.json(
+            res,
+            200,
+            abandon
+              ? threadExport.abandonThreadRetirement(threadId, abandon.operationId)
+              : await threadExport.retireThread(threadId, retire!, lifetime.signal, ctx.stopping),
+          );
+        } catch (error) {
+          // Untyped means infrastructure: the outcome stays unknown, never a
+          // client's mistake. A caller repeats this same operation. A new error
+          // carries that answer, since an abort's own `code` cannot be set.
+          ctx.requestError(
+            res,
+            typeof (error as { status?: unknown }).status === "number"
+              ? error
+              : Object.assign(
+                  new Error(error instanceof Error ? error.message : String(error), {
+                    cause: error,
+                  }),
+                  { status: 503, code: "thread_retirement_unavailable", retryable: true },
+                ),
+          );
+        }
+      } catch (error) {
+        ctx.requestError(res, error);
+      } finally {
+        lifetime.dispose();
+      }
+    });
     return true;
   }
 

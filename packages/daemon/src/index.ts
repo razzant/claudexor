@@ -31,6 +31,8 @@ export { sqlRecoveryProjections } from "./store/sql-validation.js";
 export { EngineStore } from "./store/store.js";
 export type { ObservationListener } from "./store/observation-notices.js";
 export { BlobFiles } from "./store/blob-files.js";
+export type { ThreadClosure } from "./store/thread-closure.js";
+export { retirementRefusal, type RetirementRefusal } from "./store/thread-retirement.js";
 export { type MaintenanceCommandSummary } from "./store/command-rows.js";
 export { createSqlDaemonServices } from "./store/sql-daemon-services.js";
 export { importLegacyInWorker } from "./store/import-worker.js";

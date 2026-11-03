@@ -18,7 +18,11 @@ import {
 } from "./thread-turn-problems.js";
 import type { RunStartNormalizationOptions } from "./run-start.js";
 import { servingStore } from "./run-start-receipt.js";
-import { assertLatestThreadTurn, inspectThreadTurnCreateReplay } from "./thread-recovery.js";
+import {
+  assertLatestThreadTurn,
+  assertThreadAdmitsWork,
+  inspectThreadTurnCreateReplay,
+} from "./thread-recovery.js";
 import { chainThreadMutation } from "./thread-mutation.js";
 import { assertActiveThreadAccessOverride } from "./thread-access-migration.js";
 import {
@@ -169,6 +173,7 @@ export function handleThreadTurnCreate(
       if (replay.accepted && replay.existingId) {
         return respondToTurnJob(ctx, res, replay.accepted.id, threadId, replay.existingId);
       }
+      assertThreadAdmitsWork(threadId, detail.thread);
       const thread = detail.thread as {
         repo: { root: string } | null;
         mode: string;
@@ -436,6 +441,8 @@ export function handleThreadTurnRetry(
         throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
       const recorded = turn["enqueue_error"] as { retryable?: unknown } | null | undefined;
       if (!turn["run_id"] && recorded?.retryable === false) {
+        // No job exists to replay, and a purged thread takes no new message either.
+        assertThreadAdmitsWork(threadId, detail.thread);
         throw Object.assign(
           new Error(
             `turn ${turnId} has no recorded enqueue attempt to replay; send a new message instead`,
@@ -458,6 +465,7 @@ export function handleThreadTurnRetry(
         });
         if (prior) return respondToTurnJob(ctx, res, prior.id, threadId, turnId);
       }
+      assertThreadAdmitsWork(threadId, detail.thread);
       if (turn["run_id"]) {
         throw Object.assign(
           new Error(`turn ${turnId} already has a run; retry only repairs refused turns`),
@@ -526,10 +534,15 @@ export function handleThreadTurnRetry(
       return respondToTurnJob(ctx, res, job.id, threadId, turnId);
     } catch (err) {
       // Guard refusals only (404/409): never overwrite the original recorded
-      // refusal with bookkeeping noise.
-      return ctx.json(res, errStatus(err), {
-        error: err instanceof Error ? err.message : "bad request",
-      });
+      // refusal with bookkeeping noise. The same typed problem as turn creation.
+      return ctx.json(
+        res,
+        errStatus(err),
+        turnEnqueueProblemResponse(problemFromError(err, Object(err).retryable === true), {
+          threadId,
+          turnId,
+        }),
+      );
     }
   });
 }

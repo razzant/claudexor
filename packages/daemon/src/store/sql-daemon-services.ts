@@ -43,25 +43,30 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
   const terminalFiles = new SqlTerminalFiles(store, obligations);
   const pruner = new SqlCommandPruner(store, blobs, { log: options.log });
   const projects = new SqlProjectStore(store, blobs, obligations);
-  const threads = new SqlCommandRouter(projects, {
-    obligations,
-    terminalFiles,
-    pruner,
-    validateRefs: (refs) => {
-      resources.resolve(refs);
-    },
+  // One maintenance worker per store; its read-only snapshot also answers closure observations.
+  const maintenance = new MaintenanceController(store, {
+    ...options.maintenance,
+    log: options.log,
+    blobs,
   });
+  const threads = new SqlCommandRouter(
+    projects,
+    {
+      obligations,
+      terminalFiles,
+      pruner,
+      validateRefs: (refs) => {
+        resources.resolve(refs);
+      },
+    },
+    maintenance,
+  );
   let globalEvents: SqlEventLedger | null = null;
   resources = new SqlResourceStore(store, blobs, obligations, options.log);
   const purgeFiles = new SqlPurgeFiles(store, obligations);
   obligations.registerHandler("purge_fs", purgeFiles.handler(options.purgeFiles));
   obligations.registerHandler("archive_fs", partitionFilesHandler(store));
   obligations.registerHandler("quarantine_fs", partitionFilesHandler(store));
-  const maintenance = new MaintenanceController(store, {
-    ...options.maintenance,
-    log: options.log,
-    blobs,
-  });
   const quotaFor = (events: SqlEventLedger) =>
     new QuotaRegistry(events, options.refreshers, store.now, options.subjects, options.pacerStore);
   let quota: QuotaRegistry | null = null;

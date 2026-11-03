@@ -10,7 +10,7 @@ changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, thread, runs-wait, task-group-runs, next-message, next-message-read, retry, run-again, apply, decision, review), attachment ingress (store-identity, upload-import, upload-create, upload-import-local, upload-status, upload-finalize, upload-cancel), ops (project, models, harness, scanner, doctor, quota, account-reset, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). `runs-wait` observes existing handles read-only through `--targets-json` and optional `--wait-ms`, with `--json` or `--json-stream` output. `task-group-runs` reads one bounded retained group page. `next-message` creates, replaces or clears an authorized one-shot draft; `next-message-read` reads its bounded content and editing handles. | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, thread, runs-wait, task-group-runs, next-message, next-message-read, retry, run-again, apply, decision, review, thread-retire), attachment ingress (store-identity, upload-import, upload-create, upload-import-local, upload-status, upload-finalize, upload-cancel), ops (project, models, harness, scanner, doctor, quota, account-reset, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). `runs-wait` observes existing handles read-only through `--targets-json` and optional `--wait-ms`, with `--json` or `--json-stream` output. `task-group-runs` reads one bounded retained group page. `next-message` creates, replaces or clears an authorized one-shot draft; `next-message-read` reads its bounded content and editing handles. | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, Agent runs, caller-owned model and image operations, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. `claudexor_runs_wait` projects the same read-only observation with `targets: [{runId, seen?}]` and optional `waitMs`. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
@@ -931,6 +931,59 @@ with `replayCursor`, consuming `replayNextCursor` when larger current facts need
 multiple bounded segments. Stale cursors require a resnapshot, not an empty feed.
 An empty page before the oldest turn still has `hasNewer`; an empty page after
 the newest still has `hasOlder`. The reverse cursor includes that boundary turn.
+
+**Exact export and conditional retirement.** `claudexor thread export <id> --out
+<dir> [--expected-store-id ID] [--json]` copies a thread's whole closure into a new
+directory, hashing every byte, and writes `manifest.json` first and `receipt.json`
+last; it exits 1 when the export is partial and leaves the bundle readable. A manifest
+`path` is an item's complete name, of any length. When the bundle's volume cannot name
+that path, the export still finishes: the bytes go to `relocated/<itemId>` (keeping a
+plain extension), the receipt records that as `placedAt` beside the complete `path`, and
+`--json` counts `relocatedItems`. Items that need one name that the volume can hold keep
+refusing (`thread_export_path_collision`) unless they hold the same bytes.
+`claudexor thread-retire <id> --export <dir> [--operation-id ID] [--json]` purges the
+thread now if that bundle still matches its finished closure. Before it sends a new
+operation it re-hashes every byte the bundle received and, in that same pass, syncs each
+of those files, the manifest, the receipt, the directories holding them and every
+directory above the bundle on its volume. A recursive `--out` creates an entry for the
+bundle and each missing parent, the topmost in the first directory that already existed;
+no record says which those were, so the pass asks all of them. That is more than it needs:
+a directory holding no new entry is asked too. A sync that fails, including at any of
+those directories this user may not open, refuses before anything is sent
+(`thread_export_bundle_unsynced`): restore its access or move the bundle, then repeat.
+Only a new retirement needs this, not an export or an operation the engine already bound.
+A link on the path counts as the directory it names, and what is above that directory is
+not reached. Windows cannot sync a directory, so there only file contents are; this asks
+the volume for durability and proves no power-loss outcome. It
+keeps that request in the bundle (`retire-request.json`) before sending it, created
+exclusively so it never replaces another, and synced. A concurrent invocation sends the request kept first
+once it reads whole, syncing it again, and refuses before sending while it does not
+(`thread_retirement_request_incomplete`); one left incomplete by a writer that
+stopped keeps refusing until it is removed, and exclusive creation is only as atomic
+as the volume makes it. An answer that does not settle the operation names its
+`operationId`, and repeating the command repeats it; a 200 that binds it (accepted,
+for a retirement) or a settled refusal releases it, and a 200 that binds no outcome
+to it settles nothing. From a bundle that changed or cannot be synced since, or whose
+kept request cannot be (every command syncs it again before sending it, one a
+concurrent invocation kept first included), only an operation the engine already bound
+is repeated; an unbound one is held, naming its `operationId`
+(`thread_export_bundle_unsynced`).
+`claudexor thread-retire <id> --abandon --operation-id ID [--json]` settles an
+unanswered operation so it can never accept, and `claudexor thread retirement <id>
+[--operation-id ID] [--expected-store-id ID] [--json]` reads the state back. None of
+them start a daemon. A host speaks the routes directly; catalog presence of
+`POST /v2/threads/:id/retire` is the feature marker. Its digests are
+`threadExportDigest`: one `<itemId> <sha256 hex> <size>\n` per file and symlink item,
+in byte order, hashed as UTF-8, over the whole transfer and over its `lane` plane.
+Keep each item where your volume can hold it and find it again by `itemId`, since a
+`path` may be too long to name there. An acceptance deletes the lane, so make every byte
+you kept durable (files, the directories holding them and any directory you created
+above those) before you send a new operation, and do not send it if that fails.
+Persist `operationId` and the digests before sending. Clear that intent only from a
+200, a problem whose context says settled, or a non-null `operation` on the read: a null
+one settles nothing. Repeat the same body to join an unknown outcome, or abandon it
+when it must not accept. See
+[the contract](ARCHITECTURE.md#thread-export-and-conditional-retirement).
 
 Prompt previews are at most 32 KiB, answers 64 KiB, and the complete page 2 MiB of
 minified JSON. Byte truncation is explicit; full text lengths are only
@@ -2684,6 +2737,7 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_CODEX_API_KEY` / `CLAUDEXOR_ANTHROPIC_API_KEY` / `CLAUDEXOR_CURSOR_API_KEY` | adapters | Claudexor-scoped API-key overrides (take precedence over provider env names). |
 | `CLAUDEXOR_CODEX_MODEL` | codex adapter | Default model override for the codex route. |
 | `CLAUDEXOR_CODEX_NATIVE_HOME` / `CLAUDEXOR_CLAUDE_NATIVE_DIR` | adapters | Explicit Claudexor-owned Codex profile or Claude native config directory overrides. |
+| `CLAUDEXOR_FAKE_NATIVE_STORE` | fake harness | Test fixture store where `fake-session` writes its own session files; absent means none are written. |
 | `CLAUDEXOR_PROFILE_LOCATOR` | engine → adapter `continuity` (internal, never a child env) | The registry `isolation_locator` of the credential profile whose store holds (or will hold) a native session, named by the engine on the EnvMap it hands to the adapter's `continuity.locate` / `continuity.move`; the adapter maps it onto its own vendor store variable. Users never set it. |
 | `CLAUDEXOR_RUN_SCOPE_<id>` | orchestrator / daemon (internal child env) | The run's process-scope marker (`CLAUDEXOR_RUN_SCOPE_<32 hex>=1`), minted before the first launch and carried into every harness child of the run (it survives `clean` inheritance, which also forwards an enclosing host's markers of the same grammar). At the run's terminal and at the next daemon start after a crash, every live process still carrying it — plus the groups and descendants the daemon recorded — is ended by measured identity before the run's terminal is published, and the outcome is disclosed in `final/process_scope.yaml` (best-effort evidence: when that write fails the verdict is still published and the run has no record) (on macOS the census reads the environments only of processes no older than the scope, selected by `ps` elapsed time so that both sides come from the same clock at the same moment; a process older than the run cannot carry its marker; a backward wall-clock step of more than a minute during the run can hide a marker-only member) (INV-144; `completeness` is `complete` only on Linux when the census read every same-uid environment, `not_provable` on macOS and Windows or after an unreadable or deadline-bound census). `GET /v2/runs/:id` always carries `summary.processScope`: the compact record once the run is terminal and the record is readable and valid, otherwise an explicit `null` that means unknown, never clean (the run is still live, the record is absent — a run that predates it or whose write failed — or it is unreadable or invalid); engines that predate the field omit the key, which is equally unknown, and the generated JSON Schema lists the property as optional (it declares a default of `null`) although this engine always sends it. The list projection (`GET /v2/runs`) always leaves `processScope` null — read the detail. A host that must act while the daemon is dead may read `daemon/run-scopes.json` (`{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`, `state` (`open` \| `unresolved`), `opened_at` (ISO time: the floor the daemon uses while no lstart birth exists), `scope_start` (lstart text or null), `root_groups[{pgid, leader_pid, leader_birth \| null, leader_identity?}]` — `leader_identity` is the daemon's opaque kernel birth token, comparable only by the daemon's own identity helper — and `captured[{pid, pgid, birth}]`; births in the C-locale `ps -o lstart=` spelling. A host without the identity helper, when `leader_birth` is null: a live process with `pid == pgid` cannot be verified as the recorded leader, so skip that group; when no process with `pid == pgid` is alive, the group's remaining members born at or after the floor belong to the scope, because the kernel never hands out a pid that is still a live process-group id) and end recorded members by measured identity. Users never set it. |
 | `CLAUDEXOR_HOME_SCOPED` | orchestrator / review (internal child env) | `1` when the harness runs under a scoped native-state HOME (delegated, read-only and reviewer sessions). A fact for the model, not containment. |

@@ -4,6 +4,7 @@ import { BlobFiles } from "./blob-files.js";
 import { StoreCorruptError, StoreError } from "./errors.js";
 import { STORE_WORKER_DATA_KEY, resolveStoreWorkerEntry } from "./flusher-protocol.js";
 import type { EngineStore } from "./store.js";
+import type { ThreadClosure } from "./thread-closure.js";
 import { cleanupUploadPart } from "./uploads.js";
 // Static import: the worker module must be part of this module graph so the
 // single-file daemon bundle embeds it (its self-start is inert on the main thread).
@@ -12,6 +13,15 @@ import "./maintenance-worker.js";
 export interface MaintenanceWorkerData {
   [STORE_WORKER_DATA_KEY]: "maintenance";
   dbPath: string;
+  hooks?: MaintenanceWorkerHooks;
+}
+
+/** Test seams, inert unless set (the flusher's `FlusherHooks` precedent). */
+export interface MaintenanceWorkerHooks {
+  /** A closure read parks here inside its snapshot, once the snapshot is fixed and
+   * before any closure row is read: slot 0 counts arrivals, and a read goes on once
+   * slot 1 reaches its own arrival number. */
+  closureBarrier?: SharedArrayBuffer;
 }
 
 /** Requests are a discriminated union: the importer (PR-D) adds its kind here
@@ -26,6 +36,13 @@ export type MaintenanceRequest =
       uploadsDir: string;
       /** Files whose mtime is at or after this epoch-ms instant are left alone. */
       olderThanMs: number;
+    }
+  | {
+      id: number;
+      kind: "thread_closure";
+      threadId: string;
+      /** The store the snapshot must prove it reads. */
+      storeId: string | null;
     };
 
 export interface IntegrityReport {
@@ -64,7 +81,11 @@ export interface SweepReport extends Omit<SweepCandidates, "candidates"> {
 }
 
 export type MaintenanceResponse =
-  | { id: number; ok: true; result: IntegrityReport | ExportReport | SweepCandidates }
+  | {
+      id: number;
+      ok: true;
+      result: IntegrityReport | ExportReport | SweepCandidates | ThreadClosure | null;
+    }
   | { id: number; ok: false; error: string; code?: "store_corrupt" };
 
 export interface MaintenanceControllerOptions {
@@ -74,6 +95,7 @@ export interface MaintenanceControllerOptions {
   processStartedAt?: number;
   /** The store's blob owner (one per store: it holds the unref generations). */
   blobs?: BlobFiles;
+  hooks?: MaintenanceWorkerHooks;
 }
 
 interface Pending {
@@ -89,7 +111,9 @@ interface Pending {
  * The worker owns a separate read-only connection, never shares a thread or
  * connection with the flusher, never writes a row, and only ENUMERATES sweep
  * candidates older than the process start; every removal is decided on the
- * main thread through the one owner-generation unlink rule (C10).
+ * main thread through the one owner-generation unlink rule (C10). Its snapshot
+ * also answers a thread's closure for an export's observation; every decision
+ * reads the closure again on the writer, inside the deciding transaction.
  */
 export class MaintenanceController {
   private readonly entry: string;
@@ -122,6 +146,20 @@ export class MaintenanceController {
   /** `VACUUM INTO target`: a consistent snapshot copy, written by the worker. */
   exportTo(target: string): Promise<ExportReport> {
     return this.run<ExportReport>({ id: 0, kind: "vacuum_into", target });
+  }
+
+  /**
+   * The thread's closure as one read-only snapshot holds it, read on the worker so
+   * the writer's thread stays free. An observation only: retirement reads it again
+   * inside its own transaction. `signal` ends the caller's wait alone. A read the
+   * worker has not taken leaves the queue; one it has taken keeps the worker until
+   * it ends, and its answer is dropped.
+   */
+  threadClosure(threadId: string, signal?: AbortSignal): Promise<ThreadClosure | null> {
+    return this.run<ThreadClosure | null>(
+      { id: 0, kind: "thread_closure", threadId, storeId: this.store.storeId ?? null },
+      signal,
+    );
   }
 
   /** The worker's candidate list for files older than the process start (test seam). */
@@ -192,16 +230,31 @@ export class MaintenanceController {
     if (worker) await worker.terminate();
   }
 
-  private run<T>(request: MaintenanceRequest): Promise<T> {
+  private run<T>(request: MaintenanceRequest, signal?: AbortSignal): Promise<T> {
     if (this.closing) {
       return Promise.reject(new StoreError("store_closed", 503, false, "engine store is closing"));
     }
+    if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise<T>((resolve, reject) => {
-      this.queue.push({
+      const leave = () => {
+        const queued = this.queue.indexOf(pending);
+        if (queued >= 0) this.queue.splice(queued, 1);
+        reject(signal!.reason);
+      };
+      const settled = () => signal?.removeEventListener("abort", leave);
+      const pending: Pending = {
         request: { ...request, id: this.nextId++ },
-        resolve: resolve as (value: never) => void,
-        reject,
-      });
+        resolve: (value) => {
+          settled();
+          resolve(value);
+        },
+        reject: (error) => {
+          settled();
+          reject(error);
+        },
+      };
+      signal?.addEventListener("abort", leave, { once: true });
+      this.queue.push(pending);
       this.pump();
     });
   }
@@ -218,6 +271,7 @@ export class MaintenanceController {
     const data: MaintenanceWorkerData = {
       [STORE_WORKER_DATA_KEY]: "maintenance",
       dbPath: this.store.paths.database,
+      ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
     };
     const worker = new Worker(this.entry, {
       workerData: data,

@@ -26,10 +26,24 @@ const daemonEntry = resolve(import.meta.dirname, "../dist/claudexord.js");
  * stands in for the handle a real pending listen or dial keeps alive. */
 const HOLD_STEP = String.raw`
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { createRequire, syncBuiltinESMExports } from "node:module";
+import { createRequire, registerHooks, syncBuiltinESMExports } from "node:module";
 import { isMainThread } from "node:worker_threads";
 const step = process.env.CX_HOLD_STEP;
 if (isMainThread && step) {
+  // Observe the signal supplied by the actual daemon registration, without replacing
+  // that argument or the effect. The graph tests exercise what the effect does.
+  if (process.env.CX_WATCH_STARTUP_PURGE === "1") registerHooks({
+    load(url, context, nextLoad) {
+      const loaded = nextLoad(url, context);
+      if (!url.endsWith("/thread-purge.js")) return loaded;
+      const text = typeof loaded.source === "string" ? loaded.source : Buffer.from(loaded.source).toString("utf8");
+      const at = "export function startupPurgeEffect(noProjectRoot, laneStores, stop) {";
+      if (text.split(at).length !== 2) throw new Error("startup purge observation point changed");
+      const observe = "\nprocess.stderr.write('startup-purge-registered\\n');\n" +
+        "stop.addEventListener('abort', () => process.stderr.write('startup-purge-aborted\\n'), { once: true });\n";
+      return { ...loaded, source: text.replace(at, at + observe) };
+    }
+  });
   const net = createRequire(import.meta.url)("node:net");
   let armed = true;
   const hold = () => {
@@ -285,10 +299,16 @@ describe.skipIf(process.platform === "win32" || !sqlite)(
     ])(
       "stops cleanly when SIGTERM arrives during %s",
       async (_label, step) => {
-        const daemon = startDaemon({ CX_HOLD_STEP: step, CX_HOLD_UNTIL: "sigterm" });
+        const daemon = startDaemon({
+          CX_HOLD_STEP: step,
+          CX_HOLD_UNTIL: "sigterm",
+          CX_WATCH_STARTUP_PURGE: "1",
+        });
         await daemon.held();
+        expect(daemon.stderr()).toContain("startup-purge-registered");
         daemon.child.kill("SIGTERM");
         expect(await daemon.exit(), daemon.stderr()).toEqual({ code: 0, signal: null });
+        expect(daemon.stderr()).toContain("startup-purge-aborted");
         expect(daemon.log()).toContain("shutdown requested (SIGTERM)");
         expect(daemon.log()).toContain("claudexord shut down");
         expect(daemon.log()).not.toContain("daemon lifecycle FAILED");

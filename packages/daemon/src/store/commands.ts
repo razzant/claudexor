@@ -36,6 +36,22 @@ import type { EngineStore } from "./store.js";
 import type { SqlTerminalFiles } from "./terminal-files.js";
 import { applyTerminalInTx, storedTerminal } from "./run-events.js";
 
+/** A purged thread is terminal: no new work of it is accepted. Its accepted
+ * commands still answer their replay, which every caller looks up first, and a
+ * `delivery` command (apply, discard, revert or a message receipt of a run's
+ * retained result) is not new work, so it stays as available as before purge. */
+function assertThreadAdmits(tx: MutationContext, row: CommandRow): void {
+  if (row.kind === "delivery" || row.thread_id === null) return;
+  const thread = tx.prepare("SELECT state FROM thread WHERE id=?").get(row.thread_id) as
+    { state: string } | undefined;
+  if (thread?.state === "purged")
+    throw Object.assign(new Error(`thread ${row.thread_id} was purged; it admits no new work`), {
+      code: "thread_purged",
+      status: 409,
+      retryable: false,
+    });
+}
+
 /** The command record a durable terminal settles, derived from its RunFacts. */
 function terminalRecord(current: JobRecord, event: RunEvent): JobRecord {
   const { facts } = recoveredTerminalFacts(current, event);
@@ -93,6 +109,7 @@ export class SqlCommandStore implements CommandStorePort {
     const { input, digests, record, prepared, event } = acceptance;
     const prior = this.find(input);
     if (prior) return { record: prior, reused: true };
+    assertThreadAdmits(tx, prepared.row);
     applyCommandInTx(tx, prepared, "accept");
     bindIdempotencyInTx(tx, {
       owner: "command",
