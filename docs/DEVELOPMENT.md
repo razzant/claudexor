@@ -464,6 +464,17 @@ Tests and local smokes must never touch real user state:
   Known absence and repeated disposal succeed; uncertain cleanup retains the
   root with `canary-cleanup.json`. This is normal teardown, not a guarantee
   against a runner killed before its cleanup executes.
+- Native writer-birth qualification runs after `pnpm build`, and in its own
+  Windows CI step:
+  `pnpm vitest run packages/daemon/src/writer-lease-pid-reuse.test.ts packages/cli/src/claudexord-writer-birth.test.ts`.
+  It drives the built daemon and CLI over the default endpoint in a private root
+  and prints one timing line, which is an observation and not a gate. Its
+  mismatched birth is seeded on a witness process the test owns, and it signals
+  only children it spawned. It does not force real PID recycling; injected
+  unknown and `EPERM` readings stay synthetic. A failed run, a failed soft check
+  included, logs the exact bytes of every writer record and root-authority
+  marker in its private root, with child stderr and the daemon log, before that
+  root is removed.
 - The Windows agy print/ConPTY acceptance reports a failed or timed-out run
   as the worker's error message (or, without one, the console host's stderr)
   followed by typed facts: its stage, the in-app runner's exit, allowlisted

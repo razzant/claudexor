@@ -665,6 +665,10 @@ for (const [label, mutated] of [
     "deleted SQLite storage owner cleanup test",
     ci.replace("          packages/cli/src/sql-daemon-storage-owner.test.ts\n", ""),
   ],
+  [
+    "deleted native writer birth tests",
+    ci.replace("          packages/cli/src/claudexord-writer-birth.test.ts\n", ""),
+  ],
   ["Windows agy acceptance ordered before native fixture build", delayedWindowsFixtureCi],
   [
     "Windows matrix removed from required aggregate",
@@ -1119,6 +1123,14 @@ function windowsPrLegFindings(workflow) {
   requirePattern(
     "Windows PR legs must exercise SQLite storage owner cleanup",
     /packages\/cli\/src\/sql-daemon-storage-owner\.test\.ts/,
+  );
+  requirePattern(
+    "Windows PR legs must run the native writer birth and built daemon lifecycle tests",
+    /writer-lease-pid-reuse\.test\.ts[\s\S]*?claudexord-writer-birth\.test\.ts/,
+    stepBody(
+      windows,
+      "Writer birth identity and built daemon lifecycle (credential-free native processes)",
+    ),
   );
   const build = windows.indexOf("      - name: Build\n        run: pnpm build");
   const nativeFixture = windows.indexOf("pnpm --filter @claudexor/core build:win32-fixtures");

@@ -363,6 +363,16 @@ jobs:
           packages/control-api/src/model-routes.test.ts
           scripts/lib/release-windows-stop.test.mjs
 
+      # Default-path writer birth: real FILETIME reads, an owned witness process
+      # and the built daemon on its default named pipe. The mismatched record is
+      # seeded and labelled synthetic; nothing forces real PID recycling. Kept
+      # apart from the parallel step above so its timing line reads this lane's
+      # own PowerShell and stop latency. That line is an observation, not a gate.
+      - name: Writer birth identity and built daemon lifecycle (credential-free native processes)
+        run: >
+          pnpm vitest run packages/daemon/src/writer-lease-pid-reuse.test.ts
+          packages/cli/src/claudexord-writer-birth.test.ts
+
       - name: Reproduce Codex cleanup control loss on the known broken control (Windows, no credentials)
         if: github.event_name == 'pull_request' && github.head_ref == 'fix/windows-codex-verdict-1755'
         shell: pwsh
