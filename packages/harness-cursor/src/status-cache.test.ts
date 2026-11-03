@@ -40,7 +40,7 @@ afterEach(() => {
   if (priorRoot === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
   else process.env.CLAUDEXOR_CONFIG_DIR = priorRoot;
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const rowHome = (id: string) => join(root, "profiles", `cursor-${id}`);
 const rowA = () => cursorProfileRunEnv(rowHome("a"));
 const rowB = () => cursorProfileRunEnv(rowHome("b"));

@@ -24,7 +24,7 @@ function reapMk(prefix: string): string {
 }
 afterAll(() => {
   for (const dir of reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function initRepo(): Promise<string> {
   const repo = reapMk("claudexor-row-admission-");

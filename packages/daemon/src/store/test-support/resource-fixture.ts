@@ -30,6 +30,7 @@ export async function resourceFixture(
     },
   });
   resources = new SqlResourceStore(store, blobs, obligations, (line) => logs.push(line));
+  let closing: Promise<void> | undefined;
   return {
     store,
     blobs,
@@ -41,10 +42,13 @@ export async function resourceFixture(
       store.flusherControl.tick();
       await done;
     },
-    async close() {
-      obligations.close();
-      await store.close();
-      await resources.drainCleanup();
+    /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+    close() {
+      return (closing ??= (async () => {
+        obligations.close();
+        await store.close();
+        await resources.drainCleanup();
+      })());
     },
   };
 }

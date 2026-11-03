@@ -44,7 +44,7 @@ afterEach(() => {
   } finally {
     sandbox = undefined;
   }
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 const git = (cwd: string, args: string[]): string =>
   execFileSync("git", ["-c", "user.email=c@x", "-c", "user.name=c", ...args], {

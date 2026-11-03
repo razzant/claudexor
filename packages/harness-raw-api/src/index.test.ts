@@ -18,6 +18,7 @@ import { appendHarnessEvent } from "@claudexor/core";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { createRawApiAdapter } from "./index.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -30,7 +31,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
@@ -1341,10 +1342,20 @@ describe("raw-api terminal provider completions", () => {
 describe("raw-api failed completion keeps the model's partial output exact", () => {
   const ORIGINAL_ENV = { ...process.env };
   let server: Server | undefined;
-  afterEach(async () => {
-    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  const journalRoots: string[] = [];
+  afterEachClosed(async () => {
+    // This test's folder and server, taken before the close: the file-end reaper and a later
+    // test never reach them.
+    const ownedRoots = journalRoots.splice(0);
+    const ownedServer = server;
     server = undefined;
-    process.env = { ...ORIGINAL_ENV };
+    await new Promise<void>((resolve) =>
+      ownedServer ? ownedServer.close(() => resolve()) : resolve(),
+    );
+    return () => {
+      process.env = { ...ORIGINAL_ENV };
+      for (const root of ownedRoots) __rmSyncReap(root, { recursive: true, force: true });
+    };
   });
 
   it("is exact in the live event and the journal, with the provider error masked", async () => {
@@ -1396,7 +1407,9 @@ describe("raw-api failed completion keeps the model's partial output exact", () 
     expect(live.payload?.["partial_output_truncated"]).toBe(false);
     expect(JSON.stringify(live)).not.toContain(vendor);
 
-    const journal = join(reapMk(join(tmpdir(), "raw-api-partial-")), "events.jsonl");
+    const journalRoot = mkdtempSync(join(tmpdir(), "raw-api-partial-"));
+    journalRoots.push(journalRoot);
+    const journal = join(journalRoot, "events.jsonl");
     for (const event of events) appendHarnessEvent(journal, event);
     const stored = readFileSync(journal, "utf8")
       .trim()
@@ -1427,11 +1440,21 @@ describe("raw-api diagnostics are masked whole, then bounded without splitting a
   const token = `ghp_${"a".repeat(36)}`;
   const x = (count: number) => "x".repeat(count);
   let server: Server | undefined;
+  const journalRoots: string[] = [];
 
-  afterEach(async () => {
-    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  afterEachClosed(async () => {
+    // This test's folder and server, taken before the close: the file-end reaper and a later
+    // test never reach them.
+    const ownedRoots = journalRoots.splice(0);
+    const ownedServer = server;
     server = undefined;
-    process.env = { ...ORIGINAL_ENV };
+    await new Promise<void>((resolve) =>
+      ownedServer ? ownedServer.close(() => resolve()) : resolve(),
+    );
+    return () => {
+      process.env = { ...ORIGINAL_ENV };
+      for (const root of ownedRoots) __rmSyncReap(root, { recursive: true, force: true });
+    };
   });
 
   async function runAgainst(status: number, body: string, headers: Record<string, string> = {}) {
@@ -1460,7 +1483,9 @@ describe("raw-api diagnostics are masked whole, then bounded without splitting a
         }),
       ),
     );
-    const journal = join(reapMk(join(tmpdir(), "raw-api-diagnostic-")), "events.jsonl");
+    const journalRoot = mkdtempSync(join(tmpdir(), "raw-api-diagnostic-"));
+    journalRoots.push(journalRoot);
+    const journal = join(journalRoot, "events.jsonl");
     for (const event of live) appendHarnessEvent(journal, event);
     const text = readFileSync(journal, "utf8");
     const stored = text

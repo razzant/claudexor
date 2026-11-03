@@ -37,7 +37,7 @@ describe("cursor mcp.json injection (delegation belt host)", () => {
   };
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("resolves the lane config dir: explicit CURSOR_CONFIG_DIR, then scoped HOME, never the host", () => {
     expect(resolveCursorMcpConfigDir({ CURSOR_CONFIG_DIR: "/lane/.cursor" })).toBe("/lane/.cursor");
@@ -259,7 +259,7 @@ describe("cursor adapter belt wiring (runCursor)", () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   const spec = (overrides: Partial<HarnessRunSpec> = {}): HarnessRunSpec =>
     HarnessRunSpec.parse({

@@ -12,7 +12,10 @@ vi.mock("./run-orchestrator.js", () => ({
 }));
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const inherited = (native: string | null): ProcessingReceipt => ({
   requested: null,

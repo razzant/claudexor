@@ -119,7 +119,7 @@ describe("composeBaseEnv managed-runner Node prepend rides every lane class (QA-
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   // The three lane classes (INV-067) differ only in the scoped HOME + per-harness
   // config dirs layered on top of the base env; the base env — and its PATH — is

@@ -75,7 +75,7 @@ describe("control setup-login admission order", () => {
     if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("rejects required/missing profiles before any host projection or durable create", async () => {
     const create = vi.fn();

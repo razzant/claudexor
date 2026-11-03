@@ -48,7 +48,7 @@ describe("scopedHarnessHome", () => {
   const repoRoot = join(base, "repo");
   ensureDir(repoRoot);
   const wsm = new WorkspaceManager(repoRoot, { runtimeRoot: join(base, "runtime") });
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("leaves an ordinary in-place attempt on the operator's native environment", () => {
     expect(scopedHarnessHome(wsm, envelopeAt(base, repoRoot, true), true, false)).toEqual({
@@ -90,7 +90,7 @@ describe("durable lane home of a delegated thread candidate (INV-034)", () => {
   const wsm = new WorkspaceManager(copy, { runtimeRoot: join(base, "copy-runtime") });
   const lanes = new WorkspaceManager(project, { runtimeRoot: join(base, "project-runtime") });
   const laneFor = (profile: string | null) => lanes.laneHomeEnv("th-1", "claude", profile).env;
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("re-keys the in-place candidate to the resolved account's lane, the same home every turn", () => {
     const first = scopedHarnessHome(wsm, envelopeAt(base, copy, true), true, true, "full", laneFor);
@@ -190,7 +190,7 @@ describe("delegated boundary disclosure", () => {
   const repoRoot = join(base, "project");
   ensureDir(repoRoot);
   const wsm = new WorkspaceManager(repoRoot, { runtimeRoot: join(base, "runtime") });
-  afterAll(() => rmSync(base, { recursive: true, force: true }));
+  afterAll(() => rmSync(base, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("keeps native workspace_write and records deliberate no-outer-boundary evidence", () => {
     const home = scopedHarnessHome(

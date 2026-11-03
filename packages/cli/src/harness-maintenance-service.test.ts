@@ -15,10 +15,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { spawnProcess } from "@claudexor/core";
 import { accountObservations } from "./account-observations.js";
 import { createHarnessMaintenance } from "./harness-maintenance-service.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const FAKE_CLI = `
 import { appendFileSync, readFileSync } from "node:fs";
@@ -63,7 +64,9 @@ const UPDATED = {
 const roots: string[] = [];
 const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
 const pids = new Set<number>();
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const pid of pids) {
     try {
       process.kill(pid, "SIGKILL");
@@ -73,7 +76,9 @@ afterEach(async () => {
   }
   pids.clear();
   for (const sql of stores.splice(0)) await sql.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 async function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnProcess) {

@@ -18,7 +18,7 @@ function tempDir(prefix: string): string {
 }
 afterAll(() => {
   for (const dir of reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("delegation belt descriptor — exact daemon self-entry", () => {
   it("uses the exact running daemon entry for the belt in dev, npm, and app layouts", () => {

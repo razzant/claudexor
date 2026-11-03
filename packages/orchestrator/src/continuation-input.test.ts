@@ -7,7 +7,10 @@ import { unconfirmedContinuationInputs } from "./continuation-input.js";
 import { uncertainInputFor } from "./inrun-continuity-carrier.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("continuation caller delivery", () => {
   it("marks every cut entry, including zero inline characters, with its complete durable text", () => {

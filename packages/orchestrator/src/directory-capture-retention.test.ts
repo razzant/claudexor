@@ -43,7 +43,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   for (const path of locked.splice(0)) if (existsSync(path)) chmodSync(path, 0o755);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const temp = (prefix: string) => {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);

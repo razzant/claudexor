@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { ChildProcess } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +28,20 @@ import {
   type CodexEffortCatalog,
 } from "./effort-probe.js";
 import { rmSync as __rmSyncReap } from "node:fs";
+
+/** Pass-through spawn recorder: the real children the probe started. */
+const spawned = vi.hoisted(() => [] as ChildProcess[]);
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: ((...args: Parameters<typeof actual.spawn>) => {
+      const child = actual.spawn(...args);
+      spawned.push(child);
+      return child;
+    }) as typeof actual.spawn,
+  };
+});
 import { afterAll as __afterAllReap } from "vitest";
 
 // W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
@@ -38,7 +53,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const base = {
   access: "workspace_write" as const,
@@ -146,10 +161,47 @@ describe("codex effort probe degrades gracefully", () => {
     expect(await probeCodexEfforts("claudexor-no-such-codex-binary")).toBeNull();
   });
 
-  it("returns null when the app-server never answers, bounded by the timeout", async () => {
-    // `sleep` speaks no JSON-RPC: the probe must time out, not hang the run.
-    expect(await probeCodexEfforts("sleep", { timeoutMs: 250 })).toBeNull();
-  });
+  it.skipIf(process.platform === "win32")(
+    "returns null when the app-server never answers, bounded by the timeout",
+    async () => {
+      // A silent child reads stdin, never writes and never exits, so only the
+      // probe's own timer can end it (`sleep app-server --stdio` exits at once
+      // and never reached that timer, #386).
+      const dir = reapMk(join(tmpdir(), "claudexor-codex-silent-"));
+      const bin = join(dir, "codex");
+      writeFileSync(bin, "#!/bin/sh\nexec /bin/cat >/dev/null\n");
+      chmodSync(bin, 0o755);
+      let guard: NodeJS.Timeout | undefined;
+      const outcome = await Promise.race([
+        probeCodexEfforts(bin, { timeoutMs: 250 }),
+        new Promise<string>((resolve) => {
+          guard = setTimeout(() => resolve("the probe did not settle within 5 s"), 5_000);
+        }),
+      ]);
+      clearTimeout(guard);
+      const child = spawned.find((candidate) => candidate.spawnfile === bin);
+      const ended = () => child?.exitCode !== null || child?.signalCode !== null;
+      try {
+        expect(outcome).toBeNull();
+        expect(child?.killed).toBe(true);
+        await vi.waitFor(() => expect(child?.signalCode).toBe("SIGKILL"), { timeout: 2_000 });
+      } finally {
+        // A child the probe did not end is stopped here and its exit awaited,
+        // so a failing run never leaves it alive past the test or its fixture.
+        if (child && !ended()) {
+          const exited = new Promise((resolve) => child.once("exit", resolve));
+          child.kill("SIGKILL");
+          let bound: NodeJS.Timeout | undefined;
+          await Promise.race([
+            exited,
+            new Promise((resolve) => (bound = setTimeout(resolve, 5_000))),
+          ]);
+          clearTimeout(bound);
+          if (!ended()) throw new Error(`silent child ${child.pid} still running after SIGKILL`);
+        }
+      }
+    },
+  );
 
   it("returns null — and raises NO unhandled error — when the child dies mid-handshake", async () => {
     // The regression: a broken pipe is delivered on the stream's `error` event,

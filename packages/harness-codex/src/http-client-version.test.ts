@@ -46,7 +46,7 @@ describe("codexCatalogClientVersion", () => {
     bin = join(dir, "codex");
     stub("stub");
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => rmSync(dir, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("declares the verified transport level as its own constant, separate from the installer pin", () => {
     expect(CODEX_HTTP_CLIENT_VERSION).toMatch(/^\d+\.\d+\.\d+$/);

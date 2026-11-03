@@ -2,7 +2,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { setGlobalGenerationInTx } from "./generations.js";
 import { Obligations } from "./obligations.js";
@@ -17,6 +17,7 @@ import {
   applyThreadMutation,
   prepareThreadMutation,
 } from "./thread-rows.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const clock = vi.hoisted(() => ({ at: "2030-01-01T00:00:00.000Z", id: 0 }));
 vi.mock("@claudexor/util", async (importOriginal) => ({
@@ -59,12 +60,14 @@ beforeEach(async () => {
   heads = new legacyOracle.daemonThreadHeadPing.ThreadHeadPingEmitter(journal);
   legacy = new legacyOracle.daemonThreads.ThreadStore(journal, (ping) => heads.ping(ping));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   journal?.close();
   obligations?.close();
   await store?.close();
-  rmSync(root, { recursive: true, force: true });
-  vi.restoreAllMocks();
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  };
 });
 
 function both<T>(

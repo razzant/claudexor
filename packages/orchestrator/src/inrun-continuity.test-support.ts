@@ -25,7 +25,10 @@ import type { ReviewerSpec } from "@claudexor/review";
 import { readSessionCapsule } from "./session-capsule.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 interface Spawn {
   profile: string;

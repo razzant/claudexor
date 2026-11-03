@@ -6,7 +6,7 @@ import { cli, makeSandbox, type Sandbox } from "./support.js";
 const sandboxes: Sandbox[] = [];
 afterEach(() => {
   for (const sb of sandboxes.splice(0)) sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function engine() {
   const sb = makeSandbox();

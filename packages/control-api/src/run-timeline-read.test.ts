@@ -35,7 +35,7 @@ function fixture(): { runDir: string; path: string } {
 afterEach(() => {
   vi.mocked(readSync).mockImplementation(actualFs.readSync);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("complete event snapshots through bounded read buffers", () => {
   it.each([true, false])(

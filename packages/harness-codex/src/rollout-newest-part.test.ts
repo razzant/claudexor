@@ -42,7 +42,7 @@ vi.mock("node:fs", async (importOriginal) => {
 const THREAD = "0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000";
 const STARTED_S = 1_790_000_000;
 const roots: string[] = [];
-afterAll(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterAll(() => roots.forEach((root) => rmSync(root, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const json = (record: unknown) => JSON.stringify(record);
 /** One turn's records in the recorded shapes: its model, quota reading and failure. */

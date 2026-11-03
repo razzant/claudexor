@@ -60,7 +60,7 @@ afterEach(() => {
   if (configDir === undefined) delete process.env["CLAUDEXOR_CONFIG_DIR"];
   else process.env["CLAUDEXOR_CONFIG_DIR"] = configDir;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 const git = (repo: string, args: string[], input?: string) =>

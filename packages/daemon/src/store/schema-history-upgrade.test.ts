@@ -13,9 +13,11 @@ const roots: string[] = [];
 const connections: DatabaseSync[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const db of connections.splice(0)) db.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function connect() {
   const root = mkdtempSync(join(tmpdir(), "cx-schema-history-"));
   roots.push(root);

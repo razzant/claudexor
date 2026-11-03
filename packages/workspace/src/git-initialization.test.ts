@@ -80,7 +80,7 @@ describe("Git boundary root guard (INV-075 refusal exception)", () => {
   const tempDirs: string[] = [];
   afterAll(() => {
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   /** Record every git call; answer "not a repository" to the probes and
    * succeed everything else, so a refusal is provable as PRE-mutation. */

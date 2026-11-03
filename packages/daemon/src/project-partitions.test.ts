@@ -5,30 +5,22 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   handleThreadCreate,
   type ThreadCreateRouteCtx,
 } from "../../control-api/src/thread-create-route.js";
-import { rmSync as __rmSyncReap } from "node:fs";
-import { afterAll as __afterAllReap } from "vitest";
-
-// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
-const __reapDirs: string[] = [];
-function reapMk(...args: Parameters<typeof mkdtempSync>): string {
-  const dir = mkdtempSync(...args);
-  __reapDirs.push(dir);
-  return dir;
-}
-__afterAllReap(() => {
-  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const sql of stores.splice(0).reverse()) await sql.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 const stores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
@@ -40,7 +32,7 @@ const journal = (
   cursor?: string,
 ) => readJournalEvents(graph.store, name, cursor, graph.blobs);
 async function fixture() {
-  const root = realpathSync(reapMk(join(tmpdir(), "claudexor-project-partitions-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-project-partitions-")));
   roots.push(root);
   return fixtureAt(root);
 }
@@ -413,8 +405,8 @@ describe("SqlCommandRouter", () => {
     const prev = process.env["CLAUDEXOR_CONFIG_DIR"];
     // Survivor + missing live OUTSIDE f.root; the ghost lives UNDER f.root and
     // becomes "owned" only after we point CLAUDEXOR_CONFIG_DIR at f.root below.
-    const survivor = realpathSync(reapMk(join(tmpdir(), "claudexor-survivor-")));
-    const missing = realpathSync(reapMk(join(tmpdir(), "claudexor-missing-")));
+    const survivor = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-survivor-")));
+    const missing = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-missing-")));
     roots.push(survivor, missing);
     const ghostRoot = join(f.root, "projects", "d", "workspaces", "task-9", "a01", "tree");
     mkdirSync(ghostRoot, { recursive: true });

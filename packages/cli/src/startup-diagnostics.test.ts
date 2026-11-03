@@ -24,9 +24,11 @@ const roots: string[] = [];
 const writers: DaemonStartupDiagnostics[] = [];
 
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const writer of writers.splice(0)) writer.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function root(): string {
   const value = mkdtempSync(join(tmpdir(), "claudexor-startup-diagnostics-"));

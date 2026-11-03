@@ -32,7 +32,7 @@ const locked: string[] = [];
 afterEach(() => {
   for (const path of locked.splice(0)) if (existsSync(path)) chmodSync(path, 0o600);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function fixture(): { cwd: string; evidenceDir: string; artifactsDir: string } {
   const base = mkdtempSync(join(tmpdir(), "claudexor-reviewer-workspace-"));

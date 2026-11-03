@@ -14,6 +14,7 @@ import { afterAll as __afterAllReap } from "vitest";
 // W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
 const __reapDirs: string[] = [];
 const sqlStores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
+let sqlStoresClosed = false;
 async function openSql(root: string) {
   const sql = await sqlFixture(root);
   sqlStores.push(sql);
@@ -24,9 +25,18 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
   __reapDirs.push(dir);
   return dir;
 }
+// Registered before the close hook on purpose: Vitest's default
+// `sequence.hooks: "stack"` runs after-hooks in reverse, so the removal starts
+// only after every store closed, and a close that fails or times out stops the
+// chain and keeps the directories. The flag keeps that true under any order.
+__afterAllReap(() => {
+  if (!sqlStoresClosed) throw new Error("temp dirs retained: the SQL stores did not close first");
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+// Closing the stores keeps the default hook deadline.
 __afterAllReap(async () => {
   for (const sql of sqlStores.splice(0).reverse()) await sql.close();
-  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+  sqlStoresClosed = true;
 });
 
 async function fixture() {

@@ -100,7 +100,8 @@ export interface Sandbox {
   configDir: string;
   repo: string;
   env: NodeJS.ProcessEnv;
-  dispose: () => void;
+  /** Stops the daemon and proves it inactive, then removes the fixture unless `keepFiles`. */
+  dispose: (options?: { keepFiles?: boolean }) => void;
 }
 
 export function makeSandbox(): Sandbox {
@@ -157,7 +158,7 @@ export function makeSandbox(): Sandbox {
     configDir,
     repo,
     env,
-    dispose: () => {
+    dispose: ({ keepFiles = false } = {}) => {
       if (disposed) return;
       const receipt: Record<string, unknown> = { base, configDir, daemonEntry: DAEMON };
       try {
@@ -193,6 +194,7 @@ export function makeSandbox(): Sandbox {
           if (!inactiveLease(after))
             throw new Error("writer-lease activity remains live or unknown");
         }
+        if (keepFiles) return;
         rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
         disposed = true;
       } catch (error) {

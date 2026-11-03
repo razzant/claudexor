@@ -11,7 +11,7 @@ beforeEach(() => {
 
 afterEach(() => {
   sandbox.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("RunFacts canary", () => {
   it("[INV-122:run-facts-surface-parity] terminal JSON, API, inspect, artifact, and telemetry expose one receipt", async () => {

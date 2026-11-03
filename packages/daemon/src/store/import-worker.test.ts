@@ -22,7 +22,7 @@ import { discoverLegacyPartitions } from "./import-discovery.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "import-worker-")));
   roots.push(root);

@@ -10,7 +10,7 @@ afterEach(() => {
     chmodSync(root, 0o700);
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 const fault = (outcome: unknown) => (outcome as { cleanupError?: { code?: string } }).cleanupError;
 

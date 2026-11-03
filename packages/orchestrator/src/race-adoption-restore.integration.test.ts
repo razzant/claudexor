@@ -19,7 +19,7 @@ const roots: string[] = [];
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function repo(): { root: string; git: (...args: string[]) => string } {
   const root = mkdtempSync(join(tmpdir(), "cx-race-restore-"));

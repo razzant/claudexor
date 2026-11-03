@@ -7,7 +7,10 @@ import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { Orchestrator } from "./orchestrator.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 it("prepares actual mode-qualified costs before pool ranking and width selection", async () => {
   const root = mkdtempSync(join(tmpdir(), "claudexor-processing-pool-"));

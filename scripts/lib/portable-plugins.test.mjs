@@ -11,7 +11,7 @@ const roots = [];
 const read = (path) => JSON.parse(readFileSync(path, "utf8"));
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "portable-plugins-"));

@@ -273,7 +273,7 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     else process.env.PATH = prevPath;
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("recomposes new refusals and expiry over cached probes while retaining account identity", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -1085,7 +1085,7 @@ describe("A7 per-subject unusable-ledger clearing on control-API credential muta
     credentialUnusableLedger.noteCredentialChange();
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   const observation = (harnessId: string, profileId: string | null) => ({
     harness_id: harnessId,

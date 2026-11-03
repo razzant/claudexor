@@ -34,7 +34,7 @@ const usageEvent = (estimated: boolean) =>
 
 describe("a clean attempt's routing cost sample (#171)", () => {
   const configDirs: string[] = [];
-  afterAll(() => configDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+  afterAll(() => configDirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
   const NO_DEBIT = {
     nativeMode: null,
     kind: "included" as const,

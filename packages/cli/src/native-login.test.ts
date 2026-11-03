@@ -52,7 +52,7 @@ describe("native login specs", () => {
     if (previousNativeHome === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
     else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNativeHome;
     rmSync(nativeHome, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("uses the exact allowlisted vendor commands and absolute resolved binaries", () => {
     const names = [
@@ -214,7 +214,7 @@ describe("native login specs", () => {
         else process.env[key] = value;
       }
       for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-    });
+    }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
     // Resolution only: no case here runs a fixture, so its bytes are inert.
     const exe = (path: string): string => {
       mkdirSync(dirname(path), { recursive: true });

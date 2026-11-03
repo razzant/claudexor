@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { expect, test } from "vitest";
 import { createClaudeParser } from "../../packages/harness-claude/dist/parse.js";
 import { codexAppServerEvents } from "../../packages/harness-codex/dist/app-server-run.js";
 import { harnessEventPayload } from "../../packages/orchestrator/dist/runSupport.js";
@@ -13,10 +13,17 @@ import {
   readRunJournal,
   startBrowserProbePage,
 } from "./real-harness-browser-probe.mjs";
+import { afterEachClosed } from "../../packages/cli/src/test-support/after-each-closed.ts";
 
 const cleanups = [];
-afterEach(async () => {
+const removals = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0);
   for (const cleanup of cleanups.splice(0)) await cleanup();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function fetchText(url) {
@@ -253,7 +260,7 @@ test("matches only the engine-injected Browser namespace", () => {
 
 test("reads a run journal, skipping malformed lines", () => {
   const dir = mkdtempSync(join(tmpdir(), "browser-probe-journal-"));
-  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  removals.push(() => rmSync(dir, { recursive: true, force: true }));
   expect(readRunJournal(dir)).toEqual([]);
   expect(readRunJournal(null)).toEqual([]);
   writeFileSync(

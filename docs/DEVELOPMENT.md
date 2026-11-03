@@ -369,6 +369,36 @@ Tests and local smokes must never touch real user state:
   inherits `CLAUDEXOR_CONFIG_DIR`, `CLAUDEXOR_DAEMON_SOCK`,
   `CLAUDEXOR_NO_CONTROL_API`, `NODE_OPTIONS` or provider keys. A smoke that
   starts a daemon stops and reaps that exact child before deleting its root.
+- A slow synchronous cleanup that succeeds does not fail a run. Vitest compares a
+  hook's elapsed time after the hook returns and cannot stop synchronous work, so a
+  deadline on a synchronous removal could only fail one that finished late and
+  skip the hooks after it. A cleanup hook without an await (removal, restore,
+  synchronous close, its assertions) registers with timeout 0; a removal that
+  throws still fails. An awaited `fs/promises` removal keeps its deadline: Vitest
+  is still waiting when that timer fires, so it is a real one.
+- A cleanup that awaits a close or stop keeps Vitest's deadline for that wait and
+  removes afterwards, through `afterEachClosed` in
+  `packages/cli/src/test-support/after-each-closed.ts`: the close phase returns
+  the tail, synchronous unless registered with `"awaited"`, which keeps the
+  hook deadline for a tail that awaits an `fs/promises` removal
+  (`control-api/files-result.test.ts`). A close that rejects or times out keeps its
+  folders, also if it settles later, and a late close in one test cannot reach the
+  next test's folders or handles. The close hook's outcome decides this, never the
+  test's `signal`, which the test's own timeout may have aborted before the hook
+  began. A shared list or handle is taken before the first await,
+  and what follows the last await goes in the tail; a cleanup list keeps closes
+  and removals in separate lists, so one test's removals all follow its closes and
+  a failed close keeps all of that test's folders. A removal that waits for file
+  end goes through the tail too, so no other hook removes what a failed close
+  kept. A fixture's `close` is one operation whose outcome a second caller shares.
+  In `afterAll` the removal hook is registered first, with a flag the close hook
+  sets (`daemon/projects.test.ts`). `scripts/lib/vitest-reaper-hooks.test.mjs` pins
+  these cases under the default `sequence.hooks: "stack"`, which they rely on.
+- A test waiting for work behind the store's dispatch barrier (a model or image
+  send, an account-reset consume) waits for that work, not Vitest's 1 s
+  `waitFor` default: the barrier needs a flusher pass (200 ms cadence, much
+  slower under disk contention). The bound stays below the test timeout, the
+  failure names the phase, and callers assert the terminal state they expect.
 - Managed secrets always use the daemon-owned v2 0600 file store, so a
   disposable `CLAUDEXOR_CONFIG_DIR` fully contains test secret I/O. The public
   CLI cannot select a storage backend.

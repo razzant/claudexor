@@ -11,7 +11,7 @@ const roots: string[] = [];
 afterEach(() => {
   vi.useRealTimers();
   roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true }));
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function socketPath() {
   const root = mkdtempSync(join(tmpdir(), "cx-rpc-"));
   roots.push(root);

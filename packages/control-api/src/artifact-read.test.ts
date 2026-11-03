@@ -28,7 +28,7 @@ describe("finite artifact bulk reads", () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "cx-artifact-read-"));
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("keeps list ordering, MIME, hidden git exclusion and both response envelopes", () => {
     mkdirSync(join(root, "sub"));
@@ -149,7 +149,7 @@ describe("artifact routes delegate bulk work", () => {
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "cx-artifact-route-"));
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   function context(read: ArtifactServeContext["readArtifact"]): ArtifactServeContext {
     return {

@@ -11,7 +11,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("settings canary golden stories", () => {
   it("[INV-104:settings-write-strict] refuses settings outside an authoritative harness's truth and persists nothing", () => {

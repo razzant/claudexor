@@ -228,7 +228,7 @@ describe("ensureCodexApiAuth", () => {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("seeds api_key auth.json into an isolated CODEX_HOME", () => {
     process.env.OPENAI_API_KEY = "sk-test-123";
@@ -368,7 +368,7 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     if (previousNativeHome === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
     else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNativeHome;
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("scrubs provider credentials and endpoint redirects from the native login-status probe", async () => {
     const previousKey = process.env.OPENAI_API_KEY;

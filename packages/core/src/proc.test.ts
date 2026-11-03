@@ -16,7 +16,7 @@ function tempDir(): string {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("spawnProcess", () => {
   it("exposes child closure to bidirectional session handlers", async () => {

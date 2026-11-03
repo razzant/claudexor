@@ -39,7 +39,7 @@ function scratch(prefix: string): string {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const path of scratchDirs.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function initializedRepo(): string {
   const repo = scratch("claudexor-profile-billing-repo-");

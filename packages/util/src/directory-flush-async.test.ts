@@ -27,7 +27,7 @@ afterEach(() => {
   flush.refuse = false;
   flush.closed = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 it.each(["linux", "darwin", "win32"] as const)(
   "uses the shared %s durability rule and closes both successful and refused handles",
   async (platform) => {

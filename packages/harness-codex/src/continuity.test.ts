@@ -16,7 +16,7 @@ import { codexContinuity, codexStoreHome } from "./continuity.js";
 import { codexRolloutParts } from "./rollout-file.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })));
+afterEach(() => roots.splice(0).forEach((r) => rmSync(r, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const TID = "0d6a2b0e-7c7f-4a3f-9d2e-6b1f2c3d4e5f";
 

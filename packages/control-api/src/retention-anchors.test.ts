@@ -21,7 +21,7 @@ import { pruneRunAnchors } from "./retention-anchors.js";
 const cleanup: string[] = [];
 afterEach(() => {
   for (const root of cleanup.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const old = new Date("2020-01-01");
 const policy = { runsMaxAgeDays: 30, reviewsMaxAgeDays: 14, keepLastRunsPerProject: 0 };
 function fixture() {

@@ -1,8 +1,9 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -54,9 +55,11 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-store-nosync-"));
   for (const spy of Object.values(syncSpies)) spy.mockClear();
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 describeStore("zero Node storage-sync calls on the request thread", () => {

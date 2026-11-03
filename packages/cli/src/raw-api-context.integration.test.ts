@@ -82,10 +82,20 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1`;
   process.env[KEY_ENV] = "sk-e2e";
 });
+let serverClosed = false;
+// Registered before the close hook on purpose: Vitest's default
+// `sequence.hooks: "stack"` runs after-hooks in reverse, so the removal starts
+// only after the server closed, and a close that fails or times out stops the
+// chain and keeps the directories. The flag keeps that true under any order.
+afterAll(() => {
+  if (!serverClosed) throw new Error("temp dirs retained: the server did not close first");
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+// Closing the server keeps the default hook deadline.
 afterAll(async () => {
   delete process.env[KEY_ENV];
   await new Promise((resolve) => server.close(resolve));
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  serverClosed = true;
 });
 beforeEach(() => {
   seen.gets.length = 0;

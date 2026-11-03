@@ -40,7 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function jwt(payload: Record<string, unknown>): string {
   return `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.y`;

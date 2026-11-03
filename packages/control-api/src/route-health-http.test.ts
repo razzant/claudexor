@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   ControlRouteHealth,
   DaemonTimingFacts,
@@ -13,15 +13,20 @@ import {
 import { processTiming } from "@claudexor/util";
 import { DaemonControlApiServer } from "./daemon-server.js";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const token = "route-health-fixture";
 const headers = { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" };
 const roots: string[] = [];
 const servers: DaemonControlApiServer[] = [];
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const server of servers.splice(0)) await server.stop();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 const web = {

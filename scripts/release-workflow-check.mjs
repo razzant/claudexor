@@ -134,7 +134,7 @@ const exactPromotionPairedNeedles = [
 for (const [label, pattern] of [
   ["workflow has candidate mode", /candidate/],
   ["workflow has publish mode", /publish/],
-  ["review attestation is verified", /verify-release-input\.mjs/],
+  ["release input is verified", /verify-release-input\.mjs/],
   [
     "independent review reference is exposed",
     /review_url:\s*\n\s*description:[^\n]*independent review/,

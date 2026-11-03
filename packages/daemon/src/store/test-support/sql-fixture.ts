@@ -18,7 +18,7 @@ export async function sqlFixture(root: string, now?: () => Date) {
   if (!currentGeneration(store, "global"))
     store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
   const graph = createSqlDaemonServices(store, { purgeFiles: async () => [root] });
-  let closed = false;
+  let closing: Promise<void> | undefined;
   return {
     store,
     graph,
@@ -26,11 +26,12 @@ export async function sqlFixture(root: string, now?: () => Date) {
       (store.prepare("SELECT id FROM command ORDER BY rowid").all() as Array<{ id: string }>).map(
         ({ id }) => graph.commands.findById(id)!.get(id)!,
       ),
-    async close() {
-      if (closed) return;
-      closed = true;
-      await graph.close();
-      await store.close();
+    /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+    close() {
+      return (closing ??= (async () => {
+        await graph.close();
+        await store.close();
+      })());
     },
   };
 }

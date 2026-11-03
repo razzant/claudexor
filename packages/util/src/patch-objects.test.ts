@@ -20,7 +20,7 @@ afterEach(() => {
   vi.mocked(fs.linkSync).mockReset();
   vi.mocked(fs.fsyncSync).mockReset();
   for (const path of roots.splice(0)) fs.rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("immutable patch publication", () => {
   it("shares identical attempt/final/anchor bytes and replaces only the changed path", async () => {

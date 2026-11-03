@@ -10,7 +10,7 @@ import { appendHarnessEvent, maskHarnessEventDiagnostics } from "./event-diagnos
 const SECRET = ["sk-proj", "Diag", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("-");
 const WORK = ["ghp", "W0rk7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae"].join("_");
 const dirs: string[] = [];
-afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+afterAll(() => dirs.forEach((dir) => rmSync(dir, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("harness event diagnostics seam (INV-146)", () => {
   it("masks an error event's text, error and whole native payload", () => {

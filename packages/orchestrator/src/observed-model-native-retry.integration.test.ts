@@ -24,7 +24,7 @@ function temporaryDirectory(prefix: string): string {
 }
 afterAll(() => {
   for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const row = (id: string, label: string) => HarnessModel.parse({ id, label });
 const CATALOG = [

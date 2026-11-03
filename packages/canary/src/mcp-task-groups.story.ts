@@ -17,7 +17,7 @@ import { cli, inspectSandboxLease, makeSandbox, readEvents, type Sandbox } from 
 const sandboxes: Sandbox[] = [];
 afterEach(() => {
   for (const sb of sandboxes.splice(0)) sb.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function fixture() {
   const sb = makeSandbox();

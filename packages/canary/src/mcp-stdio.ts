@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
+import type { TestContext } from "vitest";
 import { CLI, type Sandbox } from "./support.js";
 
 type Pending = {
@@ -22,6 +23,27 @@ export interface McpStdioClient {
   /** Kill the server without reading any outstanding reply (a lost response). */
   kill(): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * A story's close phase for afterEachClosed (#376). The clients close under the hook's deadline,
+ * and the returned tail stops the daemon and removes the sandbox with no deadline of its own. A
+ * client close that rejects, or settles after the hook's deadline, still stops the daemon and keeps
+ * the files. A close that never settles reaches neither, so its daemon outlives the hook.
+ */
+export async function closeThenDispose(
+  context: TestContext,
+  sandbox: Sandbox | undefined,
+  clients: McpStdioClient[],
+): Promise<() => void> {
+  let closed = false;
+  try {
+    for (const client of clients) await client.close();
+    closed = !context.signal.aborted; // Vitest aborts it when this hook's deadline passes.
+  } finally {
+    if (!closed) sandbox?.dispose({ keepFiles: true });
+  }
+  return () => sandbox?.dispose();
 }
 
 export function mcpStdioClient(

@@ -16,7 +16,7 @@ vi.mock("node:fs", async (importOriginal) => {
 const { appendLine } = await import("./index.js");
 
 const root = mkdtempSync(join(tmpdir(), "claudexor-append-line-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+afterAll(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("appendLine", () => {
   it("appends in order through the UTF-8 write, creating a missing directory once", () => {

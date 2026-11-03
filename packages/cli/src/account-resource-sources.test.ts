@@ -12,7 +12,7 @@ const roots: string[] = [];
 afterEach(() => {
   forgetClaudeOauthRejections();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 function fixture(harness = "claude") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "account-source-test-")));
   roots.push(root);

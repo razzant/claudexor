@@ -25,7 +25,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 const at = (offsetMs: number) => new Date(t0 + offsetMs).toISOString();
 

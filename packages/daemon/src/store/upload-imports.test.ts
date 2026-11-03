@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { putUploadInTx, readUploadRow } from "./resource-rows.js";
 import { runMutation } from "./mutation.js";
 import { chunks, resourceFixture, type ResourceFixture } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const fixtures: ResourceFixture[] = [];
@@ -20,13 +21,18 @@ async function open(path = root()) {
   return f;
 }
 async function close(f: ResourceFixture) {
-  fixtures.splice(fixtures.indexOf(f), 1);
+  // The fixture stays listed: teardown awaits the same close, whose outcome a second call
+  // shares, so a close that failed or settled late keeps this test's root (#376).
   await f.close();
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   vi.restoreAllMocks();
   for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
+  return () => {
+    for (const path of ownedRoots) rmSync(path, { recursive: true, force: true });
+  };
 });
 
 const bytes = Buffer.from("keyed import bytes\n");

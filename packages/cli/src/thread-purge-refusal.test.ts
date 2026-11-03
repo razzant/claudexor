@@ -27,7 +27,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPartition,
   createSqlDaemonServices,
@@ -39,6 +39,7 @@ import { ensureThreadWorktree, git } from "@claudexor/workspace";
 import { projectRemovalService } from "./project-removal.js";
 import { sqlActivityRecords } from "./sql-daemon-queries.js";
 import { threadPurgeEffect, threadPurgeOwner } from "./thread-purge.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 let root: string;
 let store: EngineStore;
@@ -61,11 +62,15 @@ beforeEach(async () => {
   store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
 });
 
-afterEach(async () => {
-  await graph.close();
-  await store.close();
-  vi.unstubAllEnvs();
-  rmSync(root, { recursive: true, force: true });
+afterEachClosed(async () => {
+  // This test's handles, taken before their closes: a late close never reaches the next test's.
+  const [ownedGraph, ownedStore] = [graph, store];
+  await ownedGraph.close();
+  await ownedStore.close();
+  return () => {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 function removeWithTrashedThreads(projectId: string) {

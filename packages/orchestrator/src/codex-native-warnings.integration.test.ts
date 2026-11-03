@@ -229,7 +229,7 @@ function stopping(closing: Frame[]): typeof spawnProcess {
 const roots: string[] = [];
 afterAll(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** `stop` presses Stop on `started` and serves the run from {@link stopping}. */
 async function run(

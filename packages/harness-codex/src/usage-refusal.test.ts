@@ -389,7 +389,10 @@ function codexHome(name: string): string {
   copyFileSync(fixture(name), join(day, `rollout-2026-09-12T07-27-38-${ROLLOUT_THREAD}.jsonl`));
   return home;
 }
-afterAll(() => homes.splice(0).forEach((home) => rmSync(home, { recursive: true, force: true })));
+afterAll(
+  () => homes.splice(0).forEach((home) => rmSync(home, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 afterEach(() => vi.useRealTimers());
 
 const ts = "2026-09-12T07:27:42.843Z";

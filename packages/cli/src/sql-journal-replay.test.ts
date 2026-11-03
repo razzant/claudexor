@@ -13,22 +13,29 @@ import {
   type JournalEventPage,
 } from "@claudexor/daemon";
 import { ControlJournalEvent } from "@claudexor/schema";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { readJournalEventPage, readJournalEvents } from "../../daemon/dist/store/cursors.js";
 import { quarantineGeneration } from "../../daemon/dist/store/generations.js";
 import { recoveryControlServices } from "./recovery-control-services.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const TOKEN = "journal-replay-fixture";
 const cleanups: Array<() => unknown> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 /** Real SQL owners behind the production recovery route binding and HTTP server. */
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sql-journal-replay-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const sql = await sqlFixture(root);
   cleanups.push(() => sql.close());
   const recovery = recoveryControlServices({

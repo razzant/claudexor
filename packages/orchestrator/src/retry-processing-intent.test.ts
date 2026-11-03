@@ -7,7 +7,10 @@ import type { ProcessingReceipt } from "@claudexor/schema";
 import { recordProcessingIntent, retryProcessingIntent } from "./retry-processing-intent.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const receipt = (native: string | null, source = "codex.managed_config"): ProcessingReceipt => ({
   requested: null,

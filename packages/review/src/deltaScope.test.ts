@@ -18,7 +18,7 @@ const deltaScopeInputWasRemoved: DeltaScopeInputWasRemoved = true;
 const reaped: string[] = [];
 afterEach(() => {
   while (reaped.length) rmSync(reaped.pop()!, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function mk(prefix: string): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));

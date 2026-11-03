@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import { sqlActivityRecords } from "./sql-daemon-queries.js";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
@@ -17,6 +17,7 @@ import { ArtifactStore } from "@claudexor/artifact-store";
 import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
 import { createRetentionRunner, scheduleStartupRetention } from "./retention-service.js";
 import { threadPurgeOwner } from "./thread-purge.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const sqlStores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
@@ -37,13 +38,17 @@ beforeEach(() => {
   writeFileSync(join(configDir, "config.yaml"), "retention:\n  keep_last_runs_per_project: 0\n");
 });
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const sql of sqlStores.splice(0).reverse()) await sql.close();
-  if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
-  if (previousHome === undefined) delete process.env.HOME;
-  else process.env.HOME = previousHome;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 /** A project root whose runtime dir holds one long-terminal run tree. */

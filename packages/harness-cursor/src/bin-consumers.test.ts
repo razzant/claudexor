@@ -38,7 +38,7 @@ afterEach(() => {
     else process.env[key] = value;
   }
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function script(path: string, body: string): string {
   mkdirSync(dirname(path), { recursive: true });

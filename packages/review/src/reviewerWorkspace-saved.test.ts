@@ -57,7 +57,7 @@ afterEach(() => {
   fullAt = null;
   for (const dir of locked.splice(0)) chmodSync(dir, 0o700);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 /** A saved copy holding `files`, listed with `candidatePaths`, prepared for one reviewer;
  * `unavailable`: what the first copy could not hold, and why. */

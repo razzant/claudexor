@@ -23,7 +23,10 @@ import { continuationSummary } from "./run-continuation-projection.js";
 import { readRunEventFacts } from "./run-event-facts.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const event = (seq: number, type: string, payload: Record<string, unknown>) => ({
   seq,

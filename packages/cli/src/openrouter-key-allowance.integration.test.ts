@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { updateGlobalConfig } from "@claudexor/config";
 import { QuotaRegistry } from "@claudexor/daemon";
 import { SecretStore } from "@claudexor/secrets";
@@ -19,6 +19,7 @@ import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
 import { quotaRefreshers } from "./quota-refreshers.js";
 import { quotaControlServices } from "./quota-services.js";
 import { quotaSubjectUniverseFromConfig } from "./quota-subject-universe.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 // Offline: synthetic keys in the temp secret store, a localhost stand-in for
 // OpenRouter's GET /api/v1/key, the real SQL ledger, registry and HTTP routes.
@@ -30,14 +31,20 @@ const roots: string[] = [];
 const stores: EngineStore[] = [];
 const servers: Array<{ stop(): Promise<void> }> = [];
 const savedEnv = { ...process.env };
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a late close or a later test never reaches
+  // another test's.
+  const ownedRoots = roots.splice(0);
+  const ownedStores = stores.splice(0);
   vi.useRealTimers();
   for (const server of servers.splice(0)) await server.stop();
-  for (const store of stores.splice(0)) await store.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  for (const name of ["CLAUDEXOR_OPENROUTER_BASE_URL", "OPENROUTER_API_KEY"])
-    if (savedEnv[name] === undefined) delete process.env[name];
-    else process.env[name] = savedEnv[name];
+  for (const store of ownedStores) await store.close();
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+    for (const name of ["CLAUDEXOR_OPENROUTER_BASE_URL", "OPENROUTER_API_KEY"])
+      if (savedEnv[name] === undefined) delete process.env[name];
+      else process.env[name] = savedEnv[name];
+  };
 });
 
 // Every figure is a literal the provider would send; the fixture does no arithmetic.

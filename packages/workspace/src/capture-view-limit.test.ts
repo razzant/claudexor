@@ -26,7 +26,7 @@ const roots: string[] = [];
 afterEach(() => {
   renders.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const LARGE = 1024 * 1024;
 
 function repo(): { root: string; git: (...args: string[]) => string } {

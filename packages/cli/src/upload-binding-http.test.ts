@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DaemonControlApiServer } from "@claudexor/control-api";
 import { createAccountEvidence, createSqlDaemonServices, EngineStore } from "@claudexor/daemon";
 import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
@@ -10,6 +10,7 @@ import { DurableJournal } from "../../daemon/src/store/test-support/fixtures/leg
 import { ResourceStore as FrozenResourceStore } from "../../daemon/src/store/test-support/fixtures/legacy/daemon/resource-store.js";
 import { controlServices } from "./control-services.js";
 import { openSqlStoreAfterTransport } from "./sql-startup-storage.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 // Deterministic native read failures; real chmod is bypassed by privileged users.
 const faults = vi.hoisted(() => ({
@@ -44,9 +45,15 @@ const request = {
   sizeBytes: 4,
 };
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   faults.match = null;
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 async function* chunks(value: string): AsyncIterable<Uint8Array> {
   yield Buffer.from(value);
@@ -59,7 +66,7 @@ const keyFile = (root: string, operation: "create" | "finalize", key: string) =>
 /** A historical root migrated by the shipped import worker and publication. */
 async function migratedRoot(seed: (legacy: FrozenResourceStore) => Promise<void>) {
   const root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), "upload-binding-http-")));
-  cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  removals.push(() => fs.rmSync(root, { recursive: true, force: true }));
   new DurableJournal({ rootDir: join(root, "journal"), partition: "global" }).close();
   await seed(new FrozenResourceStore(join(root, "resource-store")));
   const store = await openSqlStoreAfterTransport({
@@ -102,14 +109,14 @@ async function serve(root: string, now?: () => Date) {
   );
   const server = new DaemonControlApiServer({ token: TOKEN, daemon: {} as never, services });
   const { host, port } = await server.start();
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    await server.stop();
-    await graph.close();
-    await store.close();
-  };
+  let closing: Promise<void> | undefined;
+  /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+  const close = () =>
+    (closing ??= (async () => {
+      await server.stop();
+      await graph.close();
+      await store.close();
+    })());
   cleanups.push(close);
   const call = async (method: string, path: string, body?: unknown, key?: string) => {
     const headers: Record<string, string> = {

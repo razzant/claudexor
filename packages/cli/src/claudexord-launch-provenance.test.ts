@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 /**
  * C8 (sol SCOPE-06 + grok G-DIAG-01): claudexord owns the private
@@ -13,17 +14,23 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const daemonEntry = resolve(import.meta.dirname, "../dist/claudexord.js");
 const cleanups: Array<() => void | Promise<void>> = [];
+const removals: Array<() => void> = [];
 
 // Dispose in REVERSE registration order so a spawned daemon is killed and
 // REAPED before its root is removed: a SIGTERMed daemon still writes during
 // shutdown, and a recursive rm racing those writes fails ENOTEMPTY on Linux.
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const dispose of cleanups.splice(0).reverse()) await dispose();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 function freshRoot(): string {
   const root = realpathSync(mkdtempSync(join(realpathSync("/tmp"), "cx-prov-")));
-  cleanups.push(() =>
+  removals.push(() =>
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
   );
   return join(root, "config");

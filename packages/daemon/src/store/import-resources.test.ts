@@ -30,7 +30,7 @@ afterEach(() => {
   reads.forbidKeys = false;
   reads.paths = [];
   for (const path of roots.splice(0)) fs.rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 async function* chunks(value: string) {
   yield Buffer.from(value);
 }

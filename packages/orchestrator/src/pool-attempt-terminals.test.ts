@@ -932,7 +932,10 @@ function cancelAtTelemetry(cancel: AbortController) {
 
 describe("a cancel that lands after the strategy's verdict is the terminal's statement", () => {
   const dirs: string[] = [];
-  afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+  afterEach(
+    () => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })),
+    0,
+  ); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it.each([
     ["race", "user_cancelled"],
@@ -1490,7 +1493,10 @@ describe("a stop during the post-try capture keeps the try's own refusal note (#
 
 describe("the terminal-facts failure terminal names the run's list too", () => {
   const dirs: string[] = [];
-  afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
+  afterEach(
+    () => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })),
+    0,
+  ); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("keeps the announced attempts' rows when the terminal projection is unreadable", async () => {
     const repo = realpathSync(mkdtempSync(join(tmpdir(), "cx-pool-facts-")));

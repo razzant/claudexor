@@ -7,7 +7,7 @@ import {
 } from "@claudexor/workspace";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { applyCommandPruneInTx, SqlCommandPruner } from "./command-prune.js";
 import { applyCommandInTx, prepareCommandRow } from "./command-rows.js";
@@ -20,19 +20,26 @@ import { RetentionReferenceReader } from "./retention-reference-reader.js";
 import { diskRetentionReferences } from "./retention-references.js";
 import { commandRetentionCandidates } from "./retention.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const OLD = "2026-01-01T00:00:00.000Z",
   NOW = Date.parse("2026-10-10T00:00:00.000Z"),
   MONTH = 30 * 86400000;
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-sql-prune-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: join(root, "daemon"),
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),

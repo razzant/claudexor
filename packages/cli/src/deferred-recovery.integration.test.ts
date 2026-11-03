@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IncomingMessage, type ServerResponse } from "node:http";
 import { Socket } from "node:net";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 vi.mock("@claudexor/schema", () => import("../../schema/src/index.js"));
 vi.mock("@claudexor/control-api", () => import("../../control-api/src/index.js"));
 vi.mock("@claudexor/orchestrator", () => import("../../orchestrator/src/index.js"));
@@ -40,11 +40,18 @@ import { handleRunCreate } from "../../control-api/src/run-start.js";
 import { createDeferredStartPreparation } from "./deferred-start-preparation.js";
 import { boundedDeferredMessage } from "./mcp-deferred-message.js";
 import { executionRunConfig } from "../../orchestrator/src/run-defaults.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function config(maxTurns = 5) {
   return ResolvedConfig.parse({
@@ -56,7 +63,7 @@ function config(maxTurns = 5) {
 async function fixture(ttl?: "1h") {
   vi.mocked(loadConfig).mockReturnValue(config());
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-deferred-recovery-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "final"));
   const f = await sourceSqlFixture(root);
   cleanup.push(() => f.close());

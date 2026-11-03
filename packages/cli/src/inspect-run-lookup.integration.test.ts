@@ -56,7 +56,8 @@ import {
 import { canonicalDefaultSocketPath } from "@claudexor/daemon";
 import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const TOKEN = "fixture-token";
@@ -92,9 +93,11 @@ beforeEach(() => {
   closers = [];
 });
 
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const close of closers.splice(0).reverse()) await close();
-  rmSync(dir, { recursive: true, force: true });
+  return () => {
+    rmSync(dir, { recursive: true, force: true });
+  };
 });
 
 function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {

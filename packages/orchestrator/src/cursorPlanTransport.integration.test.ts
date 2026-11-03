@@ -20,7 +20,7 @@ afterAll(() => {
   for (const path of temporaryDirectories.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function initializedRepository(): Promise<string> {
   const root = temporaryDirectory("claudexor-cursor-plan-");

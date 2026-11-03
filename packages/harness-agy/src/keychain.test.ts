@@ -27,7 +27,7 @@ describe("agy private profile keychain", () => {
     if (previousConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previousConfig;
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function profileHome(name = "profile"): string {
     const root = mkdtempSync(join(tmpdir(), "agy-keychain-test-"));

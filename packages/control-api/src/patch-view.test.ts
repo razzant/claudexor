@@ -31,7 +31,7 @@ afterEach(() => {
   failingAfterFirstRead = null;
   reads = 0;
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function runWithView(reason: string) {
   const root = mkdtempSync(join(tmpdir(), "cx-patch-view-"));

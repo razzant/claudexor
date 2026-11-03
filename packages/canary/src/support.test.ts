@@ -147,6 +147,18 @@ describe("canary cleanup custody", () => {
     });
   });
 
+  it("stops the daemon but keeps the fixture when asked to keep its files", () => {
+    vi.mocked(spawnSync)
+      .mockReturnValueOnce(leaseResult(ACTIVE))
+      .mockReturnValueOnce(processResult())
+      .mockReturnValueOnce(leaseResult(ABSENT));
+    const sb = makeSandbox();
+    sb.dispose({ keepFiles: true });
+    expect(spawnSync).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(spawnSync).mock.calls[1]?.[1]).toEqual([CLI, "daemon", "stop", "--json"]);
+    expect(rmSync).not.toHaveBeenCalled();
+  });
+
   it.each([ABSENT, { ...STALE, pid: 202 }])(
     "removes after successful stop only when the current lease is inactive: %j",
     (after) => {

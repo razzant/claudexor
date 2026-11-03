@@ -20,7 +20,7 @@ afterEach(() => {
   clearCursorStatusCache();
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function profileRoot() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cursor-proof-")));

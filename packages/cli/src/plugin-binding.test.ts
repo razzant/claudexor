@@ -54,7 +54,7 @@ describe("external host plugin binding", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   function selectRuntime(version: string): void {
     const file = join(dir, `runtime-${version}.mjs`);

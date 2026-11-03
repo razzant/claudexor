@@ -50,7 +50,7 @@ function initRepo(): { repo: string; base: string } {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("transient Git capture cleanup", () => {
   it("preserves the primary typed capture error when scratch cleanup also fails", async () => {

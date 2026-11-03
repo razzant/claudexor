@@ -19,7 +19,7 @@ const token = "daemon-token-live-message";
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 type Row = { seq: number; type: string; payload: Record<string, unknown> };
 

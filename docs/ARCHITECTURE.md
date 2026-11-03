@@ -3211,9 +3211,11 @@ catalog (`packages/control-api/src/operation-catalog.ts`) carrying method, path,
 one-line summary, mutability, auth boundary, applicability plane, and
 request/response schema names.
 That catalog is the single source of truth (Zen #4): the daemon serves it at
-`GET /v2/operations`, and `node scripts/gen-endpoints-doc.mjs` derives BOTH the
-canonical inventory below and the machine-readable endpoint map for external
-agents at `docs/reference/endpoints.json` (method, path, mutating flag,
+`GET /v2/operations`. `node scripts/gen-endpoints-doc.mjs` writes two
+projections: the canonical inventory below, from the route guards actually wired
+in the control-API source, and, from the built catalog's descriptors, the
+machine-readable endpoint map for external agents at
+`docs/reference/endpoints.json` (method, path, mutating flag,
 applicability, summary, auth, located parameters, and request/response/error
 schema names referencing the generated JSON
 Schemas in `packages/schema/generated/`). README and INTEGRATIONS link here

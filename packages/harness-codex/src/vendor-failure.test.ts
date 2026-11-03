@@ -33,7 +33,7 @@ beforeAll(() => {
   mkdirSync(day, { recursive: true });
   copyFileSync(FIXTURE, join(day, `rollout-2026-09-15T12-42-52-${THREAD}.jsonl`));
 });
-afterAll(() => rmSync(home, { recursive: true, force: true }));
+afterAll(() => rmSync(home, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(SPAWN_MS);
@@ -166,7 +166,7 @@ describe("codex adapter run (wiring)", () => {
   const profileHomes: string[] = [];
   afterAll(() => {
     for (const dir of profileHomes) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   async function run(announceThread: boolean): Promise<HarnessEvent[]> {
     mkdirSync(ownedTmp, { recursive: true });

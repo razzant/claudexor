@@ -13,7 +13,7 @@ import { legacyCommandFixture as legacyCommandBackend } from "./test-support/leg
 const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const dispose of cleanup.splice(0).reverse()) dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function stores() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-port-")));

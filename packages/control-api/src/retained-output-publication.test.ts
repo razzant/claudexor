@@ -63,7 +63,7 @@ describe("main-owned retained output publication", () => {
     state.afterCleanup = null;
     state.failedPath = null;
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("lets an atomic publication finish after Stop without waiting for it or exposing a partial result", async () => {
     const text = "Recovered bytes: αβ🙂\n".repeat(100);

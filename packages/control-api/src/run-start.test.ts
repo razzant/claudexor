@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ControlProblem, ControlRunStartResponse } from "@claudexor/schema";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { DaemonControlApiServer, type DaemonFacadeClient } from "./daemon-server.js";
@@ -10,13 +10,18 @@ import {
   normalizeExistingProjectRoot,
   normalizeRunStartRequest,
 } from "./run-start.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const groupCleanups: Array<() => Promise<void>> = [];
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const close of groupCleanups.splice(0).reverse()) await close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 const GROUP = "11111111-1111-4111-8111-111111111111";

@@ -55,7 +55,7 @@ afterEach(() => {
   if (configDirOverride === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
   else process.env.CLAUDEXOR_CONFIG_DIR = configDirOverride;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("worktreePrune", () => {
   it("never deregisters a stale worktree Claudexor does not own", async () => {

@@ -116,7 +116,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(work, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("build-runtime-closure", () => {
   it("consumes the common resource stage without an app bundle", () => {

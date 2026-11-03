@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 vi.mock("@claudexor/schema", () => import("../../../schema/src/index.js"));
 import {
   ControlRunStartRequest,
@@ -12,17 +12,24 @@ import {
 import { sourceSqlFixture } from "./test-support/source-sql-fixture.js";
 import { DeferredMessages } from "../deferred-messages.js";
 import { admitCommandRequest } from "../command-rpc.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const close: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const fn of close.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 it.each(["before-promotion", "after-commit", "during-execution"] as const)(
   "holds or recovers the exact receipt across physical close/reopen: %s",
   async (phase) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-deferred-restart-")));
-    close.push(() => rmSync(root, { recursive: true, force: true }));
+    removals.push(() => rmSync(root, { recursive: true, force: true }));
     const first = await sourceSqlFixture(root);
     close.push(() => first.close());
     const request = ControlRunStartRequest.parse({ mode: "ask", prompt: "first" });

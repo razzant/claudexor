@@ -15,7 +15,7 @@ import {
   validateRunFactsInvariants,
 } from "@claudexor/schema";
 import { appendLine } from "@claudexor/util";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   streamRunEvents,
   type StreamEventsCtx,
@@ -34,6 +34,7 @@ import { settleJobError } from "../job-settlement.js";
 import { applyTerminalInTx } from "./run-events.js";
 import { applyCommandInTx, commandRow, prepareCommandRow } from "./command-rows.js";
 import { runMutation } from "./mutation.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const syncSpies = vi.hoisted(() => ({ fsyncSync: vi.fn(), fdatasyncSync: vi.fn() }));
 vi.mock("node:fs", async (importOriginal) => {
@@ -53,10 +54,16 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const TIME = "2026-10-10T00:00:00.000Z";
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const spy of Object.values(syncSpies)) spy.mockClear();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function facts() {
   const outcome = makeOutcomeFacts("failed", { reason: "harness_failed" });
@@ -136,7 +143,7 @@ async function runtime(root: string, io: ConstructorParameters<typeof SqlTermina
 }
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "cx-sql-terminal-"));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const runDir = join(root, "run");
   mkdirSync(join(runDir, "final"), { recursive: true });
   let fault: string | null = null;
@@ -430,7 +437,7 @@ describe("SQL terminal transaction and real EventLog", () => {
 
   it("T-TRM-3: SIGKILL after SQL commit leaves an obligation that a fresh process state repairs", async () => {
     const root = mkdtempSync(join(tmpdir(), "cx-sql-kill-"));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    removals.push(() => rmSync(root, { recursive: true, force: true }));
     const runDir = join(root, "run");
     mkdirSync(join(runDir, "final"), { recursive: true });
     const modules = Object.fromEntries(

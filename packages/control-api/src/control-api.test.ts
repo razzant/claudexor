@@ -63,7 +63,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-}, 30_000);
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
   if (input instanceof Request) return globalThis.fetch(input, init);
