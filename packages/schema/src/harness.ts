@@ -4,6 +4,7 @@ import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js"
 import { CredentialProfile } from "./credential-profile.js";
 import { ToolRef } from "./tool-ref.js";
 import { AccessControlCapabilities, IsolationCapabilities } from "./harness-confinement.js";
+import { RouteControls, WebPolicySupport } from "./route-controls.js";
 export {
   AccessControlCapabilities,
   ReadonlyMechanism,
@@ -64,22 +65,6 @@ export const HarnessKind = z
   .enum(["local_cli", "remote_api", "fake"])
   .describe("Kind of harness adapter: a local vendor CLI, a remote API, or a fake used for tests.");
 export type HarnessKind = z.infer<typeof HarnessKind>;
-
-/**
- * How a harness can honor the external web policy:
- * - `native`: web modes are a native config surface (codex web_search).
- * - `tools`: web runs through permissioned tools the adapter can allow/deny (claude).
- * - `uncontrolled`: the harness CAN reach the web but exposes no enforceable
- *   switch — incompatible only with strict `off`. cursor/opencode today.
- * - `none`: the harness has NO web access at all — trivially satisfies `off`,
- *   while non-off policies remain optional preferences. raw-api/fake.
- */
-export const WebPolicySupport = z
-  .enum(["native", "tools", "uncontrolled", "none"])
-  .describe(
-    "How a harness can honor the external web policy: native (a native config surface), tools (permissioned tools the adapter can allow/deny), uncontrolled (can reach the web but exposes no enforceable switch), or none (no web access at all).",
-  );
-export type WebPolicySupport = z.infer<typeof WebPolicySupport>;
 
 /**
  * Declared capabilities the ENGINE actually consumes (intent gating, routing,
@@ -399,7 +384,7 @@ export const HarnessManifest = z
     access_profiles_supported: z
       .array(AccessProfile)
       .default([])
-      .describe("Access profiles the adapter can enforce."),
+      .describe("Access profiles the adapter can translate to its harness."),
   })
   .describe(
     "Static manifest an adapter declares for its harness: identity, kind, capabilities, auth modes, and access profiles.",
@@ -697,6 +682,7 @@ export const HarnessEvent = z
     processing: ProcessingReceipt.optional(),
     processing_cost_basis: ProcessingCostBasis.optional(),
     prompt_cache_ttl: PromptCacheTtlReceipt.optional(),
+    route_controls: RouteControls.optional(),
     type: z
       .enum([
         "started",

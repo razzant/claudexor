@@ -40,6 +40,7 @@ import {
   CONTROL_STORE_IDENTITY_HEADER,
 } from "@claudexor/schema";
 import { projectObjectResultDisclosure } from "./mcp-run-projections.js";
+import { accessRouteLines, webRouteLines } from "./inspect-route-lines.js";
 import {
   flagBool,
   flagStr,
@@ -1139,6 +1140,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
           `access: requested=${contract.data.access.requested_profile} effective=${contract.data.access.effective_profile}`,
         );
       }
+      for (const line of accessRouteLines(telemetry)) print(line);
       for (const line of inspectDelegationLines(telemetry?.delegation ?? null)) print(line);
       if (telemetry) {
         print(
@@ -1149,6 +1151,7 @@ async function dispatch(args: ParsedArgs, outputMode: CliOutputMode): Promise<nu
             `${requirement.capability}: harness=${requirement.harness_id} requested=true effective=${requirement.effective} reason=${requirement.reason}`,
           );
         }
+        for (const line of webRouteLines(telemetry)) print(line);
       } else if (contract.success) {
         print(
           `web: policy=${contract.data.external_context.policy} required=${contract.data.external_context.web_required} evidence=unavailable (no telemetry.yaml)`,

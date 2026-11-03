@@ -248,7 +248,21 @@ daemon/control API for long-running interactive use and use CLI JSON only where
 the command documents or returns machine-readable output.
 
 `--web off|auto|cached|live` is the CLI-first external context policy. It is
-separate from process/network sandboxing. `claudexor inspect <run_id> --json`
+separate from process/network sandboxing: `off` switches off each route's own
+web tools, and web evidence counts typed web tool calls and engine Browser calls
+only (`web.observation.network: not_measured`), so `attempted: false` says
+nothing about network use. Each attempt's `route_controls` names what was
+prepared for the route, just before dispatch: its web switch, the access profile,
+the vendor's own access arguments and the access mechanism (only `fs_sandbox`
+declares an OS file boundary, the vendor's own; `native_settings` leaves it
+unknown). `native_session_started` says whether a native start was reported; `false`
+never proves that no process ran. The run summary projects them as `routeControls`
+(empty when no route was prepared or on older records), and text `inspect` prints
+`access route`, `web route` (with the Browser's reported `browser_startup`),
+`web retrieval` (naming `(page)` or `(search results)` for a verified result, and
+`none` when completed web tools retrieved nothing) and `web scope` lines. See the
+[route controls receipt](ARCHITECTURE.md#route-controls-receipt).
+`claudexor inspect <run_id> --json`
 projects the run artifacts: output-ready state, the task contract, the
 engine-owned telemetry (web evidence, token usage, the auth route receipt,
 structured-output conformance, unrecovered tool errors), primary output,
@@ -2317,6 +2331,27 @@ line breaks as bounded, unmasked `content_summary`; status `failed` covers an
 else the result text on one line, as `error_summary`. Any other status stays
 statusless. The tool identity stays the native tool name with `server:tool` as
 target, which Browser and Delegate evidence match.
+Codex starts an explicitly selected Browser as an optional MCP server in the
+background. A server not ready about one second after `turn/start` is absent from
+that first model request, both from code-mode `ALL_TOOLS` and from `tool_search`
+results; a later request or turn can include it. So when Browser is injected the
+adapter holds `turn/start`, after `thread/start` and `thread/resume` alike, until
+`mcpServer/startupStatus/updated` reports Browser `ready`, `failed` or `cancelled`.
+Codex keeps its own 90-second `startup_timeout_sec`; the adapter holds the turn at
+most five seconds longer, a grace for the status to arrive, so a failure Codex
+reports at its limit (observed at about 90.06 s) keeps Codex's own reason and a
+missing status cannot hold the turn longer. Stop ends the wait as `user_cancelled`
+without starting a turn. Other optional servers are not waited for. Browser's startup never
+decides the run: one nonterminal `status` event follows `started`, with
+`payload.code: codex_browser_startup`, `status` (`ready`, `failed`, `cancelled`,
+`starting` or `not_observed`), `waited_ms` and Codex's own reason as masked `error`,
+and the Control timeline shows it as an `info` row. The engine records the same
+receipt as the attempt's `browser.startup` and the run summary as the route's
+`browserStartup`; a Browser that was handed to a route but reported nothing stays
+null there. The macOS Browser badge reads it as `prepared`, `ready`,
+`startup failed`, `startup cancelled` or `startup unconfirmed`, never as a failed
+run. The turn goes on without Browser, so work needing a page stays unmet unless a
+page was actually read.
 `account/rateLimits/updated` maps measured known-scope windows to independent
 status+quota events from that same running process, without token usage or a
 cooldown. The full quota reader shares the native window codec; supplied RPC

@@ -1,0 +1,15 @@
+{
+  "schema": "ControlRouteControl",
+  "value": {
+    "harnessId": "claude",
+    "webMode": "off",
+    "webMechanism": "tools",
+    "browser": false,
+    "browserStartup": null,
+    "access": "inherit_native",
+    "nativeAccess": null,
+    "accessMechanism": "native_settings",
+    "nativeSessionStarted": false,
+    "homeScoped": null
+  }
+}

@@ -7,16 +7,22 @@ import {
   CodexServerRequestRefusal,
   codexAppServerEvents,
   codexRequestRefusal,
-  codexRequiredMcpStatuses,
   createCodexSteer,
   errorText,
   readCodexLifecycle,
   rpcProvenance,
-  waitForCodexMcp,
   type CodexThreadLifecycle,
   type CodexAppServerRunInput,
   type JsonObject,
 } from "./app-server-protocol.js";
+import {
+  CodexBrowserStartup,
+  codexRequiredMcpStatuses,
+  notificationArrival,
+  observeCodexMcpStartup,
+  waitForCodexBrowser,
+  waitForCodexMcp,
+} from "./app-server-mcp-startup.js";
 import { CodexCancellation } from "./app-server-cancel.js";
 import { CodexApprovals } from "./app-server-approvals.js";
 import { CodexAutoReview } from "./app-server-auto-review.js";
@@ -86,6 +92,7 @@ export async function* runCodexAppServer(
   let outputDrainTruncated = false;
   let nativeSystemError = false;
   const requiredMcpStatuses = codexRequiredMcpStatuses(input.spec);
+  const browserStartup = new CodexBrowserStartup(input.spec);
   const parseState: CodexParseState = {
     envelopeActive: input.spec.output_schema !== undefined && input.spec.output_schema !== null,
     requiredMcpServers: input.spec.extra_mcp_servers
@@ -143,23 +150,8 @@ export async function* runCodexAppServer(
         autoReview.close(new Error("Codex root thread failed during native authorization"));
       }
     } else if (method === "mcpServer/startupStatus/updated") {
-      const name = params?.["name"];
-      const status = params?.["status"];
-      if (
-        typeof name === "string" &&
-        requiredMcpStatuses.has(name) &&
-        (status === "starting" ||
-          status === "ready" ||
-          status === "failed" ||
-          status === "cancelled")
-      ) {
-        const error = params?.["error"] ?? params?.["failureReason"];
-        requiredMcpStatuses.set(name, {
-          status,
-          ...(typeof error === "string" ? { error } : {}),
-        });
-        if (status === "failed" || status === "cancelled") harnessReportedError = true;
-      }
+      if (observeCodexMcpStartup(params, requiredMcpStatuses, browserStartup))
+        harnessReportedError = true;
     }
   };
   const onMessage = (message: unknown): void => {
@@ -283,6 +275,10 @@ export async function* runCodexAppServer(
     send: (method, params) => rpcProvenance(request(method, params, false)),
     responseDeadlineMs: input.steerDeadlineMs ?? 30_000,
   });
+  const assertProcessLive = (): void => {
+    if (processFailure) throw processFailure;
+    if (processStopped) throw cancellation.failure ?? new Error("Codex app-server disconnected");
+  };
   const nextNotification = async (
     method: string,
     accept: (params: JsonObject | null) => boolean = () => true,
@@ -293,10 +289,8 @@ export async function* runCodexAppServer(
         (item) => item["method"] === method && accept(asObject(item["params"])),
       );
       if (index >= 0) return consume ? notifications.splice(index, 1)[0]! : notifications[index]!;
-      if (processFailure) throw processFailure;
-      await new Promise<void>((resolve) => {
-        notificationWaiter.wake = resolve;
-      });
+      assertProcessLive();
+      await notificationArrival(notificationWaiter);
     }
   };
   /** Next queued notification; with `timeoutMs`, `null` once the wait lapses in silence. */
@@ -304,21 +298,8 @@ export async function* runCodexAppServer(
     for (;;) {
       const next = notifications.shift();
       if (next) return next;
-      if (processFailure) throw processFailure;
-      if (processStopped) throw cancellation.failure ?? new Error("Codex app-server disconnected");
-      const woke = await new Promise<boolean>((resolve) => {
-        let timer: NodeJS.Timeout | undefined;
-        notificationWaiter.wake = () => {
-          if (timer) clearTimeout(timer);
-          resolve(true);
-        };
-        if (timeoutMs !== undefined)
-          timer = setTimeout(() => {
-            notificationWaiter.wake = undefined;
-            resolve(false);
-          }, timeoutMs);
-      });
-      if (!woke) return null;
+      assertProcessLive();
+      if (!(await notificationArrival(notificationWaiter, timeoutMs))) return null;
     }
   };
   let stopPromise: Promise<void> | null = null;
@@ -389,6 +370,14 @@ export async function* runCodexAppServer(
     // arrival order now that start named the root; resume was bound upfront.
     if (rootWasUnknown) notifications.forEach(observeOwnNotification);
     await waitForCodexMcp(requiredMcpStatuses, nextNotification);
+    await waitForCodexBrowser({
+      startup: browserStartup,
+      deadlineMs: input.browserStartupDeadlineMs,
+      assertProcessLive,
+      stopRequested: () => cancellation.requested,
+      abandoned: () => nativeSystemError,
+      nextArrival: (timeoutMs) => notificationArrival(notificationWaiter, timeoutMs),
+    });
     // Explicit auxiliary roots ride only the turn policy (app-server-session.ts).
     const sandboxPolicy = codexTurnSandboxPolicy(input.spec, threadResult["sandbox"]);
     yield await startCodexTurn({
@@ -399,6 +388,7 @@ export async function* runCodexAppServer(
       request,
       nextNotification,
     });
+    yield* browserStartup.takeEvents(input.spec.session_id);
     if (launchAdvisory) {
       yield {
         type: "status",

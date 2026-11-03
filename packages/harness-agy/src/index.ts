@@ -16,6 +16,7 @@ import {
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, HarnessModelSpec } from "@claudexor/core";
 import {
+  formatNativeArgs,
   HarnessUnavailableError,
   harnessPlatform,
   needsPrivatePerProfileKeychain,
@@ -263,6 +264,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
     },
     id: "agy",
     childHome: agyChildHome,
+    nativeAccess: (spec) => formatNativeArgs(accessArgs(spec.access)),
     // The level is a token of the model id: `prepareProcessing` selects the
     // listed variant of the requested model's family from the pinned
     // account's live inventory and returns the effort receipt with it.

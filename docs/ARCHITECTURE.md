@@ -363,7 +363,9 @@ restart-interrupted turn proves nothing about that (see Daemon lifecycle).
 The active access profiles are `readonly`, `workspace_write`, `full`, and
 `inherit_native`. Each adapter translates that request to its own native
 permission mode; the generic run loop invokes the adapter command directly.
-Claudexor adds no outer Seatbelt or other OS filesystem boundary. A scoped
+Claudexor adds no outer Seatbelt or other OS filesystem boundary; each spawn
+records the native setting prepared for it
+([route controls receipt](#route-controls-receipt)). A scoped
 `HOME` or named vendor profile selects credentials and keeps vendor-written
 state separate, but it is not containment and does not prevent same-user host
 access. New delegated attempt and candidate evidence records this deliberate
@@ -407,6 +409,49 @@ likewise requires an active PATCH or turn override. Browser and Delegate use
 the selected adapter's existing native MCP-injection access requirement:
 Claude can host Browser or the belt under `workspace_write`, while Codex needs
 explicit trusted `full`; no access rewrite hides that difference.
+
+#### Route controls receipt
+
+Every routed spawn passes the per-spawn gate, which records, just before it
+dispatches the adapter, what the engine prepared for that route
+(`HarnessEvent.route_controls`, folded into `attempts[].route_controls` of
+`final/telemetry.yaml`): `web_mechanism` (the route's declared `web_policy`),
+`access` (the profile handed over), `native_access` (the vendor's own access
+arguments or request parameters, from the same adapter helper that passes them;
+Codex, Claude, Cursor and Antigravity disclose it, other adapters leave it null)
+and `access_mechanism` (the manifest's `readonly_mechanism` or `write_mechanism`
+for that profile, `none` for `full`, `native_settings` for `inherit_native`).
+A Stop observed before this receipt suppresses the receipt. The gate checks Stop
+again after it, so a Stop that lands while it is read keeps the receipt and
+never calls the adapter. The receipt is not proof that anything ran: an adapter
+can still refuse before launching, as a logged-out Cursor or Claude's unsupported
+readonly profile does, and a stop can still land after dispatch. So
+`native_session_started` beside it reports whether any try of the attempt emitted
+the typed `started` event, which such a refusal never does. `false` means none was
+observed, not that no process ran: events after Stop are stored but not folded,
+so a child stopped after its dispatch can have run briefly. Raw API routes
+emit `started` just before their POST and have no native process.
+
+The receipt changes nothing the harness receives. Only `fs_sandbox` declares an OS
+file boundary, the vendor's own as the vendor applies it; Claudexor does not verify
+its coverage. The other mechanisms declare none, which is what the manifest says,
+not a measurement: Cursor's `--sandbox enabled` still appears verbatim in
+`native_access`. `native_settings` means Claudexor passes no access profile, so the
+harness's own configuration decides and what it confines is unknown here, including
+any confinement of its own.
+
+An attempt whose lane records the applied HOME fact (Agent attempts) also carries
+`harness_home_isolated`. `true` means the engine assigned its child a Claudexor-owned HOME: an
+isolated envelope, a delegated run, or a named account's `childHome` (Cursor,
+Antigravity, Grok). `false` means the engine did not replace HOME, as for an
+in-place readonly Agent, so the child inherits the engine's own environment; that
+is the operator's HOME unless a host started the engine with another, and an adapter
+can still relocate vendor state. Ask and Plan spawns run in a scoped route-context
+or lane HOME but record no such fact, so nothing is claimed for them. The run summary
+projects the distinct routes as `routeControls`, and `claudexor inspect` prints them.
+A route handed the engine Browser also carries `browserStartup`: the startup its
+adapter reported before the first model request (Codex today), or null when it
+reported none, so an armed Browser that was only prepared never reads as connected.
 
 ## 4. Routing
 
@@ -792,10 +837,17 @@ tells the caller to enable web or choose an off-enforceable harness. Per-route
 upgrades (Claude has no cached web index, so `cached` runs as `live`) are
 disclosed via `policy.web.upgraded` events and recorded in telemetry. Adapters
 map the policy to native controls: Claude Code gets explicit
-`WebSearch`/`WebFetch` allow/deny arguments, Codex gets `web_search` config, and
-managed Cursor readonly uses Ask + `--force` + sandbox enabled for non-off
-policies while `off` and `inherit_native` receive no injected force.
-Command/network sandboxing remains separate.
+`WebSearch`/`WebFetch` allow/deny arguments, Codex gets its `web_search`
+setting, and Cursor has no web switch, so a run lane under `off` refuses it.
+Cursor's access arguments are `--sandbox enabled --trust` plus Ask mode for
+`readonly`, with `--force` (which also approves Cursor's own web tools) whenever
+web is not `off`; `workspace_write` passes `--force --sandbox enabled --trust`,
+`full` passes `--force --sandbox disabled --trust`, and `inherit_native` passes
+only `--trust`. Ask mode withholds Cursor's write and shell tools, a vendor tool
+allowlist rather than a declared OS file boundary. None of these web controls is
+a network switch: the vendor API connection stays open and an allowed shell
+command can still reach the network. Each spawn records what was prepared for its
+route ([route controls receipt](#route-controls-receipt)).
 
 `access=full` (unsandboxed) requested by an operator at a surface additionally
 requires `allow_full_access: true` in the USER-LEVEL trust config
@@ -1063,7 +1115,22 @@ without valid recovery identity refuses cleanup rather than orphaning the child
 by deleting its only proof.
 
 `auto`, `cached`, and `live` permit web tools where the harness supports them
-and record whether web was attempted and at what verification strength. For
+and record whether web was attempted and at what verification strength. Web
+evidence comes only from typed web tool calls and engine Browser calls
+(`web.observation: {evidence: tool_calls, network: not_measured}`), so
+`attempted: false` never means that no network was used. `verified` needs a
+typed retrieval, and `verified_content` says what it returned: a `page` for
+Claude's WebFetch or a Browser navigation or snapshot whose own Page section shows
+a loaded http(s) page without an HTTP error status, or `search_results` for
+Claude's WebSearch, which is not a fetched page. The adapter stamps a Browser
+result through `browserPageRetrieval` from the whole reply of the pinned Browser
+MCP, before the bounded `content_summary` can cut a long one; recorded replies of
+that pin back the rule and a pin bump re-records them. A completed web call
+without a typed retrieval, such as Codex `web_search` or a Browser page read that
+got an HTTP error status, is `dispatched`. A Browser call that read no web page
+(closing, clicking, listing tabs, an `about:blank` or `data:` page) carries no
+retrieval stamp: it still counts as completed web activity (`satisfied`), so the
+policy below is unchanged, while the strength stays `none`. For
 ordinary contracts, web is optional: unused, denied, unavailable, or errored
 activity remains warning/evidence telemetry and neither decides terminal
 success nor starts route fallback. Only an explicitly persisted
@@ -3440,7 +3507,7 @@ failure groups, keyed by the typed failure category, sub-code and the first
 line of the display-safe message (redacted, at most 160 characters). The
 harness is the run's settled route harness from telemetry, else its failure's
 harness, else its primary harness, else `unknown`; the access profile is the
-one the engine enforced (telemetry, else the task contract), else `unknown`,
+one the engine passed to its routes (telemetry, else the task contract), else `unknown`,
 and the retired `external_sandbox_full` counts as `full`. Routes are sorted by
 harness, then access. The answer is computed on demand from the retained run
 records: no store and no background job. The window is a creation cohort
@@ -7901,10 +7968,14 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   `kind:"mcp"` (there is no `browser` ToolKind), so the attempt-telemetry web
   fold recognizes a browser tool call as trusted live-web activity by matching
   the ENGINE-INJECTED `browser` server namespace only (a user MCP server cannot
-  spoof it). A successful browser navigation records
-  `web.verification: verified` plus a typed
-  `browser: {attempted, satisfied, failed, unused}` receipt; a failed browser
-  call remains attributable warning evidence. Claude and Codex keep the
+  spoof it). A successful browser navigation or snapshot whose own reply shows a
+  loaded http(s) page records `web.verification: verified` with
+  `web.verified_content: page`; one that read no web page (closing, clicking,
+  tabs, `about:blank`) is satisfied activity with no retrieval strength (#118).
+  The attempt also carries a typed
+  `browser: {attempted, satisfied, failed, unused, startup}` receipt, where
+  `startup` is the selected Browser's startup as the adapter reported it (#215);
+  a failed browser call remains attributable warning evidence. Claude and Codex keep the
   browser's returned text (page URL, title, snapshot) with its line breaks as
   the result's bounded, unmasked `content_summary`, so the journal shows which
   page was read. The

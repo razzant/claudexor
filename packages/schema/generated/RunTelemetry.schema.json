@@ -48,7 +48,7 @@
             "inherit_native",
             "external_sandbox_full"
           ],
-          "description": "Access profile enforced by the engine."
+          "description": "Access profile the engine resolved and passed to its routes; each route's native setting is in attempts[].route_controls."
         },
         "external_context_policy": {
           "type": "string",
@@ -68,7 +68,7 @@
             "cached",
             "live"
           ],
-          "description": "Web policy actually executed by the selected route."
+          "description": "Web policy given to the selected route, after disclosed upgrades (e.g. cached to live); not proof that a native session ran."
         },
         "web_required": {
           "type": "boolean",
@@ -111,12 +111,12 @@
             "effective_mode": {
               "$ref": "#/definitions/RunTelemetry/properties/web/properties/policy",
               "default": "auto",
-              "description": "Policy actually executed by the harness route (disclosed upgrades, e.g. cached to live)."
+              "description": "Policy given to the harness route, after disclosed upgrades (e.g. cached to live); not proof that a native session ran."
             },
             "attempted": {
               "type": "boolean",
               "default": false,
-              "description": "Whether any web activity was attempted."
+              "description": "Whether a web tool call or engine Browser call was observed; not a network measurement (see observation)."
             },
             "satisfied": {
               "type": "boolean",
@@ -143,7 +143,23 @@
                 "none"
               ],
               "default": "none",
-              "description": "Retrieval-proof strength of observed web activity: verified (typed successful retrieval; content proven), dispatched (operation completed but no typed retrieval outcome; content not proven), or none."
+              "description": "Retrieval-proof strength of observed web activity: verified (a typed successful retrieval; verified_content says of what), dispatched (a web call completed without a typed retrieval result), or none (no search or page retrieval observed, though a Browser action may have completed)."
+            },
+            "verified_content": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "page",
+                    "search_results"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "What the verified retrieval returned: page (a fetched or loaded page; it outranks search results) or search_results (a web search's results, not a fetched page); null when nothing was verified or the record predates this field."
             },
             "tool": {
               "type": [
@@ -168,6 +184,31 @@
               ],
               "default": null,
               "description": "Redacted error detail when web activity failed."
+            },
+            "observation": {
+              "type": "object",
+              "properties": {
+                "evidence": {
+                  "type": "string",
+                  "const": "tool_calls",
+                  "description": "Web evidence comes from typed web tool calls and engine Browser MCP calls."
+                },
+                "network": {
+                  "type": "string",
+                  "const": "not_measured",
+                  "description": "Process network traffic is not measured: vendor API traffic, shell commands and other tools can use the network without appearing here."
+                }
+              },
+              "required": [
+                "evidence",
+                "network"
+              ],
+              "additionalProperties": false,
+              "description": "Scope of the web evidence: observed tool calls only, never a network measurement.",
+              "default": {
+                "evidence": "tool_calls",
+                "network": "not_measured"
+              }
             }
           },
           "additionalProperties": false,
@@ -1030,6 +1071,9 @@
                   "verification": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/verification"
                   },
+                  "verified_content": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/verified_content"
+                  },
                   "tool": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/tool"
                   },
@@ -1038,10 +1082,73 @@
                   },
                   "error_summary": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/error_summary"
+                  },
+                  "observation": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/observation"
                   }
                 },
                 "additionalProperties": false,
                 "description": "Typed web-evidence record computed by the orchestrator; surfaces project it and never re-derive evidence from raw events."
+              },
+              "route_controls": {
+                "type": "object",
+                "properties": {
+                  "web_mechanism": {
+                    "type": "string",
+                    "enum": [
+                      "native",
+                      "tools",
+                      "uncontrolled",
+                      "none"
+                    ],
+                    "description": "How this route's own web tools are switched for its web policy (the manifest's web_policy)."
+                  },
+                  "access": {
+                    "type": "string",
+                    "enum": [
+                      "readonly",
+                      "workspace_write",
+                      "full",
+                      "inherit_native"
+                    ],
+                    "description": "Access profile handed to this spawn."
+                  },
+                  "native_access": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "The vendor access setting the adapter builds for that profile, in the vendor's own spelling (argv or request parameters) and from the helper that passes it; null when it passes none or does not disclose it."
+                  },
+                  "access_mechanism": {
+                    "type": "string",
+                    "enum": [
+                      "fs_sandbox",
+                      "permission_deny",
+                      "tool_allowlist",
+                      "tool_policy",
+                      "native_settings",
+                      "none"
+                    ],
+                    "description": "How the route's access profile reaches the harness: fs_sandbox (the vendor's own file-system sandbox, as the vendor applies it), permission_deny, tool_allowlist or tool_policy (vendor tool permissions; the manifest declares no OS file boundary), native_settings (inherit_native: Claudexor passes no access profile, so the harness's own configuration decides and what it confines is unknown here), or none (full access, or a route that declares no control)."
+                  }
+                },
+                "required": [
+                  "web_mechanism",
+                  "access",
+                  "native_access",
+                  "access_mechanism"
+                ],
+                "additionalProperties": false,
+                "description": "Native web and access controls prepared for this attempt's last spawn (#118, #413); absent on older records and when no spawn was dispatched."
+              },
+              "native_session_started": {
+                "type": "boolean",
+                "description": "Present with route_controls: whether an adapter reported a native session started during this attempt (the typed started event, which an adapter's own pre-spawn refusal never emits). False means none was observed: refused before launch, or stopped or ended before a start was reported. It does not prove that no process ran."
+              },
+              "harness_home_isolated": {
+                "type": "boolean",
+                "description": "The attempt's applied HOME fact (same producer as attempt.yaml): true when the engine assigned its child a Claudexor-owned HOME, false when the engine did not replace HOME, so the child inherits the engine's own environment. Absent where the lane records none, never inferred."
               },
               "tool_errors": {
                 "type": "array",
@@ -1527,6 +1634,41 @@
                     "type": "boolean",
                     "default": false,
                     "description": "The browser was armed but never called while generic web evidence satisfied the run (disclosure only; not a failure)."
+                  },
+                  "startup": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "ready",
+                          "failed",
+                          "cancelled",
+                          "starting",
+                          "not_observed"
+                        ],
+                        "description": "Startup state when the first model request was allowed: ready (Codex reported the server started), failed, cancelled, starting (still starting when the hold ended: Codex's 90 s limit plus a 5 s grace for its status), or not_observed (no startup status at all)."
+                      },
+                      "waited_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "How long the adapter held the first model request for this outcome."
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null,
+                        "description": "The vendor's own reason for a failed or cancelled startup, masked."
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "waited_ms"
+                    ],
+                    "additionalProperties": false,
+                    "description": "The selected Browser's startup outcome as the adapter reported it before the first model request (#215); absent when the route reported none."
                   }
                 },
                 "additionalProperties": false,

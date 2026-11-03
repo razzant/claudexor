@@ -414,6 +414,61 @@ describe("codex multi-agent fixture (root-thread ownership of finality)", () => 
   });
 });
 
+describe("codex recorded Browser run (claudexor#215)", () => {
+  it("replays real startup, navigation and page text, with the injected server optional", async () => {
+    const name = "app-server/recorded-browser-delayed-start-0.162.1.jsonl";
+    const lines = readFileSync(join(FIXTURES, name), "utf8").split("\n").filter(Boolean);
+    const { spawn, writes } = appServerReplay(lines);
+    const events: HarnessEvent[] = [];
+    for await (const event of runCodexAppServer({
+      bin: "codex",
+      args: [],
+      spec: HarnessRunSpec.parse({
+        session_id: "ses-browser-recorded",
+        intent: "implement",
+        prompt: "Open the probe page with the browser tool.",
+        cwd: process.cwd(),
+        access: "full",
+        model_hint: "gpt-6-astra",
+        effort_hint: "low",
+        browser: { output_dir: null, headless: true },
+      }),
+      env: {},
+      spawn,
+      pollIntervalMs: 0,
+    }))
+      events.push(event);
+
+    const started = writes.find((write) => write.method === "thread/start");
+    const browser = (started?.params?.["config"] as Record<string, any>)["mcp_servers"]["browser"];
+    expect(browser["startup_timeout_sec"]).toBe(90);
+    expect(browser["required"]).toBeUndefined();
+    expect(writes.map((write) => write.method)).toEqual([
+      "initialize",
+      "initialized",
+      "thread/start",
+      "turn/start",
+      "thread/read",
+      "thread/goal/get",
+      "thread/backgroundTerminals/list",
+    ]);
+    const receipts = events.filter((event) => event.payload?.["code"] === "codex_browser_startup");
+    expect(receipts.map((event) => event.payload?.["status"])).toEqual(["ready"]);
+    const results = events.filter((event) => event.type === "tool_result");
+    expect(results.map((event) => [event.tool?.target, event.tool?.status])).toEqual([
+      ["browser:browser_navigate", "ok"],
+    ]);
+    const page = results[0]?.tool?.content_summary ?? "";
+    expect(page).toMatch(/- Page URL: http:\/\/127\.0\.0\.1:\d+\/claudexor-browser-probe-/);
+    const title = /- Page Title: (Claudexor Browser probe [0-9a-f]+)/.exec(page)?.[1];
+    expect(title).toBeTruthy();
+    expect(events.filter((event) => event.final).map((event) => event.text)).toEqual([
+      `The page title is "${title}".`,
+    ]);
+    expect(validateTypedStream(events).errorToolResults).toBe(0);
+  });
+});
+
 describe("codex Browser MCP fixture (claudexor#215)", () => {
   it("replays the 0.162.1-shaped Browser stream with the server's page text as tool evidence", async () => {
     const name = "app-server/synthetic-browser-mcp-0.162.1.jsonl";
@@ -453,6 +508,15 @@ describe("codex Browser MCP fixture (claudexor#215)", () => {
       ["mcp-snapshot", "ok"],
       ["mcp-navigate-unsafe", "error"],
       ["mcp-close", "ok"],
+    ]);
+    // #118: only the replies that show a loaded page are a verified retrieval of a
+    // page; a failed call stays unstamped, and closing read no page, so it carries
+    // no retrieval stamp at all.
+    expect(results.map((event) => [event.tool?.web_retrieval, event.tool?.web_content])).toEqual([
+      ["verified", "page"],
+      ["verified", "page"],
+      [undefined, undefined],
+      [undefined, undefined],
     ]);
     // The browser reports the page it actually loaded, title included.
     expect(results[0]?.tool?.content_summary).toContain(`Page URL: ${url}`);

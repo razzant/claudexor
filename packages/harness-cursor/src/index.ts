@@ -1,4 +1,5 @@
-import { cursorAccessArgs, cursorSpawnPinFacts } from "./profile.js";
+import { cursorAccessArgs, cursorModeArgs, cursorNativeAccess } from "./profile.js";
+import { cursorSpawnPinFacts } from "./profile.js";
 import {
   cursorProcessingMethods,
   applyCursorRunProcessing,
@@ -258,6 +259,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     },
     id: "cursor",
     childHome: cursorChildHome,
+    nativeAccess: cursorNativeAccess,
     // The level is a token of the compound model id: `prepareProcessing` selects the
     // listed variant of the requested family from this account's list, with its receipt.
     effortParameter: "--model",
@@ -367,15 +369,9 @@ async function* runCursor(
   spec: HarnessRunSpec,
   deps: CursorRuntimeDeps,
 ): AsyncIterable<HarnessEvent> {
+  // Access argv then Ask mode, exactly as `cursorNativeAccess` discloses them.
   const args = ["-p", "--output-format", "stream-json", ...cursorAccessArgs(spec)];
-  // Native Plan's createPlan schema cannot carry D-16 WorkReport; native read-only
-  // Ask preserves prompt-owned plan intent and the model-authored final report.
-  // `readonly` access rides the SAME mode: Ask is the only mechanism this CLI
-  // has that actually withholds the write/shell tools. Without it a readonly
-  // run is a full agent run — `--sandbox enabled` gates commands, not file
-  // edits (proven by a live probe: the agent created a file under exactly the
-  // previous readonly argv).
-  if (spec.intent === "plan" || spec.access === "readonly") args.push("--mode", "ask");
+  args.push(...cursorModeArgs(spec));
   // W-C4 live deltas (engine-gated; the parser applies the documented taxonomy).
   if (spec.stream_deltas) args.push("--stream-partial-output");
 

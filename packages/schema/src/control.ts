@@ -42,6 +42,8 @@ import { RunExecution } from "./control-run-execution.js";
 import { WorkspaceScopePath } from "./files-manifest.js";
 import { makeControlRunRetrySchemas } from "./control-run-retry.js";
 import { ControlAuthRoute } from "./control-auth-route.js";
+import { ControlRouteControl, ControlWebEvidence } from "./control-web-evidence.js";
+export { ControlRouteControl, ControlWebEvidence } from "./control-web-evidence.js";
 import { DelegatedChildRunIds, RunDelegationInfo } from "./delegation.js";
 import { HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS, InteractionTimeoutValue } from "./config.js";
 import { RuntimeConcurrencyState } from "./runtime-concurrency.js";
@@ -402,57 +404,6 @@ export const ControlProjectMetadata = z
   .describe("Project metadata projected onto a run summary.");
 export type ControlProjectMetadata = z.infer<typeof ControlProjectMetadata>;
 
-export const ControlWebEvidence = z
-  .object({
-    required: z.boolean().default(false).describe("Explicit stored web requirement."),
-    /** Requested external-context policy for the run. */
-    mode: ExternalContextPolicy.default("auto").describe(
-      "Requested external-context policy for the run.",
-    ),
-    /** Mode the selected route actually executed (disclosed upgrades, e.g. claude cached->live). */
-    effectiveMode: ExternalContextPolicy.default("auto").describe(
-      "Policy the selected route actually executed (disclosed upgrades, e.g. cached to live).",
-    ),
-    attempted: z.boolean().default(false).describe("Whether any web activity was attempted."),
-    satisfied: z
-      .boolean()
-      .default(false)
-      .describe("Completed without a typed failure; retrieved content is not necessarily proven."),
-    status: z
-      .enum(["none", "attempted", "satisfied", "failed", "unverified"])
-      .default("none")
-      .describe("Observed web status; satisfied does not prove retrieved content was verified."),
-    tool: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Web tool that produced the evidence, when any."),
-    target: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Target (query/url) of the web activity as issued, when any."),
-    errorSummary: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Redacted error detail when web activity failed."),
-    rawDetailRef: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Artifact path holding the full evidence record."),
-    /** False when the run predates telemetry.yaml; surfaces must render "telemetry unavailable". */
-    available: z
-      .boolean()
-      .default(true)
-      .describe(
-        'False when the run predates the telemetry artifact; surfaces must render "telemetry unavailable".',
-      ),
-  })
-  .describe("Web evidence projected onto a run summary from the telemetry artifact.");
-export type ControlWebEvidence = z.infer<typeof ControlWebEvidence>;
-
 /**
  * Run-level route evidence projected from telemetry (observed model per
  * attempt). `verified` is true only when an observed model was actually
@@ -738,16 +689,22 @@ export const ControlRunSummary = z
       "Access profile the caller requested.",
     ),
     effectiveAccess: RecordedAccessProfile.optional().describe(
-      "Access profile actually enforced by the engine.",
+      "Access profile the engine resolved and passed to its routes; routeControls names each route's native setting.",
     ),
     externalContextPolicy: ExternalContextPolicy.optional().describe(
       "Requested web policy for the run.",
     ),
     webRequired: z.boolean().optional().describe("Explicit stored web requirement."),
     webMode: ExternalContextPolicy.optional().describe(
-      "Web policy actually executed by the selected route.",
+      "Web policy given to the selected route, after disclosed upgrades; not proof that a native session ran.",
     ),
     webEvidence: ControlWebEvidence.default({}),
+    routeControls: z
+      .array(ControlRouteControl)
+      .default([])
+      .describe(
+        "Distinct routes of the run: the native web/access controls prepared for each and whether a native session was reported started.",
+      ),
     requestRequirements: z
       .array(RequestRequirementResolution)
       .default([])
