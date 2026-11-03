@@ -2419,11 +2419,34 @@ resumable native session id); tool steps emit `tool_call` on `ACTIVE`.
 `DONE` emits an error `tool_result` for native tool errors, a successful
 `tool_result` (+ a completed `file_change` for writers) only with reported
 output, otherwise a diagnostic `status`. Each carries the recorded `step_index`
-as its use id (`step-N`), which pairs a result with its own call. Other states are recognized no-ops. `text_delta` emits
-complete narration segments, not display deltas. Terminal `result` emits the
-`response` final (`final_source: result`); object `structured_output` is parsed
-but unreachable in shipped runs (`json_schema_output` is false).
-Empty `SUCCESS` is a cause-unknown error, never proof of permission denial.
+as its use id (`step-N`), which pairs a result with its own call. Other states are recognized no-ops. Each `text_delta`
+is a non-final stream fragment (`payload.delta`), kept byte-exact, whitespace-only
+and repeated frames included: in retained tries every typed final equals the
+exact concatenation of its narration frames, across steps and tools. In Agent
+candidates, fragments count toward the per-attempt live preview cap of 4,000: past it live
+observers get no further fragments (one status says so), while the journal,
+replay and retained output keep every frame. Terminal
+`SUCCESS` emits the `response` final (`final_source: result`); object
+`structured_output` is parsed but unreachable in shipped runs
+(`json_schema_output` is false).
+Empty `SUCCESS` is a cause-unknown error, never proof of permission denial. A
+non-`SUCCESS` result is never answer material: a non-empty `response` and an
+object `structured_output` ride exact retained evidence (`buffered` messages
+marked `non_success_result`, never live display), and its error carries the
+result's own `status` and error words as `vendor_failure` (`source:
+agy_result`), attached to the run loop's single `completed`; it is opaque and
+no retry, rotation or cooldown reads it (synthetic
+`fixtures/fragment-error-run.jsonl`). A stream that ends without its `result`
+frame and without an error is an honest failure ("agy ended without its
+terminal result"), not a narration answer or an empty success. Why the vendor
+ends a streamed turn with an error is not established by these facts. The
+vendor's own stderr record of that failure, `AGY_ERROR: {json}` (agy then exits
+3), is read for one fact: when a try voiced its failure and its last record says
+exactly `retryable: false`, the try carries the `vendor_not_retryable` request
+refusal with the record's `error_id`, so the run fails without a retry, an in-run
+continuation or an account rotation. Any other record or value, malformed JSON,
+the same line in model text or a warning without a voiced failure decides
+nothing.
 Only the native `jetski` headless auto-denial stderr diagnostic establishes
 `permission_denial`: without a final it is a terminal refusal; with a retained
 final it is a typed warning, not failed output (INV-044). No retry or access

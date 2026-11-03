@@ -978,7 +978,13 @@ views in the shared design-system files; screens compose them.
     answer bubble); typed `status` events (e.g. claude api_retry) fold into
     the status line's state word, never the reasoning disclosure; with
     `stream_deltas` the current message grows live and the complete text
-    replaces it. Agent images render inline ONLY inside the thread's
+    replaces it. Each physical try (attempt, harness and session) is its own
+    stream: its typed final seals only that stream, and concurrent candidates'
+    text never joins; a typed `native_turn_started` status (Claude's next turn
+    in the same session) reopens only that stream. Text of a speech the harness
+    states abandoned (Claude's text before an API retry) stays as streamed, and
+    a keyed complete text replaces only a block holding just its own speech.
+    Agent images render inline ONLY inside the thread's
     repoRoot / run dir (canonical-path scope, bounded decode, disclosed
     refusal outside the scope). Local file links use the same gate: safe formats
     open from a staged snapshot in Markdown/source/Quick Look, unsupported in-scope files

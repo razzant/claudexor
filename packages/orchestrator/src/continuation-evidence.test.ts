@@ -68,6 +68,39 @@ describe("evidence index (pure)", () => {
     expect(md).toContain("(a usage limit on its account)");
   });
 
+  it("names the complete retained output in surviving refs; the cut notice cites only that exact copy", () => {
+    const long = "y".repeat(EVIDENCE_SECTION_BUDGET_BYTES * 4);
+    const complete = buildEvidenceIndex(
+      input({
+        retainedOutput: long,
+        completeRetainedOutput: "/r/continuation/retained-output-try1.md",
+      }),
+    );
+    expect(complete.markdown).toContain(
+      "it is complete in the file /r/continuation/retained-output-try1.md.]",
+    );
+    expect(complete.markdown).toContain(
+      "- Complete retained assistant output: /r/continuation/retained-output-try1.md",
+    );
+    // A finished run's own file is a reference, never claimed as this section's copy.
+    const finished = buildEvidenceIndex(
+      input({
+        retainedOutput: long,
+        artifacts: {
+          eventsLog: null,
+          attemptDir: null,
+          patch: null,
+          retainedOutput: "/p/final/retained-output.md",
+        },
+      }),
+    );
+    expect(finished.markdown).toContain(
+      "- Retained output of a finished run: /p/final/retained-output.md",
+    );
+    expect(finished.markdown).not.toContain("it is complete in the file");
+    expect(finished.markdown).not.toContain("Complete retained assistant output");
+  });
+
   it("truncates honestly: a single cut section flips summarized, the tool index collapses to counts", () => {
     const long = "x".repeat(EVIDENCE_SECTION_BUDGET_BYTES + 100);
     const cut = buildEvidenceIndex(input({ retainedOutput: long }));
@@ -183,6 +216,8 @@ describe("evidence collector (I/O)", () => {
       eventsLog: join(dir, "events.jsonl"),
       attemptDir: join(dir, "attempts", "a01"),
       patch: join(dir, "attempts", "a01", "patch.diff"),
+      // An unfinished run has no final/retained-output.md of its own yet.
+      retainedOutput: null,
     });
     expect(steeringFromRunLog(join(dir, "nope"))).toEqual([]);
     expect(toolCallIndex([{ type: "tool_call", text: "Grep for x\nmore" }])).toEqual([

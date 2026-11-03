@@ -42,13 +42,23 @@ export interface SealedReviewDecisionEnvelopeParse {
   blocks: unknown[];
 }
 
-/** Deterministic persisted transcript projection for sealed native reviews. */
-export function sealedReviewTranscriptChunk(event: unknown): string | null {
+/** Deterministic persisted transcript projection for sealed native reviews. A
+ * stream fragment (`payload.delta`) is exact: joined to its neighbours, never
+ * line-terminated. Every other message (whole, buffered or the typed final) ends
+ * its own line, and starts one after an unterminated fragment run
+ * (`afterOpenFragment`), so it is never glued to a draft. */
+export function sealedReviewTranscriptChunk(
+  event: unknown,
+  afterOpenFragment = false,
+): string | null {
   if (!isRecord(event) || event["type"] !== "message") return null;
-  if (isRecord(event["payload"]) && event["payload"]["auth_switched"] === true) return null;
+  const payload = isRecord(event["payload"]) ? event["payload"] : {};
+  if (payload["auth_switched"] === true) return null;
   const text = event["text"];
   if (typeof text !== "string" || text.length === 0) return null;
-  return text.endsWith("\n") ? text : `${text}\n`;
+  if (payload["delta"] === true) return text;
+  const line = text.endsWith("\n") ? text : `${text}\n`;
+  return afterOpenFragment ? `\n${line}` : line;
 }
 
 export function sealedReviewTranscriptFromEvents(events: readonly unknown[]): string {

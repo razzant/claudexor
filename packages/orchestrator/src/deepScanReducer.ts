@@ -26,7 +26,7 @@ import { buildDeepScanReducerPrompt } from "@claudexor/synthesis";
 import { type BudgetDenial, classifyBudgetFailure } from "./budgetFailure.js";
 import type { RoutedAdapter } from "./orchestrator.js";
 import { attemptInterruption, finalizeAttempt } from "./attemptFinalize.js";
-import { unwrapWorkReportEnvelope, type WorkReportEnvelopeMode } from "./workReportEnvelope.js";
+import { unwrapAttemptAnswer, type WorkReportEnvelopeMode } from "./workReportEnvelope.js";
 import { harnessEventPayload, observeBudgetSignals, safeErrorMessage } from "./runSupport.js";
 import {
   type AttemptTelemetry,
@@ -420,9 +420,12 @@ export async function runDeepScanReducer(
   // accepted as a clean synthesis; the caller then degrades to an honest raw
   // bundle. On an inactive-transport route the unwrap passes the report through
   // untouched (unchanged behavior for schema-free reducer harnesses).
-  const unwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", built.workReportMode, {
-    sideToolReport: telemetry.sideToolWorkReport ?? undefined,
-  });
+  const unwrapped = unwrapAttemptAnswer(
+    answer.machineText() ?? "",
+    harnessError !== null && !answer.hasFinal(),
+    built.workReportMode,
+    { sideToolReport: telemetry.sideToolWorkReport ?? undefined },
+  );
   const report = unwrapped.deliverable;
   const finalized = finalizeAttempt({
     deliverableEvidence: report.trim().length > 0,

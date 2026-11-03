@@ -6,6 +6,7 @@ import {
   observeAttemptTelemetry,
 } from "./attemptTelemetry.js";
 import { RunTelemetry, type HarnessEvent } from "@claudexor/schema";
+import { beginNativeRetry } from "./native-retry-telemetry.js";
 
 // GH #31: the typed harness-failure taxonomy classifies every adapter/stream
 // transient failure at the adapter→orchestrator boundary. These tests pin the
@@ -363,5 +364,45 @@ describe("harness-reported terminal error (exit evidence)", () => {
     expect(record.transient_failures[0]?.category).toBe("unknown_harness_error");
     expect(JSON.stringify(record)).not.toContain("server_overloaded");
     expect(record.transient_failures[0]).not.toHaveProperty("vendorFailure");
+  });
+});
+
+describe("the try's voiced vendor failure (evidence, never a transient)", () => {
+  const vendorFailure = { code: "ERROR", message: "stream ended", source: "agy_result" };
+
+  it("records a zero-exit voiced failure for the try without a transient observation", () => {
+    const t = fresh();
+    observeAttemptTelemetry(
+      t,
+      ev({
+        type: "completed",
+        payload: { exit_code: 0, harness_reported_error: true, vendor_failure: vendorFailure },
+      }),
+    );
+    expect(t.transientFailures).toHaveLength(0);
+    expect(t.vendorFailure).toEqual(vendorFailure);
+    expect(JSON.stringify(attemptTelemetryRecord("a01", "agy", t))).not.toContain("stream ended");
+  });
+
+  it("a later try starts clean and its own terminal replaces the fact", () => {
+    const t = fresh();
+    observeAttemptTelemetry(
+      t,
+      ev({
+        type: "completed",
+        payload: { exit_code: 0, harness_reported_error: true, vendor_failure: vendorFailure },
+      }),
+    );
+    beginNativeRetry(t);
+    expect(t.vendorFailure).toBeNull();
+    for (const payload of [
+      { exit_code: 0, harness_reported_error: true },
+      { aborted: true, harness_reported_error: true, vendor_failure: vendorFailure },
+      { exit_signal: "SIGKILL", harness_reported_error: true, vendor_failure: vendorFailure },
+      { exit_code: 0, vendor_failure: vendorFailure },
+    ]) {
+      observeAttemptTelemetry(t, ev({ type: "completed", payload }));
+      expect(t.vendorFailure, JSON.stringify(payload)).toBeNull();
+    }
   });
 });

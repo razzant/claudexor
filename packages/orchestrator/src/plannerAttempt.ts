@@ -34,7 +34,7 @@ import {
   type AttemptOutcomeClass,
 } from "./attemptFinalize.js";
 import {
-  unwrapWorkReportEnvelope,
+  unwrapAttemptAnswer,
   type UnwrappedAnswer,
   type WorkReportEnvelopeMode,
 } from "./workReportEnvelope.js";
@@ -383,9 +383,12 @@ export async function runPlannerAttempt(
       });
   }
 
-  const planUnwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", planWorkMode, {
-    sideToolReport: telemetry.sideToolWorkReport ?? undefined,
-  });
+  const planUnwrapped = unwrapAttemptAnswer(
+    answer.machineText() ?? "",
+    harnessError !== null && !answer.hasFinal(),
+    planWorkMode,
+    { sideToolReport: telemetry.sideToolWorkReport ?? undefined },
+  );
   const planText = planUnwrapped.deliverable;
   const hasPlanText = planText.trim().length > 0;
   const harnessFailedBeforeReport = harnessError !== null;

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   type HarnessEvent,
@@ -25,6 +25,33 @@ import { directoryCaptureRefusal, type CaptureRefusal } from "./captureRefusal.j
 
 export interface DirectoryCandidate extends CapturedWorkspaceFiles {
   artifactRoot: string;
+}
+
+/** A rejected recursive fs.rm can leave sibling deletes in flight. These paths
+ * are reused by later captures, so finish each async operation before returning
+ * or throwing; never follow a symlink and never block the event loop with rmSync. */
+async function removeCaptureTree(path: string): Promise<void> {
+  try {
+    const stat = await lstat(path);
+    if (!stat.isDirectory()) {
+      await rm(path, { force: true });
+      return;
+    }
+    let failure: { error: unknown } | undefined;
+    for (const name of await readdir(path)) {
+      try {
+        await removeCaptureTree(join(path, name));
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    // Still remove every writable sibling; report the first real failure only
+    // after all operations have settled, leaving its named path in place.
+    if (failure) throw failure.error;
+    await rmdir(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 /** File-change paths are adapter facts; command/prose text never invents writes. */
@@ -87,7 +114,7 @@ export async function captureDirectoryCandidate(input: {
     // The partial payload is no result and goes. One that cannot be removed stays,
     // never in place of the capture's own cause: the refusal names it beside that.
     try {
-      await rm(join(input.artifactRoot, "final/files"), { recursive: true, force: true });
+      await removeCaptureTree(join(input.artifactRoot, "final/files"));
     } catch (cleanupError) {
       if (error instanceof Error && Object.isExtensible(error) && !("cleanupError" in error))
         Object.defineProperty(error, "cleanupError", { value: cleanupError, enumerable: false });
@@ -132,7 +159,7 @@ export async function prepareDirectoryReview(
 ): Promise<{ cwd: string; paths: string[]; dispose(): Promise<void> }> {
   const cwd = join(files.artifactRoot, "directory-review");
   await mkdir(cwd, { recursive: true });
-  await rm(join(evidenceDir, "final/files"), { recursive: true, force: true });
+  await removeCaptureTree(join(evidenceDir, "final/files"));
   const copied = new Set<string>();
   const paths: string[] = [];
   for (const entry of files.manifest.entries) {
@@ -162,7 +189,7 @@ export async function prepareDirectoryReview(
     paths.push(entry.path);
   }
   await writeFile(join(evidenceDir, "FILES.json"), JSON.stringify(files.manifest) + "\n");
-  return { cwd, paths, dispose: () => rm(cwd, { recursive: true, force: true }) };
+  return { cwd, paths, dispose: () => removeCaptureTree(cwd) };
 }
 
 /** Recheck the same captured footprint after review, keeping its sealed bytes intact. */
@@ -181,7 +208,7 @@ export async function directoryCandidateStable(
     });
     return current.files?.manifestSha256 === files.manifestSha256;
   } finally {
-    await rm(artifactRoot, { recursive: true, force: true });
+    await removeCaptureTree(artifactRoot);
   }
 }
 

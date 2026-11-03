@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReviewFinding } from "@claudexor/schema";
@@ -67,6 +68,12 @@ export function createReviewerArtifactContext(
   writeText(ctx.eventsPath, "");
   writeText(ctx.transcriptPath, "");
   return ctx;
+}
+
+/** Append transcript bytes exactly as projected (`ReviewerTextProjection`):
+ * nothing is added here, so a stream fragment never gains a line break. */
+export function appendTranscript(path: string, text: string): void {
+  appendFileSync(path, text, { encoding: "utf8", mode: 0o600 });
 }
 
 export function safeFilePart(value: string): string {

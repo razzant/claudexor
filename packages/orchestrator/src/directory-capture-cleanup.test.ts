@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,8 +45,8 @@ const unreadable = (path: string) => {
   locked.push(path);
 };
 /** A directory in the partial payload whose entry cannot be removed. */
-const stuckIn = (artifactRoot: string) => {
-  const stuck = join(artifactRoot, "final/files/leftover");
+const stuckIn = (artifactRoot: string, name = "leftover") => {
+  const stuck = join(artifactRoot, "final/files", name);
   mkdirSync(stuck, { recursive: true });
   writeFileSync(join(stuck, "stale"), "left by an earlier capture\n");
   chmodSync(stuck, 0o500);
@@ -137,6 +138,33 @@ describe.skipIf(asRoot || process.platform === "win32")(
       },
     );
 
+    it.each(["a-stuck", "z-stuck"])(
+      "finishes removing writable siblings when %s refuses removal",
+      async (name) => {
+        const f = await failingCapture(true);
+        const stuck = stuckIn(f.artifactRoot, name);
+        const removable = join(f.artifactRoot, "final/files/m-removable");
+        mkdirSync(removable);
+        writeFileSync(join(removable, "bytes"), "partial captured payload\n");
+        const { refusal, files } = await captureDirectoryCandidate({
+          manager: f.manager,
+          envelope: f.envelope,
+          artifactRoot: f.artifactRoot,
+          observedPaths: ["out.bin"],
+        });
+        expect(files).toBeUndefined();
+        expect(refusal!.failure).toMatchObject({
+          causeCode: "EACCES",
+          cleanup: { code: "EACCES" },
+        });
+        expect(refusal!.failure!.message).toContain("out.bin");
+        expect(refusal!.failure!.cleanup!.message).toContain(name);
+        expect(readFileSync(join(stuck, "stale"), "utf8")).toBe("left by an earlier capture\n");
+        expect(existsSync(removable)).toBe(false);
+        expect(existsSync(join(f.envelope.worktree_path, "out.bin"))).toBe(true);
+      },
+    );
+
     it("an error that cannot take the diagnostic still answers its own cause", async () => {
       const artifactRoot = temp("cx-dir-cleanup-run-");
       stuckIn(artifactRoot);
@@ -165,6 +193,25 @@ describe.skipIf(asRoot || process.platform === "win32")(
         failure: { code: "capture_failed", causeCode: "EIO" },
       });
       expect(refusal!.failure!.message).toContain("out.bin");
+    });
+
+    it("removes only the partial payload's link, never the link's target", async () => {
+      const f = await failingCapture(true);
+      const outside = temp("cx-dir-cleanup-outside-");
+      writeFileSync(join(outside, "keep.txt"), "not the capture payload\n");
+      mkdirSync(join(f.artifactRoot, "final/files"), { recursive: true });
+      symlinkSync(outside, join(f.artifactRoot, "final/files/link"));
+      const { refusal, files } = await captureDirectoryCandidate({
+        manager: f.manager,
+        envelope: f.envelope,
+        artifactRoot: f.artifactRoot,
+        observedPaths: ["out.bin"],
+      });
+      expect(files).toBeUndefined();
+      expect(refusal!.failure!.causeCode).toBe("EACCES");
+      expect(refusal!.failure!.cleanup).toBeUndefined();
+      expect(existsSync(join(f.artifactRoot, "final/files"))).toBe(false);
+      expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("not the capture payload\n");
     });
   },
 );
@@ -198,6 +245,13 @@ function author(runsDir: string) {
       const runs = readdirSync(runsDir).map((name) => join(runsDir, name));
       expect(runs).toHaveLength(1);
       stuckIn(join(runs[0]!, "attempts", "a01"));
+      // The real per-try and final captures reuse this artifact root. A failed
+      // recursive cleanup must not keep deleting its siblings during capture #2.
+      for (let i = 0; i < 200; i += 1) {
+        const path = `a-${String(i).padStart(4, "0")}.txt`;
+        writeFileSync(join(spec.cwd, path), `distinct output ${i}\n`);
+        yield { type: "file_change", ts, session_id: spec.session_id, payload: { path } };
+      }
       unreadable(join(spec.cwd, "output.bin"));
       yield {
         type: "file_change",

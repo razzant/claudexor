@@ -11,8 +11,8 @@
  * paths. Never throws: unreadable evidence yields an empty index section,
  * never a failed continuation.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { retainedOutput } from "@claudexor/event-log";
 import type { ResumableCause, RunEvent } from "@claudexor/schema";
 import {
@@ -261,6 +261,7 @@ function sourceInput(
   const patch = existsSync(attemptPatch)
     ? attemptPatch
     : join(sources.runDir, "final", "patch.diff");
+  const retained = join(sources.runDir, "final", "retained-output.md");
   return {
     cause: extras.cause,
     workOrder: sources.workOrder,
@@ -278,8 +279,30 @@ function sourceInput(
       eventsLog: existsSync(eventsLog) ? eventsLog : null,
       attemptDir: existsSync(attemptDir) ? attemptDir : null,
       patch: existsSync(patch) ? patch : null,
+      // A finished source's own complete projection (a successor's predecessor).
+      retainedOutput: existsSync(retained) ? retained : null,
     },
   };
+}
+
+/**
+ * Keep the complete retained output the packet section bounds beside the
+ * index (`file`), and name it in the index's surviving references. Nothing to
+ * keep, or a write that fails, leaves the input as it is: never a failed
+ * continuation, never a reference to a file that was not written.
+ */
+export function keepCompleteRetainedOutput(
+  input: EvidenceIndexInput,
+  file: string | undefined,
+): EvidenceIndexInput {
+  if (!file || !input.retainedOutput.trim()) return input;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, input.retainedOutput, { mode: 0o600 });
+  } catch {
+    return input;
+  }
+  return { ...input, completeRetainedOutput: file };
 }
 
 /** Resolve the pure builder's input from the run dir plus the loop's in-memory facts. */

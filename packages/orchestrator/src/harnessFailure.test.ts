@@ -102,6 +102,21 @@ describe("attemptVendorFailure", () => {
     expect(attemptVendorFailure(last, "a01")).toEqual(limited);
   });
 
+  it("speaks with the last try's own voiced terminal, a zero exit included", () => {
+    const agy = { code: "ERROR", message: "third", source: "agy_result" };
+    const telemetry = (vendorFailure: typeof agy | null) => ({
+      transientFailures: [voiced(overloaded)],
+      vendorFailure,
+    });
+    expect(attemptVendorFailure([{ attemptId: "a01", telemetry: telemetry(agy) }], "a01")).toEqual(
+      agy,
+    );
+    // The last try voiced nothing: the earlier try's observation is never borrowed.
+    expect(
+      attemptVendorFailure([{ attemptId: "a01", telemetry: telemetry(null) }], "a01"),
+    ).toBeNull();
+  });
+
   it("is null when the named attempt carries none — never borrowed from another attempt", () => {
     const attempts = [attempt("a01", [exitTry(overloaded)]), attempt("a02", [exitTry()])];
     expect(attemptVendorFailure(attempts, "a02")).toBeNull();

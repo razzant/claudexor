@@ -114,13 +114,18 @@ export function writeFailure(
                   "Check the vendor's own configuration for a per-model API key or managed policy that replaces session login; Claudexor does not read or change it",
                   "Retry once the vendor reports session login, or choose another model or account",
                 ]
-              : failure.code === "raw_context_exceeds_window"
+              : failure.requestRefusal?.kind === "vendor_not_retryable"
                 ? [
-                    "Choose a model with a larger context window",
-                    "Reduce context.mandatory_files in the project's .claudexor/config.yaml",
-                    "Or use a harness that reads project files itself",
+                    `The vendor marked this request not retryable${failure.requestRefusal.error_id ? ` (error id ${failure.requestRefusal.error_id})` : ""}; it was not retried, continued or moved to another account`,
+                    "Read the vendor's error and final/retained-output.md before changing the request or running it again",
                   ]
-                : (failure.nextActions ?? [])),
+                : failure.code === "raw_context_exceeds_window"
+                  ? [
+                      "Choose a model with a larger context window",
+                      "Reduce context.mandatory_files in the project's .claudexor/config.yaml",
+                      "Or use a harness that reads project files itself",
+                    ]
+                  : (failure.nextActions ?? [])),
         ...(failure.captureFailure ? (failure.nextActions ?? []) : []),
       ]),
     ],
@@ -139,9 +144,15 @@ export interface DeclaredFailure {
 
 export function requestRefusalFailure(requestRefusal: HarnessRequestRefusal): DeclaredFailure {
   return {
-    // Only an oversized input is the request's own fault; the other causes are
+    // Only an oversized input is the request's own fault; a vendor's explicit
+    // not-retryable verdict is that harness's own error; the other causes are
     // the installed vendor CLI or its configuration.
-    category: requestRefusal.kind === "input_too_large" ? "validation" : "harness_unavailable",
+    category:
+      requestRefusal.kind === "input_too_large"
+        ? "validation"
+        : requestRefusal.kind === "vendor_not_retryable"
+          ? "harness_error"
+          : "harness_unavailable",
     code: requestRefusal.kind,
     resetsAt: null,
     requestRefusal,

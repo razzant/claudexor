@@ -76,8 +76,16 @@ export interface EvidenceIndexInput {
   toolCalls: EvidenceToolCall[];
   /** `git diff --stat`-style file list of the predecessor's tree, null when unknown. */
   diffStat: string | null;
-  /** Absolute paths readable from the new environment; null when absent. */
-  artifacts: { eventsLog: string | null; attemptDir: string | null; patch: string | null };
+  /** Absolute paths readable from the new environment; null when absent. `retainedOutput`
+   * is a finished source's own final/retained-output.md. */
+  artifacts: {
+    eventsLog: string | null;
+    attemptDir: string | null;
+    patch: string | null;
+    retainedOutput?: string | null;
+  };
+  /** A file holding exactly `retainedOutput`, the whole text its section bounds. */
+  completeRetainedOutput?: string | null;
   predecessorArtifacts?: EvidenceIndexInput["artifacts"][];
 }
 
@@ -133,7 +141,7 @@ const CAUSE_LINE: Record<ResumableCause, string> = {
   vendor_limit: "a usage limit on its account",
   pool_exhausted: "every account's usage limit",
   pinned_limit: "the pinned account's usage limit",
-  transport: "a process death",
+  transport: "an error without a typed cause",
   permission_denied: "a native tool permission refusal",
   context_exhausted: "context exhaustion",
   turn_limit: "the max-turns limit",
@@ -187,7 +195,13 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
     }
   }
   parts.push("## Retained assistant output", "");
-  parts.push(input.retainedOutput.trim() ? section(input.retainedOutput) : "(no output retained)");
+  const output = bound(input.retainedOutput.trim(), EVIDENCE_SECTION_BUDGET_BYTES);
+  summarized ||= output.cut;
+  parts.push(output.text || "(no output retained)");
+  if (output.cut && input.completeRetainedOutput)
+    parts.push(
+      `[Retained output truncated to the ${EVIDENCE_SECTION_BUDGET_BYTES}-byte section budget; it is complete in the file ${input.completeRetainedOutput}.]`,
+    );
   parts.push("", "## Tool calls", "");
   if (input.toolCalls.length === 0) {
     parts.push("(none recorded)");
@@ -205,10 +219,15 @@ export function buildEvidenceIndex(input: EvidenceIndexInput): EvidenceIndex {
   parts.push(input.diffStat && input.diffStat.trim() ? section(input.diffStat) : "(no diff stat)");
   const refs = [
     input.workOrderPath ? `- Complete work order: ${input.workOrderPath}` : null,
+    input.completeRetainedOutput
+      ? `- Complete retained assistant output: ${input.completeRetainedOutput}`
+      : null,
     ...[input.artifacts, ...(input.predecessorArtifacts ?? [])].flatMap((artifacts) => [
       artifacts.eventsLog && `- Event log: ${artifacts.eventsLog}`,
       artifacts.attemptDir && `- Attempt artifacts: ${artifacts.attemptDir}`,
       artifacts.patch && `- Patch so far: ${artifacts.patch}`,
+      artifacts.retainedOutput &&
+        `- Retained output of a finished run: ${artifacts.retainedOutput}`,
     ]),
   ].filter((line): line is string => typeof line === "string");
   const footer = [

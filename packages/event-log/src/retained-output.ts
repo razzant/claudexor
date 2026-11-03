@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { renameSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { HarnessSpeech, type RunEvent } from "@claudexor/schema";
-import { writeText } from "@claudexor/util";
+import { StreamEcho, writeText } from "@claudexor/util";
 
 export const RETAINED_OUTPUT_PATH = "final/retained-output.md";
 
@@ -16,6 +16,8 @@ interface TextBlock {
   key?: string;
   /** The harness's complete text of the keyed block replaced its fragments. */
   complete?: boolean;
+  /** A complete message held outside `blocks`: the streamed blocks it exactly repeats. */
+  forms?: TextBlock[];
 }
 
 interface SourceOutput {
@@ -29,6 +31,11 @@ interface SourceOutput {
   current?: TextBlock;
   openDelta: boolean;
   pendingFlush: boolean;
+  /** Which complete message exactly repeats this stream's unkeyed fragments; the
+   * reviewer parser input reads the same rule. */
+  echo: StreamEcho;
+  /** The block of each unkeyed fragment since the last complete message, in the echo's order. */
+  fragments: TextBlock[];
   /** The block of the last final AnswerAssembly accepts (null when that final has no
    * visible text, only machine truth); absent while none was accepted. */
   answer?: TextBlock | null;
@@ -44,10 +51,10 @@ interface CarriedOutput {
   /** The native try (attempt, process session) whose answer is carried. Its answer is
    * the LAST typed final AnswerAssembly accepts (a later native turn's final wins),
    * so only that final's own block is omitted: its keyed fragments (with the run a
-   * joined frame names) and its exact adjacent delta, flush and complete forms. Its
-   * earlier finals and other narration stay, whatever their text. Without an accepted
-   * final its joined narration is the answer and the whole try is omitted. Text never
-   * decides what is represented. */
+   * joined frame names), its exact adjacent delta, flush and complete forms, and the
+   * streamed blocks it exactly repeats. Its earlier finals and other narration stay,
+   * whatever their text. Without an accepted final its joined narration is the answer
+   * and the whole try is omitted. Text never decides what is represented. */
   represented?: { attempt: string; session: string };
 }
 
@@ -87,12 +94,15 @@ export function retainedOutput(
       keyed: new Map(),
       openDelta: false,
       pendingFlush: false,
+      echo: new StreamEcho(),
+      fragments: [],
     };
     sources.set(key, source);
     const payload = p["payload"] as Record<string, unknown> | null | undefined;
     if (p["type"] !== "message" || payload?.["auth_switched"] === true) {
       source.openDelta = false;
       source.pendingFlush = false;
+      source.echo.interrupt();
       continue;
     }
     const text = p["text"];
@@ -127,15 +137,17 @@ export function retainedOutput(
       carried.represented.session === source.session;
     const answer = represented ? source.answer : undefined;
     const blocks = source.blocks.filter((block) => {
-      if (!block.text.trim()) return false;
       if (!represented) return true;
       // No accepted final: the joined narration is the answer.
       if (answer === undefined) return false;
-      // Only the carried final's own block is represented: equal or contained text
-      // elsewhere (another turn, a short "OK" inside "NOT OK") is its own evidence.
-      return block !== answer;
+      // Only the carried final's own block and the streamed blocks it exactly
+      // repeats are represented: equal or contained text elsewhere (another turn,
+      // a short "OK" inside "NOT OK") is its own evidence.
+      return block !== answer && !answer?.forms?.includes(block);
     });
-    if (!blocks.length) return [];
+    // A section needs visible text; a whitespace-only block (a separator fragment
+    // between tool calls) stays exact inside one.
+    if (!blocks.some((block) => block.text.trim())) return [];
     return [
       `## Attempt ${source.attempt} · ${source.harness}\n\nSession: \`${source.session}\`\n\n` +
         blocks
@@ -181,7 +193,11 @@ export function retainedOutput(
  * repetition of text just streamed or flushed, or of that block by a typed
  * final), or completes the keyed run its adapter names (`joinedRun`). A block
  * that holds a typed final is closed, since what follows is another native
- * turn. Anything else is a separate segment.
+ * turn. An unkeyed complete message that exactly repeats this stream's unkeyed
+ * fragments across tool calls (`StreamEcho`: an Antigravity result repeating
+ * its whole turn, an ACP final the text after its last tool) adds no block: its
+ * text stays in the streamed blocks it names. Anything else is a separate
+ * segment.
  */
 function textBlock(
   source: SourceOutput,
@@ -194,6 +210,9 @@ function textBlock(
 ): TextBlock {
   const speech = HarnessSpeech.safeParse(rawSpeech).data;
   if (speech && speech.op !== "abandoned") {
+    // Keyed text is linked by its key, never by the unkeyed echo's words.
+    source.echo.reset();
+    source.fragments = [];
     const known = source.keyed.get(speech.key);
     if (!known) {
       const block: TextBlock = {
@@ -218,20 +237,32 @@ function textBlock(
     known.final ||= final;
     return known;
   }
-  const joined = delta ? undefined : joinedRun(source, seq, text, final, payload);
-  if (joined) return joined;
   const current = source.current;
-  if (delta && source.openDelta && current && current.key === undefined) {
-    current.text += text;
-    current.last = seq;
-    return current;
+  if (delta) {
+    const continues = source.echo.fragment(text);
+    let block = current;
+    if (continues && block) {
+      block.text += text;
+      block.last = seq;
+    } else {
+      block = { text, first: seq, last: seq, delta, final };
+      source.blocks.push(block);
+    }
+    source.fragments.push(block);
+    return block;
   }
+  const buffered = payload?.["buffered"] === true;
+  const repeated = source.echo.complete(text, { buffered, final });
+  const repeats =
+    typeof repeated === "number" ? [...new Set(source.fragments.slice(repeated))] : [];
+  source.fragments = [];
+  const joined = joinedRun(source, seq, text, final, payload);
+  if (joined) return joined;
   if (
-    !delta &&
     current &&
     !current.final &&
     current.text === text &&
-    (source.openDelta || source.pendingFlush || final || payload?.["buffered"] === true)
+    (source.openDelta || source.pendingFlush || final || buffered)
   ) {
     // Exact adjacent delta/flush/final repetition, never a semantic or substring match.
     current.last = seq;
@@ -239,6 +270,7 @@ function textBlock(
     current.final ||= final;
     return current;
   }
+  if (repeated !== null) return { text, first: seq, last: seq, delta, final, forms: repeats };
   const block: TextBlock = { text, first: seq, last: seq, delta, final };
   source.blocks.push(block);
   return block;

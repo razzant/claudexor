@@ -126,7 +126,7 @@
                     "input_required",
                     "other"
                   ],
-                  "description": "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, a transport death (crash, timeout, watchdog), a confirmed native tool permission refusal, context exhaustion, the run's max-turns cap, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause."
+                  "description": "Typed reason the previous process stopped: a vendor limit (next account eligible), the whole pool spent, a pinned account's limit, an error without a typed cause (`transport`: a crash, an inactivity timeout or a harness-reported error; not proof that a process died or the network failed), a confirmed native tool permission refusal, context exhaustion, the run's max-turns cap, the wall-clock deadline, a cancel, a daemon/host restart, a model that asked for input, or another typed cause."
                 },
                 "resetsAt": {
                   "type": [
@@ -654,9 +654,41 @@
                         "reported_source"
                       ],
                       "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "vendor_not_retryable"
+                        },
+                        "source": {
+                          "type": "string",
+                          "const": "agy_stderr"
+                        },
+                        "error_id": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The vendor's own error id from the same record, verbatim; null when absent."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "source",
+                        "error_id"
+                      ],
+                      "additionalProperties": false
                     }
                   ],
-                  "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence."
+                  "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes and an explicit vendor not-retryable verdict carry their own evidence."
                 },
                 "rawContextShortfall": {
                   "type": "object",
@@ -909,6 +941,7 @@
                         "model_catalog_unavailable",
                         "vendor_cli_too_old",
                         "credential_source_unconfirmed",
+                        "vendor_not_retryable",
                         "delegated_home_unavailable",
                         "delegated_confinement_unavailable",
                         "delegated_evidence_incomplete",

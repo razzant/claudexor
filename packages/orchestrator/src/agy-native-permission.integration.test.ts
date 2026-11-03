@@ -276,11 +276,29 @@ describe("AGY native permission at the actual consumer boundary", () => {
     );
     expect(attempt).toMatchObject({ harness_home_isolated: true, harness_home_dir: childHome });
   });
-  it("does not broaden the pre-existing no-result/no-denial narration fallback", async () => {
-    const out = await run("ask", "absent", false);
-    expect(out.result.lifecycle).toBe("succeeded");
-    expect(out.resumable).toBeUndefined();
-    expect(readFileSync(join(out.finalDir, "answer.md"), "utf8")).toContain(narration);
-    expect(out.events.some((event) => event.payload["permission_denial"])).toBe(false);
-  });
+  // The narration is a stream fragment, not a typed final: a stream that ended
+  // without its terminal `result` is an honest failure (formerly an Ask success
+  // answering with the narration), never an empty "(no output)" success.
+  it.each(["ask", "agent"] as const)(
+    "%s: no result and no denial is a missing-terminal failure with the narration retained",
+    async (mode) => {
+      const out = await run(mode, "absent", false);
+      expect(out.result.lifecycle).toBe("failed");
+      expect(existsSync(join(out.finalDir, "answer.md"))).toBe(false);
+      expect(out.events.some((event) => event.payload["permission_denial"])).toBe(false);
+      expect(
+        out.events.filter(
+          (event) =>
+            event.type === "harness.event" &&
+            String(event.payload["error"]).includes("agy ended without its terminal result"),
+        ).length,
+      ).toBe(fixture.spawns.length);
+      // The tool step was progress: same-session continuations, never a fresh replay.
+      expect(fixture.spawns[0]!.args).not.toContain("--conversation");
+      for (const spawn of fixture.spawns.slice(1))
+        expect(spawn.args[spawn.args.indexOf("--conversation") + 1]).toBe("fixture");
+      expect(out.resumable).toMatchObject({ cause: "transport" });
+      expect(readFileSync(join(out.finalDir, "retained-output.md"), "utf8")).toContain(narration);
+    },
+  );
 });

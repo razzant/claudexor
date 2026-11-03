@@ -10,6 +10,7 @@ import {
 } from "./attemptFinalize.js";
 import {
   resolveWorkReportEnvelope,
+  unwrapAttemptAnswer,
   unwrapWorkReportEnvelope,
   type WorkReportEnvelopeMode,
 } from "./workReportEnvelope.js";
@@ -722,6 +723,43 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
       workReportSource: "constrained",
     });
     expect(r.deliverablePresent).toBe(false);
+  });
+});
+
+describe("an errored attempt without an accepted final (unwrapAttemptAnswer)", () => {
+  it.each([
+    ["instructed fence", FENCE],
+    ["constrained json", ACTIVE],
+    ["side tool", SIDE_TOOL],
+  ] as const)("%s: no footer or contract verdict, the route keeps its source", (_name, mode) => {
+    const unwrapped = unwrapAttemptAnswer("", true, mode);
+    expect(unwrapped).toEqual({
+      deliverable: "",
+      workReport: null,
+      source: mode.source,
+      contractViolation: null,
+    });
+    const finalized = finalizeAttempt({
+      deliverableEvidence: false,
+      harnessErrored: true,
+      workReport: unwrapped.workReport,
+      workReportSource: unwrapped.source,
+      workReportViolation: unwrapped.contractViolation,
+      workReportUnverified: unwrapped.unverified ?? null,
+      interruption: null,
+    });
+    expect(finalized.workState).toEqual({ state: "unverified", source: mode.source });
+    expect(finalized.outcomeClass).toBe("clean");
+    expect(finalized.harnessErrored).toBe(true);
+  });
+
+  it("keeps the given text as deliverable evidence and runs the route's unwrap otherwise", () => {
+    expect(unwrapAttemptAnswer("narration", true, FENCE).deliverable).toBe("narration");
+    expect(unwrapAttemptAnswer("", false, FENCE).unverified?.reason).toBe("footer_missing");
+    expect(unwrapAttemptAnswer("", false, ACTIVE).contractViolation).not.toBeNull();
+    // An inactive route has no transport: its absence stays disclosed as absent.
+    const inactive = { ...ACTIVE, active: false, source: "absent" as const };
+    expect(unwrapAttemptAnswer("x", true, inactive)).toMatchObject({ source: "absent" });
   });
 });
 

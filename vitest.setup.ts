@@ -26,6 +26,11 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
   __reapDirs.push(dir);
   return dir;
 }
+// WHY the 0: this hook is synchronous, so vitest's timer cannot interrupt it;
+// it measures the hook only after it returns and then fails the file if the
+// deletion took the global 10 s hookTimeout or more, after every test passed
+// and with the directories already gone. 0 disables only this hook's timer
+// (vitest runs a hook with timeout <= 0 untimed); no other hook or limit changes.
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
 }, 0);

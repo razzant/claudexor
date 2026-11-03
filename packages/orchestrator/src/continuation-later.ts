@@ -34,7 +34,11 @@ import {
   readlessWorkOrder,
   type PredecessorEvidenceSource,
 } from "./continuation-evidence.js";
-import { collectEvidenceIndexInput, workOrderFile } from "./continuation-evidence-io.js";
+import {
+  collectEvidenceIndexInput,
+  keepCompleteRetainedOutput,
+  workOrderFile,
+} from "./continuation-evidence-io.js";
 import { unconfirmedContinuationInputs } from "./continuation-input.js";
 import { continuationNotice, packetContinuationPrompt } from "./continuity-notice.js";
 import { InRunContinuity } from "./inrun-continuity.js";
@@ -91,7 +95,7 @@ export function openLaterAttempt(
     retainedOutput:
       (first.later === "checkpoint"
         ? unrepresentedOutput(earlierEvents, facts, exhaustedAttempt(events))
-        : retainedOutput(earlierEvents)?.trim()) ?? "",
+        : retainedOutput(earlierEvents)) ?? "",
     diffStat: null,
   };
   const cause: ResumableCause = !previous
@@ -109,18 +113,21 @@ export function openLaterAttempt(
     undefined,
   );
   const wholeWorkOrder = readlessWorkOrder(deps.route, plan.workOrder, first.spec.prompt);
+  const dir = join(deps.attemptDir, "continuation");
   const index = buildEvidenceIndex(
-    collectEvidenceIndexInput(
-      {
-        ...source,
-        workOrderPath: wholeWorkOrder ? null : workOrderFile(deps.runDir),
-        workOrderInPrompt: wholeWorkOrder !== null,
-        predecessors: plan.evidenceSources,
-      },
-      { cause, retainedOutput: source.retainedOutput, diffStat: null, completed },
+    keepCompleteRetainedOutput(
+      collectEvidenceIndexInput(
+        {
+          ...source,
+          workOrderPath: wholeWorkOrder ? null : workOrderFile(deps.runDir),
+          workOrderInPrompt: wholeWorkOrder !== null,
+          predecessors: plan.evidenceSources,
+        },
+        { cause, retainedOutput: source.retainedOutput, diffStat: null, completed },
+      ),
+      join(dir, "retained-output-try0.md"),
     ),
   );
-  const dir = join(deps.attemptDir, "continuation");
   mkdirSync(dir, { recursive: true });
   const evidencePath = join(dir, "evidence-index-try0.md");
   writeFileSync(evidencePath, index.markdown);

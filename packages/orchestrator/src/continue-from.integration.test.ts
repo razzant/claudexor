@@ -831,7 +831,9 @@ describe("continueFrom successor: first try", () => {
     const { succ } = await chain(f);
     const tries = f.spawns.filter((s) => s.phase === "successor");
     expect(tries.map((s) => s.resume)).toEqual(["sid-A", "sid-A"]);
-    expect(tries[1]!.prompt).toContain("The previous process stopped (the process died)");
+    expect(tries[1]!.prompt).toContain(
+      "The previous process stopped (an error without a typed cause)",
+    );
     expect(succ.result.lifecycle, succ.result.summary).toBe("succeeded");
     expect(succ.receipts.map((r) => [r["tryIndex"], r["carrier"], r["cause"]])).toEqual([
       [0, "native", "pool_exhausted"],

@@ -142,9 +142,41 @@
                 "reported_source"
               ],
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "vendor_not_retryable"
+                },
+                "source": {
+                  "type": "string",
+                  "const": "agy_stderr"
+                },
+                "error_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The vendor's own error id from the same record, verbatim; null when absent."
+                }
+              },
+              "required": [
+                "kind",
+                "source",
+                "error_id"
+              ],
+              "additionalProperties": false
             }
           ],
-          "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes carry their own evidence."
+          "description": "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes and an explicit vendor not-retryable verdict carry their own evidence."
         },
         "rawContextShortfall": {
           "type": "object",
@@ -397,6 +429,7 @@
                 "model_catalog_unavailable",
                 "vendor_cli_too_old",
                 "credential_source_unconfirmed",
+                "vendor_not_retryable",
                 "delegated_home_unavailable",
                 "delegated_confinement_unavailable",
                 "delegated_evidence_incomplete",

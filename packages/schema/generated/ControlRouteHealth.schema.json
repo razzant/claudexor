@@ -130,6 +130,7 @@
                             "model_catalog_unavailable",
                             "vendor_cli_too_old",
                             "credential_source_unconfirmed",
+                            "vendor_not_retryable",
                             "delegated_home_unavailable",
                             "delegated_confinement_unavailable",
                             "delegated_evidence_incomplete",
