@@ -2415,7 +2415,18 @@ from its tool-call `status`: when it does not report an observed exit (the
 command was moved to a background shell, its timeout elapsed, or the outcome is
 unknown), the result is not a finished command, never recovers an earlier
 failure, and is not itself a tool error, so it neither discards nor downgrades a
-delivered answer. Optional web denial/error is warning evidence and does
+delivered answer. A later `status` event with `payload.code:
+command_outcome_refined` names the same call (`tool.use_id`) and carries its
+refined `command_outcome`: a vendor-reported completion of a background command
+without an exit code (`completion_reported`, #546), never anything that claims
+an exit. It replaces what the transcript, the ACP call and the continuation
+packet say about that command, never changes the call's status and is not a
+result, so it recovers nothing either. The attempt's telemetry keeps each report
+as a command fact (`reported_command_outcomes`, the latest reports and their true
+count) apart from its tool errors: a reported `error` or `aborted` adds no tool
+error, warning, terminal failure or ranking penalty, because a deliberately
+stopped dev server may simply have finished correctly. Optional web
+denial/error is warning evidence and does
 not trigger route fallback or terminal failure; a read-only route is judged on
 its answer and the ordinary harness/contract axes.
 
@@ -7468,7 +7479,11 @@ completed-only frames) is its own completed row with its target and outcome;
 an ambiguous, repeated or nameless result adds nothing. A closing result whose
 `command_outcome` reports no observed exit (#450: timed out, backgrounded or
 unknown) is listed as unconfirmed with that state, never as completed, whether
-it closed a call or stands as its own row. Edits are identified
+it closed a call or stands as its own row. A later `command_outcome_refined`
+status replaces the command facts of the one call its result closed as a
+background handoff in the same try, once, so the packet names a reported
+completion (still unconfirmed: no exit code) rather than the stale handoff; it
+closes nothing itself. Edits are identified
 by their complete recorded path (`payload.path`), never the 500-character
 display target. A typed start never closes anything, repeats add no row, a
 null target never closes a named start, the companion `file_change` of a call
@@ -7587,7 +7602,8 @@ that predate that artifact report `available: false` instead of recomputed
 guesses. Timeline projections include tool name, target/domain/path, error
 summary, severity, harness, attempt, and raw event reference, and are capped
 with an explicit truncation marker. A tool row whose `command_outcome` does not
-report an observed exit is a warning, decided by that typed fact.
+report an observed exit is a warning, decided by that typed fact; so is the
+`command_outcome_refined` row that later names the same command.
 
 ## 8. Artifact Layout
 

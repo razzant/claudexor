@@ -382,10 +382,10 @@ describe("#450 command outcomes at every closing point of the collector", () => 
     ]);
     const markdown = render(calls);
     expect(markdown).toContain(
-      "- shell — sleep 300 (unconfirmed: Moved to background after 30s · still running · shell 7)",
+      "- shell — sleep 300 (unconfirmed: Handed off to background after its 30s timeout; completion not observed · shell 7)",
     );
     expect(markdown).toContain(
-      "- shell — find / -name '*.log' (unconfirmed: Moved to background after 30s · still running · shell 7)",
+      "- shell — find / -name '*.log' (unconfirmed: Handed off to background after its 30s timeout; completion not observed · shell 7)",
     );
     expect(markdown).not.toContain("(completed)");
   });
@@ -424,7 +424,7 @@ describe("#450 command outcomes at every closing point of the collector", () => 
       { name: "shell", target: "cat x", resolved: false, attempt: "a01" },
     ]);
     expect(markdown).toContain(
-      "- shell — watch (unconfirmed: Running in background) · attempt a02",
+      "- shell — watch (unconfirmed: Handed off to background; completion not observed) · attempt a02",
     );
     expect(markdown).toContain("- shell — cat x (unresolved: no result recorded) · attempt a01");
   });

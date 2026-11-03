@@ -395,6 +395,28 @@ describe("run-command pre-daemon machine contract", () => {
             ],
             outcome: { deliverable_present: true, status: "success" },
           },
+          {
+            attempt_id: "a-reported",
+            harness_id: "cursor",
+            web: {},
+            reported_command_outcomes: {
+              total: 1,
+              recent: [
+                {
+                  tool: "shell",
+                  target: "pnpm dev",
+                  tool_use_id: "call-dev-server",
+                  command_outcome: {
+                    state: "completion_reported",
+                    completion_status: "aborted",
+                    background_reason: "requested",
+                    shell_id: "148510",
+                  },
+                },
+              ],
+            },
+            outcome: { deliverable_present: true, status: "success" },
+          },
         ],
         generated_at: "2026-08-14T00:00:01.000Z",
       }),
@@ -422,6 +444,16 @@ describe("run-command pre-daemon machine contract", () => {
           summary: "required web failed",
         },
       ],
+      // #546: a vendor's word about a command, kept apart from both lists above.
+      reportedCommands: [
+        {
+          attemptId: "a-reported",
+          tool: "shell",
+          target: "pnpm dev",
+          report:
+            "Completion reported (aborted); exit code unknown · handed off to background · shell 148510",
+        },
+      ],
     });
 
     const human = spawnSync(process.execPath, [tsxCli, cliSource, "inspect", "run-tool-outcomes"], {
@@ -435,5 +467,88 @@ describe("run-command pre-daemon machine contract", () => {
     expect(human.stdout).toContain("tool errors (unrecovered):");
     expect(human.stdout).toContain("a-required-web WebSearch: required web failed");
     expect(human.stdout).not.toContain("a-recovered Read");
+    expect(human.stdout).toContain("reported command outcomes (not tool errors):");
+    expect(human.stdout).toContain(
+      "a-reported shell: Completion reported (aborted); exit code unknown · handed off to background · shell 148510 (pnpm dev)",
+    );
+  });
+
+  // C2: the human list shows the last eight reports; it says how many it hides.
+  it("inspect says how many reported command outcomes its human list does not show", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-cli-inspect-many-reports-"));
+    tempRoots.push(root);
+    const project = join(root, "project");
+    const config = join(root, "config");
+    mkdirSync(project, { recursive: true });
+    const store = new ArtifactStore(project, { claudexorDir: config });
+    const paths = store.createRun("run-many-reports");
+    store.writeYaml(
+      join(paths.contextDir, "task.yaml"),
+      TaskContract.parse({
+        schema_version: SCHEMA_VERSION,
+        task_id: "task-many-reports",
+        created_at: "2026-08-14T00:00:00.000Z",
+        repo: { root: project, base_ref: "HEAD" },
+        mode: { kind: "agent" },
+        user_intent: { raw: "start many jobs" },
+        tests: { commands: [] },
+      }),
+    );
+    // The writer keeps the latest 20 reports and the true count (23).
+    const recent = Array.from({ length: 20 }, (_, index) => ({
+      tool: "shell",
+      target: `job ${index + 4}`,
+      tool_use_id: `call-${index + 4}`,
+      command_outcome: {
+        state: "completion_reported",
+        completion_status: index === 0 ? "aborted" : "success",
+        background_reason: "requested",
+        shell_id: String(index + 4),
+      },
+    }));
+    store.writeYaml(
+      join(paths.finalDir, "telemetry.yaml"),
+      RunTelemetry.parse({
+        schema_version: SCHEMA_VERSION,
+        run_id: "run-many-reports",
+        task_id: "task-many-reports",
+        mode: "agent",
+        requested_access: "workspace_write",
+        effective_access: "workspace_write",
+        external_context_policy: "auto",
+        effective_web_mode: "auto",
+        final_attempt_id: "a-many",
+        web: {},
+        attempts: [
+          {
+            attempt_id: "a-many",
+            harness_id: "cursor",
+            web: {},
+            reported_command_outcomes: { total: 23, recent },
+            outcome: { deliverable_present: true, status: "success" },
+          },
+        ],
+        generated_at: "2026-08-14T00:00:01.000Z",
+      }),
+    );
+    store.writeText(join(paths.finalDir, "summary.md"), "Many reports.\n");
+
+    const human = spawnSync(process.execPath, [tsxCli, cliSource, "inspect", "run-many-reports"], {
+      cwd: project,
+      encoding: "utf8",
+      env: { ...process.env, CLAUDEXOR_CONFIG_DIR: config },
+    });
+    expect(human.status, human.stderr).toBe(0);
+    expect(human.stdout).toContain("reported command outcomes (not tool errors; showing 8 of 23):");
+    const listed = human.stdout.split("\n").filter((line) => line.startsWith("  - a-many shell: "));
+    expect(listed).toEqual(
+      Array.from(
+        { length: 8 },
+        (_, index) =>
+          `  - a-many shell: Completion reported; exit code unknown · handed off to background · shell ${index + 16} (job ${index + 16})`,
+      ),
+    );
+    // The hidden aborted report is not printed; the header says it exists.
+    expect(human.stdout).not.toContain("(aborted)");
   });
 });

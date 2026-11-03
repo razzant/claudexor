@@ -6,7 +6,7 @@
  */
 import { armOrphanExit } from "@claudexor/core";
 import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
-import { AcpServer } from "@claudexor/acp-server";
+import { AcpServer, type AcpServerOptions } from "@claudexor/acp-server";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
 import { acpTerminalAuthMethods } from "./acp-auth.js";
 import { acpSessionQuery } from "./acp-surface-runner.js";
@@ -33,13 +33,19 @@ export async function serveMcpBridge(): Promise<number> {
   return 0;
 }
 
-export async function serveAcpBridge(): Promise<number> {
-  armBridgeWatchdog("acp");
-  await new AcpServer({
+/** The ACP server `acp serve` runs: the official SDK projection over the
+ * daemon-thread session runner, on any transport (stdio in production). */
+export function acpBridgeServer(transport: AcpServerOptions["transport"]): AcpServer {
+  return new AcpServer({
     version: CLAUDEXOR_VERSION,
     runner: mcpSurfaceRunner({ acpSessionQuery }),
-    transport: { read: process.stdin, write: process.stdout },
+    transport,
     terminalAuthMethods: acpTerminalAuthMethods(process.platform),
-  }).serve();
+  });
+}
+
+export async function serveAcpBridge(): Promise<number> {
+  armBridgeWatchdog("acp");
+  await acpBridgeServer({ read: process.stdin, write: process.stdout }).serve();
   return 0;
 }

@@ -55,7 +55,8 @@ export interface EvidenceToolCall {
   resolved: boolean;
   /** A recorded non-ok outcome of that result or completion (completed is not success). */
   outcome?: "error" | "cancelled" | "denied";
-  /** The result's stored `command_outcome` (#450), when it reported one. */
+  /** The result's stored `command_outcome` (#450), when it reported one, or
+   * the later refinement of it (#546). */
   commandOutcome?: unknown;
   /** An untyped edit frame repeated: the repeat may be its completion or another start. */
   unconfirmed?: true;
@@ -310,7 +311,8 @@ export function uncoveredWorkSection(work: UncoveredWork): string {
 function toolRow(call: EvidenceToolCall): string {
   const target = call.target ? ` — ${wholeCharPrefix(call.target.replace(/\s+/g, " "), 160)}` : "";
   // A recorded result whose command was moved to the background, timed out or
-  // ended unknown is not a completed command (#450).
+  // ended unknown is not a completed command (#450); neither is one whose later
+  // reported completion carried no exit code (#546).
   const unconfirmed = call.resolved ? commandOutcomeLabel(call.commandOutcome) : null;
   const state = unconfirmed
     ? `unconfirmed: ${unconfirmed}`

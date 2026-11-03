@@ -463,7 +463,7 @@ describe("command outcomes in the evidence index (#450)", () => {
       }),
     ).markdown;
     expect(md).toContain(
-      "- shell — find /workspace (unconfirmed: Moved to background after 30s · still running · shell 3 · pid 4242)",
+      "- shell — find /workspace (unconfirmed: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242)",
     );
     expect(md).toContain(
       "- shell — sleep 120 (unconfirmed: Timed out after 30s · exit status unknown)",
@@ -474,5 +474,145 @@ describe("command outcomes in the evidence index (#450)", () => {
     expect(md).toContain("- shell — pnpm build (unresolved: no result recorded)");
     expect(md).not.toContain("find /workspace (completed)");
     expect(md).toContain("Tool calls: 6; unresolved: 1.");
+  });
+});
+
+// #546: a later correlated refinement (a `status` event with
+// `payload.code: command_outcome_refined`) replaces the command facts of the
+// call its result closed, so the next run never inherits a stale handoff. It
+// is never a result: it closes nothing and names no other call.
+describe("command outcome refinements in the evidence index (#546)", () => {
+  const handoff = {
+    state: "backgrounded",
+    background_reason: "timeout",
+    timeout_ms: 30000,
+    shell_id: "3",
+    pid: 4242,
+  };
+  const completion = { ...handoff, state: "completion_reported", completion_status: "success" };
+  const call = (id: string, target: string) => ({
+    type: "tool_call",
+    session_id: "s1",
+    tool: { name: "shell", kind: "command", use_id: id, target },
+  });
+  const result = (id: string, extra: Record<string, unknown> = {}) => ({
+    type: "tool_result",
+    session_id: "s1",
+    tool: { name: "shell", kind: "command", use_id: id, status: "ok", ...extra },
+  });
+  const refined = (id: string, over: Record<string, unknown> = {}) => ({
+    type: "status",
+    session_id: "s1",
+    tool: { name: "shell", kind: "command", use_id: id, target: "sleep 45" },
+    payload: { code: "command_outcome_refined" },
+    ...over,
+  });
+  const withOutcome = (id: string, outcome: unknown, over: Record<string, unknown> = {}) => {
+    const event = refined(id, over);
+    return { ...event, tool: { ...event.tool, command_outcome: outcome } };
+  };
+
+  it("replaces the closed call's command facts with the refined outcome", () => {
+    const calls = toolCallIndex([
+      call("bg", "sleep 45"),
+      result("bg", { command_outcome: handoff }),
+      call("neighbour", "pnpm test"),
+      withOutcome("bg", completion),
+    ]);
+    expect(calls).toEqual([
+      { name: "shell", target: "sleep 45", resolved: true, commandOutcome: completion },
+      { name: "shell", target: "pnpm test", resolved: false },
+    ]);
+  });
+
+  it("adds nothing for an unknown id, another session, an open call or an untyped status", () => {
+    const calls = toolCallIndex([
+      call("bg", "sleep 45"),
+      result("bg", { command_outcome: handoff }),
+      call("open", "pnpm dev"),
+      withOutcome("unknown", completion),
+      withOutcome("bg", completion, { session_id: "s2" }),
+      withOutcome("open", completion),
+      withOutcome("bg", completion, { payload: { code: "live_input_delivered" } }),
+      withOutcome("bg", { state: "suspended" }),
+    ]);
+    expect(calls).toEqual([
+      { name: "shell", target: "sleep 45", resolved: true, commandOutcome: handoff },
+      { name: "shell", target: "pnpm dev", resolved: false },
+    ]);
+  });
+
+  it("refines only a handoff, and never lets a status row claim an exit", () => {
+    const calls = toolCallIndex([
+      call("exit", "ls"),
+      result("exit", { exit_code: 0, command_outcome: { state: "exited" } }),
+      call("slow", "sleep 120"),
+      result("slow", { command_outcome: { state: "timed_out", timeout_ms: 30000 } }),
+      call("bg", "sleep 45"),
+      result("bg", { command_outcome: handoff }),
+      withOutcome("exit", completion),
+      withOutcome("slow", completion),
+      withOutcome("bg", { state: "exited" }),
+      withOutcome("bg", { ...completion, completion_status: "paused" }),
+    ]);
+    expect(calls.map((c) => c.commandOutcome)).toEqual([
+      { state: "exited" },
+      { state: "timed_out", timeout_ms: 30000 },
+      handoff,
+    ]);
+    const md = buildEvidenceIndex(input({ toolCalls: calls })).markdown;
+    expect(md).toContain("- shell — ls (completed)");
+    expect(md).not.toContain("sleep 45 (completed");
+  });
+
+  it("the first report wins, and an id two calls share is refused", () => {
+    const first = toolCallIndex([
+      call("bg", "sleep 45"),
+      result("bg", { command_outcome: handoff }),
+      withOutcome("bg", { ...completion, completion_status: "error" }),
+      withOutcome("bg", completion),
+    ]);
+    expect(first[0]?.commandOutcome).toEqual({ ...completion, completion_status: "error" });
+    const shared = toolCallIndex([
+      call("bg", "sleep 45"),
+      result("bg", { command_outcome: handoff }),
+      call("bg", "sleep 46"),
+      result("bg", { command_outcome: handoff }),
+      withOutcome("bg", completion),
+    ]);
+    expect(shared.map((c) => c.commandOutcome)).toEqual([handoff, handoff]);
+  });
+
+  it("keeps a negative report in the packet", () => {
+    const md = buildEvidenceIndex(
+      input({
+        toolCalls: toolCallIndex([
+          call("bg", "pnpm test"),
+          result("bg", { command_outcome: handoff }),
+          withOutcome("bg", { ...completion, completion_status: "error" }),
+        ]),
+      }),
+    ).markdown;
+    expect(md).toContain(
+      "- shell — pnpm test (unconfirmed: Completion reported (error); exit code unknown · handed off to background after its 30s timeout · shell 3 · pid 4242)",
+    );
+  });
+
+  it("names the reported completion in the packet without calling the command completed", () => {
+    const md = buildEvidenceIndex(
+      input({
+        toolCalls: toolCallIndex([
+          call("bg", "sleep 45"),
+          result("bg", { command_outcome: handoff }),
+          withOutcome("bg", completion),
+        ]),
+      }),
+    ).markdown;
+    expect(md).toContain(
+      "- shell — sleep 45 (unconfirmed: Completion reported; exit code unknown · handed off to background after its 30s timeout · shell 3 · pid 4242)",
+    );
+    expect(md).not.toContain("completion not observed");
+    expect(md).not.toContain("sleep 45 (completed");
+    expect(md).toContain("Tool calls: 1; unresolved: 0.");
   });
 });

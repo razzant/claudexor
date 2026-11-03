@@ -1113,6 +1113,112 @@
                 "default": 0,
                 "description": "Tool errors with no later successful recovery."
               },
+              "reported_command_outcomes": {
+                "type": "object",
+                "properties": {
+                  "total": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "True count of reports in this attempt."
+                  },
+                  "recent": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "tool": {
+                          "type": "string",
+                          "description": "Native tool name of the reported call."
+                        },
+                        "target": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null,
+                          "description": "Target of the call as issued, when known."
+                        },
+                        "tool_use_id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "The exact call the report refined."
+                        },
+                        "command_outcome": {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "exited",
+                                "timed_out",
+                                "backgrounded",
+                                "completion_reported",
+                                "unknown"
+                              ],
+                              "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; completion_reported: after such a handoff, a later vendor notification reported that the command ended, without an exit code; unknown: the native result established none of these."
+                            },
+                            "signal": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Vendor-reported signal name of an exited command."
+                            },
+                            "timeout_ms": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "description": "The elapsed tool timeout behind timed_out or a timeout-driven background handoff."
+                            },
+                            "background_reason": {
+                              "type": "string",
+                              "enum": [
+                                "timeout",
+                                "requested"
+                              ],
+                              "description": "Why a backgrounded command left the foreground: its timeout or a request."
+                            },
+                            "shell_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Vendor handle of the background shell that kept the command."
+                            },
+                            "pid": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "description": "Vendor-reported process id."
+                            },
+                            "completion_status": {
+                              "type": "string",
+                              "enum": [
+                                "success",
+                                "error",
+                                "aborted"
+                              ],
+                              "description": "What the vendor reported about a completion_reported command; never an exit code."
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false,
+                          "description": "The call's refined facts: the vendor's word and the handoff, never an exit code."
+                        }
+                      },
+                      "required": [
+                        "tool",
+                        "tool_use_id",
+                        "command_outcome"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "description": "The most recent reports, bounded by the writer."
+                  }
+                },
+                "required": [
+                  "total",
+                  "recent"
+                ],
+                "additionalProperties": false,
+                "description": "Vendor reports about handed-off commands, kept apart from tool errors."
+              },
               "statusless_tool_results": {
                 "type": "integer",
                 "minimum": 0,

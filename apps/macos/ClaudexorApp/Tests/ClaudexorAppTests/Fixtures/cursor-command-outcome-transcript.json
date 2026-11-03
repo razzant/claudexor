@@ -140,8 +140,8 @@
         "session_id": "ses-fixture",
         "ts": "2026-10-29T00:00:07.000Z",
         "type": "tool_result",
-        "title": "tool_result: Moved to background after 30s · still running · shell 3 · pid 4242",
-        "text": "tool_result: Moved to background after 30s · still running · shell 3 · pid 4242",
+        "title": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242",
+        "text": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242",
         "tool": {
           "name": "shell",
           "kind": "command",
@@ -207,8 +207,8 @@
         "session_id": "ses-fixture",
         "ts": "2026-10-29T00:00:09.000Z",
         "type": "tool_result",
-        "title": "tool_result: Running in background · shell 4 · pid 4343",
-        "text": "tool_result: Running in background · shell 4 · pid 4343",
+        "title": "tool_result: Handed off to background; completion not observed · shell 4 · pid 4343",
+        "text": "tool_result: Handed off to background; completion not observed · shell 4 · pid 4343",
         "tool": {
           "name": "shell",
           "kind": "command",

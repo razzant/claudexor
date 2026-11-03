@@ -12,7 +12,7 @@ import {
 } from "./primitives.js";
 import { OutputSchemaDialect } from "./output-schema-dialect.js";
 import { DeepScanSynthesis } from "./deep-scan.js";
-import { ToolKind } from "./tool-ref.js";
+import { ReportedCommandOutcomes, ToolKind } from "./tool-ref.js";
 import { AuthMode, RouteRankingRationale, UsageCostSummary } from "./budget.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
@@ -459,6 +459,7 @@ export const AttemptTelemetryRecord = z
       .nonnegative()
       .default(0)
       .describe("Tool errors with no later successful recovery."),
+    reported_command_outcomes: ReportedCommandOutcomes.optional(),
     statusless_tool_results: z
       .number()
       .int()

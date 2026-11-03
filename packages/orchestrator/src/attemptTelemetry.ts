@@ -14,7 +14,6 @@ import type {
   VendorFailureEvidence,
   WorkState,
 } from "@claudexor/schema";
-import { commandOutcomeUnconfirmed } from "@claudexor/schema";
 import {
   attemptUsageCostSummary,
   newAttemptUsageCost,
@@ -27,6 +26,7 @@ import * as marks from "./attemptOutputMarkers.js";
 import { observeProcessing, type ProcessingTelemetry } from "./processing-telemetry.js";
 import { observeObservedModel, type ObservedModelTelemetry } from "./observed-model-telemetry.js";
 import { observePromptCacheTtl, type PromptCacheTelemetry } from "./prompt-cache-telemetry.js";
+import { observeCommandReport, recoverable, type CommandTelemetry } from "./command-telemetry.js";
 import {
   type TransientFailureObservation,
   classifyCompletedCrash,
@@ -97,7 +97,7 @@ export interface DelegationBeltState {
 }
 
 export interface AttemptTelemetry
-  extends ProcessingTelemetry, PromptCacheTelemetry, ObservedModelTelemetry {
+  extends ProcessingTelemetry, PromptCacheTelemetry, ObservedModelTelemetry, CommandTelemetry {
   requestRefusal?: HarnessRequestRefusal;
   effortResolution?: EffortResolution;
   /** #147: the size of the last raw-api request a try prepared, receipted just
@@ -281,6 +281,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   if (ev.type === "error" && ev.request_refusal) t.requestRefusal = ev.request_refusal;
   observeProcessing(t, ev);
   observePromptCacheTtl(t, ev);
+  observeCommandReport(t, ev);
   if (ev.effort_resolution) t.effortResolution = ev.effort_resolution;
   if (ev.raw_context) t.rawContext = ev.raw_context;
   marks.observeAttemptOutputMarkers(t.outputMarkers, ev);
@@ -466,7 +467,7 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   // use id when both sides have one (else the legacy tuple key), and an observed
   // command end: a background handoff or elapsed timeout proves nothing (#450).
   const resultToolUseId = tool.use_id ?? null;
-  for (const err of commandOutcomeUnconfirmed(tool.command_outcome) ? [] : t.toolErrors) {
+  for (const err of recoverable(t.toolErrors, tool.command_outcome)) {
     // INV-043: a later identical-looking invocation cannot launder an earlier
     // error when both vendor records prove different invocation ids.
     if (
@@ -664,7 +665,6 @@ export function attemptTelemetryRecord(
   harnessId: string,
   t: AttemptTelemetry,
 ): AttemptTelemetryRecord {
-  const errors = t.toolErrors.slice(-TELEMETRY_TOOL_ERRORS_MAX);
   const warnings = toolWarnings(t);
   return {
     usage_cost: attemptUsageCostSummary(t.usageCost),
@@ -695,7 +695,7 @@ export function attemptTelemetryRecord(
       target: t.web.target,
       error_summary: t.web.errorSummary,
     },
-    tool_errors: errors.map((e) => ({
+    tool_errors: t.toolErrors.slice(-TELEMETRY_TOOL_ERRORS_MAX).map((e) => ({
       tool: e.tool,
       kind: e.kind,
       target: e.target,
@@ -705,6 +705,7 @@ export function attemptTelemetryRecord(
     })),
     tool_errors_total: t.toolErrors.length,
     unrecovered_tool_errors: unrecoveredToolErrors(t).length,
+    reported_command_outcomes: t.reportedCommandOutcomes,
     statusless_tool_results: t.statuslessResults,
     dropped_events: t.droppedEvents,
     transient_failures: t.transientFailures.slice(-TELEMETRY_TOOL_ERRORS_MAX).map((e) => ({

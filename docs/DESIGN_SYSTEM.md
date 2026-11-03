@@ -1011,12 +1011,23 @@ views in the shared design-system files; screens compose them.
     icon + humane title — a command shows its binary's basename, the full
     command line is the subtitle); a FAILED tool stands alone and carries its
     error summary (or "exit N") as a second dimmed line; an UNCONFIRMED command
-    (moved to a background shell, timed out, or an unknown outcome) never shows
-    the success check: it stands alone with the amber warning triangle
+    (handed to a background shell, timed out, a completion reported without an
+    exit code, or an unknown outcome) never shows the success check: it stands
+    alone with the amber warning triangle
     (`exclamationmark.triangle.fill`, caution tone) and its typed
-    state as a second secondary line («Moved to background after 30s · still
-    running · shell 3 · pid 4242»), worded by the engine's command-outcome
-    label; runs of MORE THAN
+    state as a second secondary line («Handed off to background after its 30s
+    timeout; completion not observed · shell 3 · pid 4242»), worded by the
+    engine's command-outcome label. A result lands on its own try's call of its
+    tool-use id; one whose call never arrived gets its own row and never closes
+    another open call, and an id-less result closes only the one open id-less call
+    of its exact name in its try when the name fits the existing tool-field limit.
+    Longer names are shown bounded but left unpaired, never matched by a clipped prefix.
+    A later `command_outcome_refined` status updates that same row in place,
+    found by its try and exact tool-use id and never by name
+    («Completion reported; exit code unknown · handed off to background
+    after its 30s timeout · shell 3 · pid 4242», or «Completion reported
+    (error); …» for a negative report); it adds no row, keeps the caution tone,
+    can never turn the row green and leaves other rows untouched; runs of MORE THAN
     THREE consecutive same-name OK tools collapse into one quiet group row
     («Read · 6 calls»); thinking is a single timer row («◐ Thinking · 12s» —
     the reasoning text and full tool output live only in the inspector); zero

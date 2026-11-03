@@ -616,9 +616,10 @@
                     "exited",
                     "timed_out",
                     "backgrounded",
+                    "completion_reported",
                     "unknown"
                   ],
-                  "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; unknown: the native result established none of these."
+                  "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; completion_reported: after such a handoff, a later vendor notification reported that the command ended, without an exit code; unknown: the native result established none of these."
                 },
                 "signal": {
                   "type": "string",
@@ -647,6 +648,15 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "description": "Vendor-reported process id."
+                },
+                "completion_status": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "error",
+                    "aborted"
+                  ],
+                  "description": "What the vendor reported about a completion_reported command; never an exit code."
                 }
               },
               "required": [
@@ -669,7 +679,7 @@
             "name"
           ],
           "additionalProperties": false,
-          "description": "Typed tool info; set on tool_call and tool_result events."
+          "description": "Typed tool info; set on tool_call and tool_result events, and on a status event with payload.code command_outcome_refined, where it names the earlier call (use_id) and carries its refined command_outcome."
         },
         "interaction": {
           "type": "object",
