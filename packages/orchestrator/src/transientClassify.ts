@@ -27,6 +27,9 @@ export interface TransientFailureObservation {
   retryDelayMs: number | null;
   httpStatus: number | null;
   signal: string | null;
+  /** The adapter proved the vendor denied this credential's subscription access,
+   * beyond a category inferred from prose. In memory only, for refusal scope. */
+  entitlementDenied?: true;
   adapterCode: string | null;
 }
 
@@ -64,6 +67,7 @@ function observation(
     httpStatus: extra.httpStatus ?? null,
     signal: extra.signal ?? null,
     adapterCode: extra.adapterCode ?? null,
+    ...(extra.entitlementDenied ? { entitlementDenied: true as const } : {}),
   };
 }
 
@@ -91,10 +95,9 @@ export function classifyPermissionDenial(): TransientFailureObservation {
  * deterministic FAILURE classes are surfaced here; rate limits arrive via the
  * dedicated `rate_limit` signal, and transient/overload retries the vendor
  * drives itself are not our failures (returns null → not recorded). */
-export function classifyStatusError(
-  ec: NonNullable<NonNullable<HarnessEvent["status"]>["error_category"]>,
-  retryDelayMs: number | null,
-): TransientFailureObservation | null {
+export function classifyStatusError(event: HarnessEvent): TransientFailureObservation | null {
+  const ec = event.status?.error_category;
+  if (!ec) return null;
   let category: HarnessFailureCategory | null;
   switch (ec) {
     case "authentication_failed":
@@ -114,7 +117,13 @@ export function classifyStatusError(
       category = null;
   }
   if (!category) return null;
-  return observation(category, { retryDelayMs, adapterCode: ec });
+  return observation(category, {
+    retryDelayMs: event.status?.retry_delay_ms ?? null,
+    adapterCode: ec,
+    ...(ec === "oauth_org_not_allowed" && event.payload?.["entitlement_denied"] === true
+      ? { entitlementDenied: true as const }
+      : {}),
+  });
 }
 
 /**

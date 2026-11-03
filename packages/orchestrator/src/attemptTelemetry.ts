@@ -325,10 +325,8 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     });
     t.transientFailures.push(classifyRateLimit(ev.rate_limit.retry_delay_ms ?? null));
   }
-  if (ev.status?.error_category) {
-    const obs = classifyStatusError(ev.status.error_category, ev.status.retry_delay_ms ?? null);
-    if (obs) t.transientFailures.push(obs);
-  }
+  const statusFailure = classifyStatusError(ev);
+  if (statusFailure) t.transientFailures.push(statusFailure);
   // D-16 context signal: a terminal capacity_exhausted marks the attempt for the
   // finalizer's interrupted/context_capacity_exhausted mapping. Context signals
   // NEVER enter the transient-retry loop (they are not transient failures).

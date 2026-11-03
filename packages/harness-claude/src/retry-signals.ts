@@ -36,7 +36,14 @@ export function claudeApiRetryEvents(
       ...(retryDelayMs === null ? {} : { retry_delay_ms: retryDelayMs }),
       error_category: claudeRetryCategory(obj["error"]),
     },
-    payload: { api_retry: true, retry_delay_ms: retryDelayMs },
+    payload: {
+      api_retry: true,
+      retry_delay_ms: retryDelayMs,
+      // Only the vendor's exact code proves subscription access is denied. The
+      // category's prose fallback below can name a single model, so it keeps the
+      // category for diagnostics and retry without this proof.
+      ...(obj["error"] === "oauth_org_not_allowed" ? { entitlement_denied: true } : {}),
+    },
   };
   if (/rate.?limit|overloaded|too many requests|quota/i.test(errText)) {
     event.rate_limit = { resets_at: null, retry_delay_ms: retryDelayMs };
@@ -64,9 +71,10 @@ export function claudeApiRetryEvents(
  * a machine fact instead of prose. The message events themselves keep flowing
  * unchanged (adapter output hygiene is a later phase).
  *
- * `kind: "api_retry"` is the only status kind the frozen schema carries today;
- * consumers read only `error_category`, and a dedicated kind would be a schema
- * change deliberately out of A1 scope.
+ * `kind: "api_retry"` is the only status kind the frozen schema carries today, and
+ * a dedicated kind would be a schema change deliberately out of A1 scope. Consumers
+ * read `error_category`; `entitlement_denied` adds the proof that this credential's
+ * subscription access is denied, which the category's prose fallback cannot give.
  */
 const CLAUDE_ORG_DISABLED_RE = /organization has disabled claude subscription access/i;
 

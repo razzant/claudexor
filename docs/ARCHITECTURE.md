@@ -1630,7 +1630,7 @@ authority whose `next_up` verdict says who an unpinned run of the configured
 default model would route to next, computed by the same routing owner; it is
 never a forecast for another model. The separate read-only
 `GET /v2/accounts/routing-evidence` carries live pre-progress refusal marks,
-temporary model capability marks, and the last-served facts of the registered rows, each scoped to its requested model,
+temporary model capability marks, model-scoped credential refusals (on request), and the last-served facts of the registered rows, each scoped to its requested model,
 and leaves the legacy listings unchanged. Its `kind` is
 `profile | api_key_route | none`. The pool authority is also served alone by
 `GET /v2/account-pools`, whose catalog presence is the unified-accounts
@@ -1835,7 +1835,18 @@ finishes even when a caller exits early. Candidate, read-only, planner, reducer,
 reviewer and continuity-summary dispatches use that same boundary; raw model
 catalog and inference calls bind the same authority before provider work.
 An unresolved typed terminal auth or capability refusal enters the daemon's
-bounded, in-memory `CredentialUnusableLedger`. A pin records evidence without
+bounded, in-memory `CredentialUnusableLedger`. Its scope follows what the vendor's
+typed category proves, with one owner (`credentialStreamRefusal`) for the observer
+and the differential probe: an auth rejection, or a denial of subscription access on
+the observed subscription route that the adapter proved (`entitlement_denied`: the
+vendor's exact `oauth_org_not_allowed` code or its recorded result), covers every
+model of that exact subject and route and never another route, row or harness. Any
+other capability refusal covers only the model the run requested, including prose the
+parser's fallback files under the same category, which keeps its diagnostics and retry
+class. A refusal from a run that named no model enters no ledger,
+because a missing selector proves nothing about the credential: the run keeps its
+own failure diagnostics, and the pre-progress ordering mark applies only under its
+own conditions. A try keeps its broadest proven scope. A pin records evidence without
 rotating. A transport failure or cancellation alone is not an auth verdict;
 served usage can recover an intermediate refusal. The existing differential
 probe still reads typed stream and local/poller evidence when rotation needs it,
@@ -1874,7 +1885,10 @@ The pure `composeCredentialProfileEvidence` owner combines local readiness,
 applicable hard refusals and authenticated quota evidence for admission, catalog,
 Accounts and `next_up`. Accounts retains its compact status and detailed reason,
 identity and last-known quota. Only credential-wide failures affect an unqualified
-account row; `next_up` considers the configured model. Only expensive probes are
+account row; `next_up` considers the configured model. A row's live model-scoped
+refusals reach Accounts only as dated evidence through the opt-in routing-evidence
+read (`credentialUnusable[]`), selected by `modelScopedCredentialUnusable` with the
+same rule a run of that model applies. Only expensive probes are
 cached, so a new refusal, recovery or expiry is composed on the next read without
 re-probing every account. Local verification failure stays local. A covering
 successful full-reader vendor observation may supersede an older auth refusal

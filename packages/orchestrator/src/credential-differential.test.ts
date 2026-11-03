@@ -156,6 +156,7 @@ describe("current poller diagnostics after dispatch-bound recovery", () => {
 function transient(
   category: TransientFailureObservation["category"],
   retryable: boolean,
+  adapterCode: string | null = null,
 ): TransientFailureObservation {
   return {
     kind: "unknown",
@@ -164,7 +165,7 @@ function transient(
     retryDelayMs: null,
     httpStatus: null,
     signal: null,
-    adapterCode: category === "capability_refused" ? "oauth_org_not_allowed" : null,
+    adapterCode,
   };
 }
 
@@ -194,13 +195,13 @@ function obs(over: Partial<CredentialUnusableObservation>): CredentialUnusableOb
 }
 
 describe("differentialSubjectVerdict (A7 — dead credential vs spent quota)", () => {
-  it("a typed NON-RETRYABLE entitlement refusal on the attempt stream is the strongest evidence, scoped to the attempt's model", async () => {
+  it("a typed NON-RETRYABLE model refusal on the attempt stream is the strongest evidence, scoped to the attempt's model", async () => {
     const verdict = await differentialSubjectVerdict({
       harnessId: "claude",
       profile: work,
       model: "opus",
       quota: emptyQuota,
-      transients: [transient("capability_refused", false)],
+      transients: [transient("capability_refused", false, "model_not_found")],
       probe: passingProbe,
     });
     expect(verdict).toMatchObject({
@@ -208,7 +209,7 @@ describe("differentialSubjectVerdict (A7 — dead credential vs spent quota)", (
       source: "attempt_stream",
       model: "opus",
       profile_id: "work",
-      detail: "oauth_org_not_allowed",
+      detail: "model_not_found",
     });
   });
 

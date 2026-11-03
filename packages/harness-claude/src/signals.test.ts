@@ -206,6 +206,23 @@ describe("claude D-16 signal fixtures", () => {
     expect(resultStatus?.text).toContain("organization has disabled");
   });
 
+  it("only the exact vendor code or the recorded result proves a subscription-wide denial", () => {
+    const retry = (error: string) =>
+      createClaudeParser()({ type: "system", subtype: "api_retry", attempt: 1, error }, "sig")?.[0];
+    expect(retry("oauth_org_not_allowed")).toMatchObject({
+      status: { error_category: "oauth_org_not_allowed" },
+      payload: { entitlement_denied: true },
+    });
+    // The fallback keeps the category and the vendor's words for diagnostics and
+    // retry, but prose about one model proves nothing about the others.
+    const prose = "Your organization is not allowed to use claude-opus-5-5";
+    const fromProse = retry(prose);
+    expect(fromProse?.status?.error_category).toBe("oauth_org_not_allowed");
+    expect(fromProse?.text).toContain(prose);
+    expect(fromProse?.payload?.["entitlement_denied"]).toBeUndefined();
+    expect(retry("model_not_found")?.payload?.["entitlement_denied"]).toBeUndefined();
+  });
+
   it("a successful result never emits the entitlement status even if prose echoes the phrase", () => {
     const out = createClaudeParser()(
       {

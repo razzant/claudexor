@@ -2004,7 +2004,7 @@ describe("account/model capability routing", () => {
       ControlAccountRoutingEvidenceResponse.omit({ capabilities: true }).strict().parse(evidence),
     ).not.toThrow();
     // Only a client that asks receives the field (its rows are covered by the HTTP consumer test).
-    expect(await f.routingStatus(true)).toHaveProperty("capabilities");
+    expect(await f.routingStatus({ capabilities: true })).toHaveProperty("capabilities");
     const routed = await f.run();
     expect(routed.routing?.selectionReason).toBeDefined();
   });

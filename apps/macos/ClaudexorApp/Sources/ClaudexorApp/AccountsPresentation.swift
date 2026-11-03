@@ -55,6 +55,9 @@ struct AccountRowModel: Identifiable {
     /// The row's latest observed service per requested model: a routing
     /// observation, never a quota or authentication verdict.
     var lastService: [AccountLastService] = []
+    /// Live typed refusals of single models on this row (#200): dated evidence
+    /// in its refusal line, never its readiness, Enabled state or order.
+    var credentialUnusable: [AccountCredentialUnusableMark] = []
     /// Non-secret {email, plan} of this account (INV-067), projected
     /// daemon-side from the owning credential-profile probe. When present it
     /// drives the row's secondary line (`identityLine`); nil when the source
@@ -268,6 +271,9 @@ enum AccountsPresentation {
                 lastService: model.accountsRoutingEvidence.lastService(
                     harnessId: entry.profile.harnessId, profileId: entry.profile.profileId,
                     at: model.activeExecutionLocation),
+                credentialUnusable: model.accountsRoutingEvidence.credentialUnusable(
+                    harnessId: entry.profile.harnessId, profileId: entry.profile.profileId,
+                    at: model.activeExecutionLocation),
                 identity: entry.identity
             )
         }
@@ -276,15 +282,32 @@ enum AccountsPresentation {
     /// The next-up badge copy: `next_up` is the configured default model's verdict.
     static let nextUpLabel = "Next up · default model"
 
-    /// "Recent refusal · <model>, …": which requested models this row refused
-    /// before progress (each mark orders the pool for its own model only).
-    static func refusalLine(_ marks: [AccountRefusalMark]) -> String? {
-        guard !marks.isEmpty else { return nil }
+    /// "Recent refusal · <model> (<reason>, <age>), <model>, …": first the
+    /// row's live typed refusals of single models, each with the vendor's
+    /// typed evidence (or the engine's code) and when it was observed, then the
+    /// requested models it refused before progress; a pre-progress mark of a
+    /// model already named folds into it. A typed refusal makes routing refuse
+    /// this row for that model; a pre-progress mark only orders the pool for
+    /// it. Both are observations of one model, never the row's readiness.
+    static func refusalLine(
+        _ marks: [AccountRefusalMark],
+        credentialUnusable: [AccountCredentialUnusableMark] = [],
+        now: Date = Date()
+    ) -> String? {
+        var entries: [String] = []
+        var named: Set<String> = []
+        for refusal in credentialUnusable where named.insert(refusal.model).inserted {
+            let reason = refusal.detail.flatMap { $0.isEmpty ? nil : $0 } ?? refusal.code
+            entries.append("\(refusal.model) (\(reason), \(age(refusal.observedAt, now: now)))")
+        }
         var models: [String] = []
-        for mark in marks where !models.contains(modelLabel(mark.requestedModel)) {
+        for mark in marks where !(mark.requestedModel.map(named.contains) ?? false)
+            && !models.contains(modelLabel(mark.requestedModel)) {
             models.append(modelLabel(mark.requestedModel))
         }
-        return "Recent refusal · \(models.joined(separator: ", "))"
+        entries += models
+        guard !entries.isEmpty else { return nil }
+        return "Recent refusal · \(entries.joined(separator: ", "))"
     }
 
     /// "Last served · <model> · <age>; …", most recent first.

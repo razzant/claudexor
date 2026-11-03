@@ -1,6 +1,7 @@
 import { z } from "zod/v3";
 import {
   ControlCredentialProfilesResponse,
+  CredentialUnusableCode,
   PreProgressRefusalObservation,
 } from "./credential-profile.js";
 import {
@@ -58,6 +59,37 @@ export const ModelCapabilityMark = z
   );
 export type ModelCapabilityMark = z.infer<typeof ModelCapabilityMark>;
 
+/** A live typed `credential_unusable` observation scoped to ONE model of a
+ * registered row: dated evidence beside the row, never its status. A
+ * credential-wide observation (model null) is composed into the row's status
+ * instead and is never listed here. */
+export const ModelScopedCredentialUnusable = z
+  .object({
+    harness_id: Id.describe("Harness family of the account."),
+    profile_id: Id.describe("Registered account row the refusal was observed on."),
+    model: z
+      .string()
+      .describe(
+        "Model the refused run requested, exactly as requested; a vendor-reported id that differs from it does not clear the observation.",
+      ),
+    code: CredentialUnusableCode,
+    detail: z
+      .string()
+      .nullable()
+      .describe(
+        "Redacted typed evidence of the refusal, such as the vendor's error category; null when none was observed.",
+      ),
+    observed_at: IsoTimestamp.describe("When the refusal was observed."),
+    expires_at: IsoTimestamp.describe(
+      "Self-expiry of the observation (bounded retention, not a vendor reset time).",
+    ),
+  })
+  .strict()
+  .describe(
+    "A live typed refusal of one model on one registered account. It affects routing for that model only and never changes the account's status, Enabled state or order.",
+  );
+export type ModelScopedCredentialUnusable = z.infer<typeof ModelScopedCredentialUnusable>;
+
 /** `GET /v2/accounts/routing-evidence`: a separate additive read, so the legacy
  * strict Accounts responses stay unchanged for older clients. */
 export const ControlAccountRoutingEvidenceResponse = z
@@ -67,6 +99,12 @@ export const ControlAccountRoutingEvidenceResponse = z
       .optional()
       .describe(
         "Temporary capability marks; absent from engines that predate them. A mark clears on a success there or a catalog or credential change; after expires_at one operation may probe the account.",
+      ),
+    credentialUnusable: z
+      .array(ModelScopedCredentialUnusable)
+      .optional()
+      .describe(
+        "Live model-scoped credential refusals of the registered rows, most recent first per account, present only when the client asked (includeCredentialUnusable=true). One clears on a later service of exactly that model, a credential change, or expiry.",
       ),
     refusals: z
       .array(PreProgressRefusalObservation)
@@ -79,7 +117,7 @@ export const ControlAccountRoutingEvidenceResponse = z
   })
   .strict()
   .describe(
-    "Model-scoped account routing evidence: live refusal marks, temporary capability marks and the durable last-served order.",
+    "Model-scoped account routing evidence: live refusal marks, temporary capability marks, model-scoped credential refusals and the durable last-served order.",
   );
 export type ControlAccountRoutingEvidenceResponse = z.infer<
   typeof ControlAccountRoutingEvidenceResponse

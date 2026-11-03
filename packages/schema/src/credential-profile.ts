@@ -163,9 +163,10 @@ export type CredentialProfileStatus = z.infer<typeof CredentialProfileStatus>;
 /** Why an observed credential is unusable, in the OBSERVER's typed vocabulary:
  * `auth_revoked` = the vendor rejected the credential itself (a credential-specific rejection);
  * `capability_refused` = a typed non-retryable entitlement refusal was observed
- * on the attempt stream (org-disabled, model-not-entitled — model-scoped when
- * the attempt carried a model hint); `verification_failed` = the profile's own
- * doctor probe failed verification. */
+ * on the attempt stream: credential-wide on the observed subscription route when
+ * the adapter proved the vendor denied that access, otherwise scoped to the model
+ * the attempt requested (an attempt that requested none records nothing);
+ * `verification_failed` = the profile's own doctor probe failed verification. */
 export const CredentialUnusableCode = z
   .enum(["auth_revoked", "capability_refused", "verification_failed"])
   .describe(

@@ -106,7 +106,21 @@ export function pollerCredentialRejections(
     .map(pollerRejection);
 }
 
-/** The cheap typed stream intake. No profile probing or routing policy. */
+/**
+ * The cheap typed stream intake and the ONE owner of a refusal's scope, which
+ * follows what the vendor's typed category proves, never whether the run named
+ * a model (`model: null` on an observation means credential-wide):
+ * - an auth rejection condemns the credential for every model;
+ * - a denial of subscription access the adapter proved (`entitlementDenied`: the
+ *   vendor's exact `oauth_org_not_allowed` code or its recorded result, never a
+ *   category inferred from prose) condemns that credential for every model on
+ *   the observed subscription route, and proves nothing about an API key or
+ *   another route;
+ * - any other capability refusal concerns the model the run requested: a known
+ *   model stays exact, and a run that named none proves nothing about the
+ *   credential, so nothing is recorded and the diagnostics stay the run's own.
+ * No profile probing or routing policy.
+ */
 export function credentialStreamRefusal(args: {
   harnessId: string;
   profileId: string | null;
@@ -115,18 +129,20 @@ export function credentialStreamRefusal(args: {
   refusal: TransientFailureObservation;
   now?: Date;
 }): CredentialUnusableObservation | null {
-  if (
-    args.refusal.retryable ||
-    !["auth_failed", "capability_refused"].includes(args.refusal.category)
-  )
+  const { refusal } = args;
+  if (refusal.retryable || !["auth_failed", "capability_refused"].includes(refusal.category))
     return null;
+  const authFailed = refusal.category === "auth_failed";
+  const credentialWide =
+    authFailed || (refusal.entitlementDenied === true && args.route === "vendor_native");
+  if (!credentialWide && args.model === null) return null;
   return {
     ...observation(
       { harnessId: args.harnessId, profileId: args.profileId, now: args.now ?? new Date() },
-      args.refusal.category === "auth_failed" ? "auth_revoked" : "capability_refused",
+      authFailed ? "auth_revoked" : "capability_refused",
       "attempt_stream",
-      args.refusal.category === "auth_failed" ? null : args.model,
-      args.refusal.adapterCode,
+      credentialWide ? null : args.model,
+      refusal.adapterCode,
     ),
     ...(args.route ? { credential_route: args.route } : {}),
   };
@@ -160,21 +176,18 @@ export async function differentialSubjectVerdict(args: {
         : "vendor_native"
       : null);
   const ctx = { harnessId: args.harnessId, profileId, now: args.now ?? new Date() };
-  // 1. The attempt's own stream: a typed NON-RETRYABLE auth/entitlement
-  // refusal the vendor just sent under this exact credential. An auth
-  // rejection condemns the credential for every model; an entitlement refusal
-  // may be model-scoped, so it condemns only the model this attempt ran.
-  const refusal = args.transients.find(
-    (t) => !t.retryable && (t.category === "auth_failed" || t.category === "capability_refused"),
+  // 1. The attempt's own stream: a typed NON-RETRYABLE auth/entitlement refusal
+  // the vendor just sent under this exact credential, in the scope
+  // `credentialStreamRefusal` proves for it; the try's broadest proven scope
+  // wins. A refusal that proves nothing about this credential is no verdict, so
+  // the independent evidence below still answers.
+  const verdicts = args.transients.flatMap(
+    (refusal) =>
+      credentialStreamRefusal({ ...ctx, model: args.model, route: route ?? undefined, refusal }) ??
+      [],
   );
-  if (refusal) {
-    return credentialStreamRefusal({
-      ...ctx,
-      model: args.model,
-      route: route ?? undefined,
-      refusal,
-    });
-  }
+  const streamVerdict = verdicts.find((verdict) => verdict.model === null) ?? verdicts[0];
+  if (streamVerdict) return streamVerdict;
   // 2. The quota poller's last authenticated vendor contact: a typed
   // `auth_revoked` absence means the vendor rejected this subject's own token.
   const quota = route
