@@ -233,6 +233,37 @@ export function buildWireFixtures() {
     review: "not_run",
     reason: "budget_exhausted",
   });
+  // A D-16 work_state veto keeps the lifecycle succeeded. Arbitration may give
+  // the reason to a harder review/checks failure while the work stays unfinished,
+  // so a consumer cannot read the veto from the reason.
+  add("outcome-facts-work-veto", "RunOutcomeFacts", {
+    lifecycle: "succeeded",
+    noChanges: false,
+    checks: "not_configured",
+    review: "not_run",
+    review_requested: false,
+    reason: "input_required",
+    work_state: {
+      state: "needs_input",
+      source: "constrained",
+      required_inputs: [
+        {
+          kind: "file",
+          locator: "fixtures/input.json",
+          description: "The fixture the change needs.",
+        },
+      ],
+    },
+  });
+  add("outcome-facts-work-veto-review-blocked", "RunOutcomeFacts", {
+    lifecycle: "succeeded",
+    noChanges: false,
+    checks: "not_configured",
+    review: "blocked",
+    review_requested: true,
+    reason: "review_blocked",
+    work_state: { state: "incomplete", source: "validated" },
+  });
 
   // Delegate readiness/outcome are consumed directly by the Swift composer
   // and run receipts. Pin both cross-language shapes so a reason/remediation

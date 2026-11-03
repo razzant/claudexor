@@ -365,7 +365,7 @@ struct TurnRefusalCard: View {
         .disabled(retrying)
         .help(help)
         if prominent {
-            button.buttonStyle(.borderedProminent).tint(Theme.accent)
+            button.buttonStyle(.borderedProminent).tint(Theme.accentSolid)
         } else {
             button.buttonStyle(.bordered)
         }

@@ -153,8 +153,9 @@ public enum ComposerOptionParser {
     }
 
     /// Parse the structured reviewer-panel JSON form used when a slot carries
-    /// a strict credentialProfileId. Compact reviewer tokens remain intentionally
-    /// unpinned because profile ids need no escaping grammar of their own.
+    /// a strict credentialProfileId or a processingPreference. Compact reviewer
+    /// tokens remain intentionally unpinned and preference-free, so neither
+    /// field needs an escaping grammar of its own.
     public static func parseReviewerPanelJSON(_ raw: String) -> [ReviewerPanelEntry]? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.first == "[" else { return nil }

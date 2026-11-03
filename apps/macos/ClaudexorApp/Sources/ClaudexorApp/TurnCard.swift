@@ -327,7 +327,7 @@ struct TurnCard: View {
                         ?? "Start an Agent turn with \(planImplementAccessDescription) access and override the plan-readiness gate although questions remain")
             } else {
                 Button(implementingPlan ? "Implementing…" : "Implement plan") { implementPlan(override: false) }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
                     .disabled(
                         implementingPlan
                             || model.isThreadBusy(target.threadID, at: target.locationID)
@@ -362,7 +362,7 @@ struct TurnCard: View {
     private func decisionAndApply(_ run: TaskRun) -> some View {
         // The review gate needs a human: the decision controls live HERE, inline.
         if DecisionApplyPresentation.showsDecisionBar(run, riskAccepted: riskAccepted) {
-            DecisionBar(runId: run.id) {
+            DecisionBar(runId: run.id, offersRiskDecisions: DecisionApplyPresentation.offersRiskDecisions(run)) {
                 riskAccepted = true
                 Task { await model.selectedHistory?.refresh() }
                 // DecisionBar owns the one post-mutation detail refresh before
@@ -387,7 +387,7 @@ struct TurnCard: View {
                 Button("Apply as branch") { apply(run, mode: "branch") }
                 Spacer()
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
+            .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
         }
     }
 
@@ -492,6 +492,13 @@ enum DecisionApplyPresentation {
     /// has not just accepted risk locally.
     static func showsDecisionBar(_ run: TaskRun, riskAccepted: Bool) -> Bool {
         run.reviewNeedsDecision && !riskAccepted
+    }
+
+    /// Accept risk and Override appear only where the engine admits them: it
+    /// refuses both on unfinished work (`work_state_needs_input`) before it looks
+    /// at review or checks. Rerun is admitted either way.
+    static func offersRiskDecisions(_ run: TaskRun) -> Bool {
+        run.unfinishedWorkLabel == nil
     }
 
     /// Apply renders on the receipt for a decision-flow run ONCE the SERVER

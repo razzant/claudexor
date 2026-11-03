@@ -61,10 +61,11 @@ extension AppModel {
     var composerTurnState: ComposerTurnState {
         guard let header = selectedHistory?.header else { return .idle }
         if let admission = header.latestAdmission, admission.runId == nil {
+            // The admission's command lifecycle has the bound run's meaning:
+            // only queued/running holds the composer (#576).
             return resolveComposerTurnState(headRunId: nil, hydratedRowActive: nil,
-                embeddedStateActive: admission.enqueueError == nil && admission.state.map {
-                    !["failed", "cancelled", "completed"].contains($0)
-                } == true)
+                embeddedStateActive: admission.enqueueError == nil
+                    && admission.state.map { RunPhase(api: $0).isActive } == true)
         }
         guard header.headRunStatus == "available", let head = header.headRun else { return .idle }
         let active = wasRunCancelled(head.runId, at: selectedExecutionLocation) ? false

@@ -203,7 +203,7 @@ struct RoutingConsumerTests {
         #expect(RunFacts.refusal(code: "model_catalog_unavailable")?.fact == "Not sent: API key missing or rejected")
         // The receipt chip says what happened instead of the generic failed reason.
         #expect(TurnPresentation.attention(phase: .failed, reason: "harness_failed", reviewNeedsDecision: false,
-                                           waitingOnUser: false, refusal: RunFacts.refusal(run)?.chip)
+                                           waitingOnUser: false, unfinishedWork: nil, refusal: RunFacts.refusal(run)?.chip)
             == TurnPresentation.Attention(text: "Not sent", tone: .failure))
         // An earlier try failed after dispatch: only this retry was refused.
         run.failureRecord = try! JSONDecoder().decode(RunFailureInfo.self, from: Data(#"""
@@ -219,7 +219,7 @@ struct RoutingConsumerTests {
         #expect(RunFacts.refusal(code: run.failureCode) == nil)
         #expect(!RunFacts.headerDetails(run).contains { $0.id == "request_refused" })
         #expect(TurnPresentation.attention(phase: .failed, reason: "harness_failed", reviewNeedsDecision: false,
-                                           waitingOnUser: false)?.text == RunReasonLabel.label("harness_failed"))
+                                           waitingOnUser: false, unfinishedWork: nil)?.text == RunReasonLabel.label("harness_failed"))
     }
 
     // MARK: #147 typed sizes from a real run

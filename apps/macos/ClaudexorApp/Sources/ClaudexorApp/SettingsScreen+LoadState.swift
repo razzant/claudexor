@@ -23,7 +23,7 @@ extension SettingsScreen {
             ) {
                 Text(message).font(.caption).foregroundStyle(Theme.status(.negative))
                 Button("Retry") { Task { await model.refreshSettings() } }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
             }
         }
     }

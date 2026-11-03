@@ -112,6 +112,9 @@ public struct TranscriptReducer: Sendable {
     /// Wall-clock start of the OPEN thinking segment (from the events' own
     /// `ts`), so the merged block can disclose how long the reasoning ran.
     private var openThinkingStart: Date?
+    /// The stream whose fragment the open reasoning segment ended on. Only its
+    /// next fragment continues the words; anything else starts a new line.
+    private var openThinkingStream: StreamKey?
     /// One assistant text stream: the journal's identity of a physical try
     /// (`attempt_id`, `harness_id`, `session_id`), so an earlier try's final never
     /// seals a later try and concurrent candidates never join. Events without
@@ -192,6 +195,12 @@ public struct TranscriptReducer: Sendable {
         self.toolFieldCap = toolFieldCap
     }
 
+    /// The adapter's stream-fragment flag on a message or thinking event: the
+    /// engine journals it nested (`payload.payload`), older rows carry it flat.
+    private static func isFragment(_ payload: JSONValue) -> Bool {
+        payload["delta"]?.boolValue == true || payload["payload"]?["delta"]?.boolValue == true
+    }
+
     /// Apply one envelope. `harness.event` run events and the engine's
     /// `workspace.prepared` receipt contribute; everything else is ignored.
     /// Returns true if the transcript changed.
@@ -233,10 +242,15 @@ public struct TranscriptReducer: Sendable {
         case "thinking":
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
             let eventAt = Self.isoDate(payload["ts"]?.stringValue)
+            let stream = StreamKey(payload)
+            let fragment = Self.isFragment(payload)
+            defer { openThinkingStream = fragment ? stream : nil }
             if case .thinking(let id, let prev, _) = blocks.last {
                 // Keep the TAIL of an overlong merge: the live feed shows the
-                // newest reasoning; the cut is counted, never silent.
-                let bounded = boundTail(prev + "\n" + text)
+                // newest reasoning; the cut is counted, never silent. A fragment
+                // of the same stream continues its words: no separator is
+                // written inside model prose.
+                let bounded = boundTail(fragment && openThinkingStream == stream ? prev + text : prev + "\n" + text)
                 textChars += bounded.count - prev.count
                 blocks[blocks.count - 1] = .thinking(id: id, text: bounded,
                                                      seconds: segmentSeconds(until: eventAt))
@@ -287,8 +301,7 @@ public struct TranscriptReducer: Sendable {
             // append would corrupt the feed); otherwise it starts a fresh one.
             // `pendingFlushId` remembers the block awaiting its authoritative
             // full flush EVEN across an intervening tool block (confirm #1).
-            // The engine journals the adapter's flag nested (`payload.payload`).
-            if payload["delta"]?.boolValue == true || payload["payload"]?["delta"]?.boolValue == true {
+            if Self.isFragment(payload) {
                 if stream.finalized { return false }
                 if let sid = stream.streamingMessageId, blocks.last?.id == sid,
                    case .message(let id, let prev) = blocks.last {
@@ -528,7 +541,10 @@ public struct TranscriptReducer: Sendable {
         // Anything but a thinking-merge CLOSES the open reasoning segment: the
         // next thinking event starts a new segment (and a new timer). Any
         // non-message block likewise closes the open streaming message.
-        if case .thinking = block {} else { openThinkingStart = nil }
+        if case .thinking = block {} else {
+            openThinkingStart = nil
+            openThinkingStream = nil
+        }
         // A non-message block ends every APPENDABLE delta stream (the next delta
         // is a new message), but `pendingFlushId` survives so a later complete
         // flush still reconciles the pre-tool block by id (confirm #1).

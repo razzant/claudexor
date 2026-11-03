@@ -22,9 +22,8 @@ struct AuthSheetReadinessPanel: View {
                             ? "checkmark.seal.fill" : "exclamationmark.triangle")
                     HStack(spacing: Theme.Spacing.sm) {
                         Circle()
-                            .fill(targetVerified ? Theme.status(.positive)
-                                : profileStatus?.availability == "unknown"
-                                    ? Theme.status(.caution) : Theme.status(.negative))
+                            .fill(Theme.statusFill(targetVerified ? .positive
+                                : profileStatus?.availability == "unknown" ? .caution : .negative))
                             .frame(width: 8, height: 8)
                         Text(profileStatus.map {
                             "\($0.availability) · verification \($0.verification)"

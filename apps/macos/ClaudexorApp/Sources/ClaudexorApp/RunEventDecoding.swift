@@ -15,25 +15,15 @@ extension AppModel {
         from payload: JSONValue,
         expectedLifecycle: String?
     ) -> RunOutcomeFacts? {
+        // The one wire decoder: a frame carries every axis a detail read does
+        // (review_requested, work_state), and repeating it cannot rewrite them.
         guard let raw = payload["facts"],
-              let lifecycle = raw["lifecycle"]?.stringValue,
-              let checks = raw["checks"]?.stringValue,
-              let review = raw["review"]?.stringValue,
-              RunPhase(api: lifecycle).isTerminal,
-              expectedLifecycle == nil || expectedLifecycle == lifecycle
+              let data = try? JSONEncoder().encode(raw),
+              let facts = try? JSONDecoder().decode(RunOutcomeFacts.self, from: data),
+              RunPhase(api: facts.lifecycle).isTerminal,
+              expectedLifecycle == nil || expectedLifecycle == facts.lifecycle
         else { return nil }
-        let reason: String?
-        switch raw["reason"] {
-        case .string(let value)?: reason = value
-        case .null?, nil: reason = nil
-        default: return nil
-        }
-        return RunOutcomeFacts(
-            lifecycle: lifecycle,
-            noChanges: raw["noChanges"]?.boolValue,
-            checks: checks,
-            review: review,
-            reason: reason)
+        return facts
     }
 
     /// The server persisted a refusal on a recorded turn when the HTTP error

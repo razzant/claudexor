@@ -1,3 +1,4 @@
+import AppKit
 import Testing
 import ClaudexorKit
 import Foundation
@@ -208,6 +209,25 @@ import Foundation
         #expect(receipt.parentRunId == "run-parent-12345678")
 
         #expect(DelegationPresentation.childReceipt(delegatedFromRunId: nil) == nil)
+    }
+
+    /// The fixed cell holds every word a child can show at its own font, so no
+    /// terminal word is cut. `.help` covers only a code a newer engine adds.
+    @Test func delegatedRowCellHoldsEveryLifecycleAndReasonWord() {
+        let reasons = [
+            "harness_failed", "no_changes", "review_blocked", "checks_failed", "budget_exhausted",
+            "budget_overshoot", "cost_unverifiable", "not_converged", "stuck_no_progress",
+            "workspace_unavailable", "capture_refused", "wall_clock_exceeded", "turn_limit_reached",
+            "crash_interrupted", "context_capacity_exhausted", "work_report_contract",
+            "user_cancelled", "host_cancelled", "owner_task_gone", "input_required", "work_incomplete",
+        ]
+        let words = reasons.compactMap { RunReasonLabel.known($0) } + RunPhase.allCases.map(\.label)
+        #expect(reasons.allSatisfy { RunReasonLabel.known($0) != nil })
+        let font = NSFont.preferredFont(forTextStyle: .caption2)
+        for word in words {
+            let width = (word as NSString).size(withAttributes: [.font: font]).width
+            #expect(width <= DelegatedRunRowLayout.phaseWidth, "\(word) is \(width) wide")
+        }
     }
 
     @Test func delegatedRowPinsFlexibleTitleBetweenFixedTrailingClusters() throws {

@@ -31,7 +31,9 @@ struct DelegationWarningRow: View {
 /// A real Claudexor delegated child shown as one ordinary flat run row. The
 /// provenance badge and parent link come only from `delegatedFromRunId`.
 enum DelegatedRunRowLayout {
-    static let phaseWidth: CGFloat = 72
+    /// Holds the longest lifecycle or reason word at `.caption2`
+    /// (`DelegationPresentationTests`); a code a newer engine adds truncates with help.
+    static let phaseWidth: CGFloat = 140
 }
 
 struct DelegatedRunRow: View {
@@ -59,10 +61,11 @@ struct DelegatedRunRow: View {
                                 .background(Theme.accent.opacity(0.12), in: Capsule())
                                 .foregroundStyle(Theme.accent)
                                 .accessibilityLabel("Delegated Claudexor run")
-                            Text(child.phase.label)
+                            Text(child.terminalWord)
                                 .font(.caption2).foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .frame(width: DelegatedRunRowLayout.phaseWidth, alignment: .trailing)
+                                .help(child.terminalWord)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -126,7 +129,7 @@ struct DelegatedRunRow: View {
         if child.phase.isActive {
             ProgressView().controlSize(.small).scaleEffect(0.65).frame(width: 10, height: 10)
         } else {
-            Circle().fill(child.phase.color).frame(width: 7, height: 7)
+            Circle().fill(Theme.statusFill(child.terminalTone)).frame(width: 7, height: 7)
                 .accessibilityHidden(true)
         }
     }

@@ -106,6 +106,7 @@ struct QuotaDetailView: View {
             )
             Button("Retry") { Task { _ = await model.refreshAccounts() } }
                 .buttonStyle(.borderedProminent)
+                .tint(Theme.accentSolid)
         }
     }
 

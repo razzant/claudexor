@@ -1,0 +1,15 @@
+{
+  "schema": "RunOutcomeFacts",
+  "value": {
+    "lifecycle": "succeeded",
+    "noChanges": false,
+    "checks": "not_configured",
+    "review": "blocked",
+    "review_requested": true,
+    "reason": "review_blocked",
+    "work_state": {
+      "state": "incomplete",
+      "source": "validated"
+    }
+  }
+}

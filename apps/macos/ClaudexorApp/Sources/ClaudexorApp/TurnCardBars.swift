@@ -24,15 +24,7 @@ struct TurnReceiptRow: View {
     let onOpenWorkspace: () -> Void
     var historyRun: ThreadHistoryRun? = nil
 
-    private var line: TurnPresentation.StatusLine {
-        TurnPresentation.statusLine(
-            phase: run.phase, reason: run.outcomeFacts?.reason,
-            harnesses: run.harnesses, n: run.n,
-            isRace: run.mode == .bestOfN,
-            retryLabel: run.phase.isActive ? run.retryStatus?.label : nil,
-            reviewNeedsDecision: run.reviewNeedsDecision,
-            waitingOnUser: run.waitingOnUser)
-    }
+    private var line: TurnPresentation.StatusLine { TurnPresentation.statusLine(for: run) }
 
     private var countSummary: String? {
         if let historyRun {
@@ -78,8 +70,8 @@ struct TurnReceiptRow: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(line.family?.color ?? .secondary)
                 .padding(.horizontal, Theme.Spacing.sm).padding(.vertical, 3)
-                .background((line.family?.color ?? Theme.separator).opacity(0.13), in: Capsule())
-                .overlay(Capsule().stroke((line.family?.color ?? Theme.separator).opacity(0.35), lineWidth: 1))
+                .background((line.family?.fill ?? Theme.separator).opacity(0.13), in: Capsule())
+                .overlay(Capsule().stroke((line.family?.fill ?? Theme.separator).opacity(0.35), lineWidth: 1))
             }
             if let word = line.stateWord {
                 Text(word).font(.caption).foregroundStyle(.secondary)
@@ -99,10 +91,7 @@ struct TurnReceiptRow: View {
             }
             // The outcome banner CHIP when present: the loud attention state
             // (needs decision / failed / waiting) — the quiet states stay text.
-            if let chip = TurnPresentation.attention(
-                phase: run.phase, reason: run.outcomeFacts?.reason,
-                reviewNeedsDecision: run.reviewNeedsDecision, waitingOnUser: run.waitingOnUser,
-                refusal: RunFacts.refusal(run)?.chip) {
+            if let chip = TurnPresentation.attention(for: run) {
                 Text(chip.text)
                     .font(.caption.weight(.semibold))
                     // Chip meta-rule (round-3 item 4): attention chip never wraps.
@@ -146,7 +135,7 @@ struct TurnReceiptRow: View {
         if run.phase.isActive {
             ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
         } else {
-            Circle().fill(run.phase.color).frame(width: 8, height: 8)
+            Circle().fill(Theme.statusFill(run.terminalTone)).frame(width: 8, height: 8)
         }
     }
 
@@ -345,6 +334,7 @@ struct ApplyThreadBar: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(Theme.accentSolid)
                 .controlSize(.small)
                 .disabled(applying)
                 .help("Deliver the thread's accumulated diff to the project (server-gated)")
