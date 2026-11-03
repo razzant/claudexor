@@ -233,6 +233,12 @@ final class AppModel {
     /// discovery/install text so either owner can settle without erasing the
     /// other's state.
     var localDaemonReconciliationNotice: String?
+    /// A replacement this app ran left no engine the connection loop will start
+    /// by itself; Offline offers Retry until an engine is adopted.
+    var localEngineAwaitsRetry = false
+    /// This app started an engine that answered, and no connection has adopted
+    /// it yet. Losing it then leaves nothing the loop will start by itself.
+    @ObservationIgnored var localSuccessorPending = false
     /// The update CHECKER (actor, off the observable graph) + an injectable
     /// transport factory so tests drive a stub without the network. One auto
     /// foreground check per session; the menu command forces a re-check. The chip

@@ -303,7 +303,9 @@ struct LocalDaemonBuildSwitchTests {
         #expect(model.secretBackend == "unknown")
         #expect(model.settingsStatus == nil)
         #expect(model.settingsEpoch > epoch)
-        #expect(model.localDaemonReconciliationNotice?.contains("Reconnecting") == true)
+        #expect(model.localDaemonReconciliationNotice
+            == "Engine v3.2.0 (bbbbbbbbbbbb) did not answer in time, and no saved copy of the previous engine v3.2.0 (aaaaaaaaaaaa) could be verified, so it was not restarted.")
+        #expect(model.localEngineAwaitsRetry)
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [LateBuildHandshakeURLProtocol.self]
@@ -539,7 +541,7 @@ struct LocalDaemonBuildSwitchTests {
         #expect(connecting.client == nil)
 
         // A terminal reason without an offer remains useful during recovery.
-        let failure = "Engine refresh stopped the previous engine but could not start the selected runtime. Reconnecting."
+        let failure = "Engine v3.2.0 (bbbbbbbbbbbb) did not answer in time, and no saved copy of the previous engine v3.2.0 (aaaaaaaaaaaa) could be verified, so it was not restarted."
         polled.localDaemonReconciliationNotice = failure
         connecting.localDaemonReconciliationNotice = failure
         #expect(await polled.pollLocalConnection(generation: 1) == .retryWithoutLaunch)

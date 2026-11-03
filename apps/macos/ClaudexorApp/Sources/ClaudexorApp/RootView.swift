@@ -118,11 +118,16 @@ struct RootView: View {
 
 /// Connecting/Offline in place of the thread screen. The sidebar's update chip
 /// is not mounted here, so the same lifecycle notice names a cause such as a
-/// refused engine lifecycle lock.
+/// refused engine lifecycle lock. After a replacement left no engine, Offline
+/// makes the shared `LocalEngineRetry` offer.
 struct EnginePlaceholder: View {
     @Environment(AppModel.self) private var model
+    /// About the description's own column, which a long notice must not widen.
+    private static let noticeMaxWidth: CGFloat = 360
 
     var body: some View {
+        let notice = UpdateChip.notice(for: model)
+        let offersRetry = LocalEngineRetry.isOffered(for: model)
         ContentUnavailableView {
             Label(
                 model.health == .connecting ? "Connecting to engine" : "Engine offline",
@@ -130,10 +135,23 @@ struct EnginePlaceholder: View {
         } description: {
             Text(model.health == .connecting
                 ? "Operational data will appear after the local engine handshake completes."
-                : "Claudexor is reconnecting automatically. Run and thread mutations stay unavailable while offline.")
+                : offersRetry
+                    ? "\(LocalEngineRetry.explanation) Run and thread mutations stay unavailable while offline."
+                    : "Claudexor is reconnecting automatically. Run and thread mutations stay unavailable while offline.")
         } actions: {
-            if let notice = UpdateChip.notice(for: model) {
-                LocalEngineNoticeLine(notice: notice, lineLimit: nil)
+            // This slot lays its children out side by side; a reason and its
+            // action read as one centered column instead.
+            if notice != nil || offersRetry {
+                VStack(spacing: Theme.Spacing.md) {
+                    if let notice {
+                        // Its ideal height: this slot would otherwise truncate
+                        // a reason that has no hover fallback here.
+                        LocalEngineNoticeLine(notice: notice, lineLimit: nil)
+                            .frame(maxWidth: Self.noticeMaxWidth)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if offersRetry { LocalEngineRetryButton() }
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
