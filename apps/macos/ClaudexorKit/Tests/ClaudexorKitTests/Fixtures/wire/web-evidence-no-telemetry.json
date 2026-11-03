@@ -1,0 +1,19 @@
+{
+  "schema": "ControlWebEvidence",
+  "value": {
+    "required": false,
+    "mode": "off",
+    "effectiveMode": "auto",
+    "attempted": false,
+    "satisfied": false,
+    "status": "none",
+    "verification": "none",
+    "verifiedContent": null,
+    "observation": null,
+    "tool": null,
+    "target": null,
+    "errorSummary": null,
+    "rawDetailRef": null,
+    "available": false
+  }
+}

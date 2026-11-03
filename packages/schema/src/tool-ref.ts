@@ -194,19 +194,32 @@ export const ToolRef = z
     /**
      * QA-042: adapter-stamped RETRIEVAL outcome for a web/browser tool result,
      * distinct from `status` (the tool-call LIFECYCLE). `verified` = the vendor
-     * exposed a typed successful retrieval (content/page present); `dispatched`
-     * = the tool call completed but the vendor exposes NO typed fetch outcome
-     * (codex `web_search`/`open_page` — a completed item can hide a 502), so the
-     * evidence is dispatch-only, not proof of content; `failed` = a typed
-     * retrieval failure. Absent on non-web tools and on adapters that do not
-     * stamp it. The engine reads THIS (never prose) to separate "web reached"
-     * from "web verified".
+     * exposed a typed successful retrieval, and `web_content` says what it
+     * returned; `dispatched` = the call completed but the vendor exposes NO typed
+     * fetch outcome (codex `web_search`/`open_page` — a completed item can hide a
+     * 502; a Browser page read that got an HTTP error), so the evidence is
+     * dispatch-only, not proof of content; `failed` = a typed retrieval failure.
+     * Absent on non-web tools, on a Browser call that read no web page (#118),
+     * and on adapters that do not stamp it. The engine reads THIS (never prose)
+     * to separate "web reached" from "web verified".
      */
     web_retrieval: z
       .enum(["verified", "dispatched", "failed"])
       .optional()
       .describe(
         "Adapter-stamped web/browser retrieval outcome (verified/dispatched/failed), distinct from the tool-call status lifecycle.",
+      ),
+    /**
+     * #118: what a `verified` retrieval returned. `page` = a fetched or loaded
+     * page (claude WebFetch; a Browser navigation or snapshot of an http(s) page
+     * with no HTTP error); `search_results` = the results of a web search
+     * (claude WebSearch), which is not a fetched page. Absent otherwise.
+     */
+    web_content: z
+      .enum(["page", "search_results"])
+      .optional()
+      .describe(
+        "What a verified web retrieval returned: page (a fetched or loaded page) or search_results (a web search's results, not a fetched page).",
       ),
   })
   .describe("Typed tool reference attached to tool_call/tool_result events.");

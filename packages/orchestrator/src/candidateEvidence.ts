@@ -9,6 +9,7 @@ import type { AppliedAttemptFacts } from "./delegatedHome.js";
 import type { ProducedOmission } from "./candidateOutputs.js";
 import type { CaptureRefusal } from "./secretDiff.js";
 import { captureRefusedFacts } from "./captureRefusal.js";
+import { pickTelemetry, type TelemetryAttempt } from "./runTelemetryWriter.js";
 import { telemetrySummary, toolWarnings } from "./attemptTelemetry.js";
 import { directoryHasOutput, type DirectoryCandidate } from "./directoryCandidate.js";
 import { gatesPassed } from "@claudexor/review";
@@ -247,14 +248,8 @@ export function interruptionOf(run: Pick<CandidateRun, "telemetry">): AttemptInt
  * `writeRunTelemetry` and the cancelled terminals consume. ONE owner so the
  * race lane's several hand-offs don't each re-spell the same map (behavior-
  * identical to the inline form). */
-export function candidateRoster(
-  runs: CandidateRun[],
-): { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] {
-  return runs.map((r) => ({
-    attemptId: r.attemptId,
-    harnessId: r.harnessId,
-    telemetry: r.telemetry,
-  }));
+export function candidateRoster(runs: CandidateRun[]): TelemetryAttempt[] {
+  return runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, ...pickTelemetry(r) }));
 }
 
 /** Candidate status projection shared by normal and cancelled race results. */

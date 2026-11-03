@@ -56,9 +56,18 @@ enum RunFacts {
         }
     }
 
-    static func webEvidence(_ status: String) -> (label: String, glyph: String, tone: OutcomePresentation.Tone) {
+    /// #118: what the satisfied web activity returned, never more. A verified page is
+    /// "Web verified" and verified search results "Web searched"; a web call without a
+    /// typed result "Web reached"; completed web tools that retrieved nothing (a Browser
+    /// close or click), or an engine that did not say, "Web tools used".
+    static func webEvidence(_ status: String, verification: String? = nil, content: String? = nil)
+        -> (label: String, glyph: String, tone: OutcomePresentation.Tone) {
         switch status {
-        case "satisfied": return ("Web verified", "network", .success)
+        case "satisfied" where verification == "verified" && content == "search_results":
+            return ("Web searched", "network", .success)
+        case "satisfied" where verification == "verified": return ("Web verified", "network", .success)
+        case "satisfied" where verification == "dispatched": return ("Web reached", "network", .neutral)
+        case "satisfied": return ("Web tools used", "network", .neutral)
         case "failed": return ("Web failed", "exclamationmark.icloud", .failure)
         case "attempted": return ("Web attempted", "icloud", .neutral)
         case "unverified": return ("Web unverified", "questionmark.diamond", .warning) // a policy gap
@@ -315,8 +324,11 @@ enum RunFacts {
             ))
         }
         if let access = task.accessLabel {
-            facts.append(Fact(id: "access", text: access, glyph: "lock.shield", tone: .neutral,
-                              help: "Access profile the engine enforced (requested vs effective)."))
+            // #413: the native setting prepared for each route, never "enforced".
+            let qualifier = RouteControlsPresentation.boundaryQualifier(task.routeControls)
+            facts.append(Fact(id: "access", text: qualifier.map { "\(access) · \($0)" } ?? access,
+                              glyph: "lock.shield", tone: .neutral,
+                              help: RouteControlsPresentation.accessHelp(task)))
         }
         if let refusal = refusal(task) {
             facts.append(Fact(
@@ -337,12 +349,18 @@ enum RunFacts {
             ))
         }
         if let web = task.webEvidenceStatus, web != "none" {
-            let evidence = webEvidence(web)
+            let evidence = webEvidence(web, verification: task.webVerification, content: task.webVerifiedContent)
             facts.append(Fact(id: "web", text: evidence.label, glyph: evidence.glyph,
-                              tone: evidence.tone, help: task.webEvidenceDetail))
+                              tone: evidence.tone, help: RouteControlsPresentation.webHelp(task)))
+        } else if task.externalContextPolicy == "off" {
+            // #118: Web Off switches each route's own web tools; it is not a network switch.
+            facts.append(Fact(id: "web", text: RouteControlsPresentation.webOffLabel(task.routeControls),
+                              glyph: "network.slash", tone: .neutral,
+                              help: RouteControlsPresentation.webHelp(task)))
         }
         if let browser = task.browserRequirementDetail {
-            facts.append(Fact(id: "browser", text: browser, glyph: "globe", tone: .neutral, help: browser))
+            facts.append(Fact(id: "browser", text: browser, glyph: "globe", tone: .neutral,
+                              help: RouteControlsPresentation.browserHelp(browser, task.routeControls)))
         }
         return facts
     }

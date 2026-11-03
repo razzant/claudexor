@@ -1,0 +1,22 @@
+{
+  "schema": "ControlWebEvidence",
+  "value": {
+    "required": false,
+    "mode": "live",
+    "effectiveMode": "live",
+    "attempted": true,
+    "satisfied": true,
+    "status": "satisfied",
+    "verification": "verified",
+    "verifiedContent": "search_results",
+    "observation": {
+      "evidence": "tool_calls",
+      "network": "not_measured"
+    },
+    "tool": "WebSearch",
+    "target": "swift release notes",
+    "errorSummary": null,
+    "rawDetailRef": "final/telemetry.yaml",
+    "available": true
+  }
+}

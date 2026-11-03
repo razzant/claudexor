@@ -392,7 +392,7 @@
                   ],
                   "description": "Active filesystem/command access profile for a run: readonly (no writes), workspace_write (use the harness's native workspace-write policy), full (unrestricted; requires the per-repo trust allow for a run an operator starts at a surface, not for an execution.delegated run), inherit_native (defer to the harness's own native settings)."
                 },
-                "description": "Access profiles the adapter can enforce."
+                "description": "Access profiles the adapter can translate to its harness."
               },
               "readonlyMechanism": {
                 "type": "string",
@@ -402,7 +402,7 @@
                   "tool_allowlist",
                   "none"
                 ],
-                "description": "HOW read-only is enforced (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness."
+                "description": "HOW a harness applies read-only (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness."
               },
               "writeMechanism": {
                 "type": "string",

@@ -1,6 +1,7 @@
 /** The single owner of typed attempt evidence and outcome truth, never prose inference. */
 import type {
   AttemptTelemetryRecord,
+  BrowserStartupRecord,
   EffortResolution,
   AuthSourceKind,
   ExternalContextPolicy,
@@ -9,7 +10,6 @@ import type {
   InputTokenUsage,
   RawContextReceipt,
   RequestRequirementResolution,
-  TaskContract,
   ToolKind,
   VendorFailureEvidence,
   WorkState,
@@ -27,6 +27,8 @@ import { observeProcessing, type ProcessingTelemetry } from "./processing-teleme
 import { observeObservedModel, type ObservedModelTelemetry } from "./observed-model-telemetry.js";
 import { observePromptCacheTtl, type PromptCacheTelemetry } from "./prompt-cache-telemetry.js";
 import { observeCommandReport, recoverable, type CommandTelemetry } from "./command-telemetry.js";
+import * as routes from "./routeControls.js";
+import * as evidence from "./webEvidence.js";
 import {
   type TransientFailureObservation,
   classifyCompletedCrash,
@@ -63,19 +65,7 @@ export interface AttemptOutcomeState {
   workState?: WorkState;
 }
 
-export interface WebEvidenceState {
-  required: boolean;
-  mode: ExternalContextPolicy;
-  effectiveMode: ExternalContextPolicy;
-  attempted: boolean;
-  satisfied: boolean;
-  failed: boolean;
-  /** Typed retrieval strength; never downgrades verified. */
-  verification: "verified" | "dispatched" | "none";
-  tool: string | null;
-  target: string | null;
-  errorSummary: string | null;
-}
+export type { WebEvidenceState } from "./webEvidence.js";
 
 /** QA-040: browser evidence matches only the engine-injected MCP server namespace. */
 export interface BrowserEvidenceState {
@@ -84,6 +74,8 @@ export interface BrowserEvidenceState {
   attempted: boolean;
   satisfied: boolean;
   failed: boolean;
+  /** #215: this native try's reported Browser startup; null until one arrives. */
+  startup: BrowserStartupRecord | null;
 }
 
 /** QA-024: injection, typed startup and actual tool use remain independent facts.
@@ -97,7 +89,12 @@ export interface DelegationBeltState {
 }
 
 export interface AttemptTelemetry
-  extends ProcessingTelemetry, PromptCacheTelemetry, ObservedModelTelemetry, CommandTelemetry {
+  extends
+    ProcessingTelemetry,
+    PromptCacheTelemetry,
+    ObservedModelTelemetry,
+    CommandTelemetry,
+    routes.RouteControlsTelemetry {
   requestRefusal?: HarnessRequestRefusal;
   effortResolution?: EffortResolution;
   /** #147: the size of the last raw-api request a try prepared, receipted just
@@ -109,7 +106,7 @@ export interface AttemptTelemetry
   statuslessResults: number;
   /** Native lines/events the adapter reported as dropped/unrecognized. */
   droppedEvents: number;
-  web: WebEvidenceState;
+  web: evidence.WebEvidenceState;
   /** Auth route the adapter disclosed for this attempt (route evidence; null = undisclosed). */
   authMode: "local_session" | "api_key" | null;
   /** Last typed route in the stream, used only for per-usage cost allocation. */
@@ -183,18 +180,7 @@ export function createAttemptTelemetry(
     toolErrors: [],
     statuslessResults: 0,
     droppedEvents: 0,
-    web: {
-      required: webRequired,
-      mode: policy,
-      effectiveMode,
-      attempted: false,
-      satisfied: false,
-      failed: false,
-      verification: "none",
-      tool: null,
-      target: null,
-      errorSummary: null,
-    },
+    web: evidence.newWebEvidence(webRequired, policy, effectiveMode),
     observedModel: null,
     authMode: null,
     currentAuthMode: null,
@@ -219,6 +205,7 @@ export function createAttemptTelemetry(
       attempted: false,
       satisfied: false,
       failed: false,
+      startup: null,
     },
     contextExhausted: false,
     contextExhaustedCause: null,
@@ -268,14 +255,6 @@ export function browserUnused(t: AttemptTelemetry): boolean {
   return t.browser.requested && !t.browser.attempted && t.web.satisfied;
 }
 
-/** QA-042: raise the web retrieval strength, never downgrading a proven
- * `verified`. A typed success promotes to verified; any other satisfied web
- * activity is dispatch-strength (completed, content not typed-proven). */
-function bumpWebVerification(t: AttemptTelemetry, retrieval: string | undefined): void {
-  if (retrieval === "verified") t.web.verification = "verified";
-  else if (t.web.verification !== "verified") t.web.verification = "dispatched";
-}
-
 /** Observe typed adapter evidence, never payload strings or tool-name heuristics. */
 export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
   if (ev.type === "error" && ev.request_refusal) t.requestRefusal = ev.request_refusal;
@@ -283,6 +262,8 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   observePromptCacheTtl(t, ev);
   observeCommandReport(t, ev);
   if (ev.effort_resolution) t.effortResolution = ev.effort_resolution;
+  routes.observeRouteControls(t, ev);
+  evidence.observeBrowserStartup(t.browser, ev);
   if (ev.raw_context) t.rawContext = ev.raw_context;
   marks.observeAttemptOutputMarkers(t.outputMarkers, ev);
   // Delegation belt readiness (QA-024): normalized startup/error events carry
@@ -497,18 +478,17 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       : null;
     t.web.tool = tool.name;
     t.web.target = tool.target ?? t.web.target;
-    // QA-042: typed retrieval is verified; dispatch-only completion stays
-    // dispatched. An absent stamp never claims verification.
-    bumpWebVerification(t, tool.web_retrieval);
+    evidence.bumpWebRetrieval(t.web, tool, false);
   }
-  // QA-040: a successful engine-injected browser call is verified web activity;
-  // user MCP servers cannot match this namespace.
+  // QA-040: a successful engine-injected browser call is satisfied web activity;
+  // user MCP servers cannot match this namespace. #118: only the adapter's own
+  // stamp says it retrieved a page; one that read no web page retrieved nothing.
   if (matchesBrowser(t, tool)) {
     t.browser.attempted = true;
     t.browser.satisfied = true;
     t.web.attempted = true;
     t.web.satisfied = true;
-    t.web.verification = "verified";
+    evidence.bumpWebRetrieval(t.web, tool, true);
     // The recovery loop above already marked a matching earlier browser error
     // recovered; recompute the disclosed failure rollup from what remains.
     t.browser.failed = t.toolErrors.some(
@@ -582,15 +562,6 @@ export function setAttemptOutcome(
   };
 }
 
-function webStatus(
-  t: AttemptTelemetry,
-): "none" | "attempted" | "satisfied" | "failed" | "unverified" {
-  if (t.web.satisfied) return "satisfied";
-  if (t.web.failed) return "failed";
-  if (t.web.attempted) return "attempted";
-  return t.web.required ? "unverified" : "none";
-}
-
 /** Bounded telemetry summary for events/artifacts (full detail lives in telemetry.yaml). */
 export function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
   const unrecovered = unrecoveredToolErrors(t);
@@ -603,7 +574,7 @@ export function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
       effective_mode: t.web.effectiveMode,
       attempted: t.web.attempted,
       satisfied: t.web.satisfied,
-      status: webStatus(t),
+      status: evidence.webStatus(t.web),
       verification: t.web.verification,
       tool: t.web.tool,
       target: t.web.target,
@@ -664,6 +635,8 @@ export function attemptTelemetryRecord(
   attemptId: string,
   harnessId: string,
   t: AttemptTelemetry,
+  /** The attempt's applied facts, where the lane recorded them (Agent attempts). */
+  applied?: { harness_home_isolated?: boolean },
 ): AttemptTelemetryRecord {
   const warnings = toolWarnings(t);
   return {
@@ -683,18 +656,8 @@ export function attemptTelemetryRecord(
     profile_id: t.profileId,
     requested_model: t.requestedModel,
     request_requirements: t.requestRequirements,
-    web: {
-      required: t.web.required,
-      policy: t.web.mode,
-      effective_mode: t.web.effectiveMode,
-      attempted: t.web.attempted,
-      satisfied: t.web.satisfied,
-      status: webStatus(t),
-      verification: t.web.verification,
-      tool: t.web.tool,
-      target: t.web.target,
-      error_summary: t.web.errorSummary,
-    },
+    web: evidence.webEvidenceRecord(t.web),
+    ...routes.routeControlsRecord(t, applied),
     tool_errors: t.toolErrors.slice(-TELEMETRY_TOOL_ERRORS_MAX).map((e) => ({
       tool: e.tool,
       kind: e.kind,
@@ -749,6 +712,7 @@ export function attemptTelemetryRecord(
             satisfied: t.browser.satisfied,
             failed: t.browser.failed,
             unused: browserUnused(t),
+            ...(t.browser.startup ? { startup: t.browser.startup } : {}),
           },
         }
       : {}),
@@ -786,32 +750,6 @@ export function aggregateRunTokenUsage(
     cached_input_tokens: sum((u) => u.cached_input_tokens),
     ...(inputTokenUsage === undefined ? {} : { input_token_usage: inputTokenUsage }),
   };
-}
-
-export function aggregateRunWebEvidence(
-  records: AttemptTelemetryRecord[],
-  contract: TaskContract,
-): AttemptTelemetryRecord["web"] {
-  const satisfied = records.find((r) => r.web.satisfied);
-  if (satisfied) return satisfied.web;
-  const severityRank = { none: 0, attempted: 1, unverified: 2, failed: 3, satisfied: 4 } as const;
-  const worst = [...records].sort(
-    (a, b) => (severityRank[b.web.status] ?? 0) - (severityRank[a.web.status] ?? 0),
-  )[0];
-  return (
-    worst?.web ?? {
-      required: contract.external_context.web_required,
-      policy: contract.external_context.policy,
-      effective_mode: contract.external_context.effective_mode,
-      attempted: false,
-      satisfied: false,
-      status: contract.external_context.web_required ? ("unverified" as const) : ("none" as const),
-      verification: "none" as const,
-      tool: null,
-      target: null,
-      error_summary: null,
-    }
-  );
 }
 
 /**

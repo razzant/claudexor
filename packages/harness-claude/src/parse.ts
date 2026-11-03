@@ -2,6 +2,7 @@ import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { InputTokenUsage } from "@claudexor/schema";
 import { turnLimitError } from "@claudexor/core";
 import { nowIso } from "@claudexor/util";
+import { BROWSER_MCP_SERVER, browserPageRetrieval } from "@claudexor/core";
 import {
   claudeCompactBoundaryEvents,
   claudeRateLimitEvents,
@@ -9,7 +10,7 @@ import {
   claudeTerminalContextEvent,
 } from "./context-signals.js";
 import { requiredMcpStartupReceipts } from "./required-mcp.js";
-import { summarizeToolResultContent } from "./tool-output.js";
+import { summarizeToolResultContent, toolResultText } from "./tool-output.js";
 import { claudeApiRetryEvents, claudeEntitlementEvents } from "./retry-signals.js";
 import {
   claudeCompletion,
@@ -23,6 +24,7 @@ import {
 type Json = any;
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+const BROWSER_TOOL_PREFIX = `mcp__${BROWSER_MCP_SERVER}__`;
 
 function toolKindFor(name: string): ToolKind {
   if (name === "WebSearch" || name === "WebFetch") return "web";
@@ -395,6 +397,9 @@ function parseClaudeEventStateful(
         }
         const denied = isError && origin?.name !== undefined && deniedTools.has(origin.name);
         const status: ToolRef["status"] = denied ? "denied" : isError ? "error" : "ok";
+        const browserTool = origin?.name.startsWith(BROWSER_TOOL_PREFIX)
+          ? origin.name.slice(BROWSER_TOOL_PREFIX.length)
+          : null;
         const tool: ToolRef = {
           name: origin?.name ?? "tool",
           kind: origin?.kind ?? "other",
@@ -406,11 +411,25 @@ function parseClaudeEventStateful(
             (origin?.kind === "mcp" ? summarizeToolResultContent(block.content, true) : detail) ||
             undefined,
           // QA-042: claude WebSearch/WebFetch return TYPED content with an
-          // is_error flag, so a successful web result is a VERIFIED retrieval
-          // (content present), not dispatch-only — unlike codex, which cannot
-          // expose the fetch outcome. A typed error is a failed retrieval.
-          ...(origin?.kind === "web"
-            ? { web_retrieval: status === "error" ? ("failed" as const) : ("verified" as const) }
+          // is_error flag, so a successful web result is a VERIFIED retrieval,
+          // not dispatch-only — unlike codex, which cannot expose the fetch
+          // outcome. #118: WebFetch returns a page; WebSearch returns search
+          // results, which are not a fetched page. A typed error is a failed
+          // retrieval; a denied or cancelled call retrieved nothing.
+          ...(origin?.kind === "web" && status === "ok"
+            ? {
+                web_retrieval: "verified" as const,
+                web_content:
+                  origin.name === "WebSearch" ? ("search_results" as const) : ("page" as const),
+              }
+            : origin?.kind === "web" && status === "error"
+              ? { web_retrieval: "failed" as const }
+              : {}),
+          // #118: a successful Browser call is verified only when its whole reply
+          // shows a page (the bounded summary above can cut a long one short),
+          // and one that read no web page carries no retrieval stamp at all.
+          ...(browserTool && status === "ok"
+            ? browserPageRetrieval(browserTool, toolResultText(block.content))
             : {}),
         };
         out.push({

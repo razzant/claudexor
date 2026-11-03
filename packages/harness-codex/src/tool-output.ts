@@ -54,7 +54,7 @@ export function mcpToolOutcome(
 
 /** Text blocks of an MCP `CallToolResult`; image and other binary blocks are
  * not evidence text. Structured content is used only when no text came back. */
-function mcpResultText(result: Json): string {
+export function mcpResultText(result: Json): string {
   if (typeof result === "string") return result;
   if (!result || typeof result !== "object") return "";
   const text = Array.isArray(result.content)

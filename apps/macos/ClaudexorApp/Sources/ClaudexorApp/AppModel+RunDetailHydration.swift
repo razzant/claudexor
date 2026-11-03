@@ -151,10 +151,12 @@ extension AppModel {
             task.reviewRequested = detail.summary.review
             task.reviewerPanel = detail.summary.reviewerPanel
             task.protectedPathApprovals = detail.summary.protectedPathApprovals
-            task.browserRequirementDetail = browserRequirementDetail(detail.summary.requestRequirements)
+            task.browserRequirementDetail = browserRequirementDetail(detail.summary.requestRequirements,
+                                                                     routes: detail.summary.routeControls ?? [])
+            task.applyRouteFacts(detail.summary)
             if detail.summary.webEvidence?.available == false {
                 task.webEvidenceStatus = nil
-                task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."
+                task.webEvidenceDetail = RouteControlsPresentation.telemetryUnavailable
             } else {
                 task.webEvidenceStatus = detail.summary.webEvidence?.status
                 task.webEvidenceDetail = Self.webEvidenceDetail(detail.summary.webEvidence)

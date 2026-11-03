@@ -511,5 +511,73 @@ export function buildWireFixtures() {
     },
   });
 
+  // #118/#413: what each route was prepared with, and the scope of web evidence.
+  add("route-control-started", "ControlRouteControl", {
+    harnessId: "cursor",
+    webMode: "auto",
+    webMechanism: "uncontrolled",
+    browser: false,
+    access: "readonly",
+    nativeAccess: "--force --sandbox enabled --trust --mode ask",
+    accessMechanism: "tool_allowlist",
+    nativeSessionStarted: true,
+    homeScoped: false,
+  });
+  add("route-control-prepared-only", "ControlRouteControl", {
+    harnessId: "claude",
+    webMode: "off",
+    webMechanism: "tools",
+    browser: false,
+    access: "inherit_native",
+    nativeAccess: null,
+    accessMechanism: "native_settings",
+    nativeSessionStarted: false,
+    homeScoped: null,
+  });
+  add("web-evidence-dispatched", "ControlWebEvidence", {
+    required: false,
+    mode: "auto",
+    effectiveMode: "cached",
+    attempted: true,
+    satisfied: true,
+    status: "satisfied",
+    verification: "dispatched",
+    observation: { evidence: "tool_calls", network: "not_measured" },
+    tool: "web_search",
+    target: "swift release notes",
+    rawDetailRef: "final/telemetry.yaml",
+    available: true,
+  });
+  add("web-evidence-no-telemetry", "ControlWebEvidence", { mode: "off", available: false });
+  // #118: a verified web search is search results, not a fetched page.
+  add("web-evidence-verified-search", "ControlWebEvidence", {
+    required: false,
+    mode: "live",
+    effectiveMode: "live",
+    attempted: true,
+    satisfied: true,
+    status: "satisfied",
+    verification: "verified",
+    verifiedContent: "search_results",
+    observation: { evidence: "tool_calls", network: "not_measured" },
+    tool: "WebSearch",
+    target: "swift release notes",
+    rawDetailRef: "final/telemetry.yaml",
+    available: true,
+  });
+  // #215: the selected Browser's startup as the route reported it.
+  add("route-control-browser-startup", "ControlRouteControl", {
+    harnessId: "codex",
+    webMode: "live",
+    webMechanism: "native",
+    browser: true,
+    browserStartup: { status: "failed", waitedMs: 812, error: "browser launcher exited" },
+    access: "full",
+    nativeAccess: "sandbox=danger-full-access approvalPolicy=never approvalsReviewer=auto_review",
+    accessMechanism: "none",
+    nativeSessionStarted: true,
+    homeScoped: true,
+  });
+
   return fixtures;
 }

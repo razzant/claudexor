@@ -38,5 +38,11 @@
   "apply-eligibility-no": "ApplyEligibility",
   "quota-response": "ControlQuotaResponse",
   "harness-settings-patch-maximal": "ControlHarnessSettingsPatch",
-  "settings-snapshot-maximal": "ControlSettingsSnapshot"
+  "settings-snapshot-maximal": "ControlSettingsSnapshot",
+  "route-control-started": "ControlRouteControl",
+  "route-control-prepared-only": "ControlRouteControl",
+  "web-evidence-dispatched": "ControlWebEvidence",
+  "web-evidence-no-telemetry": "ControlWebEvidence",
+  "web-evidence-verified-search": "ControlWebEvidence",
+  "route-control-browser-startup": "ControlRouteControl"
 }

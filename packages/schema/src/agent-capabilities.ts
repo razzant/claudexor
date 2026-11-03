@@ -150,9 +150,9 @@ export const CatalogHarness = z
       .describe("Reasoning-effort ladder the adapter declares (normalized by the engine)."),
     accessProfilesSupported: z
       .array(AccessProfile)
-      .describe("Access profiles the adapter can enforce."),
+      .describe("Access profiles the adapter can translate to its harness."),
     readonlyMechanism: ReadonlyMechanism.describe(
-      "HOW read-only is enforced (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness.",
+      "HOW a harness applies read-only (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness.",
     ),
     writeMechanism: WriteMechanism.default("none").describe(
       "HOW workspace_write is confined (fs_sandbox | tool_policy | none) — fs_sandbox is the base sandbox; a native automatic reviewer may still admit individual actions outside it. tool_policy means an allowed shell is unconfined (no FS/network fence); consumers choosing lanes by confinement read THIS field, never a harness name.",
