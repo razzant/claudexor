@@ -4113,7 +4113,7 @@ not retry automatically.
   replay reads that stored authority before the thread's current idle gate and
   repeats the lookup inside the serialized mutation to close a concurrent-record
   race;
-`accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
+  `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
   `revert_run` uses an immutable external content-addressed anchor and restores
   only recorded postimage bytes that still match; overlapping later user edits
   are refused instead of overwritten. The anchor remains reachable independently
