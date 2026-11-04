@@ -135,20 +135,36 @@ import Testing
     }
 
     @Test func repeatedlyWaitsForShortLivedChildrenWithoutMissingTermination() async throws {
-        let manager = SSHConnectionManager()
-        let invocation = SSHInvocation(
-            executable: "/bin/sh",
-            arguments: ["-c", "printf ready"])
-        let started = ContinuousClock.now
+        // A post-loop stopwatch cannot end a lost termination notification. The
+        // kernel alarm belongs only to this exit-test child, never the test runner;
+        // it also bounds a blocked executor. This is a hang guard, not a speed SLA.
+        let observed = try #require(await #expect(
+            processExitsWith: .success,
+            observing: [\.standardOutputContent, \.standardErrorContent]
+        ) {
+            alarm(30)
+            let manager = SSHConnectionManager()
+            let invocation = SSHInvocation(
+                executable: "/bin/sh",
+                arguments: ["-c", "printf ready"])
+            let started = ContinuousClock.now
 
-        for _ in 0 ..< 50 {
-            let result = try await manager.runForTesting(invocation)
-            #expect(result.status == 0)
-            #expect(result.stdout == Data("ready".utf8))
-        }
+            for index in 0 ..< 50 {
+                alarm(30)
+                FileHandle.standardError.write(Data("Waiting for child \(index + 1)/50 (30s bound)\n".utf8))
+                let result = try await manager.runForTesting(invocation)
+                #expect(result.status == 0)
+                #expect(result.stdout == Data("ready".utf8))
+            }
 
-        #expect(ContinuousClock.now - started < .seconds(5))
-        await manager.shutdown()
+            print("50 child results checked in \(ContinuousClock.now - started)")
+            alarm(30)
+            FileHandle.standardError.write(Data("Waiting for shutdown (30s bound)\n".utf8))
+            await manager.shutdown()
+            // Keep the alarm armed through exit-test teardown; SIGALRM is a
+            // failed child result. It is not process-tree cleanup for arbitrary commands.
+        })
+        print(String(decoding: observed.standardOutputContent, as: UTF8.self))
     }
 
     @Test func batchFailureClassificationOnlyPromptsForUserInput() {
