@@ -114,7 +114,6 @@ describeStore("upload bytes leave the request thread", () => {
     const body = Buffer.from("testdata");
     const initial = f.resources.create({ ...uploadRequest, sizeBytes: body.length }, "pending");
     hold.suffix = `${initial.uploadId}.part`;
-    hold.release = null;
     let settled = false;
     const writing = f.resources.write(initial.uploadId, chunks(body)).finally(() => {
       settled = true;
@@ -149,7 +148,6 @@ describeStore("upload bytes leave the request thread", () => {
     const body = Buffer.from("testdata");
     const initial = f.resources.create({ ...uploadRequest, sizeBytes: body.length }, "cancel");
     hold.suffix = `${initial.uploadId}.part`;
-    hold.release = null;
     const writing = f.resources.write(initial.uploadId, chunks(body));
     const entered = new Promise<void>((resolve, reject) => {
       hold.entered = resolve;

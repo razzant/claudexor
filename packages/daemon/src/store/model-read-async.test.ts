@@ -101,10 +101,17 @@ describe("model request bytes leave the request thread", () => {
       sha256: "sha256:" + "ab".repeat(32),
       sizeBytes: 1,
     } satisfies ModelPayloadRef;
-    const store = {
+    const unused = (): never => {
+      throw new Error("the result parser only reads");
+    };
+    const store: ModelPayloadStore = {
       readModel: () => Buffer.from(JSON.stringify(body)),
       readModelAsync: () => Promise.reject(new Error("result parse must stay synchronous")),
-    } as ModelPayloadStore;
+      publishModel: unused,
+      releaseModel: unused,
+      expireModel: unused,
+      listModelResources: unused,
+    };
     expect(readModelPayload(store, ref, ModelCallRequest, "ModelCallRequest")).toEqual(body);
   });
 });

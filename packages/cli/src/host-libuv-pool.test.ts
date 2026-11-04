@@ -155,7 +155,9 @@ try {
           reject(new Error(`host pool probe exited ${status}: ${err || out}`));
           return;
         }
-        resolve(JSON.parse(out) as { host: number; ready: number; dnsOutcome: string; dnsMs: number });
+        resolve(
+          JSON.parse(out) as { host: number; ready: number; dnsOutcome: string; dnsMs: number },
+        );
       });
     });
     process.stdout.write(`HOST_POOL_PROBE ${JSON.stringify(result)}\n`);
