@@ -73,11 +73,12 @@ struct StreamTransportIsolationTests {
         let threadB = source.detail.thread.id
         let session = URLSession(configuration: .ephemeral)
         let streams = try capacity(of: session)
+        try #require(streams >= 2, "compound fixture needs another live run beside the global stream")
         let others = (0..<(streams - 1)).map { "run-other-\($0)" }
         let runList = others.map { #"{"runId":"\#($0)","state":"running","mode":"agent"}"# }
         let server = try LoopbackControlServer(token: token, routes: [
             "/v2/runs": .init(body: Data(#"{"runs":[\#(runList.joined(separator: ","))]}"#.utf8),
-                              delay: .seconds(2)),
+                              held: true),
             "/v2/threads/\(threadB)/history": .init(body: try JSONEncoder().encode(source.page(nil))),
         ])
         let base = try await server.start()
@@ -94,18 +95,33 @@ struct StreamTransportIsolationTests {
         model.selectedThreadId = "thread-previous"
         model.selectedHistory = model.makeHistoryStore(locationID: .local, id: "thread-previous")
 
-        let started = ContinuousClock.now
         let switched = Task { await model.openThread(threadB) }
-        try await until("the switched history to install") { model.selectedHistory?.state == .ready }
-        let installedAfter = ContinuousClock.now - started
-        #expect(model.selectedHistory?.rows.count == 3)
-        #expect(server.answeredAt("/v2/runs") == nil, "history waited for the unrelated run list")
-        let history = try #require(server.requests.first { $0.path == "/v2/threads/\(threadB)/history" })
-        #expect(history.openStreams == streams)
-        #expect(server.requests.contains { $0.path == "/v2/runs" })
+        let beforeRelease: Result<Void, Error>
+        do {
+            // These independent reads may arrive in either order. Observe both
+            // before releasing /runs; history must already be installed.
+            try await until("history installed while run-list response is held") {
+                model.selectedHistory?.state == .ready
+                    && server.requests.contains { $0.path == "/v2/runs" }
+            }
+            #expect(model.selectedHistory?.rows.count == 3)
+            #expect(server.answeredAt("/v2/runs") == nil, "history waited for the unrelated run list")
+            let history = try #require(server.requests.first { $0.path == "/v2/threads/\(threadB)/history" })
+            #expect(history.openStreams == streams)
+            let runListRequest = try #require(server.requests.first { $0.path == "/v2/runs" })
+            #expect(runListRequest.openStreams == streams)
+            #expect(model.runListReconciliationNeeded)
+            beforeRelease = .success(())
+        } catch {
+            // Also drain the real requests on a failed assertion/timeout path.
+            switched.cancel()
+            model.cancelAllStreams()
+            beforeRelease = .failure(error)
+        }
+        server.release("/v2/runs")
         await switched.value
-        let reconciledAfter = ContinuousClock.now - started
-        #expect(installedAfter < reconciledAfter)
+        try beforeRelease.get()
+        #expect(server.answeredAt("/v2/runs") != nil)
         #expect(!model.runListReconciliationNeeded)
         #expect(model.selectedThreadId == threadB)
         // The switch neither closed nor restricted any stream.

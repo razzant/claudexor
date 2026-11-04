@@ -7,8 +7,8 @@ import Network
 /// connection; a `Connection: close` stream would not occupy URLSession's
 /// per-host pool and could not reproduce the starvation), then stay open with
 /// comment heartbeats until the client leaves. JSON routes answer from a table,
-/// optionally after a delay that never blocks other connections. Every request
-/// records how many event streams were open when it arrived, so a test can
+/// optionally delayed or held until an explicit release, without blocking other
+/// connections. Every request records how many event streams were open, so a test can
 /// prove ordering without wall-clock limits.
 final class LoopbackControlServer: @unchecked Sendable {
     struct Arrival: Sendable {
@@ -20,6 +20,7 @@ final class LoopbackControlServer: @unchecked Sendable {
     struct Route {
         var body: Data
         var delay: Duration = .zero
+        var held = false
     }
 
     private let listener: NWListener
@@ -32,6 +33,8 @@ final class LoopbackControlServer: @unchecked Sendable {
     private var streams: [ObjectIdentifier: (path: String, connection: NWConnection)] = [:]
     private var unauthorized = 0
     private var heartbeat: DispatchSourceTimer?
+    // Accessed only on queue. A test controls response order, never a sleep.
+    private var heldResponses: [String: [(connection: NWConnection, respond: () -> Void)]] = [:]
 
     init(token: String, routes: [String: Route]) throws {
         let parameters = NWParameters.tcp
@@ -47,6 +50,14 @@ final class LoopbackControlServer: @unchecked Sendable {
 
     func answeredAt(_ path: String) -> ContinuousClock.Instant? {
         lock.withLock { answered.first { $0.path == path }?.at }
+    }
+
+    func release(_ path: String) {
+        queue.sync {
+            lock.withLock { routes[path]?.held = false }
+            let pending = heldResponses.removeValue(forKey: path) ?? []
+            pending.forEach { $0.respond() }
+        }
     }
 
     func start() async throws -> URL {
@@ -95,6 +106,10 @@ final class LoopbackControlServer: @unchecked Sendable {
             heartbeat = nil
             for entry in lock.withLock({ Array(streams.values) }) { entry.connection.cancel() }
             lock.withLock { streams.removeAll() }
+            for pending in heldResponses.values {
+                pending.forEach { $0.connection.cancel() }
+            }
+            heldResponses.removeAll()
             listener.cancel()
         }
     }
@@ -155,8 +170,9 @@ final class LoopbackControlServer: @unchecked Sendable {
             connection.send(content: response, completion: .contentProcessed { _ in })
             self.receive(connection, buffer: rest)
         }
-        let delay = route?.delay ?? .zero
-        if delay > .zero {
+        if route?.held == true {
+            heldResponses[path, default: []].append((connection, respond))
+        } else if let delay = route?.delay, delay > .zero {
             let (seconds, attoseconds) = delay.components
             let interval = Double(seconds) + Double(attoseconds) / 1e18
             queue.asyncAfter(deadline: .now() + interval, execute: respond)
