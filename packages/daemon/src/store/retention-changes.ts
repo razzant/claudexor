@@ -25,7 +25,7 @@ const columns = {
   blob: ["sha256", "size", "inline"],
 } as const;
 type Table = keyof typeof columns;
-type Change = { table: Table; id: string; operation: string; roots: Set<string> };
+type Change = { table: Table; id: string; roots: Set<string> };
 type Listener = (change: Change) => void;
 const observers = new WeakMap<EngineStore, Set<Listener>>();
 
@@ -33,14 +33,13 @@ function observe(store: EngineStore, listener: Listener): () => void {
   let listeners = observers.get(store);
   if (!listeners) {
     const targets = new Set<Listener>();
-    store.db.function("disk_retention_changed", (table, id, operation, root) => {
+    store.db.function("disk_retention_changed", (table, id, root) => {
       // Node 24.15 truncates TEXT at NUL; interaction keys must arrive as bytes.
       const decodedId = Buffer.from(id as Uint8Array).toString("utf8");
       for (const target of targets)
         target({
           table: table as Table,
           id: decodedId,
-          operation: String(operation),
           roots: new Set(root === null ? [] : [Buffer.from(root as Uint8Array).toString("utf8")]),
         });
       return null;
@@ -59,7 +58,7 @@ function observe(store: EngineStore, listener: Listener): () => void {
           operation === "UPDATE" ? ["OLD", "NEW"] : [operation === "DELETE" ? "OLD" : "NEW"];
         store.exec(`CREATE TEMP TRIGGER disk_retention_${table}_${operation}
           AFTER ${operation} ON main.${table} ${changed} BEGIN
-          ${rows.map((row) => `SELECT disk_retention_changed('${table}',CAST(${row}.${key} AS BLOB),'${operation}',${table === "project" ? `CAST(${row}.root AS BLOB)` : "NULL"});`).join("\n")}
+          ${rows.map((row) => `SELECT disk_retention_changed('${table}',CAST(${row}.${key} AS BLOB),${table === "project" ? `CAST(${row}.root AS BLOB)` : "NULL"});`).join("\n")}
           END`);
       }
     }

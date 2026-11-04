@@ -158,7 +158,8 @@
                 "exclusiveMinimum": 0
               },
               "example": {
-                "type": "string"
+                "type": "string",
+                "description": "Named cause and affected owner, such as a changed registration, unreadable row or pending recovery partition."
               }
             },
             "required": [

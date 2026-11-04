@@ -219,6 +219,11 @@ it("keeps remaining candidates when a changed reference owner becomes unreadable
   const receipt = await runner()({ dry_run: false });
   expect(receipt.deleted_runs).toEqual([]);
   expect(receipt.errors.join()).toContain("reference refresh failed");
+  expect(receipt.holds).toContainEqual({
+    class: "references_changed",
+    count: 1,
+    example: expect.stringContaining(thread.id),
+  });
   expect(existsSync(join(held, "final", "failure.yaml"))).toBe(true);
 });
 

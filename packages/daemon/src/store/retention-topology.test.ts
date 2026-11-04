@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { sqlFixture } from "./test-support/sql-fixture.js";
-import { diskRetentionReferences } from "./retention-references.js";
 import { retentionGenerations } from "./retention-generations.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -29,7 +28,7 @@ async function fixture() {
 it("absorbs a partition and continuation born during inventory, but rejects a missing live pid", async () => {
   const sql = await fixture();
   const generations = retentionGenerations(sql.store);
-  const pending = diskRetentionReferences(sql.store);
+  const pending = sql.graph.threads.retentionReferences();
   const project = sql.register("late");
   const params = { scope: { kind: "project", root: project.root }, continueFrom: "source" };
   sql.graph.commands.forRequest(params).accept({
@@ -53,7 +52,7 @@ it("absorbs a partition and continuation born during inventory, but rejects a mi
 it("holds every old and new root through relink and removal without vetoing unrelated proof", async () => {
   const sql = await fixture();
   const project = sql.register("original");
-  const proof = await diskRetentionReferences(sql.store);
+  const proof = await sql.graph.threads.retentionReferences();
   const middle = join(sql.root, "middle");
   const last = join(sql.root, "last");
   mkdirSync(middle);
@@ -73,7 +72,7 @@ it("holds every old and new root through relink and removal without vetoing unre
 it("latches unreadable changed owners while unrelated project insertion stays current", async () => {
   const sql = await fixture();
   const thread = sql.graph.threads.createThread({ title: "owner", workspace: "in_place" });
-  const proof = await diskRetentionReferences(sql.store);
+  const proof = await sql.graph.threads.retentionReferences();
   try {
     sql.register("unrelated");
     expect(proof.recheck!()).toBe(true);
@@ -95,7 +94,7 @@ it("keeps a late recovery hold install-wide for the rest of the pass", async () 
   const sql = await fixture();
   const project = sql.register("recovering");
   const pid = sql.graph.projects.partition(project.id)!.pid;
-  const proof = await diskRetentionReferences(sql.store);
+  const proof = await sql.graph.threads.retentionReferences();
   try {
     sql.store.transaction(() =>
       sql.store.prepare("UPDATE partition SET status='recovery_required' WHERE id=?").run(pid),
@@ -114,7 +113,7 @@ it("keeps a late recovery hold install-wide for the rest of the pass", async () 
   } finally {
     proof.close!();
   }
-  const fresh = await diskRetentionReferences(sql.store);
+  const fresh = await sql.graph.threads.retentionReferences();
   expect(fresh.recheck!()).toBe(true);
   fresh.close!();
 });

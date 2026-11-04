@@ -235,7 +235,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
               } catch (error) {
                 if (!laneProofCurrent()) {
                   inventoryErrors.push(deferred);
-                  laneHold(deferred);
+                  laneHold(`${deferred}: ${String(error)}`);
                   break;
                 }
                 const detail = `lane sweep skipped for ${root}: ${String(error)}`;

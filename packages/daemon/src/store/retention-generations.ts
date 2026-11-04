@@ -1,10 +1,10 @@
-import type { EngineStore } from "./store.js";
+import type { SqlWriteContext } from "./mutation.js";
 import type { GcHold } from "@claudexor/schema";
 
 /** Quarantine completes recovery: those rows are evidence, never live owners.
  * Archived generations remain restorable owners. Unknown/pending states cannot
  * prove absence and hold run retirement install-wide. */
-export function retentionGenerations(store: EngineStore) {
+export function retentionGenerations(store: Pick<SqlWriteContext, "prepare">) {
   const query = `SELECT q.id,q.name,q.status,q.project_id,p.root,g.status AS registry_status FROM partition q
     LEFT JOIN project p ON p.id=q.project_id LEFT JOIN partition g ON g.id=p.pid`;
   const rows = store.prepare(query).all() as Array<{

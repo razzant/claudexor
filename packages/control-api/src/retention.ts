@@ -133,13 +133,15 @@ export async function runRetentionPass(
   let deletions = 0;
   let truncated = false;
   let invalidated = false;
+  let invalidationReason = "retention references changed during inventory";
   const proofCurrent = () => {
     if (invalidated || deps.signal?.aborted) return false;
     try {
       if (deps.referencesCurrent?.() === false) invalidated = true;
     } catch (error) {
       invalidated = true;
-      errors.push(`retention reference recheck failed: ${String(error)}`);
+      invalidationReason = `retention reference recheck failed: ${String(error)}`;
+      errors.push(invalidationReason);
     }
     return !invalidated;
   };
@@ -149,7 +151,8 @@ export async function runRetentionPass(
       await deps.refreshReferences?.();
     } catch (error) {
       invalidated = true;
-      errors.push(`retention reference refresh failed: ${String(error)}`);
+      invalidationReason = `retention reference refresh failed: ${String(error)}`;
+      errors.push(invalidationReason);
     }
   };
   const recoverPending = async (parent: string, kind: "runs" | "reviews", projectRoot: string) => {
@@ -471,7 +474,7 @@ export async function runRetentionPass(
     holds.push({
       class: "references_changed",
       count: 1,
-      example: "remaining candidates kept; retry with a fresh snapshot",
+      example: invalidationReason,
     });
     deps.onTruncated?.();
     errors.push(

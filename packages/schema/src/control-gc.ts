@@ -97,7 +97,11 @@ export const GcHold = z
   .object({
     class: GcHoldClass,
     count: z.number().int().positive(),
-    example: z.string(),
+    example: z
+      .string()
+      .describe(
+        "Named cause and affected owner, such as a changed registration, unreadable row or pending recovery partition.",
+      ),
   })
   .strict();
 export type GcHold = z.infer<typeof GcHold>;
@@ -123,6 +127,19 @@ export const GcLastPass = z
     outcome: z.enum(["completed", "held", "truncated", "failed"]),
     started_at: z.string(),
     finished_at: z.string(),
+    last_completed_at: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Last completed non-preview pass time, or null when no completion is known."),
+    failed_or_held_streak: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe(
+        "Failed or held passes since the last completion; truncated passes preserve the count. Only a completed pass resets it.",
+      ),
     freed_bytes: z.number().int().nonnegative(),
     kept: GcKeepCounts,
     held: GcHeldCounts,

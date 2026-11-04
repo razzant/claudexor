@@ -5164,7 +5164,16 @@ and shutdown drains that barrier; persistence failures propagate to the caller.
 The summary carries `outcome` (`completed`, `held`, `truncated`, `failed`), start/end
 timestamps, freed bytes, run keep counts, separate counts of held roots and vetoed native homes,
 per-class hold counts with one example and the first continuously held `since`,
-and error count/first error. A clean observed pass clears holds; previews never replace it.
+and error count/first error. Each hold example names the actual cause and affected owner,
+including registration changes, unreadable references and recovery partitions.
+`last_completed_at` retains the last successful completion across failed, held and
+truncated passes; it is null when no completion is known. `failed_or_held_streak`
+increments for each failed or held pass, survives truncation, and resets only on
+completion. A failed durability barrier preserves the preceding completion and counts
+as a failure. Older saved summaries default the history fields; a prior completed
+summary still supplies its finish time. `gc --last` prints both history fields so
+repeated failures cannot look like fresh successful cleanup.
+A clean observed pass clears holds; previews never replace it.
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
 `since` while reporting its own failure or truncation. A truncated pass also carries
