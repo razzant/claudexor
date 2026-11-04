@@ -4069,10 +4069,13 @@ not retry automatically.
   enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
   pre-provenance files show a null root). A scoped GET does not walk that
-  directory. Its `source` is `file` when that repo's trust file was read and
-  `default` when the answer is the schema default because the file was absent,
-  so a caller can tell a missing grant from an explicit refusal. Older daemons
-  and the unscoped list omit `source`. The unscoped list reads the directory
+  directory. Its `source` is `default` only when no trust file exists at that
+  repo's path, and `file` whenever one does, including an empty, comment-only
+  or unreadable file whose values read as the schema default. A path that
+  cannot be checked also reports `file`. A caller can therefore tell a missing
+  grant from an explicit refusal, and granting on `default` never overwrites a
+  file the daemon could not read. Older daemons and the unscoped list omit
+  `source`. The unscoped list reads the directory
   off the request thread. The POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
   update one repo. Versioned project test commands are canonical typed argv,

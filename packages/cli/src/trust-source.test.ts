@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { updateTrustConfig } from "@claudexor/config";
+import { trustConfigPath, updateTrustConfig } from "@claudexor/config";
 import { listTrustService } from "./trust-services.js";
 
 const listed = vi.hoisted(() => ({ calls: 0 }));
@@ -53,6 +53,30 @@ describe("scoped trust says whether the file exists", () => {
     const body = await listTrustService({ repoRoot: repo });
     expect(body.entries[0]).toMatchObject({ allowFullAccess: false, source: "file" });
     expect(listed.calls).toBe(0);
+  });
+
+  it("returns file for an existing trust file that is empty", async () => {
+    isolated();
+    const repo = join("/tmp", "cx-trust-empty");
+    const path = trustConfigPath(repo);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "");
+    const body = await listTrustService({ repoRoot: repo });
+    expect(body.entries[0]).toMatchObject({ allowFullAccess: false, source: "file" });
+  });
+
+  it("returns file for an explicit refusal the daemon cannot read", async () => {
+    isolated();
+    const repo = join("/tmp", "cx-trust-unreadable");
+    updateTrustConfig(repo, (cfg) => ({ ...cfg, allow_full_access: false }));
+    const path = trustConfigPath(repo);
+    chmodSync(path, 0o000);
+    try {
+      const body = await listTrustService({ repoRoot: repo });
+      expect(body.entries[0]).toMatchObject({ allowFullAccess: false, source: "file" });
+    } finally {
+      chmodSync(path, 0o600);
+    }
   });
 
   it("the unscoped list still walks trust files and omits source", async () => {

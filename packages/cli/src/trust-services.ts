@@ -1,4 +1,5 @@
 /** User-level trust services behind the typed control API. */
+import { lstatSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import {
   ControlTrustListResponse,
@@ -20,15 +21,16 @@ export async function listTrustService(input?: {
   if (repoRoot && !isAbsolute(repoRoot)) throw badRoot(repoRoot);
   if (repoRoot) {
     const config = loadConfig(repoRoot);
+    const path = trustConfigPath(repoRoot);
     return ControlTrustListResponse.parse({
       entries: [
         {
           repoRoot,
-          path: trustConfigPath(repoRoot),
+          path,
           allowFullAccess: config.trust.allow_full_access,
           accessDefault: config.trust.access_default,
           testCommandGrantCount: config.trust.test_command_grants.length,
-          source: config.sources.includes(trustConfigPath(repoRoot)) ? "file" : "default",
+          source: trustFileSource(path, config.sources),
         },
       ],
     });
@@ -77,6 +79,24 @@ export async function updateTrustService(
     testCommandGrantCount: res.config.test_command_grants.length,
     source: "file",
   });
+}
+
+/**
+ * `default` only when no trust file is at that path. The config load reads an
+ * empty, comment-only or unreadable file as the schema default, but that file
+ * is still the operator's: a caller that granted on `default` would overwrite
+ * an explicit refusal it could not read. A path that cannot be checked is
+ * reported as `file`.
+ */
+function trustFileSource(path: string, sources: readonly string[]): "file" | "default" {
+  if (sources.includes(path)) return "file";
+  try {
+    lstatSync(path);
+    return "file";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "default" : "file";
+  }
 }
 
 function badRoot(repoRoot: string): Error & { status: number } {
