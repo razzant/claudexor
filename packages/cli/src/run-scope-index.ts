@@ -99,8 +99,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   private unreadableNotice: string | null = null;
   private readonly log: (message: string) => void;
   private readonly now: () => string;
-  /** Bytes last written/read, so a retry that discovers no new fact does not
-   * churn the hot index file. */
+  /** Bytes last written/read; unchanged retries do not churn the hot index file. */
   private lastPersistedText: string | null = null;
 
   constructor(private readonly options: DaemonRunScopeIndexOptions) {
@@ -217,7 +216,6 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
    * on a `ps -p` or identity read (bounded by their own longer timeouts) must
    * not extend the cancel path, and the reap then runs on what is recorded;
    * a refinement still pending then starts no read and records nothing more.
-   * Another run's seeds are never awaited (Astra R3).
    */
   private async seedsSettled(marker: string, deadlineMs: number): Promise<void> {
     const jobs = this.seeding.get(marker);
@@ -321,10 +319,8 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     });
     return this.capturing;
   }
-
-  /** Revisit unresolved scopes owned by this live daemon on the existing pids
-   * tick. Each retry gets a fresh settlement budget; only a fresh settled
-   * census removes the entry from the hot index. */
+  /** Retry unresolved scopes owned by this daemon on the existing pids tick;
+   * only a fresh settled census removes the entry. */
   private async retryLiveUnresolved(): Promise<void> {
     if (!this.table) return; // Windows keeps its existing unsupported retirement.
     const entries = this.load().filter((entry) => entry.state === "unresolved");
@@ -351,12 +347,10 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
       }
       this.log(this.retireOrKeep(entry, outcome));
       const stillPresent = this.load().includes(entry);
-      if (
-        stillPresent &&
-        (entry.state !== beforeState || JSON.stringify(entry.outcome ?? null) !== beforeOutcome)
-      )
-        changed = true;
-      if (!stillPresent) changed = true;
+      const outcomeChanged =
+        entry.state !== beforeState || JSON.stringify(entry.outcome ?? null) !== beforeOutcome;
+      if (stillPresent && outcomeChanged) changed = true;
+      changed ||= !stillPresent;
     }
     if (!changed) return;
     try {
