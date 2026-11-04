@@ -138,7 +138,12 @@ independently, as described below. Missing signing/notary/npm credentials fail;
 there is no unsigned or GitHub-only fallback. npm packages publish in dependency
 order with provenance. An existing package is accepted only when its signed npm
 provenance binds this repository's release workflow, exact tag/commit and published
-digest; a collision fails. Eventual-consistency reads are bounded. The GitHub
+digest; a collision fails. Within one run, a named network failure permits at most
+three attempts of the same packed file, with a registry read before every retry.
+An exposed version then needs that file's original digest; a successful npm
+acknowledgement never permits another publish while indexing or attestations lag.
+Unknown outcomes stay unresolved. Transient registry reads are bounded separately
+from publishing; auth, digest and provenance failures are not retryable. The GitHub
 Release stays draft until all publication checks pass, rejects differing
 same-name assets, and becomes public as the final mutation. Published releases
 are never edited. Versions still use changesets and the fixed lockstep group.
