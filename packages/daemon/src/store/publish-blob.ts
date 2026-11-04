@@ -152,6 +152,9 @@ export class PublishBlob {
       tx.changes.blobChanged(sha);
       tx.changes.uploadChanged(id);
     });
+    // The binding now holds the digest. Every later complete (replay, recovery)
+    // verifies the bytes, so the in-memory copy is dropped here, not at restart.
+    this.uploads.forgetDigest(id);
     // Dedup must read the blob already on disk. A missing digest must read the
     // part. The hot path has already hashed the bytes it is about to link.
     return this.complete(upload, undefined, remembered === undefined || deduplicated);

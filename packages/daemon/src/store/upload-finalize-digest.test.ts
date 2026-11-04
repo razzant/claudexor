@@ -48,6 +48,11 @@ function partReads(dir: string): string[] {
   return reads.paths.filter((path) => path.startsWith(dir) && path.endsWith(".part"));
 }
 
+/** The write-time digests the upload owner still holds in memory. */
+function heldDigests(f: ResourceFixture): ReadonlyMap<string, string> {
+  return (f.resources as unknown as { uploads: { digests: Map<string, string> } }).uploads.digests;
+}
+
 describe("finalize uses the write-time digest", () => {
   it("does not read the part on the hot path, including a rejected expected digest", async () => {
     const f = await open();
@@ -59,9 +64,11 @@ describe("finalize uses the write-time digest", () => {
       f.resources.finalize(initial.uploadId, `sha256:${"ab".repeat(32)}`, "bad-sha"),
     ).toThrow(expect.objectContaining({ code: "digest_mismatch" }));
     expect(partReads(f.store.paths.uploads)).toEqual([]);
+    expect([...heldDigests(f).keys()]).toEqual([initial.uploadId]);
     reads.paths.length = 0;
     const receipt = f.resources.finalize(initial.uploadId, undefined, "hot-final");
     expect(partReads(f.store.paths.uploads)).toEqual([]);
+    expect(heldDigests(f).size).toBe(0);
     expect(
       f.resources.readModel({
         resourceId: receipt.resourceId,
@@ -69,6 +76,9 @@ describe("finalize uses the write-time digest", () => {
         sizeBytes: receipt.sizeBytes,
       }),
     ).toEqual(body);
+    const result = f.resources.publishModel(Buffer.from('{"answer":1}'));
+    expect(f.resources.readModel(result).toString()).toBe('{"answer":1}');
+    expect(heldDigests(f).size).toBe(0);
   });
 
   it("still reads when replaying a publication, deduplicating, or recovering after restart", async () => {

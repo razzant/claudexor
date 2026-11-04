@@ -192,6 +192,11 @@ export class SqlUploads {
     return this.digests.get(id);
   }
 
+  /** Publication committed its digest; replay and recovery verify the bytes instead. */
+  forgetDigest(id: string): void {
+    this.digests.delete(id);
+  }
+
   async write(id: string, chunks: AsyncIterable<Uint8Array>): Promise<ControlUploadStatus> {
     const row = this.get(id);
     if (row.status.state !== "open")

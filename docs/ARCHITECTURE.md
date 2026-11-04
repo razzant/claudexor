@@ -5569,7 +5569,9 @@ kept only for cold import and an independent frozen copy kept for tests.
   keeps the sha256 of those bytes in memory for the following finalize and does
   not store it in `upload.finalize_sha`, which remains the publication's
   ownership reference. Finalize of a transfer this process just wrote uses
-  that digest and does not read the part again. Dedup, replay and recovery
+  that digest and does not read the part again. Finalize drops the in-memory
+  copy as soon as its first commit records the publication; a rejected
+  `expectedSha256` keeps it for the next attempt. Dedup, replay and recovery
   still read and check the bytes. A restart drops the digest, so publication
   reads the part as before, and an unfinished PUT reopens at byte zero.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
