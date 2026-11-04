@@ -104,6 +104,7 @@ function harness(behaviour: Behaviour, after?: () => void): HarnessAdapter {
 
 type WorkProductMeta = {
   git_result?: { base_tree: string; candidate_tree: string };
+  capturedNoGitChange?: boolean;
   adopted?: boolean | null;
   apply_state?: string;
   pre_turn_sha?: string | null;
@@ -232,6 +233,7 @@ describe("the post-turn fence of a live single-candidate turn (#502)", () => {
     expect(observed.captures).toBe(2);
     expect(run.meta?.git_result?.base_tree).toBe(run.meta?.git_result?.candidate_tree);
     expect(run.meta).toMatchObject({
+      capturedNoGitChange: true,
       adopted: null,
       apply_state: "not_applied",
       post_turn_sha: null,
@@ -348,6 +350,7 @@ describe("the post-turn fence of a live single-candidate turn (#502)", () => {
     expect(unchanged.result.facts.noChanges).toBe(true);
     expect.soft(unchanged.snapshots).toBe(2);
     expect(unchanged.meta).toMatchObject({
+      capturedNoGitChange: true,
       adopted: null,
       apply_state: "not_applied",
       post_turn_sha: null,

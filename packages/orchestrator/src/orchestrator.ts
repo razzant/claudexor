@@ -93,6 +93,7 @@ import {
 import * as AC from "./attemptUsageCost.js";
 import * as custody from "./continuation-custody.js";
 import {
+  capturedNoGitChangeValue,
   type CandidateRun,
   candidateCaptureRefusals,
   candidateCompletion,
@@ -4254,6 +4255,7 @@ export class Orchestrator {
         if (inPlaceWinner && requestedSingleCandidate && adopted === true) {
           revertAnchorId = await anchors.turn(preTurnSha, postTurnSha);
         }
+        const capturedNoGitChange = capturedNoGitChangeValue(winnerRun);
         store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
           id: newId("wp"),
           kind: input.create === true ? "new_repo" : "patch",
@@ -4273,6 +4275,7 @@ export class Orchestrator {
             budget_stopped: budgetStopped,
             ...{ patch_sha256: patchSha256, ...savedPatch.meta },
             result_kind: resultKind,
+            ...(capturedNoGitChange !== null ? { capturedNoGitChange } : {}),
             diffstat: {
               files: wstats.paths.length,
               additions: wstats.additions,
@@ -5458,6 +5461,7 @@ export class Orchestrator {
             : "not_applied";
         const revertAnchorId =
           convAdopted === true ? await anchors.turn(preTurnSha, lastPostTurnSha) : null;
+        const capturedNoGitChange = capturedNoGitChangeValue(lastRun);
         store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
           id: newId("wp"),
           kind: "patch",
@@ -5466,6 +5470,7 @@ export class Orchestrator {
           meta: {
             harness_id: lastRun.harnessId,
             result_kind: "patch",
+            ...(capturedNoGitChange !== null ? { capturedNoGitChange } : {}),
             mode,
             attempts: attempt,
             lifecycle: facts.lifecycle,

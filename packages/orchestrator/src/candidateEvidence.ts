@@ -32,7 +32,18 @@ export function hasCandidateChanges(run: Pick<CandidateRun, "diff" | "result" | 
 export function capturedNoGitChange(
   run: Pick<CandidateRun, "result" | "files" | "captureRefusal" | "continuationRefusal">,
 ): boolean {
-  if (run.files || run.captureRefusal || run.continuationRefusal || !run.result) return false;
+  return capturedNoGitChangeValue(run) === true;
+}
+
+/** The persisted form of the exact capture fact (#612). `null` means the
+ * producer cannot prove a Git capture was complete (directory output, missing
+ * result, or a refusal); a boolean is known only for a complete Git capture.
+ * Keeping unknown distinct from `false` prevents a failed capture from being
+ * mistaken for an unchanged tree by retention. */
+export function capturedNoGitChangeValue(
+  run: Pick<CandidateRun, "result" | "files" | "captureRefusal" | "continuationRefusal">,
+): boolean | null {
+  if (run.files || run.captureRefusal || run.continuationRefusal || !run.result) return null;
   return run.result.base_tree === run.result.candidate_tree;
 }
 
