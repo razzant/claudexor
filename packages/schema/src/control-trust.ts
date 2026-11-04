@@ -70,7 +70,7 @@ export const ControlTrustState = z
       .enum(["file", "default"])
       .optional()
       .describe(
-        "file when this repo's trust file was read; default when the answer is the schema default because that file was absent. Omitted by older daemons and by the unscoped list.",
+        "default only when no trust file exists at this repo's path; file whenever one does, including an empty, comment-only or unreadable file read as the schema default. Omitted by older daemons and by the unscoped list.",
       ),
   })
   .describe("Trust state of one repo from its user-level trust file.");
