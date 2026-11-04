@@ -88,6 +88,8 @@ export interface ResourceStorePort {
   importUpload(raw: unknown, idempotencyKey: string): ControlUploadImport;
   resolve(refs: ResourceAttachmentRef[] | undefined): Attachment[];
   readModel(raw: ModelPayloadRef): Buffer;
+  /** Off the request thread. Result GET stays on `readModel` so ACK cannot race it. */
+  readModelAsync(raw: ModelPayloadRef): Promise<Buffer>;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(raw: ModelPayloadRef): void;
   expireModel(raw: ModelPayloadRef, expiredAt: string): void;

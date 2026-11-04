@@ -83,6 +83,12 @@ function resources(): ModelPayloadStore {
       expect(row.ref).toEqual(ref);
       return row.bytes;
     },
+    async readModelAsync(ref) {
+      const row = bodies.get(ref.resourceId);
+      if (!row) throw new Error("released payload");
+      expect(row.ref).toEqual(ref);
+      return row.bytes;
+    },
     releaseModel(ref) {
       bodies.delete(ref.resourceId);
     },

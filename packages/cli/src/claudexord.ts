@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./host-libuv-pool-boot.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -58,7 +59,6 @@ import { startupPurgeEffect } from "./thread-purge.js";
 import { laneCredentialStores } from "./thread-export-services.js";
 import { accountResetServices } from "./account-reset-services.js";
 type Graph = ReturnType<typeof createSqlDaemonServices>;
-
 export async function main(): Promise<void> {
   if (runProbeIfRequested(process.argv.slice(2))) return;
   if (await runStopIfRequested(process.argv.slice(2))) return;

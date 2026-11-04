@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import {
   Attachment,
   ControlResource,
@@ -86,6 +87,12 @@ export class SqlResourceStore implements ResourceStorePort {
     const resource = this.metadata(ref.resourceId);
     assertModelRef(resource, ref);
     return verifiedResourceBytes(resource, this.blobs.filePath(resourceSha(resource)));
+  }
+  async readModelAsync(raw: ModelPayloadRef): Promise<Buffer> {
+    const ref = ModelPayloadRef.parse(raw);
+    const resource = this.metadata(ref.resourceId);
+    assertModelRef(resource, ref);
+    return readVerifiedResourceFile(resource, this.blobs.filePath(resourceSha(resource)));
   }
   publishModel(bytes: Uint8Array): ModelPayloadRef {
     const status = this.uploads.create({
@@ -176,4 +183,25 @@ export class SqlResourceStore implements ResourceStorePort {
       .finally(() => this.cleanup.delete(pending));
     this.cleanup.add(pending);
   }
+}
+
+/** Same checks as `verifiedResourceBytes`, on the libuv pool. */
+async function readVerifiedResourceFile(resource: ControlResource, path: string): Promise<Buffer> {
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(path);
+  } catch (error) {
+    const code =
+      error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+    if (code === "ENOENT")
+      throw resourceError("resource blob is unavailable", 409, "resource_unavailable");
+    throw error;
+  }
+  if (bytes.length !== resource.sizeBytes || sha256Hex(bytes) !== resourceSha(resource))
+    throw resourceError(
+      "resource blob no longer matches finalized bytes",
+      409,
+      "resource_digest_mismatch",
+    );
+  return bytes;
 }

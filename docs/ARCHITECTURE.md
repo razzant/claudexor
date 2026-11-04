@@ -3279,7 +3279,9 @@ their permit stays occupied until runner settlement, including cancellation, but
 not while awaiting a client's result-digest ACK, and they are not Agent Runs. The command store holds content hashes and resource references, not the
 conversation. A model-purpose upload uses `ResourceStore`'s atomic finalization;
 its contents are delivered exactly like every other working input (INV-146),
-and it cannot resolve as an ordinary Agent attachment. Engine authorization
+and it cannot resolve as an ordinary Agent attachment. Create and dispatch
+read those request bytes off the request thread. Result GET stays on the
+synchronous read, so acknowledgement cannot interleave with it. Engine authorization
 never enters the model payload.
 
 Result GET returns exact digest-bound bytes without acknowledging them. A client
@@ -3435,7 +3437,12 @@ validator dump, and validates the per-run SSE cursor as a nonnegative integer
 for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
 would otherwise race the server's close), allows 66 s for request headers, and
 does not bound the receipt of a request body, so a large upload during a busy
-period is not cut; none of these limits applies to responses or SSE streams.
+period is not cut. The PUT writes its bytes on the libuv pool, and the request
+thread can answer other control requests while that write is in flight.
+Concurrent PUTs share a gate that leaves pool threads for DNS and other
+filesystem work; a PUT holds a slot only while one of its writes is in the
+pool, not while it waits for the body. None of
+these limits applies to responses or SSE streams.
 Once stopping, it closes each kept-alive socket as soon as its response finishes,
 so the longer keep-alive window never delays shutdown.
 
@@ -4062,7 +4069,15 @@ not retry automatically.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
-  pre-provenance files show a null root), and the POST accepts `repoRoot` plus
+  pre-provenance files show a null root). A scoped GET does not walk that
+  directory. Its `source` is `default` only when no trust file exists at that
+  repo's path, and `file` whenever one does, including an empty, comment-only
+  or unreadable file whose values read as the schema default. A path that
+  cannot be checked also reports `file`. A caller can therefore tell a missing
+  grant from an explicit refusal, and granting on `default` never overwrites a
+  file the daemon could not read. Older daemons and the unscoped list omit
+  `source`. The unscoped list reads the directory
+  off the request thread. The POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
   update one repo. Versioned project test commands are canonical typed argv,
   never implicit shell text. Their external grant binds the project/config/
@@ -5549,6 +5564,40 @@ kept only for cold import and an independent frozen copy kept for tests.
   whose sequence moved while it was staged) has no owner and is not collected
   until the orphan sweep of the next start reclaims it; this costs disk space
   only.
+  An upload part is that same write-through file, written incrementally on the
+  libuv pool. Concurrent incremental uploads share one gate of that process's
+  pool minus two threads (never below one). Each pool operation of a transfer
+  (the open, every chunk write, the close) takes one slot and releases it when
+  the operation returns, so a PUT waiting for its next bytes from the network,
+  however long, holds no slot and cannot hold up other uploads. A writer that
+  finds the gate full waits on the event loop, and cancellation wakes the wait;
+  the close still runs after a cancel. When the operator has not set
+  `UV_THREADPOOL_SIZE`, the daemon entry sets it from the host's available
+  parallelism (at least 8, at most libuv's 1024) before the rest of the daemon
+  graph is imported, and submits one stat so that libuv creates the pool at that
+  size at once (a later assignment would not resize it). The entry then keeps
+  the size in a process global for the gate and removes the variable again, so
+  harness children and what they start (MCP servers, test runners, a nested
+  daemon) inherit the user's environment rather than the daemon's pool size. An
+  operator-set value stays in the environment, and children inherit it. The
+  bound is the size of that pool, not a policy. Windows caveat, not verified on
+  a Windows host: libuv may read the C runtime's copy of the environment, which
+  an in-process assignment does not update there, so the pool may stay at
+  libuv's 4 while the gate assumes the host size and keeps no DNS reserve. That
+  is no worse than before the gate existed, and a value the operator sets before
+  the daemon starts applies on every platform. The request thread commits once
+  when the PUT begins and once when the bytes are durable; it does not commit
+  each chunk, and it calls no Node storage-sync primitive. `receivedBytes` is
+  the finished total, so a status read during the PUT reports `uploading` and
+  zero received bytes. This process keeps the sha256 of those bytes in memory
+  for the following finalize and does not store it in `upload.finalize_sha`,
+  which remains the publication's ownership reference. Finalize of a transfer
+  this process just wrote uses that digest and does not read the part again.
+  Finalize drops the in-memory copy as soon as its first commit records the
+  publication; a rejected `expectedSha256` keeps it for the next attempt. Dedup,
+  replay and recovery still read and check the bytes. A restart drops the
+  digest, so publication reads the part as before, and an unfinished PUT reopens
+  at byte zero.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the
