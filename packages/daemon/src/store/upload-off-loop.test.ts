@@ -1,7 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { join, resolve } from "node:path";
@@ -76,6 +85,27 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 const distStore = resolve(import.meta.dirname, "../../dist/store");
+
+/**
+ * The kill tests run the built store in a child process. A dist built before
+ * the current sources would exercise the previous code and still pass, so
+ * every store module must be built and no older than its source.
+ */
+function assertFreshStoreDist(): void {
+  const sources = import.meta.dirname;
+  const stale = readdirSync(sources)
+    .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .filter((name) => {
+      const built = join(distStore, name.replace(/\.ts$/, ".js"));
+      return !existsSync(built) || statSync(built).mtimeMs < statSync(join(sources, name)).mtimeMs;
+    });
+  if (stale.length > 0)
+    throw new Error(
+      `rebuild @claudexor/daemon (pnpm build) before the upload durability tests; ` +
+        `missing or older than its source in dist/store: ${stale.join(", ")}`,
+    );
+}
+
 const roots: string[] = [];
 const fixtures: ResourceFixture[] = [];
 const children: ChildProcess[] = [];
@@ -162,7 +192,6 @@ describeStore("upload bytes leave the request thread", () => {
     hold.release?.();
     await expect(writing).rejects.toMatchObject({ code: "upload_cancelled" });
     await f.resources.drainCleanup();
-    const { existsSync } = await import("node:fs");
     expect(existsSync(join(f.store.paths.uploads, `${initial.uploadId}.part`))).toBe(false);
     expect(readUploadRow(f.store, initial.uploadId)?.finalizeSha).toBeNull();
     expect((f.store.prepare("SELECT COUNT(*) AS n FROM resource").get() as { n: number }).n).toBe(
@@ -262,9 +291,7 @@ function driveKill(mode: "mid" | "done"): {
 
 describeStore("an interrupted upload restarts from byte zero", () => {
   it("kill during the PUT reopens the upload at byte zero", async () => {
-    const { existsSync } = await import("node:fs");
-    if (!existsSync(join(distStore, "store.js")))
-      throw new Error("run pnpm build before the upload durability tests");
+    assertFreshStoreDist();
     const killed = await driveKill("mid").result;
     const reopened = await resourceFixture(join(killed.daemonDir, ".."));
     fixtures.push(reopened);
@@ -275,9 +302,7 @@ describeStore("an interrupted upload restarts from byte zero", () => {
   });
 
   it("kill after the finish receipt keeps the part and its hash", async () => {
-    const { existsSync } = await import("node:fs");
-    if (!existsSync(join(distStore, "store.js")))
-      throw new Error("run pnpm build before the upload durability tests");
+    assertFreshStoreDist();
     const killed = await driveKill("done").result;
     expect(killed.done?.receivedBytes).toBe(8);
     const reopened = await resourceFixture(join(killed.daemonDir, ".."));
@@ -466,7 +491,6 @@ describe("libuv pool under blocked upload writes", () => {
           receivedBytes: 0,
         });
         await f.resources.drainCleanup();
-        const { existsSync } = await import("node:fs");
         expect(existsSync(join(f.store.paths.uploads, `${initial.uploadId}.part`))).toBe(false);
       } finally {
         held.release();
