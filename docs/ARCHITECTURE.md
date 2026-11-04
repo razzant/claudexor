@@ -3435,7 +3435,9 @@ validator dump, and validates the per-run SSE cursor as a nonnegative integer
 for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
 would otherwise race the server's close), allows 66 s for request headers, and
 does not bound the receipt of a request body, so a large upload during a busy
-period is not cut; none of these limits applies to responses or SSE streams.
+period is not cut. The PUT writes its bytes on the libuv pool, and the request
+thread can answer other control requests while that write is in flight. None of
+these limits applies to responses or SSE streams.
 Once stopping, it closes each kept-alive socket as soon as its response finishes,
 so the longer keep-alive window never delays shutdown.
 
@@ -5539,6 +5541,15 @@ kept only for cold import and an independent frozen copy kept for tests.
   whose sequence moved while it was staged) has no owner and is not collected
   until the orphan sweep of the next start reclaims it; this costs disk space
   only.
+  An upload part is that same write-through file, written incrementally on the
+  libuv pool. The request thread commits once when the PUT begins and once when
+  the bytes are durable; it does not commit each chunk, and it calls no Node
+  storage-sync primitive. `receivedBytes` is the finished total, so a status
+  read during the PUT reports `uploading` and zero received bytes. This process
+  keeps the sha256 of those bytes in memory for the following finalize and does
+  not store it in `upload.finalize_sha`, which remains the publication's
+  ownership reference. A restart drops the in-memory digest and resets an
+  unfinished PUT to `open` at byte zero.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the

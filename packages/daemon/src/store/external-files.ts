@@ -209,6 +209,55 @@ export async function writeStagedTemp(
 }
 
 /**
+ * Incremental `O_DSYNC` write of an existing file on the libuv pool, using the
+ * same flags as `writeStagedTemp`. The caller owns the path (an upload part).
+ * `accept` runs on the request thread before each chunk is submitted and may
+ * throw to stop the transfer; `committed` runs after that chunk's write returns.
+ * A write already sitting in the pool finishes before the next `accept`.
+ */
+export async function writeExternalIncremental(
+  path: string,
+  chunks: AsyncIterable<Uint8Array>,
+  hooks?: {
+    accept?: (chunk: Uint8Array, received: number) => void;
+    committed?: (chunk: Uint8Array, received: number) => void;
+  },
+): Promise<number> {
+  const handle = await open(path, externalWriteFlags(constants.O_RDWR));
+  let received = 0;
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    await handle.close();
+  };
+  try {
+    await handle.truncate(0);
+    for await (const chunk of chunks) {
+      hooks?.accept?.(chunk, received);
+      let offset = 0;
+      while (offset < chunk.byteLength) {
+        const { bytesWritten } = await handle.write(
+          chunk,
+          offset,
+          chunk.byteLength - offset,
+          received + offset,
+        );
+        if (bytesWritten <= 0) throw new Error(`short write of ${path}`);
+        offset += bytesWritten;
+      }
+      received += chunk.byteLength;
+      hooks?.committed?.(chunk, received);
+    }
+    await close();
+    return received;
+  } catch (error) {
+    await close().catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
  * The off-loop twin of `writeExternalFile` for a content-addressed body: the
  * same `O_DSYNC` temp, published under its final name only while that name is
  * absent (a hard link refuses an existing target, so a concurrent twin never

@@ -1132,7 +1132,10 @@ silently mints a new key.
 | `ready` | use `resource.resourceId`; no source access |
 | `cancelled` | finished without a resource; a new attempt needs a new key |
 
-The daemon hashes an import's bytes while receiving them. A digest mismatch
+The daemon hashes every upload's bytes while receiving them, and an import
+still checks that digest against the one it declared. `receivedBytes` changes
+when the PUT finishes, not as each chunk lands; a status read during the PUT
+sees `uploading` and `receivedBytes: 0`. A digest mismatch
 (`409 digest_mismatch`), a short, oversized or interrupted transfer, or a daemon
 restart during the transfer returns that upload to `open` with zero bytes, so the
 same key resends from byte zero; ordinary uploads keep their single-shot
