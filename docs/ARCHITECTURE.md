@@ -3440,7 +3440,8 @@ does not bound the receipt of a request body, so a large upload during a busy
 period is not cut. The PUT writes its bytes on the libuv pool, and the request
 thread can answer other control requests while that write is in flight.
 Concurrent PUTs share a gate that leaves pool threads for DNS and other
-filesystem work. None of
+filesystem work; a PUT holds a slot only while one of its writes is in the
+pool, not while it waits for the body. None of
 these limits applies to responses or SSE streams.
 Once stopping, it closes each kept-alive socket as soon as its response finishes,
 so the longer keep-alive window never delays shutdown.
@@ -5555,30 +5556,33 @@ kept only for cold import and an independent frozen copy kept for tests.
   only.
   An upload part is that same write-through file, written incrementally on the
   libuv pool. Concurrent incremental uploads share one gate of that process's
-  pool minus two threads (never below one). A writer that finds the gate full
-  waits on the event loop, and cancellation wakes the wait; the slot is released
-  on every exit. When the operator has not set `UV_THREADPOOL_SIZE`, the daemon
-  entry sets it from the host's available parallelism (at least 8, at most
-  libuv's 1024) before the rest of the daemon graph is imported, and submits
-  one stat so that libuv creates the pool at that size at once (a later
-  assignment would not resize it). The entry then keeps the size in a process
-  global for the gate and removes the variable again, so harness children and
-  what they start (MCP servers, test runners, a nested daemon) inherit the
-  user's environment rather than the daemon's pool size. An operator-set value
-  stays in the environment, and children inherit it. The bound is the size of
-  that pool, not a policy. The request
-  thread commits once when the PUT begins and once when
-  the bytes are durable; it does not commit each chunk, and it calls no Node
-  storage-sync primitive. `receivedBytes` is the finished total, so a status
-  read during the PUT reports `uploading` and zero received bytes. This process
-  keeps the sha256 of those bytes in memory for the following finalize and does
-  not store it in `upload.finalize_sha`, which remains the publication's
-  ownership reference. Finalize of a transfer this process just wrote uses
-  that digest and does not read the part again. Finalize drops the in-memory
-  copy as soon as its first commit records the publication; a rejected
-  `expectedSha256` keeps it for the next attempt. Dedup, replay and recovery
-  still read and check the bytes. A restart drops the digest, so publication
-  reads the part as before, and an unfinished PUT reopens at byte zero.
+  pool minus two threads (never below one). Each pool operation of a transfer
+  (the open, every chunk write, the close) takes one slot and releases it when
+  the operation returns, so a PUT waiting for its next bytes from the network,
+  however long, holds no slot and cannot hold up other uploads. A writer that
+  finds the gate full waits on the event loop, and cancellation wakes the wait;
+  the close still runs after a cancel. When the operator has not set
+  `UV_THREADPOOL_SIZE`, the daemon entry sets it from the host's available
+  parallelism (at least 8, at most libuv's 1024) before the rest of the daemon
+  graph is imported, and submits one stat so that libuv creates the pool at that
+  size at once (a later assignment would not resize it). The entry then keeps
+  the size in a process global for the gate and removes the variable again, so
+  harness children and what they start (MCP servers, test runners, a nested
+  daemon) inherit the user's environment rather than the daemon's pool size. An
+  operator-set value stays in the environment, and children inherit it. The
+  bound is the size of that pool, not a policy. The request thread commits once
+  when the PUT begins and once when the bytes are durable; it does not commit
+  each chunk, and it calls no Node storage-sync primitive. `receivedBytes` is
+  the finished total, so a status read during the PUT reports `uploading` and
+  zero received bytes. This process keeps the sha256 of those bytes in memory
+  for the following finalize and does not store it in `upload.finalize_sha`,
+  which remains the publication's ownership reference. Finalize of a transfer
+  this process just wrote uses that digest and does not read the part again.
+  Finalize drops the in-memory copy as soon as its first commit records the
+  publication; a rejected `expectedSha256` keeps it for the next attempt. Dedup,
+  replay and recovery still read and check the bytes. A restart drops the
+  digest, so publication reads the part as before, and an unfinished PUT reopens
+  at byte zero.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the

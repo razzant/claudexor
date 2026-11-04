@@ -474,4 +474,54 @@ describe("libuv pool under blocked upload writes", () => {
       }
     },
   );
+
+  it.skipIf(!sqliteAvailable)(
+    "lets another upload finish while more PUTs than slots wait for bytes that never come",
+    async () => {
+      const f = await fixture();
+      const parkedCount = uploadWriteSlots() + 1;
+      const body = Buffer.from("parked!!");
+      let unpark!: () => void;
+      const silent = new Promise<void>((resolve) => {
+        unpark = resolve;
+      });
+      let waiting = 0;
+      const parked = Array.from({ length: parkedCount }, (_, index) => {
+        const status = f.resources.create(
+          { ...uploadRequest, sizeBytes: body.length },
+          `parked-${index}`,
+        );
+        const writing = f.resources.write(
+          status.uploadId,
+          (async function* () {
+            waiting += 1;
+            await silent;
+            yield body;
+          })(),
+        );
+        return { uploadId: status.uploadId, writing };
+      });
+      try {
+        await until(
+          "a PUT waiting for bytes kept another PUT from opening its part",
+          () => waiting === parkedCount,
+          2_000,
+        );
+        const other = f.resources.create({ ...uploadRequest, sizeBytes: 4 }, "unrelated");
+        const outcome = await Promise.race([
+          f.resources.write(other.uploadId, chunks("test")).then((status) => status.state),
+          new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 2_000)),
+        ]);
+        expect(outcome).toBe("uploaded");
+      } finally {
+        unpark();
+        await Promise.allSettled(parked.map((upload) => upload.writing));
+      }
+      for (const upload of parked)
+        expect(f.resources.status(upload.uploadId)).toMatchObject({
+          state: "uploaded",
+          receivedBytes: body.length,
+        });
+    },
+  );
 });

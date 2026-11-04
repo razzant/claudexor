@@ -89,8 +89,18 @@ export function createUploadWriteGate(slots: () => number): UploadWriteGate {
 
 const uploadWrites = createUploadWriteGate(uploadWriteSlots);
 
-export function acquireUploadWriteSlot(cancelled?: () => void): Promise<() => void> {
-  return uploadWrites.acquire(cancelled);
+/** One pool operation under one upload slot, released when the operation settles.
+ * Callers do not hold a slot while they wait for network bytes. */
+export async function withUploadWriteSlot<T>(
+  cancelled: (() => void) | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const release = await uploadWrites.acquire(cancelled);
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
 }
 
 export function wakeUploadWriteSlots(): void {
