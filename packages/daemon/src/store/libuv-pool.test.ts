@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeExternalIncremental } from "./external-files.js";
-import { createUploadWriteGate, libuvPoolSizeFrom, uploadWriteSlots } from "./libuv-pool.js";
+import {
+  createUploadWriteGate,
+  libuvPoolSize,
+  libuvPoolSizeFrom,
+  uploadWriteSlots,
+} from "./libuv-pool.js";
 
 const roots: string[] = [];
 
@@ -19,6 +24,28 @@ describe("libuv pool size", () => {
     expect(libuvPoolSizeFrom("nope")).toBe(1);
     expect(libuvPoolSizeFrom("8")).toBe(8);
     expect(libuvPoolSizeFrom("5000")).toBe(1024);
+  });
+
+  it("uses the size the daemon entry applied after it removed the variable", () => {
+    const key = Symbol.for("claudexor.libuvPoolSize");
+    const global = globalThis as Record<symbol, unknown>;
+    const savedEnv = process.env.UV_THREADPOOL_SIZE;
+    const savedApplied = global[key];
+    try {
+      delete process.env.UV_THREADPOOL_SIZE;
+      global[key] = 22;
+      expect(libuvPoolSize()).toBe(22);
+      expect(uploadWriteSlots()).toBe(20);
+      delete global[key];
+      expect(libuvPoolSize()).toBe(4);
+      process.env.UV_THREADPOOL_SIZE = "6";
+      expect(uploadWriteSlots()).toBe(4);
+    } finally {
+      if (savedEnv === undefined) delete process.env.UV_THREADPOOL_SIZE;
+      else process.env.UV_THREADPOOL_SIZE = savedEnv;
+      if (savedApplied === undefined) delete global[key];
+      else global[key] = savedApplied;
+    }
   });
 });
 

@@ -1,20 +1,41 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { hostLibuvPoolSize, LIBUV_POOL_MAX } from "./host-libuv-pool.js";
+import { composeSpawnEnv } from "@claudexor/core";
+import { applyHostLibuvPool, hostLibuvPoolSize, LIBUV_POOL_MAX } from "./host-libuv-pool.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
-const poolModule = pathToFileURL(join(repoRoot, "packages/claudexor/bin/libuv-pool.js")).href;
+const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
 
-function runApply(env: NodeJS.ProcessEnv): Promise<{ env: string | null; host: number }> {
+/** The npm bin and the built entry (`dist/claudexord.js`, the bundle) each carry a copy. */
+const twins = [
+  { name: "npm bin", path: join(repoRoot, "packages/claudexor/bin/libuv-pool.js") },
+  { name: "built entry", path: join(import.meta.dirname, "../dist/host-libuv-pool.js") },
+];
+function moduleUrl(path: string): string {
+  if (!existsSync(path)) throw new Error(`build @claudexor/cli before this test: ${path}`);
+  return pathToFileURL(path).href;
+}
+
+interface Applied {
+  env: string | null;
+  applied: number | null;
+  host: number;
+}
+
+function runApply(poolModule: string, env: NodeJS.ProcessEnv): Promise<Applied> {
   const childEnv = { ...env };
   const code = `
 import { applyHostLibuvPool, hostLibuvPoolSize } from ${JSON.stringify(poolModule)};
 applyHostLibuvPool();
-process.stdout.write(JSON.stringify({ env: process.env.UV_THREADPOOL_SIZE ?? null, host: hostLibuvPoolSize() }));
+process.stdout.write(JSON.stringify({
+  env: process.env.UV_THREADPOOL_SIZE ?? null,
+  applied: globalThis[Symbol.for("claudexor.libuvPoolSize")] ?? null,
+  host: hostLibuvPoolSize(),
+}));
 `;
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--input-type=module", "-e", code], {
@@ -37,7 +58,7 @@ process.stdout.write(JSON.stringify({ env: process.env.UV_THREADPOOL_SIZE ?? nul
         reject(new Error(`pool apply exited ${status}: ${err}`));
         return;
       }
-      resolve(JSON.parse(out) as { env: string | null; host: number });
+      resolve(JSON.parse(out) as Applied);
     });
   });
 }
@@ -50,16 +71,51 @@ describe("host libuv pool", () => {
     expect(expected).toBeLessThanOrEqual(1024);
   });
 
-  it("sets the variable only when the operator has not", async () => {
-    const unset = { ...process.env };
-    delete unset.UV_THREADPOOL_SIZE;
-    const assigned = await runApply(unset);
-    expect(assigned.env).toBe(String(hostLibuvPoolSize()));
-    expect(assigned.host).toBe(hostLibuvPoolSize());
-    const kept = await runApply({ ...unset, UV_THREADPOOL_SIZE: "3" });
-    expect(kept.env).toBe("3");
-    const huge = await runApply({ ...unset, UV_THREADPOOL_SIZE: "5000" });
-    expect(huge.env).toBe("5000");
+  it.each(twins)(
+    "sizes the pool only when the operator has not, and removes its own assignment ($name)",
+    async (twin) => {
+      const poolModule = moduleUrl(twin.path);
+      const unset = { ...process.env };
+      delete unset.UV_THREADPOOL_SIZE;
+      const assigned = await runApply(poolModule, unset);
+      expect(assigned).toEqual({
+        env: null,
+        applied: hostLibuvPoolSize(),
+        host: hostLibuvPoolSize(),
+      });
+      const kept = await runApply(poolModule, { ...unset, UV_THREADPOOL_SIZE: "3" });
+      expect(kept).toMatchObject({ env: "3", applied: null });
+      const huge = await runApply(poolModule, { ...unset, UV_THREADPOOL_SIZE: "5000" });
+      expect(huge).toMatchObject({ env: "5000", applied: null });
+    },
+  );
+
+  it("keeps the daemon's pool size out of harness children, and passes an operator value on", () => {
+    const global = globalThis as Record<symbol, unknown>;
+    const savedEnv = process.env.UV_THREADPOOL_SIZE;
+    const savedApplied = global[APPLIED_POOL];
+    try {
+      delete process.env.UV_THREADPOOL_SIZE;
+      delete global[APPLIED_POOL];
+      applyHostLibuvPool();
+      expect(global[APPLIED_POOL]).toBe(hostLibuvPoolSize());
+      expect(process.env.UV_THREADPOOL_SIZE).toBeUndefined();
+      expect(composeSpawnEnv("mirror_native")).not.toHaveProperty("UV_THREADPOOL_SIZE");
+      // A second entry in the same process (the npm bin, then the built entry) keeps it so.
+      applyHostLibuvPool();
+      expect(composeSpawnEnv("mirror_native")).not.toHaveProperty("UV_THREADPOOL_SIZE");
+
+      delete global[APPLIED_POOL];
+      process.env.UV_THREADPOOL_SIZE = "3";
+      applyHostLibuvPool();
+      expect(global[APPLIED_POOL]).toBeUndefined();
+      expect(composeSpawnEnv("mirror_native").UV_THREADPOOL_SIZE).toBe("3");
+    } finally {
+      if (savedEnv === undefined) delete process.env.UV_THREADPOOL_SIZE;
+      else process.env.UV_THREADPOOL_SIZE = savedEnv;
+      if (savedApplied === undefined) delete global[APPLIED_POOL];
+      else global[APPLIED_POOL] = savedApplied;
+    }
   });
 
   it("assigns the pool before either daemon entry imports the graph", () => {
@@ -77,12 +133,16 @@ describe("host libuv pool", () => {
     expect(boot).not.toContain("node:fs");
   });
 
-  it("enlarges the pool before filesystem work, so six blocked reads still leave dns.lookup a thread", async () => {
-    const unset = { ...process.env };
-    delete unset.UV_THREADPOOL_SIZE;
-    const code = `
+  it.each(twins)(
+    "enlarges the pool before filesystem work, so six blocked reads still leave dns.lookup a thread ($name)",
+    async (twin) => {
+      const poolModule = moduleUrl(twin.path);
+      const unset = { ...process.env };
+      delete unset.UV_THREADPOOL_SIZE;
+      const code = `
 import { applyHostLibuvPool, hostLibuvPoolSize } from ${JSON.stringify(poolModule)};
 applyHostLibuvPool();
+const env = process.env.UV_THREADPOOL_SIZE ?? null;
 const fs = await import("node:fs/promises");
 const dns = await import("node:dns/promises");
 const { spawn } = await import("node:child_process");
@@ -116,7 +176,7 @@ try {
     dns.lookup("localhost").then(() => "ok", () => "error"),
     new Promise((resolve) => setTimeout(() => resolve("timeout"), 2_000)),
   ]);
-  process.stdout.write(JSON.stringify({ host: hostLibuvPoolSize(), ready, dnsOutcome, dnsMs: Date.now() - dnsStarted }) + "\\n");
+  process.stdout.write(JSON.stringify({ host: hostLibuvPoolSize(), env, ready, dnsOutcome, dnsMs: Date.now() - dnsStarted }) + "\\n");
   for (const holder of holders) { try { holder.stdin.write("\\n"); } catch { /* already gone */ } }
   await Promise.allSettled(reads);
 } finally {
@@ -124,47 +184,57 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 `;
-    const result = await new Promise<{
-      host: number;
-      ready: number;
-      dnsOutcome: string;
-      dnsMs: number;
-    }>((resolve, reject) => {
-      const child = spawn(process.execPath, ["--input-type=module", "-e", code], {
-        env: unset,
-        stdio: ["ignore", "pipe", "pipe"],
+      const result = await new Promise<{
+        host: number;
+        env: string | null;
+        ready: number;
+        dnsOutcome: string;
+        dnsMs: number;
+      }>((resolve, reject) => {
+        const child = spawn(process.execPath, ["--input-type=module", "-e", code], {
+          env: unset,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+        let out = "";
+        let err = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          out += chunk;
+        });
+        child.stderr.on("data", (chunk: string) => {
+          err += chunk;
+        });
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("exit", (status) => {
+          clearTimeout(timer);
+          if (status !== 0) {
+            reject(new Error(`host pool probe exited ${status}: ${err || out}`));
+            return;
+          }
+          resolve(
+            JSON.parse(out) as {
+              host: number;
+              env: string | null;
+              ready: number;
+              dnsOutcome: string;
+              dnsMs: number;
+            },
+          );
+        });
       });
-      const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
-      let out = "";
-      let err = "";
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk: string) => {
-        out += chunk;
-      });
-      child.stderr.on("data", (chunk: string) => {
-        err += chunk;
-      });
-      child.once("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.once("exit", (status) => {
-        clearTimeout(timer);
-        if (status !== 0) {
-          reject(new Error(`host pool probe exited ${status}: ${err || out}`));
-          return;
-        }
-        resolve(
-          JSON.parse(out) as { host: number; ready: number; dnsOutcome: string; dnsMs: number },
-        );
-      });
-    });
-    process.stdout.write(`HOST_POOL_PROBE ${JSON.stringify(result)}\n`);
-    expect(result.host).toBe(hostLibuvPoolSize());
-    expect(result.host).toBeGreaterThan(6);
-    expect(result.ready).toBe(6);
-    expect(result.dnsOutcome).toBe("ok");
-    expect(result.dnsMs).toBeLessThan(2_000);
-  });
+      process.stdout.write(`HOST_POOL_PROBE ${JSON.stringify({ twin: twin.name, ...result })}\n`);
+      expect(result.host).toBe(hostLibuvPoolSize());
+      expect(result.host).toBeGreaterThan(6);
+      // The variable is already gone; the pool libuv created from it stays enlarged.
+      expect(result.env).toBeNull();
+      expect(result.ready).toBe(6);
+      expect(result.dnsOutcome).toBe("ok");
+      expect(result.dnsMs).toBeLessThan(2_000);
+    },
+  );
 });

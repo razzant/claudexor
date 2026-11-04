@@ -5557,11 +5557,16 @@ kept only for cold import and an independent frozen copy kept for tests.
   libuv pool. Concurrent incremental uploads share one gate of that process's
   pool minus two threads (never below one). A writer that finds the gate full
   waits on the event loop, and cancellation wakes the wait; the slot is released
-  on every exit. The daemon entry sets `UV_THREADPOOL_SIZE`, when the operator
-  has not, from the host's available parallelism (at least 8, at most libuv's
-  1024) before the rest of the daemon graph is imported. The pool is created on
-  first use and a later assignment does not resize it. The bound is the size of
-  that pool, not a policy, and an operator-set value is kept. The request
+  on every exit. When the operator has not set `UV_THREADPOOL_SIZE`, the daemon
+  entry sets it from the host's available parallelism (at least 8, at most
+  libuv's 1024) before the rest of the daemon graph is imported, and submits
+  one stat so that libuv creates the pool at that size at once (a later
+  assignment would not resize it). The entry then keeps the size in a process
+  global for the gate and removes the variable again, so harness children and
+  what they start (MCP servers, test runners, a nested daemon) inherit the
+  user's environment rather than the daemon's pool size. An operator-set value
+  stays in the environment, and children inherit it. The bound is the size of
+  that pool, not a policy. The request
   thread commits once when the PUT begins and once when
   the bytes are durable; it does not commit each chunk, and it calls no Node
   storage-sync primitive. `receivedBytes` is the finished total, so a status

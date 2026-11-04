@@ -1,9 +1,16 @@
 /**
- * The process libuv pool. The daemon entry sets `UV_THREADPOOL_SIZE` from the
- * host before any filesystem call when the operator has not set it. Unset here
- * means the pool was already created at libuv's default of 4; assigning the
- * variable later does not resize it. A non-positive value is libuv's 1, and
- * anything above 1024 is libuv's maximum.
+ * The size the daemon entry applied when the operator had not set
+ * `UV_THREADPOOL_SIZE`. The entry created the pool at that size and then removed
+ * the variable, so harness children do not inherit it. Same key as
+ * `packages/cli/src/host-libuv-pool.ts` and `packages/claudexor/bin/libuv-pool.js`.
+ */
+const APPLIED_POOL = Symbol.for("claudexor.libuvPoolSize");
+
+/**
+ * The pool an operator-set (or unset) `UV_THREADPOOL_SIZE` gives. Unset means
+ * libuv's default of 4; assigning the variable after the pool exists does not
+ * resize it. A non-positive value is libuv's 1, and anything above 1024 is
+ * libuv's maximum.
  */
 export function libuvPoolSizeFrom(raw: string | undefined): number {
   if (raw == null || raw === "") return 4;
@@ -13,6 +20,8 @@ export function libuvPoolSizeFrom(raw: string | undefined): number {
 }
 
 export function libuvPoolSize(): number {
+  const applied = (globalThis as Record<symbol, unknown>)[APPLIED_POOL];
+  if (typeof applied === "number") return applied;
   return libuvPoolSizeFrom(process.env.UV_THREADPOOL_SIZE);
 }
 
