@@ -66,6 +66,12 @@ export const ControlTrustState = z
       .nonnegative()
       .default(0)
       .describe("Number of exact external test-command grants for this repo."),
+    source: z
+      .enum(["file", "default"])
+      .optional()
+      .describe(
+        "file when this repo's trust file was read; default when the answer is the schema default because that file was absent. Omitted by older daemons and by the unscoped list.",
+      ),
   })
   .describe("Trust state of one repo from its user-level trust file.");
 export type ControlTrustState = z.infer<typeof ControlTrustState>;

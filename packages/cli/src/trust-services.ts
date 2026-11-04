@@ -28,12 +28,13 @@ export async function listTrustService(input?: {
           allowFullAccess: config.trust.allow_full_access,
           accessDefault: config.trust.access_default,
           testCommandGrantCount: config.trust.test_command_grants.length,
+          source: config.sources.includes(trustConfigPath(repoRoot)) ? "file" : "default",
         },
       ],
     });
   }
   return ControlTrustListResponse.parse({
-    entries: listTrustConfigs().map(({ path, config }) => ({
+    entries: (await listTrustConfigs()).map(({ path, config }) => ({
       repoRoot: config.repo_root,
       path,
       allowFullAccess: config.allow_full_access,
@@ -74,6 +75,7 @@ export async function updateTrustService(
     allowFullAccess: res.config.allow_full_access,
     accessDefault: res.config.access_default,
     testCommandGrantCount: res.config.test_command_grants.length,
+    source: "file",
   });
 }
 

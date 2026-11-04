@@ -4066,7 +4066,12 @@ not retry automatically.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
-  pre-provenance files show a null root), and the POST accepts `repoRoot` plus
+  pre-provenance files show a null root). A scoped GET does not walk that
+  directory. Its `source` is `file` when that repo's trust file was read and
+  `default` when the answer is the schema default because the file was absent,
+  so a caller can tell a missing grant from an explicit refusal. Older daemons
+  and the unscoped list omit `source`. The unscoped list reads the directory
+  off the request thread. The POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
   update one repo. Versioned project test commands are canonical typed argv,
   never implicit shell text. Their external grant binds the project/config/
