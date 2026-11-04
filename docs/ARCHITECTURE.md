@@ -4113,11 +4113,16 @@ not retry automatically.
   replay reads that stored authority before the thread's current idle gate and
   repeats the lookup inside the serialized mutation to close a concurrent-record
   race;
-  `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
+`accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
   `revert_run` uses an immutable external content-addressed anchor and restores
   only recorded postimage bytes that still match; overlapping later user edits
   are refused instead of overwritten. The anchor remains reachable independently
-  of Git garbage collection.
+  of Git garbage collection. `action: taken` with `reason: captured_result` is
+  the caller-owned acknowledgement for a terminal `kind: patch` result it has
+  already captured: it is idempotent, records the mutable delivery-state
+  overlay and audit reason, refuses `run_taken_non_terminal`,
+  `run_taken_continuable` and `run_taken_not_patch`, and leaves the engine copy
+  under the existing age/keep-last retention window.
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS workspace
   Artifacts-tab source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
@@ -5184,6 +5189,17 @@ Exact Retry sources and frozen plans, plus durable continuation source lists aft
 command-history pruning), undelivered/applyable
 patches or copied-file results, and trees with no terminal evidence are protected
 fail-closed. Lane sweeping derives root ownership once from the shared thread inventory and synchronously rereads changed owners immediately before each root’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including topology changes during the loop. A per-root ownership failure names only the skipped root.
+
+The producer records `meta.capturedNoGitChange: true` only when a complete Git
+capture proves that the base and candidate trees are equal. Refused, missing or
+directory captures remain unknown, and a false or absent fact (including legacy
+rows) keeps a patch actionable; copied-file results remain actionable as well.
+Failed-check and blocked-review holds take precedence over the no-change fact.
+The caller-owned `action=taken` decision with `reason=captured_result` clears only
+the actionable hold for a terminal patch that the caller already captured. It
+uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
+with no second retention window, while the engine's copy remains until ordinary
+retention removes it.
 
 A `quarantined` generation and project generations owned by its replaced global registry are retired journal evidence: its rows do not own references or keep unsettled commands active, and completed quarantine does not stop retention. Terminal metadata may still date its old payloads. Archived projects in the current registry remain reference owners. Pending or unknown recovery states hold all run namespaces, with one named partition/status hold per pending generation in `errors[]`: scope roots do not bound cross-project dependencies. Partial file delivery retains that protection; explicit discard
 ends pending delivery but does not delete artifacts immediately or bypass other

@@ -18,6 +18,7 @@ import { ProcessingPreference } from "./processing.js";
 import { PromptCacheTtl } from "./prompt-cache.js";
 import { CatalogInputLimit } from "./harness-input.js";
 import { ControlProblem } from "./problem.js";
+import { RunDecisionAction } from "./control.js";
 
 /**
  * AgentCapabilityCatalog — the machine-readable answer to "what can this
@@ -265,6 +266,11 @@ export const AgentCapabilityCatalog = z
       .array(z.string())
       .describe(
         "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these).",
+      ),
+    runDecisionActions: z
+      .array(RunDecisionAction)
+      .describe(
+        "Actions accepted by POST /runs/:id/decision; taken acknowledges a captured terminal patch result.",
       ),
     outputSchemaDialects: z
       .array(CatalogOutputSchemaDialect)
