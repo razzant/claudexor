@@ -248,6 +248,90 @@ describe("DaemonRunScopeIndex", () => {
     });
   });
 
+  it("the pids tick retries a live unresolved owner with a fresh budget and retires only a fresh settled census", async () => {
+    const root = tempRoot();
+    const path = join(root, RUN_SCOPE_INDEX_FILE);
+    const owner = known(5151, "5151");
+    const survivor = settledOutcome({
+      settled: false,
+      incomplete: true,
+      completeness: "not_provable",
+      completenessReason: "settlement deadline expired",
+      survivors: [{ pid: 4711, startToken: "ps:x" }],
+    });
+    const first = new DaemonRunScopeIndex({
+      path,
+      owner: async () => owner,
+      reap: async () => survivor,
+      table: fakeTable([]),
+      identity: fakeIdentity({ 5151: owner }),
+      roots: () => [],
+      deadlineMs: 321,
+    });
+    const { marker } = await first.open("run-live-unresolved");
+    await first.settle("run-live-unresolved", marker);
+    expect(readFileSync(path, "utf8")).not.toContain("\n");
+
+    const calls: ScopeReapOptions[] = [];
+    const second = new DaemonRunScopeIndex({
+      path,
+      reap: async (opts) => {
+        calls.push(opts);
+        return settledOutcome({
+          completeness: "not_provable",
+          completenessReason: "darwin census",
+        });
+      },
+      table: fakeTable([]),
+      identity: fakeIdentity({ 5151: owner }),
+      roots: () => [],
+      deadlineMs: 321,
+    });
+    await second.captureTick();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ marker, deadlineMs: 321 });
+    expect(second.list()).toEqual([]);
+  });
+
+  it("keeps a survivor outcome on a live retry and does not rewrite identical bytes", async () => {
+    const root = tempRoot();
+    const path = join(root, RUN_SCOPE_INDEX_FILE);
+    const owner = known(6161, "6161");
+    const survivor = settledOutcome({
+      settled: false,
+      incomplete: true,
+      completeness: "not_provable",
+      completenessReason: "deadline miss",
+      survivors: [{ pid: 4712, startToken: "ps:y" }],
+    });
+    const first = new DaemonRunScopeIndex({
+      path,
+      owner: async () => owner,
+      reap: async () => survivor,
+      table: fakeTable([]),
+      identity: fakeIdentity({ 6161: owner }),
+      roots: () => [],
+    });
+    const { marker } = await first.open("run-live-survivor");
+    await first.settle("run-live-survivor", marker);
+    const before = readFileSync(path, "utf8");
+    const calls: ScopeReapOptions[] = [];
+    const second = new DaemonRunScopeIndex({
+      path,
+      reap: async (opts) => {
+        calls.push(opts);
+        return survivor;
+      },
+      table: fakeTable([]),
+      identity: fakeIdentity({ 6161: owner }),
+      roots: () => [],
+    });
+    await second.captureTick();
+    expect(calls).toHaveLength(1);
+    expect(second.list()).toMatchObject([{ marker, state: "unresolved" }]);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
   it("settle hands the reaper the entry's opening time as scopeStartAt (the census skips older processes); a row without opened_at hands null, the full census (round 5)", async () => {
     const root = tempRoot();
     const path = join(root, RUN_SCOPE_INDEX_FILE);

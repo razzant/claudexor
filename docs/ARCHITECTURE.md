@@ -5412,7 +5412,14 @@ member and receives no signal. Once known members settle, that discovery
 uncertainty limits completeness without forcing `settled` false; a host may
 release its copy under the known-member settlement policy while disclosing
 `not_provable`. Unsupported or failed census, surviving known members and
-unknown receipts do not certify that release.
+unknown receipts do not certify that release. On the existing pids tick, an
+`unresolved` entry whose recorded owner is still this live daemon is retried
+with a fresh settlement budget. Only a fresh `settled` census removes it from
+`run-scopes.json`; survivors or a deadline miss keep the entry and its outcome.
+Darwin's `completeness: not_provable` remains compatible with `settled` once
+the known members have settled. The index is compact JSON and an unchanged
+capture or retry does not rewrite its bytes. Windows keeps its existing
+`unsupported` retirement behavior.
 A host cancel that arrives during the settlement barrier does not rewrite a
 completed run as cancelled: the cancellation decision is frozen when the
 strategy's terminal is held.

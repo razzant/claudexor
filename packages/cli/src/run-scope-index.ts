@@ -99,6 +99,9 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   private unreadableNotice: string | null = null;
   private readonly log: (message: string) => void;
   private readonly now: () => string;
+  /** Bytes last written/read, so a retry that discovers no new fact does not
+   * churn the hot index file. */
+  private lastPersistedText: string | null = null;
 
   constructor(private readonly options: DaemonRunScopeIndexOptions) {
     this.identity = options.identity ?? defaultAsyncProcessIdentityReader;
@@ -310,10 +313,61 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
    */
   captureTick(): Promise<void> {
     if (this.capturing) return this.capturing;
-    this.capturing = this.captureOnce().finally(() => {
+    this.capturing = (async () => {
+      await this.captureOnce();
+      await this.retryLiveUnresolved();
+    })().finally(() => {
       this.capturing = null;
     });
     return this.capturing;
+  }
+
+  /** Revisit unresolved scopes owned by this live daemon on the existing pids
+   * tick. Each retry gets a fresh settlement budget; only a fresh settled
+   * census removes the entry from the hot index. */
+  private async retryLiveUnresolved(): Promise<void> {
+    if (!this.table) return; // Windows keeps its existing unsupported retirement.
+    const entries = this.load().filter((entry) => entry.state === "unresolved");
+    let changed = false;
+    for (const entry of entries) {
+      if (!(await this.ownerLive(entry))) continue;
+      const beforeState = entry.state;
+      const beforeOutcome = JSON.stringify(entry.outcome ?? null);
+      let outcome: ScopeReapOutcome;
+      try {
+        outcome = await this.reap({
+          marker: entry.marker,
+          deadlineMs: this.deadlineMs,
+          ...reapSources(entry),
+          table: this.table,
+        });
+      } catch (error) {
+        this.log(
+          `run-scope index: unresolved retry of ${entry.run_id} failed (${
+            error instanceof Error ? error.message : String(error)
+          }); kept`,
+        );
+        continue;
+      }
+      this.log(this.retireOrKeep(entry, outcome));
+      const stillPresent = this.load().includes(entry);
+      if (
+        stillPresent &&
+        (entry.state !== beforeState || JSON.stringify(entry.outcome ?? null) !== beforeOutcome)
+      )
+        changed = true;
+      if (!stillPresent) changed = true;
+    }
+    if (!changed) return;
+    try {
+      await this.persist();
+    } catch (error) {
+      this.log(
+        `run-scope index: unresolved retry could not be persisted (${
+          error instanceof Error ? error.message : String(error)
+        })`,
+      );
+    }
   }
 
   private async captureOnce(): Promise<void> {
@@ -434,9 +488,15 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         ? describe(entry, outcome)
         : `${describe(entry, outcome)}; retired without proof (no environment census on this platform)`;
     }
+    const summary = summarize(outcome);
+    if (
+      entry.state === "unresolved" &&
+      JSON.stringify(entry.outcome ?? null) === JSON.stringify(summary)
+    )
+      return describe(entry, outcome);
     entry.state = "unresolved";
     entry.settled_at = this.now();
-    entry.outcome = summarize(outcome);
+    entry.outcome = summary;
     return describe(entry, outcome);
   }
 
@@ -492,6 +552,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
       }
       parsed.push(entry);
     }
+    this.lastPersistedText = text;
     this.entries.push(...parsed);
     return this.entries;
   }
@@ -517,13 +578,15 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   private persist(): Promise<void> {
     const text = measureSync("scope.persist", () => {
       const body: RunScopeIndexFile = { schema_version: 1, entries: this.load() };
-      return JSON.stringify(body, null, 2);
+      return JSON.stringify(body);
     });
     const write = this.writes.then(async () => {
+      if (this.lastPersistedText === text) return;
       await mkdir(dirname(this.options.path), { recursive: true });
       const tmp = `${this.options.path}.tmp`;
       await writeFile(tmp, text, { mode: 0o600 });
       await rename(tmp, this.options.path);
+      this.lastPersistedText = text;
     });
     this.writes = write.catch(() => {});
     return write;
