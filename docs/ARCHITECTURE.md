@@ -3279,7 +3279,9 @@ their permit stays occupied until runner settlement, including cancellation, but
 not while awaiting a client's result-digest ACK, and they are not Agent Runs. The command store holds content hashes and resource references, not the
 conversation. A model-purpose upload uses `ResourceStore`'s atomic finalization;
 its contents are delivered exactly like every other working input (INV-146),
-and it cannot resolve as an ordinary Agent attachment. Engine authorization
+and it cannot resolve as an ordinary Agent attachment. Create and dispatch
+read those request bytes off the request thread. Result GET stays on the
+synchronous read, so acknowledgement cannot interleave with it. Engine authorization
 never enters the model payload.
 
 Result GET returns exact digest-bound bytes without acknowledging them. A client

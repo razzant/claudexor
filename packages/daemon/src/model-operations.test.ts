@@ -993,11 +993,42 @@ describe("model operations over the existing daemon command substrate", () => {
     expect(f.sends).not.toHaveBeenCalled();
   });
 
+  it("reads a new request off the thread and keeps result GET synchronous", async () => {
+    const f = await fixture();
+    const ref = f.upload();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = f.resources.readModelAsync.bind(f.resources);
+    let entered = false;
+    let settled = false;
+    vi.spyOn(f.resources, "readModelAsync").mockImplementation(async (raw) => {
+      entered = true;
+      await gate;
+      return original(raw);
+    });
+    const syncRead = vi.spyOn(f.resources, "readModel");
+    const creating = f.operations.create(ref, "off-thread").finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(settled).toBe(false);
+    expect(syncRead).not.toHaveBeenCalled();
+    release();
+    const created = await creating;
+    expect(syncRead).not.toHaveBeenCalled();
+    await f.terminal(created.id);
+    syncRead.mockClear();
+    expect(f.operations.readResult(created.id).bytes.length).toBeGreaterThan(0);
+    expect(syncRead).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves resource I/O failure instead of granting invalid-request authority", async () => {
     const f = await fixture();
     const ref = f.upload();
     const failure = Object.assign(new Error("resource unavailable"), { code: "EIO" });
-    vi.spyOn(f.resources, "readModel").mockImplementation(() => {
+    vi.spyOn(f.resources, "readModelAsync").mockImplementation(() => {
       throw failure;
     });
     await expect(f.operations.create(ref, "io-error")).rejects.toBe(failure);
@@ -1012,11 +1043,13 @@ describe("model operations over the existing daemon command substrate", () => {
     f.operations.acknowledge(created.id, f.operations.readResult(created.id).sha256);
     const replacement = f.upload();
     f.resources.releaseModel(replacement);
-    const read = vi.spyOn(f.resources, "readModel");
+    const syncRead = vi.spyOn(f.resources, "readModel");
+    const asyncRead = vi.spyOn(f.resources, "readModelAsync");
     const replay = await f.operations.create(replacement, "accepted-before-validation");
     expect(replay.id).toBe(created.id);
     expect(replay.response.state).toBe("acknowledged");
-    expect(read).not.toHaveBeenCalled();
+    expect(syncRead).not.toHaveBeenCalled();
+    expect(asyncRead).not.toHaveBeenCalled();
     expect(f.records()).toHaveLength(1);
     expect(f.sends).toHaveBeenCalledTimes(1);
   });

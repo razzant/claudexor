@@ -187,14 +187,11 @@ export async function executeModelOperation(
   }
 }
 
-export function readModelPayload<T>(
-  resources: ModelPayloadStore,
-  ref: ModelPayloadRef,
+function parseModelPayload<T>(
+  bytes: Buffer,
   schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
   name: string,
 ): T {
-  // Preserve resource/digest/I/O failures; they are not invalid caller JSON.
-  const bytes = resources.readModel(ref);
   let parsed: { success: true; data: T } | { success: false } | undefined;
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -213,6 +210,27 @@ export function readModelPayload<T>(
   return parsed.data;
 }
 
+/** Result reads stay here: an async read would race acknowledgement. */
+export function readModelPayload<T>(
+  resources: ModelPayloadStore,
+  ref: ModelPayloadRef,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  name: string,
+): T {
+  // Preserve resource/digest/I/O failures; they are not invalid caller JSON.
+  return parseModelPayload(resources.readModel(ref), schema, name);
+}
+
+/** Create and dispatch. The same parse as `readModelPayload`, after an off-thread read. */
+export async function readModelPayloadAsync<T>(
+  resources: ModelPayloadStore,
+  ref: ModelPayloadRef,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  name: string,
+): Promise<T> {
+  return parseModelPayload(await resources.readModelAsync(ref), schema, name);
+}
+
 /** Only request parsing and adapter invocation differ; dispatch, publication and
  * terminal custody have one owner for both payload kinds. */
 async function invokeModelOperation(
@@ -225,7 +243,7 @@ async function invokeModelOperation(
   if (params.requestKind === "image") {
     if (params.request.sizeBytes > 144 * 1024 * 1024)
       throw operationError("image_request_too_large", "The image request exceeds 144 MiB", 413);
-    const request = readModelPayload(
+    const request = await readModelPayloadAsync(
       deps.resources(),
       params.request,
       ImageCallRequest,
@@ -251,7 +269,7 @@ async function invokeModelOperation(
       }),
     );
   }
-  const request = readModelPayload(
+  const request = await readModelPayloadAsync(
     deps.resources(),
     params.request,
     ModelCallRequest,

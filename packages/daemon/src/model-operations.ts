@@ -22,7 +22,7 @@ import type { ModelResourceQueries } from "./store/command-queries.js";
 import {
   emptyDispatch,
   operationError,
-  readModelPayload,
+  readModelPayloadAsync,
   executeModelOperation,
   type Evidence,
 } from "./model-operation-execution.js";
@@ -32,6 +32,7 @@ export const MODEL_OPERATION_ID = "model.operation.create";
 /** Existing ResourceStore supplies these purpose-bound byte operations. */
 export interface ModelPayloadStore {
   readModel(ref: ModelPayloadRef): Buffer;
+  readModelAsync(ref: ModelPayloadRef): Promise<Buffer>;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(ref: ModelPayloadRef): void;
   expireModel(ref: ModelPayloadRef, expiredAt: string): void;
@@ -133,8 +134,8 @@ export class ModelOperations {
       // Validate only a NEW request. A settled replay's input has been released.
       // model_request_invalid from this boundary proves no command was accepted:
       // the idempotency lookup above succeeded and validation precedes enqueue.
-      if (requestKind === "image") this.readImageRequest(request);
-      else this.readRequest(request);
+      if (requestKind === "image") await this.readImageRequest(request);
+      else await this.readRequest(request);
       id = (await this.deps.enqueue(envelope)).id;
     }
     // Re-uploaded copies can lose either the early lookup or the enqueue race.
@@ -286,14 +287,14 @@ export class ModelOperations {
     return (this.deps.now ?? (() => new Date()))();
   }
 
-  private readRequest(ref: ModelPayloadRef): ModelCallRequest {
-    return readModelPayload(this.deps.resources(), ref, ModelCallRequest, "ModelCallRequest");
+  private readRequest(ref: ModelPayloadRef): Promise<ModelCallRequest> {
+    return readModelPayloadAsync(this.deps.resources(), ref, ModelCallRequest, "ModelCallRequest");
   }
 
-  private readImageRequest(ref: ModelPayloadRef): ImageCallRequest {
+  private readImageRequest(ref: ModelPayloadRef): Promise<ImageCallRequest> {
     if (ref.sizeBytes > 144 * 1024 * 1024)
       throw operationError("image_request_too_large", "The image request exceeds 144 MiB", 413);
-    return readModelPayload(this.deps.resources(), ref, ImageCallRequest, "ImageCallRequest");
+    return readModelPayloadAsync(this.deps.resources(), ref, ImageCallRequest, "ImageCallRequest");
   }
 
   private record(id: string): JobRecord {
