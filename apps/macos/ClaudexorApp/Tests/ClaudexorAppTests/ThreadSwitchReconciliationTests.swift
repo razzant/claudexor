@@ -75,6 +75,25 @@ struct ThreadSwitchReconciliationTests {
         try await ThreadHistoryIntegrationTests().until(predicate)
     }
 
+    /// Release every fixture gate and join its requests before the shared
+    /// URLProtocol handler is cleared, including a throwing assertion path.
+    private func withReleasedGates(
+        _ gates: [RunListGate],
+        tasks: () -> [Task<Void, Never>],
+        body: () async throws -> Void
+    ) async throws {
+        let result: Result<Void, Error>
+        do {
+            try await body()
+            result = .success(())
+        } catch {
+            result = .failure(error)
+        }
+        gates.forEach { $0.release() }
+        for task in tasks() { await task.value }
+        try result.get()
+    }
+
     @Test(arguments: [false, true])
     func historyIsInstalledBeforeAnUnrelatedRunListAnswers(secondTrigger: Bool) async throws {
         defer { HistoryURLProtocol.handler = nil }
@@ -103,20 +122,19 @@ struct ThreadSwitchReconciliationTests {
         // A second trigger while the lead pass is held (e.g. a global event for
         // an off-page run) arms the trailing pass; neither pass gates history.
         var trigger: Task<Void, Never>?
-        if secondTrigger {
-            try await until { runLists == 1 }
-            trigger = Task { await model.refreshRuns() }
+        try await withReleasedGates([gate], tasks: { [open] + (trigger.map { [$0] } ?? []) }) {
+            if secondTrigger {
+                try await until { runLists == 1 }
+                trigger = Task { await model.refreshRuns() }
+            }
+            // Installed while the reconciliation's /runs is issued and still held.
+            try await until {
+                model.selectedHistory?.threadID == threadB && model.selectedHistory?.state == .ready && runLists == 1
+            }
+            #expect(runListsAnswered == 0)
+            #expect(model.selectedHistory?.rows.count == 3)
+            #expect(model.runListReconciliationNeeded) // still due until /runs answers
         }
-        // Installed while the reconciliation's /runs is issued and still held.
-        try await until {
-            model.selectedHistory?.threadID == threadB && model.selectedHistory?.state == .ready && runLists == 1
-        }
-        #expect(runListsAnswered == 0)
-        #expect(model.selectedHistory?.rows.count == 3)
-        #expect(model.runListReconciliationNeeded) // still due until /runs answers
-        gate.release()
-        await open.value
-        await trigger?.value
         #expect(runLists == (secondTrigger ? 2 : 1))
         #expect(!model.runListReconciliationNeeded)
         #expect(model.selectedThreadId == threadB)
@@ -146,9 +164,9 @@ struct ThreadSwitchReconciliationTests {
             }
         }
         let open = Task { await model.openThread(threadB) }
-        try await until { model.selectedHistory?.state == .ready }
-        gate.release()
-        await open.value
+        try await withReleasedGates([gate], tasks: { [open] }) {
+            try await until { model.selectedHistory?.state == .ready }
+        }
         #expect(runLists == 1)
         #expect(model.runListReconciliationNeeded)
         #expect(model.liveTasks.map(\.id) == ["run-other-thread"]) // last-known rows kept
@@ -229,23 +247,59 @@ struct ThreadSwitchReconciliationTests {
             }
         }
         let late = Task { await model.refreshRuns() } // issued while thread A is selected
-        try await until { runLists == 1 }
-        let open = Task { await model.openThread("thread-B") }
-        // The switch has happened: B is selected and its page is either
-        // installed or still held when the late /runs answer lands.
-        try await until {
-            model.selectedHistory?.threadID == "thread-B" && historyReads == 1
-                && (!newFamilyLoaded || model.selectedHistory?.state == .ready)
+        var open: Task<Void, Never>?
+        try await withReleasedGates([runListGate, historyGate], tasks: { [late] + (open.map { [$0] } ?? []) }) {
+            try await until { runLists == 1 }
+            open = Task { await model.openThread("thread-B") }
+            // The switch has happened: B is selected and its page is either
+            // installed or still held when the late /runs answer lands.
+            try await until {
+                model.selectedHistory?.threadID == "thread-B" && historyReads == 1
+                    && (!newFamilyLoaded || model.selectedHistory?.state == .ready)
+            }
+            runListGate.release()
+            await late.value
+            let kept = Set(model.liveTasks.map(\.id))
+            #expect(kept.isDisjoint(with: ["run-A-0", "run-A-1", "run-A-child"]))
+            #expect(kept == (newFamilyLoaded ? ["run-B-0", "run-B-1"] : []))
         }
-        runListGate.release()
-        await late.value
-        let kept = Set(model.liveTasks.map(\.id))
-        #expect(kept.isDisjoint(with: ["run-A-0", "run-A-1", "run-A-child"]))
-        #expect(kept == (newFamilyLoaded ? ["run-B-0", "run-B-1"] : []))
-        historyGate.release()
-        await open.value
         #expect(model.selectedThreadId == "thread-B" && model.selectedHistory?.rows.count == 2)
         #expect(Set(model.liveTasks.map(\.id)).isDisjoint(with: ["run-A-0", "run-A-1", "run-A-child"]))
+    }
+
+    @Test func throwingBodyDrainsItsRequestBeforeReturning() async throws {
+        enum ProbeFailure: Error { case expected }
+        defer { HistoryURLProtocol.handler = nil }
+        let source = try HistoryTestSource(count: 1)
+        let thread = source.detail.thread.id
+        let (model, _) = ThreadHistoryIntegrationTests().makeModel(.local)
+        model.liveTasks = [liveRunInAnotherThread("run-other-thread")]
+        selectPreviousThread(model)
+        let gate = RunListGate()
+        var started = 0, answered = 0
+        HistoryURLProtocol.handler = { request in
+            if request.url?.path == "/v2/runs" {
+                started += 1
+                await gate.wait()
+                answered += 1
+                return (200, runSummaries([]))
+            }
+            if request.url?.path == "/v2/threads/\(thread)/history" {
+                return (200, try JSONEncoder().encode(source.page(nil)))
+            }
+            return (404, Data())
+        }
+        let open = Task { await model.openThread(thread) }
+        do {
+            try await withReleasedGates([gate], tasks: { [open] }) {
+                try await until { started == 1 }
+                throw ProbeFailure.expected
+            }
+            Issue.record("The assertion error must survive cleanup")
+        } catch ProbeFailure.expected {}
+        #expect(answered == 1)
+        #expect(model.selectedHistory?.state == .ready)
+        #expect(!model.runListReconciliationNeeded)
     }
 
     /// Local run ids and a remote engine's run ids are separate namespaces: a
