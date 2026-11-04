@@ -9,6 +9,7 @@ import {
   unlinkExternalFile,
   writeExternalIncremental,
 } from "./external-files.js";
+import { wakeUploadWriteSlots } from "./libuv-pool.js";
 import { mapStoreError } from "./errors.js";
 import { deleteUnownedInlineInTx } from "./blob-files.js";
 import { bindIdempotencyInTx } from "./idempotency.js";
@@ -206,6 +207,7 @@ export class SqlUploads {
       row.status = { ...row.status, state: "uploading", receivedBytes: 0 };
       this.save(row);
       const received = await writeExternalIncremental(this.partPath(id), chunks, {
+        cancelled: () => this.rejectIfCancelled(id),
         accept: (chunk, soFar) => {
           this.rejectIfCancelled(id);
           if (soFar + chunk.byteLength > row.status.expectedBytes)
@@ -349,6 +351,7 @@ export class SqlUploads {
   }
   private markCancelled(row: UploadRow): void {
     this.cancelled.add(row.status.uploadId);
+    wakeUploadWriteSlots();
     this.digests.delete(row.status.uploadId);
     row.status = { ...row.status, state: "cancelled" };
     row.state = "discarded";

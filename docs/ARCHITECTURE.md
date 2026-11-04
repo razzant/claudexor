@@ -3438,7 +3438,9 @@ for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
 would otherwise race the server's close), allows 66 s for request headers, and
 does not bound the receipt of a request body, so a large upload during a busy
 period is not cut. The PUT writes its bytes on the libuv pool, and the request
-thread can answer other control requests while that write is in flight. None of
+thread can answer other control requests while that write is in flight.
+Concurrent PUTs share a gate that leaves pool threads for DNS and other
+filesystem work. None of
 these limits applies to responses or SSE streams.
 Once stopping, it closes each kept-alive socket as soon as its response finishes,
 so the longer keep-alive window never delays shutdown.
@@ -5549,7 +5551,15 @@ kept only for cold import and an independent frozen copy kept for tests.
   until the orphan sweep of the next start reclaims it; this costs disk space
   only.
   An upload part is that same write-through file, written incrementally on the
-  libuv pool. The request thread commits once when the PUT begins and once when
+  libuv pool. Concurrent incremental uploads share one gate of that process's
+  pool minus two threads (never below one). A writer that finds the gate full
+  waits on the event loop, and cancellation wakes the wait; the slot is released
+  on every exit. The daemon entry sets `UV_THREADPOOL_SIZE`, when the operator
+  has not, from the host's available parallelism (at least 8, at most libuv's
+  1024) before the rest of the daemon graph is imported. The pool is created on
+  first use and a later assignment does not resize it. The bound is the size of
+  that pool, not a policy, and an operator-set value is kept. The request
+  thread commits once when the PUT begins and once when
   the bytes are durable; it does not commit each chunk, and it calls no Node
   storage-sync primitive. `receivedBytes` is the finished total, so a status
   read during the PUT reports `uploading` and zero received bytes. This process

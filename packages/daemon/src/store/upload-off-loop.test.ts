@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 import { writeExternalIncremental } from "./external-files.js";
+import { libuvPoolSize, uploadWriteSlots } from "./libuv-pool.js";
 import { readUploadRow } from "./resource-rows.js";
 import {
   chunks,
@@ -166,9 +167,9 @@ describeStore("upload bytes leave the request thread", () => {
     const { existsSync } = await import("node:fs");
     expect(existsSync(join(f.store.paths.uploads, `${initial.uploadId}.part`))).toBe(false);
     expect(readUploadRow(f.store, initial.uploadId)?.finalizeSha).toBeNull();
-    expect(
-      (f.store.prepare("SELECT COUNT(*) AS n FROM resource").get() as { n: number }).n,
-    ).toBe(0);
+    expect((f.store.prepare("SELECT COUNT(*) AS n FROM resource").get() as { n: number }).n).toBe(
+      0,
+    );
   });
 });
 
@@ -254,8 +255,7 @@ function driveKill(mode: "mid" | "done"): {
       }
     });
     child.once("exit", (code, signal) => {
-      if (signal === "SIGKILL" && uploadId)
-        resolve({ uploadId, daemonDir, done });
+      if (signal === "SIGKILL" && uploadId) resolve({ uploadId, daemonDir, done });
       else fail(new Error(`child exited early (code ${code}, signal ${signal}): ${stderr}`));
     });
   });
@@ -288,69 +288,73 @@ describeStore("an interrupted upload restarts from byte zero", () => {
       state: "uploaded",
       receivedBytes: 8,
     });
-    const part = readFileSync(
-      join(reopened.store.paths.uploads, `${killed.uploadId}.part`),
-    );
+    const part = readFileSync(join(reopened.store.paths.uploads, `${killed.uploadId}.part`));
     expect(createHash("sha256").update(part).digest("hex")).toBe(killed.done?.sha256);
     expect(part).toEqual(Buffer.from("abcdefgh"));
   });
 });
 
-describe("libuv pool under four blocked upload writes", () => {
-  it("keeps the request loop ticking and records dns.lookup time", async () => {
-    const dir = freshRoot("cx-upload-pool-");
-    const paths = [0, 1, 2, 3].map((index) => join(dir, `part-${index}`));
-    const fifos = paths.map((path) => `${path}.fifo`);
-    for (const path of paths) writeFileSync(path, Buffer.alloc(0));
-    await new Promise<void>((resolve, reject) => {
-      const maker = spawn("/usr/bin/mkfifo", fifos);
-      maker.once("error", reject);
-      maker.once("exit", (code) =>
-        code === 0 ? resolve() : reject(new Error(`mkfifo exited ${code}`)),
-      );
+interface HeldWrites {
+  readyCount: () => number;
+  writes: Array<{ done: Promise<number>; settled: () => boolean }>;
+  release: () => void;
+}
+
+/** `count` part writes, each stalled inside the pool on an unread FIFO. */
+async function holdPoolWrites(count: number): Promise<HeldWrites> {
+  const dir = freshRoot("cx-upload-pool-");
+  const paths = Array.from({ length: count }, (_, index) => join(dir, `part-${index}`));
+  const fifos = paths.map((path) => `${path}.fifo`);
+  for (const path of paths) writeFileSync(path, Buffer.alloc(0));
+  await new Promise<void>((resolve, reject) => {
+    const maker = spawn("/usr/bin/mkfifo", fifos);
+    maker.once("error", reject);
+    maker.once("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`mkfifo exited ${code}`)),
+    );
+  });
+  paths.forEach((path, index) => hold.blockOn.set(path, fifos[index]!));
+  const holders: ChildProcess[] = [];
+  let ready = 0;
+  for (const fifo of fifos) {
+    const holder = spawn(
+      "/usr/bin/python3",
+      [
+        "-c",
+        "import os,sys\nfd=os.open(sys.argv[1], os.O_WRONLY)\nsys.stdout.buffer.write(b'ready\\n'); sys.stdout.buffer.flush()\nsys.stdin.buffer.read(1)\nos.write(fd, b'x')\nos.close(fd)\n",
+        fifo,
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    holders.push(holder);
+    children.push(holder);
+    let text = "";
+    let counted = false;
+    holder.stdout!.on("data", (chunk: Buffer) => {
+      text += chunk.toString("utf8");
+      if (!counted && text.includes("ready")) {
+        counted = true;
+        ready += 1;
+      }
     });
-    paths.forEach((path, index) => hold.blockOn.set(path, fifos[index]!));
-    const holders: ChildProcess[] = [];
-    const ready: Array<Promise<void>> = [];
-    for (const fifo of fifos) {
-      const holder = spawn(
-        "/usr/bin/python3",
-        [
-          "-c",
-          "import os,sys\nfd=os.open(sys.argv[1], os.O_WRONLY)\nsys.stdout.buffer.write(b'ready\\n'); sys.stdout.buffer.flush()\nsys.stdin.buffer.read(1)\nos.write(fd, b'x')\nos.close(fd)\n",
-          fifo,
-        ],
-        { stdio: ["pipe", "pipe", "pipe"] },
-      );
-      holders.push(holder);
-      children.push(holder);
-      ready.push(
-        new Promise<void>((resolve, reject) => {
-          let text = "";
-          holder.stdout!.on("data", (chunk: Buffer) => {
-            text += chunk.toString("utf8");
-            if (text.includes("ready")) resolve();
-          });
-          holder.once("exit", (code) => {
-            if (!text.includes("ready")) reject(new Error(`fifo holder ${fifo} exited ${code}`));
-          });
-        }),
-      );
-    }
-    const payload = Buffer.alloc(64, 7);
-    const writes = paths.map((path) => {
-      let settled = false;
-      const done = writeExternalIncremental(
-        path,
-        (async function* () {
-          yield payload;
-        })(),
-      ).finally(() => {
-        settled = true;
-      });
-      return { done, settled: () => settled };
+  }
+  const payload = Buffer.alloc(64, 7);
+  const writes = paths.map((path) => {
+    let settled = false;
+    const done = writeExternalIncremental(
+      path,
+      (async function* () {
+        yield payload;
+      })(),
+    ).finally(() => {
+      settled = true;
     });
-    const releaseHolders = (): void => {
+    return { done, settled: () => settled };
+  });
+  return {
+    readyCount: () => ready,
+    writes,
+    release: () => {
       for (const holder of holders) {
         try {
           holder.stdin?.write("\n");
@@ -358,16 +362,34 @@ describe("libuv pool under four blocked upload writes", () => {
           /* already gone */
         }
       }
-    };
+    },
+  };
+}
+
+async function until(label: string, predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(label);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+describe("libuv pool under blocked upload writes", () => {
+  async function probe(kind: "four" | "pool"): Promise<void> {
+    const pool = libuvPoolSize();
+    const slots = uploadWriteSlots();
+    const concurrency = kind === "four" ? 4 : pool;
+    const held = await holdPoolWrites(concurrency);
     try {
-      await Promise.race([
-        Promise.all(ready),
-        new Promise((_resolve, reject) =>
-          setTimeout(() => reject(new Error("fifo holders did not open")), 5_000),
-        ),
-      ]);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(writes.every((write) => write.settled() === false)).toBe(true);
+      const entered = Math.min(concurrency, slots);
+      await until(
+        `fifo holders did not reach ${entered}`,
+        () => held.readyCount() >= entered,
+        5_000,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(held.readyCount()).toBe(entered);
+      expect(held.writes.every((write) => write.settled() === false)).toBe(true);
       const histogram = monitorEventLoopDelay({ resolution: 10 });
       histogram.enable();
       let ticks = 0;
@@ -376,14 +398,22 @@ describe("libuv pool under four blocked upload writes", () => {
       }, 10);
       const dnsStarted = performance.now();
       const dnsOutcome = await Promise.race([
-        lookup("localhost").then(() => "ok" as const),
-        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 400)),
+        lookup("localhost").then(
+          () => "ok" as const,
+          () => "error" as const,
+        ),
+        new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2_000)),
       ]);
       const dnsMs = performance.now() - dnsStarted;
       await new Promise((resolve) => setTimeout(resolve, 150));
       clearInterval(timer);
       histogram.disable();
-      const probe = {
+      const sample = {
+        kind,
+        concurrency,
+        pool,
+        slots,
+        entered: held.readyCount(),
         ticks,
         dnsMs: Math.round(dnsMs),
         dnsOutcome,
@@ -391,14 +421,59 @@ describe("libuv pool under four blocked upload writes", () => {
         loopMaxMs: Math.round(histogram.max / 1e6),
         uv: process.env.UV_THREADPOOL_SIZE ?? null,
       };
-      process.stdout.write(`UPLOAD_POOL_PROBE ${JSON.stringify(probe)}\n`);
-      expect(ticks).toBeGreaterThan(8);
+      process.stdout.write(`UPLOAD_POOL_PROBE ${JSON.stringify(sample)}\n`);
+      expect(sample.dnsOutcome).toBe("ok");
+      expect(sample.dnsMs).toBeLessThan(2_000);
+      expect(sample.ticks).toBeGreaterThan(8);
+      expect(held.readyCount()).toBe(entered);
     } finally {
-      releaseHolders();
-      await Promise.allSettled(writes.map((write) => write.done));
-      for (const holder of holders) {
-        if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
-      }
+      held.release();
+      await Promise.allSettled(held.writes.map((write) => write.done));
     }
+  }
+
+  it("answers dns.lookup while four upload writes are held", async () => {
+    await probe("four");
   });
+
+  it("answers dns.lookup while one upload write per pool thread is waiting", async () => {
+    await probe("pool");
+  });
+
+  it.skipIf(!sqliteAvailable)(
+    "cancels an upload waiting for a pool slot before any blocked write finishes",
+    async () => {
+      const slots = uploadWriteSlots();
+      const held = await holdPoolWrites(slots);
+      try {
+        await until(
+          "occupying writes did not enter the pool",
+          () => held.readyCount() === slots,
+          5_000,
+        );
+        const f = await fixture();
+        const body = Buffer.from("queued");
+        const initial = f.resources.create(
+          { ...uploadRequest, sizeBytes: body.length },
+          "gate-cancel",
+        );
+        const writing = f.resources.write(initial.uploadId, chunks(body));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(held.readyCount()).toBe(slots);
+        expect(held.writes.every((write) => write.settled() === false)).toBe(true);
+        expect(f.resources.cancel(initial.uploadId).state).toBe("cancelled");
+        await expect(writing).rejects.toMatchObject({ code: "upload_cancelled" });
+        expect(f.resources.status(initial.uploadId)).toMatchObject({
+          state: "cancelled",
+          receivedBytes: 0,
+        });
+        await f.resources.drainCleanup();
+        const { existsSync } = await import("node:fs");
+        expect(existsSync(join(f.store.paths.uploads, `${initial.uploadId}.part`))).toBe(false);
+      } finally {
+        held.release();
+        await Promise.allSettled(held.writes.map((write) => write.done));
+      }
+    },
+  );
 });
