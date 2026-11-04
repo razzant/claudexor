@@ -5570,7 +5570,12 @@ kept only for cold import and an independent frozen copy kept for tests.
   harness children and what they start (MCP servers, test runners, a nested
   daemon) inherit the user's environment rather than the daemon's pool size. An
   operator-set value stays in the environment, and children inherit it. The
-  bound is the size of that pool, not a policy. The request thread commits once
+  bound is the size of that pool, not a policy. Windows caveat, not verified on
+  a Windows host: libuv may read the C runtime's copy of the environment, which
+  an in-process assignment does not update there, so the pool may stay at
+  libuv's 4 while the gate assumes the host size and keeps no DNS reserve. That
+  is no worse than before the gate existed, and a value the operator sets before
+  the daemon starts applies on every platform. The request thread commits once
   when the PUT begins and once when the bytes are durable; it does not commit
   each chunk, and it calls no Node storage-sync primitive. `receivedBytes` is
   the finished total, so a status read during the PUT reports `uploading` and
