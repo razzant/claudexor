@@ -8,6 +8,8 @@ extension AppModel {
         if let expected, connectionGeneration != expected { return }
         connectionGeneration += 1
         let generation = connectionGeneration
+        // A loop that may start an engine itself no longer depends on one.
+        if allowInitialLaunch { localSuccessorPending = false }
         retireLocalDaemonBuildSwitchProgress()
         retireLocalDaemonBuildSwitchOffer()
         // Retire the previous exact client synchronously, before the new
@@ -50,7 +52,7 @@ extension AppModel {
                 return await self.pollLocalConnection(generation: generation)
             },
             startDaemon: { DaemonLauncher.startIfNeeded(launchPermit: $0) },
-            enterOffline: { self.enterHardOffline() },
+            enterOffline: { self.enterLocalOffline() },
             lifecycleRefused: { refusal in
                 self.setLocalDaemonReconciliationNotice(refusal.map {
                     "Claudexor did not start the engine: \($0.reason)."
@@ -165,6 +167,24 @@ extension AppModel {
         localDaemonReconciliationNotice = notice
     }
 
+    /// A lifecycle this app ran ended without an engine the loop will start by
+    /// itself: keep its reason visible and offer Retry until one is adopted.
+    func publishLocalLifecycleFailure(_ notice: String) {
+        localDaemonReconciliationNotice = notice
+        localEngineAwaitsRetry = true
+        localSuccessorPending = false
+    }
+
+    /// The connection loop's Offline transition. If the engine this app just
+    /// started was lost before any connection adopted it, the loop's start was
+    /// already spent on that lifecycle, so this is a lifecycle failure too.
+    func enterLocalOffline() {
+        enterHardOffline()
+        if localSuccessorPending {
+            publishLocalLifecycleFailure(LocalDaemonReconciliationPolicy.lostSuccessorNotice)
+        }
+    }
+
     private func tryConnect(generation: Int) async -> LocalConnectionProbeResult {
         do {
             let discovery = try ControlApiDiscovery.load()
@@ -221,6 +241,8 @@ extension AppModel {
                     }
                     endpoint = candidateEndpoint
                     adoptClientForReconnect(candidate)
+                    localEngineAwaitsRetry = false
+                    localSuccessorPending = false
                     // A new connection publishes only its own observation.
                     // Contention made none yet, so nothing earlier stays.
                     if case let .useCompatible(notice) = policy {
@@ -284,7 +306,7 @@ extension AppModel {
                     guard localConnectionGenerationIsCurrent(generation) else {
                         return .superseded
                     }
-                    setLocalDaemonReconciliationNotice(notice)
+                    publishLocalLifecycleFailure(notice)
                     client = nil
                     engineIdentity = nil
                     return .lifecycleFailed
@@ -372,7 +394,7 @@ extension AppModel {
             guard requestedConnectionGenerationIsCurrent(generation) else {
                 return .superseded
             }
-            setLocalDaemonReconciliationNotice(notice)
+            publishLocalLifecycleFailure(notice)
             client = nil
             engineIdentity = nil
             cancelAllStreams()

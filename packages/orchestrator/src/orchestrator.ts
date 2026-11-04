@@ -60,7 +60,11 @@ import {
   withPoolAttempts,
 } from "./pool-attempt-evidence.js";
 import type { PreProgressRefusalMemory } from "./pre-progress-refusal.js";
-import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
+import {
+  pickTelemetry,
+  writeRunTelemetryArtifact,
+  type TelemetryAttempt,
+} from "./runTelemetryWriter.js";
 import {
   buildFileBackedSynthesisInput,
   materializeWinnerOutputs,
@@ -154,6 +158,7 @@ import type {
   BudgetLease,
   ImplementationTransport,
   WebPolicySupport,
+  AccessControlCapabilities,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
 import {
@@ -721,6 +726,7 @@ export interface RoutedAdapter {
   /** Canonical auxiliary writable roots THIS lane applies; [] on read-only lanes. */
   auxiliaryWritableRoots: string[];
   webSupport: WebPolicySupport;
+  accessControl: AccessControlCapabilities;
   providerFamily: ProviderFamily;
   supportsMaxTurns: boolean;
   supportsToolLists: boolean;
@@ -1414,6 +1420,7 @@ export class Orchestrator {
           adapterAccess: requiredAccess,
           auxiliaryWritableRoots,
           webSupport,
+          accessControl: manifest.capability_profile.access_control,
           providerFamily: manifest.provider_family,
           supportsMaxTurns: manifest.capabilities.max_turns,
           supportsToolLists: manifest.capabilities.tool_lists,
@@ -4497,7 +4504,7 @@ export class Orchestrator {
     runId: string,
     taskId: string,
     mode: ModeKind,
-    attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[],
+    attempts: TelemetryAttempt[],
     finalAttemptId: string | null,
     deepScanSynthesis?: DeepScanSynthesis | null,
   ): void {
@@ -4806,11 +4813,7 @@ export class Orchestrator {
     const convergenceQuotaLedger = this.quotaLedgerView(ledger, adapterPool);
     const allCooledDown = () =>
       adapterPool.every((a) => convergenceQuotaLedger.cooldownActive(a.adapter.id));
-    const attemptTelemetries: {
-      attemptId: string;
-      harnessId: string;
-      telemetry: AttemptTelemetry;
-    }[] = [];
+    const attemptTelemetries: TelemetryAttempt[] = [];
     let lastDiffStable = true;
     const observedPaths = new Set<string>();
 
@@ -5033,7 +5036,7 @@ export class Orchestrator {
         // Fail-closed twin of the candidate lane's gate: this loop terminalizes
         // per attempt, so the proof is spent per attempt.
         assertDelegatedEvidence(input.delegated === true, convergenceAccess, [run]);
-        attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry: run.telemetry });
+        attemptTelemetries.push({ attemptId, harnessId: adapter.id, ...pickTelemetry(run) });
         lastPostTurnSha = null;
         // Post-mutation fence for in-place: snapshot the live tree NOW (after the
         // harness mutated it, before this attempt's review). The last attempt's

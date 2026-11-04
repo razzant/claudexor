@@ -14,10 +14,24 @@ import type { ArtifactStore } from "@claudexor/artifact-store";
 import { nowIso } from "@claudexor/util";
 import {
   aggregateRunTokenUsage,
-  aggregateRunWebEvidence,
   attemptTelemetryRecord,
   type AttemptTelemetry,
 } from "./attemptTelemetry.js";
+import { aggregateRunWebEvidence } from "./webEvidence.js";
+
+/** One attempt of the run as the telemetry writer receives it; `applied` is the
+ * attempt's applied-facts block where its lane records one (Agent attempts). */
+export interface TelemetryAttempt {
+  attemptId: string;
+  harnessId: string;
+  telemetry: AttemptTelemetry;
+  applied?: { harness_home_isolated?: boolean };
+}
+
+/** The telemetry half of a candidate run: its attempt telemetry and applied facts. */
+export function pickTelemetry(run: Pick<TelemetryAttempt, "telemetry" | "applied">) {
+  return { telemetry: run.telemetry, applied: run.applied };
+}
 
 /** Aggregate the run-level Delegate receipt from engine-owned request facts,
  * per-lane preflight receipts, injection evidence, and typed belt tool events. */
@@ -105,7 +119,7 @@ export function writeRunTelemetryArtifact(args: {
   runId: string;
   taskId: string;
   mode: ModeKind;
-  attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[];
+  attempts: TelemetryAttempt[];
   finalAttemptId: string | null;
   /** QA-034: typed routing rationale recorded at pool ordering; null when no
    * ranking was computed (explicit single-harness pool) or on legacy runs. */
@@ -117,7 +131,7 @@ export function writeRunTelemetryArtifact(args: {
   const { store, finalDir, contract, runId, taskId, mode, attempts, finalAttemptId } = args;
   {
     const records = attempts.map((a) =>
-      attemptTelemetryRecord(a.attemptId, a.harnessId, a.telemetry),
+      attemptTelemetryRecord(a.attemptId, a.harnessId, a.telemetry, a.applied),
     );
     const finalRecord = finalAttemptId
       ? records.find((r) => r.attempt_id === finalAttemptId)

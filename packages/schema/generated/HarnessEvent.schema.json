@@ -488,6 +488,58 @@
           "additionalProperties": false,
           "description": "Requested, configured and observed prompt-cache lifetime facts for one attempt. Lifecycle, outcome and cost are separate facts and never derive from this receipt."
         },
+        "route_controls": {
+          "type": "object",
+          "properties": {
+            "web_mechanism": {
+              "type": "string",
+              "enum": [
+                "native",
+                "tools",
+                "uncontrolled",
+                "none"
+              ],
+              "description": "How this route's own web tools are switched for its web policy (the manifest's web_policy)."
+            },
+            "access": {
+              "type": "string",
+              "enum": [
+                "readonly",
+                "workspace_write",
+                "full",
+                "inherit_native"
+              ],
+              "description": "Access profile handed to this spawn."
+            },
+            "native_access": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The vendor access setting the adapter builds for that profile, in the vendor's own spelling (argv or request parameters) and from the helper that passes it; null when it passes none or does not disclose it."
+            },
+            "access_mechanism": {
+              "type": "string",
+              "enum": [
+                "fs_sandbox",
+                "permission_deny",
+                "tool_allowlist",
+                "tool_policy",
+                "native_settings",
+                "none"
+              ],
+              "description": "How the route's access profile reaches the harness: fs_sandbox (the vendor's own file-system sandbox, as the vendor applies it), permission_deny, tool_allowlist or tool_policy (vendor tool permissions; the manifest declares no OS file boundary), native_settings (inherit_native: Claudexor passes no access profile, so the harness's own configuration decides and what it confines is unknown here), or none (full access, or a route that declares no control)."
+            }
+          },
+          "required": [
+            "web_mechanism",
+            "access",
+            "native_access",
+            "access_mechanism"
+          ],
+          "additionalProperties": false,
+          "description": "Per-spawn receipt of the native web and access controls prepared for a route, recorded just before dispatch; not proof that a native process ran with them. Claudexor adds no outer boundary."
+        },
         "type": {
           "type": "string",
           "enum": [
@@ -616,9 +668,10 @@
                     "exited",
                     "timed_out",
                     "backgrounded",
+                    "completion_reported",
                     "unknown"
                   ],
-                  "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; unknown: the native result established none of these."
+                  "description": "exited: the tool observed the command end; timed_out: the tool's timeout elapsed before an observed end (the process may still run or may have been signalled); backgrounded: the command was handed to a background shell and was still running when the result returned; completion_reported: after such a handoff, a later vendor notification reported that the command ended, without an exit code; unknown: the native result established none of these."
                 },
                 "signal": {
                   "type": "string",
@@ -647,6 +700,15 @@
                   "type": "integer",
                   "exclusiveMinimum": 0,
                   "description": "Vendor-reported process id."
+                },
+                "completion_status": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "error",
+                    "aborted"
+                  ],
+                  "description": "What the vendor reported about a completion_reported command; never an exit code."
                 }
               },
               "required": [
@@ -663,13 +725,21 @@
                 "failed"
               ],
               "description": "Adapter-stamped web/browser retrieval outcome (verified/dispatched/failed), distinct from the tool-call status lifecycle."
+            },
+            "web_content": {
+              "type": "string",
+              "enum": [
+                "page",
+                "search_results"
+              ],
+              "description": "What a verified web retrieval returned: page (a fetched or loaded page) or search_results (a web search's results, not a fetched page)."
             }
           },
           "required": [
             "name"
           ],
           "additionalProperties": false,
-          "description": "Typed tool info; set on tool_call and tool_result events."
+          "description": "Typed tool info; set on tool_call and tool_result events, and on a status event with payload.code command_outcome_refined, where it names the earlier call (use_id) and carries its refined command_outcome."
         },
         "interaction": {
           "type": "object",

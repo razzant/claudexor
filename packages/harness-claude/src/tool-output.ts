@@ -15,24 +15,30 @@ export function summarizeToolResultContent(content: unknown, lines = false): str
           .join("\n")
       : text.trim().replace(/\s+/g, " ")
     ).slice(0, 1000);
-  if (typeof content === "string") return summarize(content);
-  if (Array.isArray(content)) {
-    const parts = content
-      .map((item) => {
-        if (typeof item === "string") return item;
-        if (!item || typeof item !== "object" || Array.isArray(item)) return "";
-        const rec = item as Record<string, unknown>;
-        return typeof rec["text"] === "string"
-          ? rec["text"]
-          : typeof rec["content"] === "string"
-            ? rec["content"]
-            : "";
-      })
-      .filter(Boolean);
-    return summarize(parts.join(lines ? "\n" : " "));
+  if (typeof content === "string" || Array.isArray(content)) {
+    return summarize(toolResultText(content, lines ? "\n" : " "));
   }
   if (content && typeof content === "object") {
     return JSON.stringify(content).slice(0, 1000);
   }
   return "";
+}
+
+/** The whole text of a tool result, before any display bound. */
+export function toolResultText(content: unknown, separator = "\n"): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((item) => {
+      if (typeof item === "string") return item;
+      if (!item || typeof item !== "object" || Array.isArray(item)) return "";
+      const rec = item as Record<string, unknown>;
+      return typeof rec["text"] === "string"
+        ? rec["text"]
+        : typeof rec["content"] === "string"
+          ? rec["content"]
+          : "";
+    })
+    .filter(Boolean)
+    .join(separator);
 }

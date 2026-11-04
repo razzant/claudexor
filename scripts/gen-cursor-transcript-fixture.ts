@@ -3,9 +3,9 @@
  * Generates the macOS transcript fixtures for Cursor streams from the engine
  * path itself: the native frames go through the Cursor normalizer and the
  * orchestrator's stored `harness.event` projection. Swift replays the rows
- * through its reducer: command outcomes (#450) into transcript presentation,
- * partial-output text (#575) through the SSE client. Only timestamps are
- * pinned, so the bytes stay stable.
+ * through its reducer: command outcomes (#450) and later background
+ * completions (#546) into transcript presentation, partial-output text (#575)
+ * through the SSE client. Only timestamps are pinned, so the bytes stay stable.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -21,6 +21,14 @@ const targets = [
   {
     source: "packages/harness-cursor/fixtures/shell/command-outcomes.jsonl",
     fixture: `${appFixtures}/cursor-command-outcome-transcript.json`,
+  },
+  {
+    source: "packages/harness-cursor/fixtures/shell/background-completion.jsonl",
+    fixture: `${appFixtures}/cursor-background-completion-transcript.json`,
+  },
+  {
+    source: "packages/harness-cursor/fixtures/shell/background-completion-failures.jsonl",
+    fixture: `${appFixtures}/cursor-background-completion-failures-transcript.json`,
   },
   {
     source: "packages/harness-cursor/fixtures/stream/text-deltas.jsonl",

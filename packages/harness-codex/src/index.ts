@@ -15,7 +15,6 @@ import { resolveSecret } from "@claudexor/secrets";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  type AccessProfile,
   type AuthSourceReadiness,
   type ConformanceReport,
   type CredentialProfile,
@@ -63,7 +62,7 @@ import { codexPersistence } from "./native-home-retention.js";
 import { smokeIsolatedApiKey } from "./smoke.js";
 export { canonicalCodexProfileHome, codexAccountIdentity } from "./profile.js";
 import { codexExecInput, codexImageArgs, verifyCodexAttachments } from "./attachments.js";
-import { assertCodexExecSpec, codexSandboxMode } from "./sandbox.js";
+import { assertCodexExecSpec, codexExecSandboxArgs, codexNativeAccess } from "./sandbox.js";
 import {
   CodexAppServerController,
   runCodexAppServer,
@@ -107,11 +106,6 @@ import {
   probeLogin,
   type CodexLoginProbe,
 } from "./auth.js";
-
-function sandboxArgs(access: AccessProfile): string[] {
-  const mode = codexSandboxMode(access);
-  return mode ? ["--sandbox", mode] : [];
-}
 
 export function codexNativeEnv(
   base?: Record<string, string | null | undefined>,
@@ -239,7 +233,7 @@ export function codexExecArgs(
       ...processingArgs,
       ...CODEX_FILE_AUTH_ARGS,
       ...CODEX_PROJECT_DOC_FALLBACK_ARGS,
-      ...sandboxConfigArgs(spec.access),
+      ...codexExecSandboxArgs(spec),
       "--skip-git-repo-check",
     ];
     if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
@@ -270,7 +264,7 @@ export function codexExecArgs(
     ...CODEX_FILE_AUTH_ARGS,
     ...CODEX_PROJECT_DOC_FALLBACK_ARGS,
   ];
-  args.push(...sandboxArgs(spec.access), "--skip-git-repo-check");
+  args.push(...codexExecSandboxArgs(spec), "--skip-git-repo-check");
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   if (spec.model_hint) args.push("-m", spec.model_hint);
   if (effort) args.push("-c", `model_reasoning_effort="${effort}"`);
@@ -289,12 +283,6 @@ export function codexExecArgs(
   if (imageArgs.length > 0) args.push("--");
   args.push("-");
   return args;
-}
-
-/** Sandbox as `-c sandbox_mode=...` config (the only spelling `exec resume` accepts). */
-function sandboxConfigArgs(access: AccessProfile): string[] {
-  const mode = codexSandboxMode(access);
-  return mode ? ["-c", `sandbox_mode="${mode}"`] : [];
 }
 
 function codexWebArgs(policy: HarnessRunSpec["external_context_policy"]): string[] {
@@ -350,6 +338,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     id: "codex",
     effortParameter: "model_reasoning_effort",
     capabilityProfile: CODEX_CAPABILITY_PROFILE,
+    nativeAccess: (spec) => codexNativeAccess(spec, Boolean(runtime.runAppServer)),
     ...codexProcessingMethods(runtime, codexNativeEnv),
 
     async discover(): Promise<HarnessManifest> {

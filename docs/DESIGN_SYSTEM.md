@@ -921,7 +921,23 @@ frequency and volume are. The contracts:
   A queued button action retains its displayed pair and cannot adopt a later
   poll's offer. If replacement proof fails, canonical offline cleanup retires
   stale projections and discovery keeps waiting for a late engine without a
-  second fallback launch.
+  second fallback launch. When the selected runtime did not come up and the
+  previous build was restarted from its saved copy (see ARCHITECTURE), the
+  notice names both builds, says the previous engine was restarted (never
+  restored) and when the selected one is tried again: at that engine's exit,
+  after a reopen for a newer version, or through this button for a build of the
+  same version. Passive polls and Reconnect keep it, and this button stays
+  limited to builds of one version. When no engine serves after such a failure,
+  including an engine this app started that stopped answering before it was
+  used, the Offline placeholder shows the reason, says that Claudexor keeps
+  checking but will not start an engine on its own, and offers **Retry**, the
+  same action as Reconnect; an ordinary outage keeps the automatic-reconnect
+  wording. One `LocalEngineRetry` owner decides that offer for both surfaces:
+  when remote connections or cached remote threads keep the thread screen, the
+  sidebar notice is shown whole with the same explanation and a mini Retry. A
+  restarted copy that answers only in recovery mode shows Connecting with the
+  reason and the exact operator stop for the app's own engine root, selectable
+  for Terminal; Retry appears once that engine is gone.
   Installation disables it with an explanatory tooltip. It never grants a
   downgrade or makes passive polling switch builds. Newer or unorderable serving
   versions retain the compatible connection with an explanatory notice.
@@ -995,12 +1011,23 @@ views in the shared design-system files; screens compose them.
     icon + humane title — a command shows its binary's basename, the full
     command line is the subtitle); a FAILED tool stands alone and carries its
     error summary (or "exit N") as a second dimmed line; an UNCONFIRMED command
-    (moved to a background shell, timed out, or an unknown outcome) never shows
-    the success check: it stands alone with the amber warning triangle
+    (handed to a background shell, timed out, a completion reported without an
+    exit code, or an unknown outcome) never shows the success check: it stands
+    alone with the amber warning triangle
     (`exclamationmark.triangle.fill`, caution tone) and its typed
-    state as a second secondary line («Moved to background after 30s · still
-    running · shell 3 · pid 4242»), worded by the engine's command-outcome
-    label; runs of MORE THAN
+    state as a second secondary line («Handed off to background after its 30s
+    timeout; completion not observed · shell 3 · pid 4242»), worded by the
+    engine's command-outcome label. A result lands on its own try's call of its
+    tool-use id; one whose call never arrived gets its own row and never closes
+    another open call, and an id-less result closes only the one open id-less call
+    of its exact name in its try when the name fits the existing tool-field limit.
+    Longer names are shown bounded but left unpaired, never matched by a clipped prefix.
+    A later `command_outcome_refined` status updates that same row in place,
+    found by its try and exact tool-use id and never by name
+    («Completion reported; exit code unknown · handed off to background
+    after its 30s timeout · shell 3 · pid 4242», or «Completion reported
+    (error); …» for a negative report); it adds no row, keeps the caution tone,
+    can never turn the row green and leaves other rows untouched; runs of MORE THAN
     THREE consecutive same-name OK tools collapse into one quiet group row
     («Read · 6 calls»); thinking is a single timer row («◐ Thinking · 12s» —
     the reasoning text and full tool output live only in the inspector); zero
@@ -1227,11 +1254,42 @@ views in the shared design-system files; screens compose them.
   (`pending/finalizing/ready/diagnostic`), requested/effective access, web policy,
   web evidence (`none/attempted/satisfied/failed/unverified`), tool errors,
   budget source, artifact path, and route fallback. Badges are projections of
-  Control API fields, not UI-invented state. Raw wire strings are humanized
-  ("Web verified", not `satisfied`); `unverified` web evidence gets a distinct
-  warning treatment from a benign `attempted`; telemetry-unavailable runs say
-  so instead of guessing. Engine-typed event severity (info/warning/error)
-  tints timeline rows.
+  Control API fields, not UI-invented state. Raw wire strings are humanized;
+  `satisfied` reads "Web verified" (success tone) only for a verified page
+  (`webEvidence.verification` `verified` with `verifiedContent` `page`, or an older
+  record that does not say which), "Web searched" (success tone) for verified search
+  results, which are not a fetched page, "Web reached" (neutral) for a web call
+  without a typed result, and "Web tools used" (neutral) when completed web tools
+  retrieved nothing (a Browser close or click) or the engine sent no strength. `unverified` web evidence gets a distinct warning treatment
+  from a benign `attempted`; telemetry-unavailable runs say so instead of
+  guessing, and so does Diagnostics (and Copy Diagnostics, which carries the same
+  text): it keeps the requested mode and requirement and prints
+  `observed: unavailable` instead of the placeholder observation values. A Web Off
+  run without web evidence shows "Web tools off" (`network.slash`)
+  only when a route reported a native session under the off switch; otherwise
+  "Web Off requested", because a request alone proves no tool was switched off.
+  Every web badge's help separates what was requested, what was observed (or that
+  telemetry is missing), each route's own web switch from `routeControls` ("prepared
+  only" when no native start was reported), whether the engine Browser was handed to
+  it, and, when the engine states it, that evidence counts tool calls and network
+  traffic is not measured. The access badge reads the access label plus one qualifier
+  from the routes that reported a native session ("vendor sandbox", "no OS file
+  boundary declared", "harness settings" for `inherit_native`, or "OS boundary varies
+  by route") and no qualifier when none did. Its help names each route's native
+  setting, mechanism and, only where recorded, its HOME ("Claudexor-owned" or "not
+  scoped by Claudexor", never "your own"), and never says "enforced". The Browser
+  badge (`globe`, neutral tone) keeps an admission refusal as resolved ("browser
+  unavailable (<reason>)"); otherwise it states what the harness's routes reported
+  about the Browser's startup (#215): "browser prepared" when nothing was reported
+  or the engine sends no such fact, "browser ready", "browser startup failed",
+  "browser startup cancelled" or "browser startup unconfirmed" (still starting
+  when the hold ended, or no status), the least confirmed one when routes differ.
+  "ready" is Codex's own startup state, never a claim that the Browser worked, and
+  no state reads as a failed run. Its help adds each route's report ("ready before
+  the first model request", "failed to start: <reason>", "still starting after N
+  s") or "startup not reported".
+  `RouteControlsPresentation` is their one presenter. Engine-typed event
+  severity (info/warning/error) tints timeline rows.
 - **Read-only report surfaces.** Ask (the answer, or the `--deep-scan` research
   sweep) primary output appears in
   Outcome as markdown. Technical artifacts (`context/task.yaml`, `events.jsonl`)
@@ -1645,7 +1703,7 @@ views in the shared design-system files; screens compose them.
   guessing.
 - **Harness chips.** Chips reflect Gateway status for the active mode intent. A
   harness that is not installed, not authenticated, degraded without the required
-  intent, or unable to enforce read-only is visible but disabled, with a hover
+  intent, or unable to apply read-only is visible but disabled, with a hover
   reason and a path to Harness Doctor/Auth setup. An explicit chip reads the
   status's `enabledIntents` (the app's `HarnessInfo` keeps it as `intents`), so
   a degraded harness that still enables the intent stays selectable and shows

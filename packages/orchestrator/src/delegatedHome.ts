@@ -179,10 +179,12 @@ export function outerBoundaryNotice(
 export interface AppliedAttemptFacts {
   /**
    * ABSENT when the attempt died before its home was decided (`wsm.create` or
-   * home selection failed). A literal `false` is a POSITIVE claim — this
-   * child ran in the operator's own HOME — and an attempt that never reached
-   * the decision made no such claim. Absence keeps it a gap in the record,
-   * which is what `appliedEvidenceComplete` already refuses on.
+   * home selection failed). A literal `false` is a POSITIVE claim — the engine
+   * did not replace HOME, so this child inherits the engine's own environment
+   * (the operator's HOME unless a host started the engine with another) — and
+   * an attempt that never reached the decision made no such claim. Absence
+   * keeps it a gap in the record, which is what `appliedEvidenceComplete`
+   * already refuses on.
    */
   harness_home_isolated?: boolean;
   harness_home_dir: string | null;

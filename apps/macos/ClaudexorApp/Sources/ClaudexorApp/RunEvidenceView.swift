@@ -234,7 +234,9 @@ struct RunEvidenceView: View {
         .frame(width: 560)
     }
 
-    private func copyDiagnostics(_ task: TaskRun) {
+    /// The Copy Diagnostics text: the run's identity, then the same diagnostics the
+    /// panel above shows (`diagnosticText`).
+    static func diagnosticsCopyText(_ task: TaskRun) -> String {
         var text = [
             "run: \(task.id)",
             "mode: \(task.mode.apiValue)",
@@ -244,7 +246,11 @@ struct RunEvidenceView: View {
         if let runDir = task.runDir { text += "\nrunDir: \(runDir)" }
         if let engineError = task.engineError { text += "\n\n# Engine Error\n\(engineError)" }
         if let diagnostics = task.diagnosticText { text += "\n\n# Diagnostics\n\(diagnostics)" }
-        copyToPasteboard(text)
+        return text
+    }
+
+    private func copyDiagnostics(_ task: TaskRun) {
+        copyToPasteboard(Self.diagnosticsCopyText(task))
     }
 
     private func copyToPasteboard(_ text: String) {

@@ -243,6 +243,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let webRequired: Bool?
     public let webMode: String?
     public let webEvidence: WebEvidence?
+    /// Native web/access controls prepared for each route (#118/#413); nil from older engines.
+    public let routeControls: [RouteControlInfo]?
     public let requestRequirements: [RequestRequirementResolution]?
     public let outputReadyState: String?
     public let toolWarningsTotal: Int?
@@ -290,6 +292,15 @@ public struct WebEvidence: Codable, Sendable, Equatable {
     public let attempted: Bool
     public let satisfied: Bool
     public let status: String
+    /// Retrieval-proof strength: `verified` when a typed result shows a retrieval,
+    /// `dispatched` when a web call completed without one, `none` when no search or
+    /// page retrieval was observed. Nil from older engines, never read as verified.
+    public let verification: String?
+    /// What a verified result returned: `page` or `search_results` (a search, not a
+    /// fetched page). Nil when nothing was verified or the engine did not record it.
+    public let verifiedContent: String?
+    /// What the evidence covers (tool calls; network not measured); nil when unrecorded.
+    public let observation: WebObservation?
     public let tool: String?
     public let target: String?
     public let errorSummary: String?

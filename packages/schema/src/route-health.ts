@@ -49,7 +49,7 @@ export const ControlRouteHealthRoute = z
     access: z
       .enum([...AccessProfile.options, "unknown"])
       .describe(
-        "Effective access profile the engine enforced; unknown when the run recorded none. The retired external_sandbox_full counts as full.",
+        "Effective access profile the engine passed to the route; unknown when the run recorded none. The retired external_sandbox_full counts as full.",
       ),
     runs: count.describe(
       "Terminal product runs of the route created inside the window; always succeeded + failed + cancelled + other.",

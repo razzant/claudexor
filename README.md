@@ -595,7 +595,10 @@ downgrade. See
 ## Web, Budgets, And Gates
 
 External web context is a typed run policy (`--web off|auto|cached|live`),
-separate from shell/network sandboxing. `off` is strict; `auto`, `cached`, and
+separate from shell/network sandboxing. `off` asks each route to switch off its
+own web tools and refuses a route that cannot; it is not a network switch, since
+the vendor API connection stays open, and receipts name each route's switch while
+saying that network traffic is not measured. `auto`, `cached`, and
 `live` are optional preferences, so unused, denied, unavailable, or failed web
 never blocks an otherwise useful result and remains visible as evidence or a
 warning. A harness such as Cursor that cannot guarantee `off` is refused before

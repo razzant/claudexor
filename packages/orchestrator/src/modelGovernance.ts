@@ -98,8 +98,9 @@ import {
 } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 import { ProcessingBudgetAdmissionError } from "./processing-dispatch.js";
+import { routeControlsEvent, type RouteControlSource } from "./routeControls.js";
 
-export interface ModelGovernedRoute {
+export interface ModelGovernedRoute extends Omit<RouteControlSource, "adapter"> {
   adapter: HarnessAdapter;
   /** Manifest model truth source (used when the adapter has no live models()). */
   knownModels: readonly KnownModelEntry[];
@@ -498,6 +499,12 @@ export async function* runModelGovernedRoute(
   }
   // The disclosures above are yields; a run stopped at one of them is not
   // dispatched when its consumer keeps reading to drain teardown evidence.
+  if (abortSignalFromSpec(spec)?.aborted) return;
+  // #118/#413: what the engine prepared for this spawn's web and file access. The
+  // adapter below may still refuse before launching; its `started` reports a launch.
+  const controls = routeControlsEvent(routed, spec);
+  if (controls) yield controls;
+  // The receipt is a yield too: a run stopped while it was read is not dispatched.
   if (abortSignalFromSpec(spec)?.aborted) return;
   const sent = truth?.observation ? withDispatchModelCatalog(spec, truth.observation) : spec;
   const events = stampObservedModelCatalogMatch(

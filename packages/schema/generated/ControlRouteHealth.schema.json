@@ -61,7 +61,7 @@
                   "inherit_native",
                   "unknown"
                 ],
-                "description": "Effective access profile the engine enforced; unknown when the run recorded none. The retired external_sandbox_full counts as full."
+                "description": "Effective access profile the engine passed to the route; unknown when the run recorded none. The retired external_sandbox_full counts as full."
               },
               "runs": {
                 "type": "integer",

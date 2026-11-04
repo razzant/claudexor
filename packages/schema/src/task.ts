@@ -293,9 +293,9 @@ export const TaskContract = z
         requested_profile: RecordedAccessProfile.default("workspace_write").describe(
           "Access profile the caller requested.",
         ),
-        /** Profile actually enforced by the engine (mode/trust clamps applied; never client-supplied). */
+        /** Profile the engine resolved and passes to the harness (mode/trust clamps applied; never client-supplied). */
         effective_profile: RecordedAccessProfile.default("workspace_write").describe(
-          "Access profile actually enforced by the engine (mode/trust clamps applied; never client-supplied).",
+          "Access profile the engine resolved and passes to the harness (mode/trust clamps applied; never client-supplied); the harness's native setting decides what it confines.",
         ),
         auxiliary_writable_roots: AuxiliaryWritableRoots,
       })
@@ -303,7 +303,7 @@ export const TaskContract = z
         requested_profile: "workspace_write",
         effective_profile: "workspace_write",
       })
-      .describe("Requested vs engine-enforced access profile."),
+      .describe("Requested vs engine-resolved access profile."),
     external_context: z
       .object({
         policy: ExternalContextPolicy.default("auto").describe(
@@ -317,7 +317,7 @@ export const TaskContract = z
           ),
         /** Mode the selected route actually executes (disclosed upgrades, e.g. claude cached->live). */
         effective_mode: ExternalContextPolicy.default("auto").describe(
-          "Policy the selected route actually executes (disclosed upgrades, e.g. cached to live).",
+          "Policy given to the selected route, after disclosed upgrades (e.g. cached to live).",
         ),
       })
       .default({ policy: "auto", web_required: false, effective_mode: "auto" })

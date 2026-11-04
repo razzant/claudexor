@@ -311,6 +311,19 @@ export interface HarnessAdapter {
    * `spec.env.HOME`.
    */
   childHome?(spec: HarnessRunSpec): string | null;
+  /**
+   * The vendor access setting this adapter passes for `spec`, in the vendor's
+   * own spelling, computed by the SAME helper that builds the argv or request
+   * (#413). Disclosure only, recorded on the per-spawn route receipt. Absent
+   * or null: the adapter passes no access setting or does not disclose it.
+   */
+  nativeAccess?(spec: HarnessRunSpec): string | null;
+}
+
+/** One display string for native arguments: empty or spaced tokens are quoted. */
+export function formatNativeArgs(args: readonly string[]): string | null {
+  if (args.length === 0) return null;
+  return args.map((arg) => (arg === "" || /\s/.test(arg) ? JSON.stringify(arg) : arg)).join(" ");
 }
 
 /** A recorded session's reach. It never extends to another version or entry. */

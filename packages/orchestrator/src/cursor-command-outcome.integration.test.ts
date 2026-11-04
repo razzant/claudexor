@@ -147,7 +147,7 @@ describe("Cursor command outcomes through the durable event log (#450)", () => {
       "error",
     ]);
     expect(rows[2]?.title).toBe(
-      "tool_result: Moved to background after 30s · still running · shell 3 · pid 4242",
+      "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242",
     );
 
     // ACP replay of the same stored rows: never `completed` for an unconfirmed command.
@@ -198,10 +198,10 @@ describe("Cursor command outcomes through the durable event log (#450)", () => {
     ).markdown;
     // Positive: each unconfirmed command names its state.
     expect(packet).toContain(
-      "- shell — find /repo -name '*.log' (unconfirmed: Moved to background after 30s · still running · shell 3 · pid 4242)",
+      "- shell — find /repo -name '*.log' (unconfirmed: Handed off to background after its 30s timeout; completion not observed · shell 3 · pid 4242)",
     );
     expect(packet).toContain(
-      "- shell — pnpm dev (unconfirmed: Running in background · shell 4 · pid 4343)",
+      "- shell — pnpm dev (unconfirmed: Handed off to background; completion not observed · shell 4 · pid 4343)",
     );
     expect(packet).toContain(
       "- shell — sleep 120 (unconfirmed: Timed out after 30s · exit status unknown)",

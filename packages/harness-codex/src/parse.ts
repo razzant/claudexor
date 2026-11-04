@@ -1,8 +1,9 @@
 import { InputTokenUsage, WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
+import { BROWSER_MCP_SERVER, browserPageRetrieval } from "@claudexor/core";
 import { codexFileChangeEvents } from "./file-change.js";
 import { applyCodexRateLimit, applyCodexTransient, codexReconnectStatus } from "./retry-signals.js";
-import { mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
+import { mcpResultText, mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
 
 type Json = any;
 
@@ -345,13 +346,20 @@ export function parseCodexEvent(
       }
       case "mcp_tool_call": {
         const outcome = mcpToolOutcome(item);
+        // #118: a successful Browser call is verified only when its whole reply
+        // shows a page (the bounded summary can cut a long one short), and one
+        // that read no web page carries no retrieval stamp at all.
+        const retrieval =
+          item.server === BROWSER_MCP_SERVER && outcome.status === "ok"
+            ? browserPageRetrieval(String(item.tool), mcpResultText(item.result))
+            : {};
         return [
           {
             type: "tool_result",
             session_id: sessionId,
             ts,
             text: outcome.status === "error" ? "tool_result: error" : "tool_result",
-            tool: { ...mcpToolRef(item), ...outcome },
+            tool: { ...mcpToolRef(item), ...outcome, ...retrieval },
             payload: {
               server: item.server,
               tool: item.tool,

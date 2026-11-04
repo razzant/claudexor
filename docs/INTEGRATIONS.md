@@ -248,7 +248,21 @@ daemon/control API for long-running interactive use and use CLI JSON only where
 the command documents or returns machine-readable output.
 
 `--web off|auto|cached|live` is the CLI-first external context policy. It is
-separate from process/network sandboxing. `claudexor inspect <run_id> --json`
+separate from process/network sandboxing: `off` switches off each route's own
+web tools, and web evidence counts typed web tool calls and engine Browser calls
+only (`web.observation.network: not_measured`), so `attempted: false` says
+nothing about network use. Each attempt's `route_controls` names what was
+prepared for the route, just before dispatch: its web switch, the access profile,
+the vendor's own access arguments and the access mechanism (only `fs_sandbox`
+declares an OS file boundary, the vendor's own; `native_settings` leaves it
+unknown). `native_session_started` says whether a native start was reported; `false`
+never proves that no process ran. The run summary projects them as `routeControls`
+(empty when no route was prepared or on older records), and text `inspect` prints
+`access route`, `web route` (with the Browser's reported `browser_startup`),
+`web retrieval` (naming `(page)` or `(search results)` for a verified result, and
+`none` when completed web tools retrieved nothing) and `web scope` lines. See the
+[route controls receipt](ARCHITECTURE.md#route-controls-receipt).
+`claudexor inspect <run_id> --json`
 projects the run artifacts: output-ready state, the task contract, the
 engine-owned telemetry (web evidence, token usage, the auth route receipt,
 structured-output conformance, unrecovered tool errors), primary output,
@@ -1978,13 +1992,31 @@ The same projection distinguishes deadline exhaustion from user cancellation:
 a terminal `cancelled` lifecycle with `wall_clock_exceeded` returns ACP
 `refusal`, while an explicit ACP/session Stop returns `cancelled`.
 
-Tool activity streams as `tool_call` (`in_progress`) followed by one
-`tool_call_update`. The update is `completed` only for a result that is not an
-error and does not report an unconfirmed command. An error is `failed`, and so
-is a command that was moved to a background shell, timed out, or has an unknown
-outcome: ACP v1 has no other terminal status short of success, and no later
-update will arrive for that call. Such an update carries the state as text
-content and the typed facts at `_meta.claudexor.commandOutcome`.
+Tool activity streams as `tool_call` (`in_progress`) followed by one closing
+`tool_call_update`. `claudexor acp serve` reads it from the run's own event
+stream, the one that also carries its timer notices: tool calls, their results
+and the refinements below, never narration or thinking, so the answer arrives
+once when the turn ends. If that stream fails, the client is told that live tool
+and time-limit updates are unavailable. Each ACP call id names the run and try
+that issued the native call (`<run>/<attempt>/<session>/<native id>`, each part
+URI-encoded), so tries of a race, or turns of one session, that reuse a native
+id stay separate calls; an event without a run or try (a custom runner's) keeps
+the bare native id. A turn's calls are forgotten when the turn ends. The update
+is `completed` only for a result that is not an error and does not report an
+unconfirmed command. An error is `failed`, and so is a command that was handed
+to a background shell, timed out, or has an unknown outcome: ACP v1 has no other
+terminal status short of success. Such an update carries the state as text
+content and the typed facts at `_meta.claudexor.commandOutcome`. When the vendor
+later reports the end of a background command (the engine's
+`command_outcome_refined` status), that one call gets one more
+`tool_call_update` with `content` and `_meta` only: the report replaces "Handed
+off to background; completion not observed", and leaving `status` out keeps the
+terminal `failed`, because a report without an exit code is not a `completed`
+success. The protocol allows partial updates and does not say whether a client
+keeps reading a call after its terminal status; one that stops, as Claudexor's
+own ACP client does, keeps the handoff text. A report that names no handoff its
+own try closed in this turn sends nothing, and `session/load` replays only
+prompts and answers, so it replays no tool calls.
 
 `session/load` replays the conversation on reopen by fetching one run detail
 per turn. That fan-out is bounded to the most recent 50 turns: an older thread
@@ -2299,6 +2331,27 @@ line breaks as bounded, unmasked `content_summary`; status `failed` covers an
 else the result text on one line, as `error_summary`. Any other status stays
 statusless. The tool identity stays the native tool name with `server:tool` as
 target, which Browser and Delegate evidence match.
+Codex starts an explicitly selected Browser as an optional MCP server in the
+background. A server not ready about one second after `turn/start` is absent from
+that first model request, both from code-mode `ALL_TOOLS` and from `tool_search`
+results; a later request or turn can include it. So when Browser is injected the
+adapter holds `turn/start`, after `thread/start` and `thread/resume` alike, until
+`mcpServer/startupStatus/updated` reports Browser `ready`, `failed` or `cancelled`.
+Codex keeps its own 90-second `startup_timeout_sec`; the adapter holds the turn at
+most five seconds longer, a grace for the status to arrive, so a failure Codex
+reports at its limit (observed at about 90.06 s) keeps Codex's own reason and a
+missing status cannot hold the turn longer. Stop ends the wait as `user_cancelled`
+without starting a turn. Other optional servers are not waited for. Browser's startup never
+decides the run: one nonterminal `status` event follows `started`, with
+`payload.code: codex_browser_startup`, `status` (`ready`, `failed`, `cancelled`,
+`starting` or `not_observed`), `waited_ms` and Codex's own reason as masked `error`,
+and the Control timeline shows it as an `info` row. The engine records the same
+receipt as the attempt's `browser.startup` and the run summary as the route's
+`browserStartup`; a Browser that was handed to a route but reported nothing stays
+null there. The macOS Browser badge reads it as `prepared`, `ready`,
+`startup failed`, `startup cancelled` or `startup unconfirmed`, never as a failed
+run. The turn goes on without Browser, so work needing a page stays unmet unless a
+page was actually read.
 `account/rateLimits/updated` maps measured known-scope windows to independent
 status+quota events from that same running process, without token usage or a
 cooldown. The full quota reader shares the native window codec; supplied RPC
@@ -2453,8 +2506,28 @@ background shell handle (`shellId`, `backgroundReason` or result-level
 `unknown` for an ok result in an unrecognized shape. Such an unconfirmed result
 keeps tool status `ok`, names its state in the event text, and keeps its
 complete native result, exactly, as `payload.native_result` of the durable
-`harness.event`. These shapes follow the `agent.v1` shell protocol of
-cursor-agent 2026.08.11; no timeout or background frame has been recorded live.
+`harness.event`. A handoff reads "Handed off to background; completion not
+observed", never "still running". The adapter keeps each handoff by its shell
+id; when a later `system/task_notification` frame names that shell
+(`task_id` = the result's `shellId`, from the same native session), it emits
+one `status` event with `payload.code: command_outcome_refined` for the SAME
+call: its `tool` carries the call's `use_id` and the handoff facts with state
+`completion_reported` and the vendor's `completion_status` (`success`, `error`
+or `aborted`, the words 2026.08.11 defines for a shell), and the complete native
+frame rides as `payload.native_notification`. The exit code stays unknown, even
+for `success`: the frame has no typed exit code, a free-text `detail` such as
+`exit_code=1` stays unparsed in the kept frame, and Claudexor does not read
+Cursor's own terminal records. So the text is "Completion reported; exit code
+unknown", or "Completion reported (error); exit code unknown", followed by the
+handoff. A notification that names no pending handoff of that session (an unknown
+or progress id, a duplicate, a shell id two pending handoffs share) or carries
+any other status consumes nothing, leaves the handoff standing and stays counted
+in `dropped_unrecognized_events`. These shapes follow the `agent.v1` shell
+protocol and the stream-json writer of cursor-agent 2026.08.11, and
+razzant/claudexor#546 reports one native run with its timeout and requested
+handoffs and `success` notifications. `error`, `aborted` and progress ids come
+only from reading that build's code. The repository holds no sanitized
+recording, so the shape remains a hypothesis until one exists.
 On successful terminal `result`, the
 adapter finalizes the LAST complete assistant flush
 (`final_source: assistant_message`) rather than Cursor's concatenated `result`

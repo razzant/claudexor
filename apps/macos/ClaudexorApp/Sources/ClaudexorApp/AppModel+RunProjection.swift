@@ -67,11 +67,13 @@ extension AppModel {
         task.reviewRequested = summary.review
         task.reviewerPanel = summary.reviewerPanel
         task.protectedPathApprovals = summary.protectedPathApprovals
-        task.browserRequirementDetail = browserRequirementDetail(summary.requestRequirements)
+        task.browserRequirementDetail = browserRequirementDetail(summary.requestRequirements,
+                                                                 routes: summary.routeControls ?? [])
+        task.applyRouteFacts(summary)
         // Missing engine telemetry is disclosed, never replaced with a guess.
         if summary.webEvidence?.available == false {
             task.webEvidenceStatus = nil
-            task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."
+            task.webEvidenceDetail = RouteControlsPresentation.telemetryUnavailable
         } else {
             task.webEvidenceStatus = summary.webEvidence?.status
             task.webEvidenceDetail = webEvidenceDetail(summary.webEvidence)
@@ -91,7 +93,7 @@ extension AppModel {
         guard let evidence, evidence.attempted || evidence.required else { return nil }
         var parts = ["web \(evidence.status)"]
         if let effective = evidence.effectiveMode, effective != evidence.mode {
-            parts.append("requested \(evidence.mode) → ran \(effective)")
+            parts.append("requested \(evidence.mode) → route policy \(effective)")
         }
         if let tool = evidence.tool { parts.append(tool) }
         if let target = evidence.target { parts.append(target) }

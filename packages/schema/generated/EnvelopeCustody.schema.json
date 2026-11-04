@@ -106,7 +106,7 @@
             "policy_profile": {
               "type": "string",
               "default": "workspace_write",
-              "description": "Access profile the envelope enforces."
+              "description": "Access profile recorded for the envelope."
             },
             "dirty_policy": {
               "type": "string",

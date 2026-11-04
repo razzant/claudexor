@@ -112,6 +112,14 @@ public struct RuntimeInstaller: Sendable {
         else { return nil }
         return script
     }
+
+    /// The same guard for `versions/<version>` named by a saved build's
+    /// version instead of by the active pointer, which is neither read nor written.
+    public func containedDaemonScript(version: String) -> URL? {
+        containedDaemonScript(RuntimeCurrent(
+            version: version, path: RuntimeCurrent.versionPath(version),
+            sha256: "", installedAt: "", engineSha: nil))
+    }
 }
 
 private extension String {

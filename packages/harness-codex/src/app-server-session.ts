@@ -1,11 +1,11 @@
 import type { EffortHint, HarnessRunSpec } from "@claudexor/schema";
 import {
   asObject,
-  codexAppServerApprovalParams,
   codexAppServerThreadParams,
   CodexServerRequestRefusal,
   type JsonObject,
 } from "./app-server-protocol.js";
+import { codexAppServerApprovalParams } from "./sandbox.js";
 
 /** thread/start, or thread/resume of the bound native session, under legacy thread params. */
 export function codexAppServerThreadRequest(

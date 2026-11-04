@@ -22,6 +22,7 @@ import { continuationSummary } from "./run-continuation-projection.js";
 import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
 
 import { controlWebEvidence, latestPlanProgress, timelineEvents } from "./run-timeline.js";
+import { projectRouteControls } from "./route-controls-projection.js";
 import { readRunEventFacts, type RunEventFacts } from "./run-event-facts.js";
 import {
   paramsRecord,
@@ -245,6 +246,7 @@ export function summarizeRun(rec: DaemonRunRecord, facts?: RunEventFacts): Contr
     webRequired: telemetry?.web_required ?? task?.external_context.web_required,
     webMode: telemetry?.effective_web_mode ?? task?.external_context.effective_mode,
     webEvidence,
+    routeControls: projectRouteControls(telemetry),
     requestRequirements: telemetry?.request_requirements ?? [],
     toolPermissionPolicy: task?.tool_permission_policy,
     outputReadyState: outputReadyState(

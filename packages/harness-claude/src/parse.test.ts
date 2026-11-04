@@ -450,6 +450,45 @@ describe("parseClaudeEvent", () => {
     expect(out[0]?.tool?.status).toBe("ok");
     // Claude exposes typed content -> a VERIFIED retrieval (unlike codex dispatch).
     expect(out[0]?.tool?.web_retrieval).toBe("verified");
+    expect(out[0]?.tool?.web_content).toBe("page");
+    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
+  it("stamps a successful WebSearch as verified search results, not a fetched page (#118)", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "toolu_ws", name: "WebSearch", input: { query: "claudexor" } },
+          ],
+        },
+      },
+      "s1",
+    );
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_ws",
+              content:
+                'Web search results for query: "claudexor"\n\nLinks: [{"title":"Claudexor","url":"https://example.com/"}]',
+            },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.tool).toMatchObject({
+      kind: "web",
+      status: "ok",
+      web_retrieval: "verified",
+      web_content: "search_results",
+    });
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 
@@ -488,6 +527,9 @@ describe("parseClaudeEvent", () => {
     expect(out[0]?.tool?.kind).toBe("web");
     expect(out[0]?.tool?.error_summary).toBeUndefined();
     expect(out[0]?.tool?.content_summary).toContain("WebSearch denied by policy");
+    // A denial retrieved nothing: no retrieval stamp, least of all "verified".
+    expect(out[0]?.tool?.web_retrieval).toBeUndefined();
+    expect(out[0]?.tool?.web_content).toBeUndefined();
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 

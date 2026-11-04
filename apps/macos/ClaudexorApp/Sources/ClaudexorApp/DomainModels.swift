@@ -543,6 +543,13 @@ struct TaskRun: Identifiable, Hashable {
     var outputReadyState: String?
     var webEvidenceStatus: String?
     var webEvidenceDetail: String?
+    /// #118: retrieval strength, what a verified result returned, and evidence scope,
+    /// as the engine projected them.
+    var webVerification: String?
+    var webVerifiedContent: String?
+    var webObservation: WebObservation?
+    /// #118/#413: what was prepared for each route and whether it started; [] when unrecorded.
+    var routeControls: [RouteControlInfo] = []
     var browserRequirementDetail: String?
     var requestedAccess: String?
     var effectiveAccess: String?
