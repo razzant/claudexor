@@ -1135,7 +1135,9 @@ silently mints a new key.
 The daemon hashes every upload's bytes while receiving them, and an import
 still checks that digest against the one it declared. `receivedBytes` changes
 when the PUT finishes, not as each chunk lands; a status read during the PUT
-sees `uploading` and `receivedBytes: 0`. A digest mismatch
+sees `uploading` and `receivedBytes: 0`. Finalize of that same process uses
+the digest it just computed and does not read the part again; a duplicate of
+an existing blob, a replay, and recovery still read the bytes. A digest mismatch
 (`409 digest_mismatch`), a short, oversized or interrupted transfer, or a daemon
 restart during the transfer returns that upload to `open` with zero bytes, so the
 same key resends from byte zero; ordinary uploads keep their single-shot
