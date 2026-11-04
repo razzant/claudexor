@@ -1024,6 +1024,30 @@ describe("model operations over the existing daemon command substrate", () => {
     expect(syncRead).toHaveBeenCalledTimes(1);
   });
 
+  it("answers a same-key create whose read lost to an accepted overlap with that accepted handle", async () => {
+    const f = await fixture();
+    const ref = f.upload();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = f.resources.readModelAsync.bind(f.resources);
+    let reads = 0;
+    vi.spyOn(f.resources, "readModelAsync").mockImplementation(async (raw) => {
+      if (reads++ === 0) await gate;
+      return original(raw);
+    });
+    const slow = f.operations.create(ref, "overlap");
+    await vi.waitFor(() => expect(reads).toBe(1));
+    const fast = await f.operations.create(ref, "overlap");
+    await f.terminal(fast.id);
+    await vi.waitFor(() => expect(() => f.resources.readModel(ref)).toThrow());
+    release();
+    expect((await slow).id).toBe(fast.id);
+    expect(f.records()).toHaveLength(1);
+    expect(f.sends).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves resource I/O failure instead of granting invalid-request authority", async () => {
     const f = await fixture();
     const ref = f.upload();

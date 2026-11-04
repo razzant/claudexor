@@ -132,11 +132,19 @@ export class ModelOperations {
     let id = replay?.id;
     if (!id) {
       // Validate only a NEW request. A settled replay's input has been released.
-      // model_request_invalid from this boundary proves no command was accepted:
-      // the idempotency lookup above succeeded and validation precedes enqueue.
-      if (requestKind === "image") await this.readImageRequest(request);
-      else await this.readRequest(request);
-      id = (await this.deps.enqueue(envelope)).id;
+      // The read yields to the event loop, so a same-key call may be accepted, settle
+      // and release this input meanwhile: a failed read asks the idempotency record
+      // again and answers with that accepted handle. Only when none exists does the
+      // failure stand, and then model_request_invalid proves no command was accepted.
+      try {
+        if (requestKind === "image") await this.readImageRequest(request);
+        else await this.readRequest(request);
+      } catch (error) {
+        const accepted = findAcceptedCommand(this.deps.commands, envelope);
+        if (!accepted) throw error;
+        id = accepted.id;
+      }
+      id ??= (await this.deps.enqueue(envelope)).id;
     }
     // Re-uploaded copies can lose either the early lookup or the enqueue race.
     // Release only the unused copy; another live command may still own it.
