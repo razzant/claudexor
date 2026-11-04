@@ -5143,9 +5143,15 @@ triggers observe row identities while the pass runs; no durable schema or writer
 added. Typed reference reads are shared with the initial inventory. Each distinct immutable command request is parsed once per pass by its content digest, including changed-owner refreshes. Combined run/native retention shares one SQL inventory and observer; standalone native retention owns and closes its own inventory. No durable schema changes. Quota/event
 writes and unrelated metadata do not restart it. References accumulate during a pass
 and lifecycle records refresh before the synchronous last proof and expiration marker.
-Large change batches yield between reads; an unreadable owner, changed project/generation
-topology, or a burst exceeding one final synchronous read page keeps remaining candidates
-and schedules a fresh pass. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
+A partition born during inventory is read live through the same registry join and cached;
+a genuinely missing partition still fails. Ready/archived births do not invalidate unrelated
+cleanup. Project INSERT/UPDATE/DELETE holds every old and new root it names for the rest
+of the pass, including a newly registered root whose keep-last policy changed after inventory.
+Run, review and runtime cleanup skip those namespaces. Large change batches yield between
+reads; an unreadable changed owner latches the shared proof closed for the rest of the pass,
+even after its pending change is consumed. That failure or a burst exceeding one final
+synchronous read page keeps remaining candidates and schedules a fresh pass. Pending
+partition recovery still holds install-wide; an unrelated project change does not. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
 retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
@@ -5183,7 +5189,7 @@ referenced by any non-purged thread's lineage or retained command dependencies
 Exact Retry sources and frozen plans, plus durable continuation source lists after
 command-history pruning), undelivered/applyable
 patches or copied-file results, and trees with no terminal evidence are protected
-fail-closed. Lane sweeping derives root ownership once from the shared thread inventory and synchronously rereads changed owners immediately before each root’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including topology changes during the loop. A per-root ownership failure names only the skipped root.
+fail-closed. Lane sweeping derives root ownership once from the shared thread inventory and synchronously rereads changed owners immediately before each root’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including recovery or unreadable changes during the loop. Project registration changes skip only the affected roots. A per-root ownership failure names only the skipped root.
 
 A `quarantined` generation and project generations owned by its replaced global registry are retired journal evidence: its rows do not own references or keep unsettled commands active, and completed quarantine does not stop retention. Terminal metadata may still date its old payloads. Archived projects in the current registry remain reference owners. Pending or unknown recovery states hold all run namespaces, with one named partition/status hold per pending generation in `errors[]`: scope roots do not bound cross-project dependencies. Partial file delivery retains that protection; explicit discard
 ends pending delivery but does not delete artifacts immediately or bypass other
@@ -5264,7 +5270,7 @@ session capsule, and every retained run's typed resumable record protect their
 native session IDs across all homes of that harness. Archived threads and pinned
 account continuations retain that protection. Missing artifacts have no reference;
 malformed or unreadable references, linked artifact directories, unavailable
-project generations, uncertain command ownership, or active/unconfirmed setup work prevent
+project bindings, pending recovery, uncertain command ownership, or active/unconfirmed setup work prevent
 native pruning. SQL rows and filesystem inventory yield to admission. Active and
 queued product work protects its named sessions and continuation sources, without
 holding unrelated cold sessions. The pass rereads changed SQL owners and each active

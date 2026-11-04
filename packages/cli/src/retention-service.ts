@@ -13,7 +13,13 @@ import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import type { ControlGcReceipt, ControlGcRequest, Thread } from "@claudexor/schema";
 import { findActiveThreadRun, runRetentionPass } from "@claudexor/control-api";
 import { loadConfig } from "@claudexor/config";
-import { claudexorOwnedRoot, noProjectRepoRoot, userConfigDir } from "@claudexor/util";
+import { dirname } from "node:path";
+import {
+  claudexorOwnedRoot,
+  noProjectRepoRoot,
+  projectRuntimeDir,
+  userConfigDir,
+} from "@claudexor/util";
 import { sweepOrphanLanes } from "@claudexor/workspace";
 import type { NativeRetentionRequest, NativeRetentionResult } from "./native-home-retention.js";
 import { retentionProjects } from "./retention-projects.js";
@@ -154,11 +160,31 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       const references = await deps.threads.retentionReferences(previewPurged, signal);
       try {
         const healthyRoots = new Set(references.blocked ? [] : deps.threads.healthyProjectRoots());
-        const inventoryErrors = [...(references.errors ?? [])];
-        const inventoryHolds = [...(references.holds ?? [])];
+        const inventoryErrors: string[] = [];
+        const inventoryHolds: ControlGcReceipt["holds"] = [];
         const laneHold = (example: string) =>
           inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
         const heldRoots = new Set(references.protectedProjectRoots);
+        const changedRoots = new Set<string>();
+        const projectHeld = (project: { root: string; runsDir: string }) => {
+          for (const root of references.heldProjectRoots ?? []) {
+            if (project.root !== root && dirname(project.runsDir) !== projectRuntimeDir(root))
+              continue;
+            heldRoots.add(project.root);
+            if (!changedRoots.has(root)) {
+              changedRoots.add(root);
+              inventoryHolds.push({
+                class: "references_changed",
+                count: 1,
+                example: `project registration changed: ${root}; namespace kept until next pass`,
+              });
+            }
+            return true;
+          }
+          if (!references.protectedProjectRoots.has(project.root)) return false;
+          heldRoots.add(project.root);
+          return true;
+        };
         const gcProjects = await retentionProjects(
           references,
           noProjectRoot,
@@ -199,7 +225,8 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
                       .map((thread) => thread.id),
                   );
                 // No yield between the live read and the synchronous sweep.
-                sweepOrphanLanes(root, ids);
+                if (!projectHeld({ root, runsDir: `${projectRuntimeDir(root)}/runs` }))
+                  sweepOrphanLanes(root, ids);
               } catch (error) {
                 if (!laneProofCurrent()) {
                   inventoryErrors.push(deferred);
@@ -227,6 +254,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             referencedRunIds: () => references.referencedRunIds,
             referencesCurrent: references.recheck ?? references.isCurrent,
             refreshReferences: references.refresh,
+            projectHeld,
             maxDeletionsPerPass: deps.maxDeletionsPerPass,
             onTruncated: () => {
               morePending = true;
@@ -245,9 +273,10 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           },
         );
         receipt.held.roots = heldRoots.size;
-        receipt.holds.push(...inventoryHolds);
+        const reportedGenerationHolds = references.holds?.length ?? 0;
+        receipt.holds.push(...(references.holds ?? []), ...inventoryHolds);
         const unclassified = [...heldRoots].filter(
-          (root) => !references.protectedProjectRoots.has(root),
+          (root) => !references.protectedProjectRoots.has(root) && !changedRoots.has(root),
         );
         if (unclassified.length && !references.blocked)
           receipt.holds.push({
@@ -273,7 +302,13 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           receipt.held.native_homes = native.heldHomes ?? 0;
           if (request.native_home_report) receipt.native_homes = native.reports;
         }
-        receipt.errors.unshift(...leftovers.errors, ...trash.errors, ...inventoryErrors);
+        receipt.holds.push(...(references.holds?.slice(reportedGenerationHolds) ?? []));
+        receipt.errors.unshift(
+          ...leftovers.errors,
+          ...trash.errors,
+          ...(references.errors ?? []),
+          ...inventoryErrors,
+        );
         if (request.trash_purge_report) {
           receipt.purged_threads = trash.purged;
           receipt.purge_leftovers = leftovers.finished;

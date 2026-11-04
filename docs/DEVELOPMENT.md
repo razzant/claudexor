@@ -345,6 +345,14 @@ the system ones, so CI and other machines work unchanged:
   `docs/ARCHITECTURE.md`. The prepend is skipped when the daemon's own Node is
   the at-risk build.
 
+### Retention changes
+
+Exercise concurrent registration, relink/removal, late continuation/session ownership and
+recovery through the real SQL observer. Prove both unrelated cleanup progress and preservation
+of newly owned bytes; an unreadable changed owner must stay latched after its queue entry is
+consumed. Keep the [retention contract](ARCHITECTURE.md#7-control-api) and storage FEATURES row
+with the implementation.
+
 ### Deterministic / hermetic testing
 
 Tests and local smokes must never touch real user state:

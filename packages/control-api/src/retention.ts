@@ -69,6 +69,8 @@ export interface RetentionDeps {
   referencedRunIds: () => Set<string>;
   /** Fresh proof that asynchronous inventory still describes the SQL owners. */
   referencesCurrent?: () => boolean;
+  /** A changed registration holds its namespace, not unrelated candidates. */
+  projectHeld?: (project: RetentionProject) => boolean;
   /** Reread changed owners cooperatively before the synchronous final proof. */
   refreshReferences?: () => Promise<void>;
   now?: () => number;
@@ -184,6 +186,7 @@ export async function runRetentionPass(
     if (deps.signal?.aborted) break;
     await refreshProof();
     if (!proofCurrent()) break;
+    if (deps.projectHeld?.(project)) continue;
     await recoverPending(project.runsDir, "runs", project.root);
     if (truncated || deps.signal?.aborted) break;
     const candidates: {
@@ -197,6 +200,7 @@ export async function runRetentionPass(
       await yieldToAdmission();
       await refreshProof();
       if (!proofCurrent()) break runProjects;
+      if (deps.projectHeld?.(project)) continue runProjects;
       const root = join(project.runsDir, runId);
       if (existsSync(join(root, TOMBSTONE))) continue; // already reclaimed
       examined += 1;
@@ -244,6 +248,7 @@ export async function runRetentionPass(
           );
         await refreshProof();
         if (!proofCurrent()) break runProjects;
+        if (deps.projectHeld?.(project)) continue runProjects;
         // Re-read every mutable filesystem guard after the asynchronous walk.
         // SQL-backed callers reread changed owners; older embedders
         // without that proof supply fresh references/records here instead.
@@ -306,10 +311,11 @@ export async function runRetentionPass(
     if (truncated || deps.signal?.aborted) break;
   }
 
-  for (const project of projects) {
+  reviewProjects: for (const project of projects) {
     await yieldToAdmission();
     await refreshProof();
     if (!proofCurrent()) break;
+    if (deps.projectHeld?.(project)) continue;
     // No reviews dir (the no-project root has none) — skip THIS project only.
     // Checked BEFORE the cap so a project with nothing to sweep never makes
     // the pass claim it was truncated.
@@ -352,6 +358,7 @@ export async function runRetentionPass(
         if (!dryRun) retirement = await prepareRetirement(reviewsDir, name, null);
         await refreshProof();
         if (!proofCurrent()) break;
+        if (deps.projectHeld?.(project)) continue reviewProjects;
         const currentFence = canonicalInRepoReviewsDir(project);
         if (
           currentFence.verdict !== "ok" ||
@@ -383,7 +390,12 @@ export async function runRetentionPass(
     }
   }
   let namedAnchors: Set<string> | undefined;
-  if (!deps.anchorsHeld && !invalidated && !deps.signal?.aborted) {
+  if (
+    !deps.anchorsHeld &&
+    !projects.some((project) => deps.projectHeld?.(project)) &&
+    !invalidated &&
+    !deps.signal?.aborted
+  ) {
     try {
       namedAnchors = await survivingAnchorIds(
         projects,
@@ -407,6 +419,7 @@ export async function runRetentionPass(
       if (invalidated || deps.signal?.aborted) break;
       await refreshProof();
       if (!proofCurrent()) break;
+      if (deps.projectHeld?.(project)) continue;
       if (namedAnchors)
         freedBytes += await pruneRunAnchors({
           runtime: dirname(project.runsDir),
@@ -414,7 +427,7 @@ export async function runRetentionPass(
           cutoff: runCutoff,
           dryRun,
           planned: plannedUnlinks,
-          current: proofCurrent,
+          current: () => proofCurrent() && !projects.some((item) => deps.projectHeld?.(item)),
           signal: deps.signal,
         });
       freedBytes += await prunePatchObjects(
@@ -433,7 +446,7 @@ export async function runRetentionPass(
       freedBytes += (
         await pruneProjectObjectStore(dirname(project.runsDir), { dryRun, retiredOwners })
       ).freedBytes;
-      if (!dryRun && proofCurrent())
+      if (!dryRun && proofCurrent() && !deps.projectHeld?.(project))
         pruneEmptyRuntimeDirectories(
           dirname(project.runsDir),
           Date.parse(startedAt),

@@ -105,7 +105,7 @@ it("names the root when live lane ownership cannot be read", async () => {
 });
 
 it.each(["before-loop", "during-loop"])(
-  "defers lanes once after topology changes %s",
+  "sweeps unrelated lanes after project insertion %s",
   async (when) => {
     const lanes: string[] = [];
     for (let i = 0; i < 12; i++) {
@@ -155,10 +155,8 @@ it.each(["before-loop", "during-loop"])(
       hasPurgeLeftovers: () => false,
     });
     const receipt = await gc({ dry_run: false });
-    expect(receipt.errors.filter((error) => error.startsWith("lane sweep"))).toEqual([
-      expect.stringContaining("lane sweep deferred"),
-    ]);
-    for (const lane of lanes) expect(existsSync(lane)).toBe(true);
+    expect(receipt.errors.filter((error) => error.startsWith("lane sweep"))).toEqual([]);
+    for (const lane of lanes) expect(existsSync(lane)).toBe(false);
     expect(existsSync(held)).toBe(true);
     const resumed = await gc({ dry_run: false });
     expect(resumed.errors).toEqual([]);

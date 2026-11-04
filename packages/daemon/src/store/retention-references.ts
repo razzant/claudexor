@@ -37,6 +37,8 @@ export interface DiskRetentionReferences {
   /** Archived-only registrations need an extant root to own recent history. */
   archivedProjectRoots?: Set<string>;
   protectedProjectRoots: Set<string>;
+  /** Registration changes hold only these roots until the next keep-last inventory. */
+  heldProjectRoots?: ReadonlySet<string>;
   referencedRunIds: Set<string>;
   nativeSessions: Map<string, Set<string>>;
   records: Array<{ runId: string; state: string; finishedAt?: string }>;
@@ -114,6 +116,7 @@ export async function diskRetentionReferences(
     const { registeredProjectRoots, archivedProjectRoots, protectedProjectRoots, errors, blocked } =
       generations;
     const roots = new Set([...registeredProjectRoots, ...protectedProjectRoots]);
+    const heldProjectRoots = new Set<string>();
     const retained = blocked ? () => false : generations.retained;
     const reader = new RetentionReferenceReader(store, ignoreThreadIds, retained);
     for await (const rows of retentionPages<{
@@ -165,6 +168,7 @@ export async function diskRetentionReferences(
     const readChange = ({
       table,
       id,
+      roots: changedRoots,
     }: Parameters<Parameters<typeof changesObserved.current>[0]>[0]) => {
       if (table === "command") commands.refresh(id);
       else if (table === "deferred_message") refreshDraft(id);
@@ -178,9 +182,13 @@ export async function diskRetentionReferences(
           throw new Error(
             `immutable retention command ${owner.id} in partition ${owner.pid}: params blob ${id} changed during inventory`,
           );
-      } else if (table !== "project" && table !== "partition") reader.refresh(table, id);
+      } else if (table === "project") {
+        for (const root of changedRoots) heldProjectRoots.add(root);
+        generations.refreshProject(id);
+      } else if (table === "partition") generations.refreshPartition(Number(id));
+      else reader.refresh(table, id);
     };
-    const recheck = () => changesObserved.current(readChange);
+    const recheck = () => changesObserved.current(readChange) && !generations.blocked;
     const refresh = () => changesObserved.refresh(readChange, signal);
     await refresh();
     for (const root of reader.roots) roots.add(root);
@@ -199,13 +207,16 @@ export async function diskRetentionReferences(
       nativeReferenceError: commands.nativeReferenceError,
       hasActiveCommands: commands.hasActiveCommands,
       close: changesObserved.close,
-      blocked,
+      get blocked() {
+        return generations.blocked;
+      },
       errors,
       holds: generations.holds,
       projectRoots: [...roots],
       registeredProjectRoots,
       archivedProjectRoots,
       protectedProjectRoots,
+      heldProjectRoots,
       referencedRunIds: reader.runs,
       records: commands.records,
       nativeSessions: reader.sessions,
