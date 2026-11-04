@@ -7924,6 +7924,17 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   projections. Within that turn-start path, each post-await result is accepted
   only for that client/generation, while the explicitly offline thread-summary
   cache remains a separate lifetime.
+- Each `GatewayClient` (local or remote) holds its long-lived SSE (run events,
+  the global journal including the Accounts quota observer, setup jobs) in a
+  connection pool of its own, created from the request session's configuration
+  and released with the client; ordinary requests (history, runs, controls)
+  never queue behind open streams. The platform's per-host limit (6 observed
+  for loopback HTTP/1.1 on macOS 26.4) still applies among streams: a stream
+  beyond it waits for another stream to end, and the request timeout and the
+  stream's reconnect policy still apply to that wait. Opening or switching a
+  thread reads its history at once; the global run-list reconciliation for the
+  previous selection runs beside that read, and when `/v2/runs` answers it
+  preserves the off-page family of the local thread selected at that moment.
 - Delegate readiness comes from each harness row's engine-owned `delegation`
   projection. Run summaries carry the requested/effective/used/reason/remediation outcome
   and the narrow `delegatedFromRunId` child link. The exact composer and run-row

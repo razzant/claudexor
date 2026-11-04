@@ -44,17 +44,24 @@ extension AppModel {
             return
         }
         pendingRemoteThreadSelection = nil
-        if locationID == .local, runListReconciliationNeeded {
-            let successes = successfulRunsRefreshes
-            await refreshRuns()
-            if successfulRunsRefreshes > successes { runListReconciliationNeeded = false }
-        }
-        guard selectedHistory === history else { return }
+        // The global run-list reconciliation never gates this thread's page: it
+        // runs beside the read and settles before eviction. Its refresh takes
+        // the preserved family from the selection current when /runs answers.
+        async let reconciliation: Void = reconcileRunList(at: locationID)
         await history.open()
         guard selectedHistory === history else { return }
         await loadHistoryDelegates(history)
         if let reason = history.errorMessage { threadStatus = "Could not load thread: \(reason)" }
+        await reconciliation
         evictBackgroundRunData()
+    }
+
+    /// One bounded global refresh after a selection change; failure keeps it due.
+    private func reconcileRunList(at locationID: ExecutionLocationID) async {
+        guard locationID == .local, runListReconciliationNeeded else { return }
+        let successes = successfulRunsRefreshes
+        await refreshRuns()
+        if successfulRunsRefreshes > successes { runListReconciliationNeeded = false }
     }
 
     func startDraftThread() {
