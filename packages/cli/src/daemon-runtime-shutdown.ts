@@ -29,6 +29,40 @@ export interface DaemonRuntimeShutdownOptions {
   drainGraceMs?: number;
 }
 
+/** The cleanup claudexord composes into its daemon participant. Accessors read
+ * the current owner at stop time: storage recovery and admission replace both. */
+export interface ProductionDaemonStopOptions {
+  abort(): void;
+  server(): RuntimeStopParticipant;
+  closeModels(): void;
+  stopRetention(): Promise<void>;
+  opening(): Promise<void> | null;
+}
+
+/** The daemon participant production shutdown installs. `server.stop()` comes
+ * first: its synchronous prefix is the daemon's admission fence, so no new command
+ * is accepted while an in-flight retention pass drains. Every cleanup is
+ * started and held in the same turn, so a failed stop has a handler at once and
+ * still fails the shutdown (keeping the journal open) after the others settle. */
+export function productionDaemonStop(options: ProductionDaemonStopOptions): RuntimeStopParticipant {
+  return {
+    stop: async () => {
+      options.abort();
+      const results = await Promise.allSettled(
+        [() => options.server().stop(), options.closeModels, options.stopRetention].map(
+          async (step) => step(),
+        ),
+      );
+      await options.opening()?.catch(() => {});
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason as unknown] : [],
+      );
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "daemon stop cleanup failed");
+    },
+  };
+}
+
 /**
  * THE daemon shutdown state machine (W3.5): every trigger — OS signal,
  * socket-RPC stop, startup failure, test dispose — enters through
