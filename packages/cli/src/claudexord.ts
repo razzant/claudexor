@@ -41,7 +41,7 @@ import { createSetupJobManager } from "./setup-jobs.js";
 import { bustLoginCredentialState } from "./credential-status-invalidation.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
-import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
+import { DaemonRuntimeShutdown, productionDaemonStop } from "./daemon-runtime-shutdown.js";
 import { quotaRefreshers } from "./quota-refreshers.js";
 import {
   dispatchClaudexordEntry,
@@ -272,15 +272,13 @@ export async function main(): Promise<void> {
       !existsSync(join(daemonDir(), "engine.sqlite")) && existsSync(join(daemonDir(), "journal"));
     if (process.env.CLAUDEXOR_NO_CONTROL_API !== "1" || importing) control = makeControl();
     shutdown = new DaemonRuntimeShutdown({
-      daemon: {
-        stop: async () => {
-          abort.abort();
-          await stopRetention();
-          executors?.models.close();
-          await server.stop();
-          await opening?.catch(() => {});
-        },
-      },
+      daemon: productionDaemonStop({
+        abort: () => abort.abort(),
+        server: () => server,
+        closeModels: () => executors?.models.close(),
+        stopRetention: () => stopRetention(),
+        opening: () => opening,
+      }),
       setup: {
         hasActiveWork: () => {
           if (!setup) throw recoveryOnlyRefusal("setup activity");

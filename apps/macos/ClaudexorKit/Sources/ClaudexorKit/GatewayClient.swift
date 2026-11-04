@@ -7,13 +7,23 @@ public final class GatewayClient: Sendable {
     private let baseURL: URL
     private let token: String
     let session: URLSession
+    /// Long-lived SSE get their own connection pool, configured like `session`,
+    /// so open streams never hold the connections ordinary requests need.
+    /// This client owns it; the caller's `session` is never invalidated here.
+    /// Only the configuration is copied: no caller sets a session delegate, and
+    /// every request, stream or not, carries its own bearer header.
+    let streamSession: URLSession
     let accountResourceCapabilityCache = AccountResourceCapabilityCache()
 
     public init(baseURL: URL, token: String, session: URLSession = .shared) {
         self.baseURL = baseURL
         self.token = token
         self.session = session
+        self.streamSession = URLSession(configuration: session.configuration)
     }
+
+    // Every stream task retains its client, so no live stream remains here.
+    deinit { streamSession.invalidateAndCancel() }
 
     func request(_ path: String, method: String, timeout: TimeInterval? = nil,
                  queryItems: [URLQueryItem] = []) -> URLRequest {
@@ -446,9 +456,10 @@ public final class GatewayClient: Sendable {
         }
     }
 
-    /// Raw byte-level frame stream shared by run and setup consumers. Keeping
-    /// this below the DTO wrappers prevents the `AsyncBytes.lines` empty-line
-    /// regression from returning through a second SSE implementation.
+    /// Raw byte-level frame stream shared by run, global and setup consumers.
+    /// Keeping this below the DTO wrappers prevents the `AsyncBytes.lines`
+    /// empty-line regression from returning through a second SSE implementation.
+    /// It is the only `streamSession` caller; every other request uses `session`.
     func sseFrames(path: String, lastEventId: String?) -> AsyncThrowingStream<SSEFrame, Error> {
         AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
             let task = Task {
@@ -456,7 +467,7 @@ public final class GatewayClient: Sendable {
                     var req = self.request(path, method: "GET")
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     if let last = lastEventId { req.setValue(last, forHTTPHeaderField: "Last-Event-ID") }
-                    let (bytes, resp) = try await self.session.bytes(for: req)
+                    let (bytes, resp) = try await self.streamSession.bytes(for: req)
                     guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                         let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
                         throw GatewayError.http(status: status, body: "events stream failed")
