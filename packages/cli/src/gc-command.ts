@@ -31,6 +31,9 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
         `${last.outcome}: ${last.started_at} to ${last.finished_at}; freed ${last.freed_bytes} bytes`,
       );
       print(
+        `last completed: ${last.last_completed_at ?? "unknown"}; failed/held streak: ${last.failed_or_held_streak}`,
+      );
+      print(
         `kept ${Object.entries(last.kept)
           .map(([reason, count]) => `${reason}=${count}`)
           .join(" ")}; held roots=${last.held.roots} native_homes=${last.held.native_homes}`,

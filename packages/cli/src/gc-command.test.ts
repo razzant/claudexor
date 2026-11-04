@@ -142,6 +142,8 @@ describe("gcCommand data_root_report capability negotiation", () => {
       outcome: "held",
       started_at: RECEIPT.started_at,
       finished_at: RECEIPT.finished_at,
+      last_completed_at: "2026-08-07T00:00:00.000Z",
+      failed_or_held_streak: 3,
       freed_bytes: 42,
       kept: { referenced: 3 },
       held: { roots: 2, native_homes: 1 },
@@ -162,6 +164,7 @@ describe("gcCommand data_root_report capability negotiation", () => {
     const out = stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("");
     for (const text of [
       "held:",
+      `last completed: ${last.last_completed_at}; failed/held streak: 3`,
       last.started_at,
       last.finished_at,
       "42 bytes",

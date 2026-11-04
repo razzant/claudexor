@@ -56,20 +56,17 @@ export function createNativeHomeRetention(deps: {
           (await deps.threads.retentionReferences(request.ignoredThreadIds, request.signal));
         if (!request.references) closeReferences = () => snapshot.close?.();
         request.signal?.throwIfAborted();
-        if (snapshot.blocked) throw new Error(snapshot.blocked);
-        if (snapshot.protectedProjectRoots.size)
-          throw new Error(
-            `native homes kept: ${(snapshot.errors ?? [...snapshot.protectedProjectRoots]).join("; ")}`,
-          );
         const seenRunDirs = new Set<string>();
         references = snapshot.nativeSessions;
         canPrune = () => {
-          if (
-            request.signal?.aborted ||
-            deps.isBusy() ||
-            !(snapshot.recheck ?? snapshot.isCurrent)()
-          )
-            return false;
+          if (request.signal?.aborted || deps.isBusy()) return false;
+          const current = (snapshot.recheck ?? snapshot.isCurrent)();
+          if (snapshot.blocked) throw new Error(snapshot.blocked);
+          if (snapshot.protectedProjectRoots.size)
+            throw new Error(
+              `native homes kept: ${(snapshot.errors ?? [...snapshot.protectedProjectRoots]).join("; ")}`,
+            );
+          if (!current) return false;
           const uncertainty = snapshot.nativeReferenceError?.();
           if (uncertainty) throw new Error(uncertainty);
           for (const run of snapshot.nativeWatchRunDirs ?? [])

@@ -25,7 +25,7 @@ const columns = {
   blob: ["sha256", "size", "inline"],
 } as const;
 type Table = keyof typeof columns;
-type Change = { table: Table; id: string; operation: string };
+type Change = { table: Table; id: string; roots: Set<string> };
 type Listener = (change: Change) => void;
 const observers = new WeakMap<EngineStore, Set<Listener>>();
 
@@ -33,11 +33,15 @@ function observe(store: EngineStore, listener: Listener): () => void {
   let listeners = observers.get(store);
   if (!listeners) {
     const targets = new Set<Listener>();
-    store.db.function("disk_retention_changed", (table, id, operation) => {
+    store.db.function("disk_retention_changed", (table, id, root) => {
       // Node 24.15 truncates TEXT at NUL; interaction keys must arrive as bytes.
       const decodedId = Buffer.from(id as Uint8Array).toString("utf8");
       for (const target of targets)
-        target({ table: table as Table, id: decodedId, operation: String(operation) });
+        target({
+          table: table as Table,
+          id: decodedId,
+          roots: new Set(root === null ? [] : [Buffer.from(root as Uint8Array).toString("utf8")]),
+        });
       return null;
     });
     for (const [table, fields] of Object.entries(columns)) {
@@ -54,7 +58,7 @@ function observe(store: EngineStore, listener: Listener): () => void {
           operation === "UPDATE" ? ["OLD", "NEW"] : [operation === "DELETE" ? "OLD" : "NEW"];
         store.exec(`CREATE TEMP TRIGGER disk_retention_${table}_${operation}
           AFTER ${operation} ON main.${table} ${changed} BEGIN
-          ${rows.map((row) => `SELECT disk_retention_changed('${table}',CAST(${row}.${key} AS BLOB),'${operation}');`).join("\n")}
+          ${rows.map((row) => `SELECT disk_retention_changed('${table}',CAST(${row}.${key} AS BLOB),${table === "project" ? `CAST(${row}.root AS BLOB)` : "NULL"});`).join("\n")}
           END`);
       }
     }
@@ -70,10 +74,11 @@ function observe(store: EngineStore, listener: Listener): () => void {
 export function retentionChanges(store: EngineStore) {
   const pending = new Map<string, Change>();
   let closed = false;
-  let topologyChanged = false;
+  let readFailed = false;
   const stop = observe(store, (change) => {
-    pending.set(`${change.table}:${change.id}`, change);
-    if (change.table === "project" || change.table === "partition") topologyChanged = true;
+    const key = `${change.table}:${change.id}`;
+    for (const root of pending.get(key)?.roots ?? []) change.roots.add(root);
+    pending.set(key, change);
   });
   const readOne = (key: string, read: (change: Change) => void) => {
     const change = pending.get(key);
@@ -82,7 +87,7 @@ export function retentionChanges(store: EngineStore) {
     try {
       read(change);
     } catch (error) {
-      topologyChanged = true;
+      readFailed = true;
       throw error;
     }
   };
@@ -97,12 +102,12 @@ export function retentionChanges(store: EngineStore) {
       }
     },
     current(read: (change: Change) => void) {
-      if (closed || topologyChanged) return false;
+      if (closed || readFailed) return false;
       // Same physical read budget as a SQL inventory page. An exceptional
       // burst stays for the next cooperative pass, never a long admission lock.
       if (pending.size > 100) return false;
       for (const key of pending.keys()) readOne(key, read);
-      return !topologyChanged;
+      return !readFailed;
     },
     close() {
       closed = true;

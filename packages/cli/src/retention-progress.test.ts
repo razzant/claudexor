@@ -136,7 +136,13 @@ it("makes bounded progress under a stream of real thread, quota and command meta
   }
 });
 
-it.each(["thread", "continuation", "active run", "pending interaction"])(
+it.each([
+  "thread",
+  "continuation",
+  "active run",
+  "pending interaction",
+  "new partition continuation",
+])(
   "rereads a new %s owner after retirement preparation while retiring its neighbor",
   async (kind) => {
     const held = oldRun("held");
@@ -163,12 +169,27 @@ it.each(["thread", "continuation", "active run", "pending interaction"])(
             .run(pid, Buffer.from("{}")),
         );
       } else {
-        const commands = sql.graph.commands.current();
+        const scope =
+          kind === "new partition continuation"
+            ? { kind: "project", root: join(root, "late-project") }
+            : undefined;
+        if (scope) {
+          mkdirSync(scope.root);
+          sql.graph.projects.register({
+            root: scope.root,
+            idempotencyKey: "late",
+            clientId: "fixture",
+          });
+        }
+        const commands = scope
+          ? sql.graph.commands.forRequest({ scope })
+          : sql.graph.commands.current();
         commands.accept({
           id: "new-owner",
           params: {
             prompt: "use the evidence",
-            ...(kind === "continuation" ? { continueFrom: "held" } : {}),
+            ...(kind === "continuation" || scope ? { continueFrom: "held" } : {}),
+            ...(scope ? { scope } : {}),
           },
           idempotencyKey: "new-owner",
           clientId: "fixture",
@@ -198,6 +219,11 @@ it("keeps remaining candidates when a changed reference owner becomes unreadable
   const receipt = await runner()({ dry_run: false });
   expect(receipt.deleted_runs).toEqual([]);
   expect(receipt.errors.join()).toContain("reference refresh failed");
+  expect(receipt.holds).toContainEqual({
+    class: "references_changed",
+    count: 1,
+    example: expect.stringContaining(thread.id),
+  });
   expect(existsSync(join(held, "final", "failure.yaml"))).toBe(true);
 });
 
@@ -241,4 +267,31 @@ it("stops a scheduled pass promptly and resumes its remaining candidates", async
   } finally {
     await stop();
   }
+});
+
+it("holds a root registered after keep-last inventory while retiring an unrelated root", async () => {
+  const held = oldRun("register-mid-pass");
+  const neighbor = new ArtifactStore(join(root, "neighbor")).createRun("unrelated").root;
+  writeFileSync(join(neighbor, "final", "failure.yaml"), "terminal failure");
+  utimesSync(neighbor, new Date("2020-01-01"), new Date("2020-01-01"));
+  hook.afterPrepare = (name) => {
+    if (name !== "register-mid-pass") return;
+    const repo = join(root, "orphan");
+    mkdirSync(repo);
+    sql.graph.projects.register({ root: repo, idempotencyKey: "late", clientId: "test" });
+  };
+  const receipt = await runner()({ dry_run: false });
+  expect(receipt.deleted_runs.map((run) => run.run_id)).toEqual(["unrelated"]);
+  expect(receipt.held.roots).toBe(1);
+  expect(receipt.holds.some((hold) => hold.class === "namespace_unreadable")).toBe(false);
+  expect(receipt.holds).toContainEqual({
+    class: "references_changed",
+    count: 1,
+    example: expect.stringContaining("project registration changed"),
+  });
+  expect(existsSync(join(held, "final", "failure.yaml"))).toBe(true);
+  hook.afterPrepare = undefined;
+  const next = await runner()({ dry_run: false });
+  expect(next.kept.recent).toBe(1);
+  expect(next.held.roots).toBe(0);
 });

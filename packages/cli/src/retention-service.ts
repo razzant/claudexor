@@ -13,7 +13,13 @@ import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import type { ControlGcReceipt, ControlGcRequest, Thread } from "@claudexor/schema";
 import { findActiveThreadRun, runRetentionPass } from "@claudexor/control-api";
 import { loadConfig } from "@claudexor/config";
-import { claudexorOwnedRoot, noProjectRepoRoot, userConfigDir } from "@claudexor/util";
+import { dirname } from "node:path";
+import {
+  claudexorOwnedRoot,
+  noProjectRepoRoot,
+  projectRuntimeDir,
+  userConfigDir,
+} from "@claudexor/util";
 import { sweepOrphanLanes } from "@claudexor/workspace";
 import type { NativeRetentionRequest, NativeRetentionResult } from "./native-home-retention.js";
 import { retentionProjects } from "./retention-projects.js";
@@ -154,11 +160,31 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       const references = await deps.threads.retentionReferences(previewPurged, signal);
       try {
         const healthyRoots = new Set(references.blocked ? [] : deps.threads.healthyProjectRoots());
-        const inventoryErrors = [...(references.errors ?? [])];
-        const inventoryHolds = [...(references.holds ?? [])];
+        const inventoryErrors: string[] = [];
+        const inventoryHolds: ControlGcReceipt["holds"] = [];
         const laneHold = (example: string) =>
           inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
         const heldRoots = new Set(references.protectedProjectRoots);
+        const changedRoots = new Set<string>();
+        const projectHeld = (project: { root: string; runsDir: string }) => {
+          for (const root of references.heldProjectRoots ?? []) {
+            if (project.root !== root && dirname(project.runsDir) !== projectRuntimeDir(root))
+              continue;
+            heldRoots.add(project.root);
+            if (!changedRoots.has(project.root)) {
+              changedRoots.add(project.root);
+              inventoryHolds.push({
+                class: "references_changed",
+                count: 1,
+                example: `project registration changed: ${root}; namespace kept until next pass`,
+              });
+            }
+            return true;
+          }
+          if (!references.protectedProjectRoots.has(project.root)) return false;
+          heldRoots.add(project.root);
+          return true;
+        };
         const gcProjects = await retentionProjects(
           references,
           noProjectRoot,
@@ -167,13 +193,9 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           signal,
           heldRoots,
         );
-        // Lane sweeping still uses only served healthy roots; archived lanes can
-        // belong to retained threads invisible to the public listing.
-        const roots = [...healthyRoots, noProjectRoot].filter((root) => !heldRoots.has(root));
-        // INV-034 lifecycle owner (c): remove durable per-lane read-only homes whose
-        // thread no longer exists. Bounded to HEALTHY roots only (same fail-closed
-        // set as the run GC): a recovery-pending partition cannot
-        // supply live ownership and is excluded until recovery completes. Skip in dry-run — a GC preview must not delete bytes.
+        // The namespace inventory finds the last orphan even after its root's
+        // last thread is purged. Archived/quarantined registrations keep lanes;
+        // healthy and unregistered namespaces use the shared live ownership proof.
         if (!request.dry_run && !references.blocked) {
           const laneProofCurrent = references.recheck ?? references.isCurrent;
           const deferred =
@@ -182,28 +204,38 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             inventoryErrors.push(deferred);
             laneHold(deferred);
           } else
-            for (const root of roots) {
+            for (const project of gcProjects) {
+              const { root } = project;
+              const runtime = dirname(project.runsDir);
+              if (!healthyRoots.has(root) && references.registeredProjectRoots.has(root)) continue;
               await yieldToAdmission();
               if (signal.aborted) break;
               try {
                 const ids =
-                  references.laneThreadIds?.(root) ??
+                  references.laneThreadIds?.(root, runtime) ??
                   new Set(
                     deps.threads
                       .listThreads()
                       .filter(
                         (thread) =>
                           thread.state !== "purged" &&
-                          (thread.repo?.root ?? noProjectRoot) === root,
+                          projectRuntimeDir(thread.repo?.root ?? noProjectRoot) === runtime,
                       )
                       .map((thread) => thread.id),
                   );
                 // No yield between the live read and the synchronous sweep.
-                sweepOrphanLanes(root, ids);
+                if (
+                  projectHeld(project) ||
+                  [...(references.protectedLaneRoots ?? [])].some(
+                    (held) => projectRuntimeDir(held) === runtime,
+                  )
+                )
+                  continue;
+                sweepOrphanLanes(runtime, ids);
               } catch (error) {
                 if (!laneProofCurrent()) {
                   inventoryErrors.push(deferred);
-                  laneHold(deferred);
+                  laneHold(`${deferred}: ${String(error)}`);
                   break;
                 }
                 const detail = `lane sweep skipped for ${root}: ${String(error)}`;
@@ -227,6 +259,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             referencedRunIds: () => references.referencedRunIds,
             referencesCurrent: references.recheck ?? references.isCurrent,
             refreshReferences: references.refresh,
+            projectHeld,
             maxDeletionsPerPass: deps.maxDeletionsPerPass,
             onTruncated: () => {
               morePending = true;
@@ -245,9 +278,10 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           },
         );
         receipt.held.roots = heldRoots.size;
-        receipt.holds.push(...inventoryHolds);
+        const reportedGenerationHolds = references.holds?.length ?? 0;
+        receipt.holds.push(...(references.holds ?? []), ...inventoryHolds);
         const unclassified = [...heldRoots].filter(
-          (root) => !references.protectedProjectRoots.has(root),
+          (root) => !references.protectedProjectRoots.has(root) && !changedRoots.has(root),
         );
         if (unclassified.length && !references.blocked)
           receipt.holds.push({
@@ -273,7 +307,13 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           receipt.held.native_homes = native.heldHomes ?? 0;
           if (request.native_home_report) receipt.native_homes = native.reports;
         }
-        receipt.errors.unshift(...leftovers.errors, ...trash.errors, ...inventoryErrors);
+        receipt.holds.push(...(references.holds?.slice(reportedGenerationHolds) ?? []));
+        receipt.errors.unshift(
+          ...leftovers.errors,
+          ...trash.errors,
+          ...(references.errors ?? []),
+          ...inventoryErrors,
+        );
         if (request.trash_purge_report) {
           receipt.purged_threads = trash.purged;
           receipt.purge_leftovers = leftovers.finished;
