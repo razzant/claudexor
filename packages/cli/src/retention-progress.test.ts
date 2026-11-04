@@ -278,6 +278,7 @@ it("holds a root registered after keep-last inventory while retiring an unrelate
   const receipt = await runner()({ dry_run: false });
   expect(receipt.deleted_runs.map((run) => run.run_id)).toEqual(["unrelated"]);
   expect(receipt.held.roots).toBe(1);
+  expect(receipt.holds.some((hold) => hold.class === "namespace_unreadable")).toBe(false);
   expect(receipt.holds).toContainEqual({
     class: "references_changed",
     count: 1,

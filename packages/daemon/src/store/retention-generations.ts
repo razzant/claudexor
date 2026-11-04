@@ -16,6 +16,19 @@ export function retentionGenerations(store: EngineStore) {
     registry_status: string | null;
   }>;
   const known = new Map(rows.map((row) => [row.id, row]));
+  const protectedLaneRoots = new Set<string>();
+  const refreshLaneRoots = (pid?: number) => {
+    for (const row of store
+      .prepare(
+        `SELECT p.root FROM project p
+      JOIN partition g ON g.id=p.pid LEFT JOIN partition q ON q.id=p.current_pid
+      WHERE (q.status='quarantined' OR g.status='quarantined')
+      ${pid === undefined ? "" : "AND (p.pid=? OR p.current_pid=?)"}`,
+      )
+      .all(...(pid === undefined ? [] : [pid, pid])) as Array<{ root: string }>)
+      protectedLaneRoots.add(row.root);
+  };
+  refreshLaneRoots();
   // A completed global quarantine also retires its project descendants. Their
   // own ready/archived/pending bits are historical, not an independent owner.
   const retired = (row: (typeof rows)[number]) =>
@@ -61,6 +74,7 @@ export function retentionGenerations(store: EngineStore) {
       (typeof rows)[number] | undefined;
     if (!row) throw new Error(`retention owner names missing partition ${pid}`);
     known.set(pid, row);
+    refreshLaneRoots(pid);
     observe(row);
     return row;
   };
@@ -98,6 +112,7 @@ export function retentionGenerations(store: EngineStore) {
     registeredProjectRoots,
     archivedProjectRoots,
     protectedProjectRoots,
+    protectedLaneRoots,
     errors,
     holds,
     get blocked() {

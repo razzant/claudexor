@@ -171,8 +171,8 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             if (project.root !== root && dirname(project.runsDir) !== projectRuntimeDir(root))
               continue;
             heldRoots.add(project.root);
-            if (!changedRoots.has(root)) {
-              changedRoots.add(root);
+            if (!changedRoots.has(project.root)) {
+              changedRoots.add(project.root);
               inventoryHolds.push({
                 class: "references_changed",
                 count: 1,
@@ -193,13 +193,9 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           signal,
           heldRoots,
         );
-        // Lane sweeping still uses only served healthy roots; archived lanes can
-        // belong to retained threads invisible to the public listing.
-        const roots = [...healthyRoots, noProjectRoot].filter((root) => !heldRoots.has(root));
-        // INV-034 lifecycle owner (c): remove durable per-lane read-only homes whose
-        // thread no longer exists. Bounded to HEALTHY roots only (same fail-closed
-        // set as the run GC): a recovery-pending partition cannot
-        // supply live ownership and is excluded until recovery completes. Skip in dry-run — a GC preview must not delete bytes.
+        // The namespace inventory finds the last orphan even after its root's
+        // last thread is purged. Archived/quarantined registrations keep lanes;
+        // healthy and unregistered namespaces use the shared live ownership proof.
         if (!request.dry_run && !references.blocked) {
           const laneProofCurrent = references.recheck ?? references.isCurrent;
           const deferred =
@@ -208,25 +204,34 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             inventoryErrors.push(deferred);
             laneHold(deferred);
           } else
-            for (const root of roots) {
+            for (const project of gcProjects) {
+              const { root } = project;
+              const runtime = dirname(project.runsDir);
+              if (!healthyRoots.has(root) && references.registeredProjectRoots.has(root)) continue;
               await yieldToAdmission();
               if (signal.aborted) break;
               try {
                 const ids =
-                  references.laneThreadIds?.(root) ??
+                  references.laneThreadIds?.(root, runtime) ??
                   new Set(
                     deps.threads
                       .listThreads()
                       .filter(
                         (thread) =>
                           thread.state !== "purged" &&
-                          (thread.repo?.root ?? noProjectRoot) === root,
+                          projectRuntimeDir(thread.repo?.root ?? noProjectRoot) === runtime,
                       )
                       .map((thread) => thread.id),
                   );
                 // No yield between the live read and the synchronous sweep.
-                if (!projectHeld({ root, runsDir: `${projectRuntimeDir(root)}/runs` }))
-                  sweepOrphanLanes(root, ids);
+                if (
+                  projectHeld(project) ||
+                  [...(references.protectedLaneRoots ?? [])].some(
+                    (held) => projectRuntimeDir(held) === runtime,
+                  )
+                )
+                  continue;
+                sweepOrphanLanes(runtime, ids);
               } catch (error) {
                 if (!laneProofCurrent()) {
                   inventoryErrors.push(deferred);

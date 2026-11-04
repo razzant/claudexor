@@ -1,3 +1,4 @@
+import { projectRuntimeDir } from "@claudexor/util";
 import { Thread, type GcHold } from "@claudexor/schema";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { access } from "node:fs/promises";
@@ -20,7 +21,7 @@ export interface DiskRetentionReferences {
   /** Native callers absorb the same changed owners before per-file rechecks. */
   nativeCurrent?: () => boolean;
   /** Pass-local ownership, refreshed synchronously at each lane sweep boundary. */
-  laneThreadIds?: (root: string) => Set<string>;
+  laneThreadIds?: (root: string, runtime?: string) => Set<string>;
   nativeRunDirs?: ReadonlySet<string>;
   nativeWatchRunDirs?: ReadonlySet<string>;
   nativeReferenceError?: () => string | null;
@@ -39,6 +40,8 @@ export interface DiskRetentionReferences {
   protectedProjectRoots: Set<string>;
   /** Registration changes hold only these roots until the next keep-last inventory. */
   heldProjectRoots?: ReadonlySet<string>;
+  /** Quarantined lane owners cannot supply a live thread inventory. */
+  protectedLaneRoots?: ReadonlySet<string>;
   referencedRunIds: Set<string>;
   nativeSessions: Map<string, Set<string>>;
   records: Array<{ runId: string; state: string; finishedAt?: string }>;
@@ -197,10 +200,10 @@ export async function diskRetentionReferences(
       refresh,
       recheck,
       nativeCurrent: recheck,
-      laneThreadIds: (root) => {
+      laneThreadIds: (root, runtime = projectRuntimeDir(root)) => {
         if (!recheck())
           throw new Error("lane ownership changed; a fresh retention pass must resume");
-        return reader.lanes.get(root) ?? new Set<string>();
+        return reader.lanes.get(runtime) ?? new Set<string>();
       },
       nativeRunDirs: commands.nativeRunDirs,
       nativeWatchRunDirs: commands.nativeWatchRunDirs,
@@ -217,6 +220,7 @@ export async function diskRetentionReferences(
       archivedProjectRoots,
       protectedProjectRoots,
       heldProjectRoots,
+      protectedLaneRoots: generations.protectedLaneRoots,
       referencedRunIds: reader.runs,
       records: commands.records,
       nativeSessions: reader.sessions,

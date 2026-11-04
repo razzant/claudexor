@@ -1,5 +1,5 @@
 import { Session, Thread, ThreadTurn } from "@claudexor/schema";
-import { noProjectRepoRoot } from "@claudexor/util";
+import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
 import type { EngineStore } from "./store.js";
 import { decodeBody } from "./thread-rows.js";
 
@@ -39,7 +39,7 @@ export class RetentionReferenceReader {
         `thread ${row.id} in partition ${row.pid}: retention state or identity disagrees`,
       );
     if (thread.repo) this.roots.add(thread.repo.root);
-    const root = thread.repo?.root ?? noProjectRepoRoot();
+    const root = projectRuntimeDir(thread.repo?.root ?? noProjectRepoRoot());
     const lanes = this.lanes.get(root) ?? new Set<string>();
     lanes.add(thread.id);
     this.lanes.set(root, lanes);
@@ -60,7 +60,7 @@ export class RetentionReferenceReader {
     )
       return;
     const thread = this.read("thread", row, () => Thread.parse(decodeBody(row)));
-    const root = thread.repo?.root ?? noProjectRepoRoot();
+    const root = projectRuntimeDir(thread.repo?.root ?? noProjectRepoRoot());
     const lanes = this.lanes.get(root) ?? new Set<string>();
     lanes.add(thread.id);
     this.lanes.set(root, lanes);

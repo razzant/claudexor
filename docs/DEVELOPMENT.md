@@ -350,7 +350,8 @@ the system ones, so CI and other machines work unchanged:
 Exercise concurrent registration, relink/removal, late continuation/session ownership and
 recovery through the real SQL observer. Prove both unrelated cleanup progress and preservation
 of newly owned bytes; an unreadable changed owner must stay latched after its queue entry is
-consumed. Keep the [retention contract](ARCHITECTURE.md#7-control-api) and storage FEATURES row
+consumed. Lane tests cover an unregistered namespace after its last thread/root record disappears,
+as well as a live ephemeral thread and quarantined/archived lane owners. Keep the [retention contract](ARCHITECTURE.md#7-control-api) and storage FEATURES row
 with the implementation.
 
 ### Deterministic / hermetic testing

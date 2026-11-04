@@ -83,9 +83,9 @@ it("names the root when live lane ownership cannot be read", async () => {
     const refs = await read(...args);
     return {
       ...refs,
-      laneThreadIds: (projectRoot) => {
+      laneThreadIds: (projectRoot, runtime) => {
         if (projectRoot === repoRoot) throw new Error("root ownership cannot be read");
-        return refs.laneThreadIds!(projectRoot);
+        return refs.laneThreadIds!(projectRoot, runtime);
       },
     };
   });
@@ -137,12 +137,12 @@ it.each(["before-loop", "during-loop"])(
       else {
         const laneIds = refs.laneThreadIds!;
         let changed = false;
-        refs.laneThreadIds = (projectRoot) => {
+        refs.laneThreadIds = (projectRoot, runtime) => {
           if (!changed) {
             changed = true;
             changeTopology();
           }
-          return laneIds(projectRoot);
+          return laneIds(projectRoot, runtime);
         };
       }
       return refs;

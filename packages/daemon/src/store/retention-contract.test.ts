@@ -161,10 +161,10 @@ describe("SQL command retention contract", () => {
     const register = f.store.db.function.bind(f.store.db);
     vi.spyOn(f.store.db, "function").mockImplementation((name, callback) => {
       if (name !== "disk_retention_changed") return register(name, callback);
-      register(name, (table, id, operation) => {
+      register(name, (table, id, operation, root) => {
         changes.push({ table, id, operation });
         // Emulate Node 24.15's TEXT truncation on newer Node too; BLOBs stay intact.
-        return callback(table, typeof id === "string" ? id.split("\0")[0]! : id, operation);
+        return callback(table, typeof id === "string" ? id.split("\0")[0]! : id, operation, root);
       });
     });
     const refresh = vi.spyOn(RetentionReferenceReader.prototype, "refresh");
