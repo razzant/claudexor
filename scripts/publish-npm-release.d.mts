@@ -58,3 +58,14 @@ export interface ReconcileIo {
 /** `--reconcile <selection.json>`: reads and verifies selected earlier publications, never
  * publishing or moving a dist-tag; resolves to the process exit code. */
 export function reconcileNpmPublications(args: string[], io?: ReconcileIo): Promise<number>;
+
+/** Bounded network-only retry of one already-packed package; never repeats an
+ * acknowledged publish while waiting for registry exposure or provenance. */
+export function publishNpmPackage(
+  tarball: string,
+  expected: Omit<
+    PublishedProvenanceInput,
+    "metadata" | "attestationDocument" | "allowSameSourceRebuild"
+  >,
+  io?: ReconcileIo,
+): Promise<void>;
