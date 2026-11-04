@@ -1,0 +1,5 @@
+---
+"@claudexor/cli": patch
+---
+
+Every daemon stop now closes command admission before it waits for an in-flight retention pass (#603). A runtime-replacement receipt, `claudexor daemon stop` or a signal used to leave the daemon accepting new commands until that pass finished: a command sent over the socket, or an HTTP run start already past its first check, could be accepted and then cancelled. A new key that still reaches the daemon, in process or from an HTTP request already past that check, now refuses with `daemon_stopping`, and an already accepted key that reaches it replays its receipt. Once the listener has closed, a socket client gets a closed connection or `daemon_unavailable` instead, and no command is accepted. Running work is aborted without waiting for the pass, and a failed daemon stop still fails the shutdown and keeps the store open once the pass has settled. While the pass drains the socket is gone but the process and its writer lease are still alive, so a later `claudexord --stop` answers `runtime_activity_unknown` rather than proving the daemon stopped, and a restart still has to wait for the lease.

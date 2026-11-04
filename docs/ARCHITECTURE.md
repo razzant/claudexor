@@ -4949,12 +4949,22 @@ its queued/running/in-flight command authority, the composition root checks the
 setup authority, including terminal jobs whose process termination remains
 unconfirmed, and only an idle result enters `beginShutdown`, whose
 synchronous prefix fences setup, Control API, and daemon admission before any
-shutdown await. Busy is a retryable `runtime_replacement_busy`; unreadable or
+shutdown await. Every trigger shares that order: the daemon participant calls
+`DaemonServer.stop()` before it awaits an in-flight retention pass. An enqueue with
+a new key that still reaches the dispatcher, in process or from an HTTP request
+already past the gate, refuses `daemon_stopping`; an accepted key that reaches it
+replays its receipt. Once the listener has closed, a socket client gets a closed
+connection or `daemon_unavailable`, an outcome the daemon did not decide, and
+neither a refusal nor a replay reaches it. The listener closes while the pass
+drains and the process keeps the journal and writer lease; a live lease without a
+socket stays `runtime_activity_unknown` for a later caller, never permission to
+restart. Busy is a retryable `runtime_replacement_busy`; unreadable or
 missing authority is `runtime_activity_unknown`; either refusal leaves the
 serving daemon and every ingress open. A lost, untyped, or incompatible RPC
 response may passively prove that the pinned daemon exited, but only an exact
-`{ok:true,fenced:true}` admission receipt grants SIGKILL authority; uncertainty
-therefore cannot turn an old or newly busy daemon into a replacement casualty.
+`{ok:true,fenced:true,targetBound:true}` admission receipt grants SIGKILL
+authority; uncertainty therefore cannot turn an old or newly busy daemon into a
+replacement casualty.
 Explicit operator shutdown keeps its forceful semantics. The daemon records its
 birth identity in the writer lease at startup; `claudexor daemon stop` then CONFIRMS death
 (released lease, gone pid, or identity-verified SIGKILL escalation — a

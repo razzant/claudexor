@@ -10,10 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { inspectDaemonWriterLease } from "@claudexor/daemon";
+import { DaemonClient, inspectDaemonWriterLease } from "@claudexor/daemon";
 import { describe, expect, it } from "vitest";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 
@@ -53,7 +54,38 @@ if (isMainThread && step) {
     const alive = setInterval(() => {}, 1000);
     return new Promise((done) => process.once("SIGTERM", () => (clearInterval(alive), done())));
   };
-  if (step === "handshake") {
+  if (step === "retention-pass") {
+    // The REAL scheduled pass is admitted at once and held at its first awaited
+    // read; the real stop then waits for it through cancel and flight. A prompt
+    // naming the preflight hold stays past the HTTP gate until it is released.
+    const edit = (loaded, at, by) => {
+      const text = typeof loaded.source === "string" ? loaded.source : Buffer.from(loaded.source).toString("utf8");
+      if (text.split(at).length !== 2) throw new Error("retention observation point changed: " + at);
+      return { ...loaded, source: text.replace(at, by) };
+    };
+    const waitFor = async (name) => {
+      appendFileSync(process.env.CX_HOLD_MARK, name + "-held\n");
+      while (!existsSync(process.env.CX_HOLD_MARK + "." + name)) await new Promise((done) => setTimeout(done, 10));
+    };
+    globalThis.cxHold = waitFor;
+    registerHooks({
+      load(url, context, nextLoad) {
+        const loaded = nextLoad(url, context);
+        const pass = process.env.CX_HOLD_PASS === "1";
+        if (pass && url.endsWith("/retention-schedule.js"))
+          return edit(loaded, "opts.delayMs ?? 60_000", "opts.delayMs ?? 1");
+        if (pass && url.endsWith("/retention-service.js")) {
+          const read = "const maintenanceThreads = await deps.threads.retentionThreads(signal);";
+          return edit(loaded, read, "await globalThis.cxHold('retention');\n" + read);
+        }
+        if (url.endsWith("/run-start-preparation.js")) {
+          const next = "await services.validateResources?.(request.attachments ?? []);";
+          return edit(loaded, next, "if (request.prompt === 'cx603 held preflight') await globalThis.cxHold('preflight');\n" + next);
+        }
+        return loaded;
+      },
+    });
+  } else if (step === "handshake") {
     const realFetch = globalThis.fetch;
     globalThis.fetch = async (url, init) => {
       if (!armed || !String(init?.body ?? "").includes('"client":"claudexord-startup"'))
@@ -245,24 +277,25 @@ function startDaemon(hold: Record<string, string>, extra: Record<string, string>
   const socket = join(daemonDir, "claudexord.sock");
   const mark = join(root, "hold.mark");
   const log = join(daemonDir, "claudexord.log");
+  const env = {
+    HOME: home,
+    USER: "fixture",
+    LOGNAME: "fixture",
+    XDG_CONFIG_HOME: join(home, ".config"),
+    TMPDIR: temporary,
+    PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
+    CLAUDEXOR_CONFIG_DIR: config,
+    CLAUDEXOR_CONTROL_PORT: "0",
+    CX_HOLD_MARK: mark,
+    CX_HOLD_SOCKET: socket,
+    CX_HOLD_LOG: log,
+    ...hold,
+    ...extra,
+  };
   const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href, daemonEntry], {
     cwd: root,
     stdio: ["ignore", "ignore", "pipe"],
-    env: {
-      HOME: home,
-      USER: "fixture",
-      LOGNAME: "fixture",
-      XDG_CONFIG_HOME: join(home, ".config"),
-      TMPDIR: temporary,
-      PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter),
-      CLAUDEXOR_CONFIG_DIR: config,
-      CLAUDEXOR_CONTROL_PORT: "0",
-      CX_HOLD_MARK: mark,
-      CX_HOLD_SOCKET: socket,
-      CX_HOLD_LOG: log,
-      ...hold,
-      ...extra,
-    },
+    env,
   });
   const entry = own(`daemon holding ${hold.CX_HOLD_STEP ?? "nothing"}`, root, child, [log, mark]);
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((done) =>
@@ -271,13 +304,27 @@ function startDaemon(hold: Record<string, string>, extra: Record<string, string>
   const read = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : "");
   return {
     child,
+    root,
+    env,
+    socket,
+    database: join(daemonDir, "engine.sqlite"),
     log: () => read(log),
     stderr: entry.stderr,
-    async held() {
-      for (let tries = 0; !read(mark).includes("held"); tries += 1) {
+    async held(name = "held") {
+      for (let tries = 0; !read(mark).includes(name); tries += 1) {
         if (!live(child) || tries > 800) throw new Error(`step was never held: ${entry.stderr()}`);
         await pause(25);
       }
+    },
+    release(name: string) {
+      writeFileSync(`${mark}.${name}`, "released\n");
+    },
+    token: () => readFileSync(join(daemonDir, "token"), "utf8").trim(),
+    control() {
+      return JSON.parse(readFileSync(join(daemonDir, "control-api.json"), "utf8")) as {
+        host: string;
+        port: number;
+      };
     },
     async exit() {
       const result = await exitedAndClosed(exited, entry, 20_000);
@@ -338,6 +385,294 @@ describe.skipIf(process.platform === "win32" || !sqlite)(
       expect(daemon.log()).toContain("shutdown requested (SIGTERM)");
       expect(daemon.stderr()).toContain("EADDRINUSE");
     }, 60_000);
+  },
+);
+
+type RetentionDaemon = ReturnType<typeof startDaemon>;
+const evidenceRoot = process.env.CLAUDEXOR_REPLACEMENT_FENCE_EVIDENCE;
+const askRequest = (prompt: string) => ({ mode: "ask", prompt });
+
+/** A real built daemon at normal admission, with the listed holds available. */
+async function normalDaemon(
+  pass: "held" | "none",
+): Promise<RetentionDaemon & { rpc: DaemonClient }> {
+  const daemon = startDaemon({
+    CX_HOLD_STEP: "retention-pass",
+    CX_HOLD_PASS: pass === "held" ? "1" : "0",
+  });
+  for (let tries = 0; ; tries += 1) {
+    const mode = await Promise.resolve()
+      .then(() => new DaemonClient(daemon.socket, daemon.token()).health())
+      .then((health) => (health as { servingMode?: string }).servingMode)
+      .catch(() => null);
+    if (mode === "normal") break;
+    if (!live(daemon.child) || tries > 800)
+      throw new Error(`no normal admission: ${daemon.stderr()}\n${daemon.log()}`);
+    await pause(25);
+  }
+  if (pass === "held") await daemon.held("retention-held");
+  return Object.assign(daemon, { rpc: new DaemonClient(daemon.socket, daemon.token()) });
+}
+
+function http(daemon: RetentionDaemon, path: string, body: unknown, key: string) {
+  const { host, port } = daemon.control();
+  return fetch(`http://${host}:${port}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${daemon.token()}`,
+      "x-claudexor-protocol-major": "3",
+      "content-type": "application/json",
+      "idempotency-key": key,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(25_000),
+  });
+}
+
+async function replacementTarget(daemon: RetentionDaemon) {
+  const hello = (await (
+    await http(daemon, "/v2/handshake", { protocolMajor: 3, client: "cx603-fixture" }, "hello")
+  ).json()) as { engine: { version: string; sha: string } };
+  const lease = inspectDaemonWriterLease(daemon.socket);
+  if (lease.status !== "owned") throw new Error(`no writer lease: ${JSON.stringify(lease)}`);
+  return {
+    version: hello.engine.version,
+    buildSha: hello.engine.sha,
+    leaseOwner: { pid: lease.owner.pid, token: lease.owner.token },
+  };
+}
+
+async function settled(rpc: DaemonClient, id: string): Promise<void> {
+  for (let tries = 0; ; tries += 1) {
+    const { state } = await rpc.status(id);
+    if (state !== "queued" && state !== "running") return;
+    if (tries > 800) throw new Error(`job ${id} stayed ${state}`);
+    await pause(25);
+  }
+}
+
+/** What actually reached the engine store, read after the owner process exited. */
+function acceptedPrompts(database: string): string[] {
+  const db = new sqlite!.DatabaseSync(database, { readOnly: true });
+  try {
+    const rows = db
+      .prepare(
+        "SELECT json_extract(CAST(summary AS TEXT),'$.promptPreview') AS prompt FROM command ORDER BY rowid",
+      )
+      .all() as Array<{ prompt: string | null }>;
+    return rows.map((row) => String(row.prompt));
+  } finally {
+    db.close();
+  }
+}
+
+/** The observed outcome of one attempt, kept whole for the assertion message. */
+const outcome = (attempt: Promise<unknown>) =>
+  attempt.then(
+    (value) => ({ answered: value }),
+    (error: { code?: unknown; message?: unknown }) => ({
+      refused: error?.code ?? String(error?.message),
+    }),
+  );
+
+function record(name: string, value: unknown): void {
+  if (!evidenceRoot) return;
+  mkdirSync(evidenceRoot, { recursive: true });
+  writeFileSync(join(evidenceRoot, `${name}.json`), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function runStop(daemon: RetentionDaemon, target: { version: string; buildSha: string }) {
+  const child = spawn(process.execPath, [daemonEntry, "--stop", target.version, target.buildSha], {
+    cwd: daemon.root,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: daemon.env,
+  });
+  let stdout = "";
+  child.stdout!.on("data", (part) => (stdout += String(part)));
+  const entry = own("claudexord --stop", mkdtempSync(join(daemon.env.TMPDIR, "stop-")), child, []);
+  const done = new Promise<number | null>((finish) => child.once("exit", finish));
+  return {
+    async result() {
+      const code = await exitedAndClosed(done, entry, 25_000);
+      return { code, answer: JSON.parse(stdout) as Record<string, unknown> };
+    },
+  };
+}
+
+describe.skipIf(process.platform === "win32" || !sqlite)(
+  "the production stop while a real retention pass drains (issue #603)",
+  () => {
+    it("fences socket, in-process and preaccepted HTTP admission before the held pass ends", async () => {
+      const daemon = await normalDaemon("held");
+      const { rpc } = daemon;
+
+      // Positive controls: while the pass is held the engine serves normally.
+      const socketRun = await rpc.enqueue(askRequest("socket before"), {
+        idempotencyKey: "socket-before",
+      });
+      expect(socketRun.reused).toBe(false);
+      await expect(
+        rpc.enqueue(askRequest("socket before"), { idempotencyKey: "socket-before" }),
+      ).resolves.toMatchObject({ id: socketRun.id, reused: true });
+      await settled(rpc, socketRun.id);
+      const httpRun = await http(daemon, "/v2/runs", askRequest("http before"), "http-before");
+      expect(httpRun.status, await httpRun.clone().text()).toBeLessThan(300);
+      await settled(rpc, ((await httpRun.json()) as { jobId: string }).jobId);
+
+      // An inexact instance is refused and leaves every ingress open.
+      const target = await replacementTarget(daemon);
+      for (const wrong of [
+        { ...target, buildSha: "b".repeat(40) },
+        { ...target, version: `${target.version}-other` },
+        { ...target, leaseOwner: { pid: target.leaseOwner.pid, token: "prior-process" } },
+      ])
+        await expect(rpc.shutdownForRuntimeReplacement(wrong)).rejects.toMatchObject({
+          code: "runtime_activity_unknown",
+        });
+      const stillOpen = await rpc.enqueue(askRequest("after refusal"), {
+        idempotencyKey: "after-refusal",
+      });
+      await settled(rpc, stillOpen.id);
+
+      // One start is past the HTTP gate, one socket connection is already open.
+      const held = http(daemon, "/v2/runs", askRequest("cx603 held preflight"), "held-preflight");
+      await daemon.held("preflight-held");
+      const open = connect(daemon.socket);
+      await new Promise<void>((done) => open.once("connect", () => done()));
+      let openAnswer = "";
+      const openClosed = new Promise<void>((done) => {
+        open.on("data", (part) => (openAnswer += String(part)));
+        open.on("close", () => done());
+        open.on("error", () => done());
+      });
+
+      const ack = await outcome(rpc.shutdownForRuntimeReplacement(target));
+
+      const line = {
+        id: 1,
+        method: "claudexor.enqueue",
+        token: daemon.token(),
+        params: { request: askRequest("late open socket"), idempotencyKey: "late-open" },
+      };
+      if (!open.destroyed) open.write(`${JSON.stringify(line)}\n`);
+      const fresh = await outcome(
+        rpc.enqueue(askRequest("late fresh socket"), { idempotencyKey: "late-fresh" }),
+      );
+      const freshHttp = await outcome(
+        http(daemon, "/v2/runs", askRequest("late fresh http"), "late-http").then((r) => r.json()),
+      );
+      await Promise.race([openClosed, pause(500)]);
+      daemon.release("preflight");
+      const heldAnswer = await outcome(held.then(async (r) => [r.status, await r.json()]));
+      const second = await runStop(daemon, target).result();
+      const beforeRelease = {
+        daemonAlive: live(daemon.child),
+        socketPresent: existsSync(daemon.socket),
+        lease: inspectDaemonWriterLease(daemon.socket).status,
+        shutDown: daemon.log().includes("claudexord shut down"),
+      };
+      record("held-fence", {
+        ack,
+        fresh,
+        freshHttp,
+        openAnswer,
+        heldAnswer,
+        second,
+        beforeRelease,
+      });
+
+      // The receipt is delivered or lost; only its exact form grants signals.
+      if ("answered" in ack)
+        expect(ack.answered).toEqual({ ok: true, fenced: true, targetBound: true });
+      else expect(ack.refused).toBe("daemon_unavailable");
+      expect.soft(fresh).not.toHaveProperty("answered");
+      expect.soft(freshHttp).not.toHaveProperty("answered.jobId");
+      expect.soft(openAnswer).not.toContain('"result"');
+      expect.soft(heldAnswer).toMatchObject({
+        answered: [503, expect.objectContaining({ code: "daemon_stopping" })],
+      });
+      // A live lease without a socket is no restart permission and no second stop.
+      expect.soft(beforeRelease).toEqual({
+        daemonAlive: true,
+        socketPresent: false,
+        lease: "owned",
+        shutDown: false,
+      });
+      expect.soft(second.code).toBe(1);
+      expect.soft(second.answer).toMatchObject({
+        stopped: false,
+        code: "runtime_activity_unknown",
+      });
+
+      daemon.release("retention");
+      expect(await daemon.exit(), daemon.log()).toEqual({ code: 0, signal: null });
+      expect(daemon.log()).toContain("shutdown requested (runtime replacement stop)");
+      expect(daemon.log()).toContain("claudexord shut down");
+      expect(acceptedPrompts(daemon.database)).toEqual([
+        "socket before",
+        "http before",
+        "after refusal",
+      ]);
+    }, 120_000);
+
+    it("the real --stop reports the exact daemon's exit once the held pass drains", async () => {
+      const daemon = await normalDaemon("held");
+      const target = await replacementTarget(daemon);
+      const stop = runStop(daemon, target);
+      for (let tries = 0; existsSync(daemon.socket); tries += 1) {
+        if (tries > 400) throw new Error(`the fence never closed the socket: ${daemon.log()}`);
+        await pause(25);
+      }
+      expect(live(daemon.child)).toBe(true);
+      daemon.release("retention");
+      const stopped = await stop.result();
+      record("real-stop", stopped);
+      expect(stopped.code).toBe(0);
+      expect(stopped.answer).toMatchObject({ stopped: true, outcome: "exited" });
+      expect(await daemon.exit()).toEqual({ code: 0, signal: null });
+    }, 120_000);
+
+    it("records the replacement receipt with no pass in flight, and the daemon still exits", async () => {
+      const daemon = await normalDaemon("none");
+      const ack = await outcome(
+        daemon.rpc.shutdownForRuntimeReplacement(await replacementTarget(daemon)),
+      );
+      record("idle-ack", ack);
+      if ("answered" in ack)
+        expect(ack.answered).toEqual({ ok: true, fenced: true, targetBound: true });
+      else expect(ack.refused).toBe("daemon_unavailable");
+      expect(await daemon.exit(), daemon.log()).toEqual({ code: 0, signal: null });
+      expect(acceptedPrompts(daemon.database)).toEqual([]);
+    }, 120_000);
+
+    it.each([
+      ["SIGTERM", (daemon: RetentionDaemon) => void daemon.child.kill("SIGTERM"), "SIGTERM"],
+      [
+        "the ordinary shutdown RPC",
+        (daemon: RetentionDaemon) =>
+          void new DaemonClient(daemon.socket, daemon.token()).shutdown(),
+        "socket-rpc stop",
+      ],
+    ])(
+      "%s closes the socket during the held pass and exits cleanly",
+      async (_label, trigger, reason) => {
+        const daemon = await normalDaemon("held");
+        trigger(daemon);
+        for (let tries = 0; existsSync(daemon.socket); tries += 1) {
+          if (tries > 400) throw new Error(`stop never closed the socket: ${daemon.log()}`);
+          await pause(25);
+        }
+        expect(live(daemon.child)).toBe(true);
+        await expect(
+          daemon.rpc.enqueue(askRequest("late"), { idempotencyKey: "late" }),
+        ).rejects.toMatchObject({ code: "daemon_unavailable" });
+        daemon.release("retention");
+        expect(await daemon.exit(), daemon.log()).toEqual({ code: 0, signal: null });
+        expect(daemon.log()).toContain(`shutdown requested (${reason})`);
+        expect(acceptedPrompts(daemon.database)).toEqual([]);
+      },
+      120_000,
+    );
   },
 );
 
