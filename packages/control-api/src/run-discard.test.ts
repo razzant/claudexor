@@ -20,7 +20,8 @@ import {
   retainedEnvelopeOfRun,
 } from "@claudexor/workspace";
 import { afterAll, describe, expect, it } from "vitest";
-import { discardRunResult } from "./run-discard.js";
+import { discardRunResult, takeRunResult } from "./run-discard.js";
+import { readDeliveryState } from "./run-delivery-state.js";
 import type { DaemonRunRecord } from "./run-record.js";
 
 const dirs: string[] = [];
@@ -142,5 +143,58 @@ describe("discard decision", () => {
     const runDir = temp("run");
     const rec: DaemonRunRecord = { id: "job-x", runId: "run-x", state: "failed", runDir };
     await expect(discardRunResult(rec)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("marks a terminal patch as taken, keeps the patch bytes, and repeats as a no-op", async () => {
+    const runDir = temp("taken");
+    mkdirSync(join(runDir, "final"), { recursive: true });
+    writeFileSync(join(runDir, "events.jsonl"), "");
+    writeFileSync(
+      join(runDir, "final/work_product.yaml"),
+      "id: wp-1\nkind: patch\nsource_task_id: task-1\nmeta:\n  result_kind: patch\n  apply_state: not_applied\n",
+    );
+    writeFileSync(join(runDir, "final/patch.diff"), "diff --git a/a b/a\n");
+    const rec: DaemonRunRecord = { id: "job-t", runId: "run-t", state: "succeeded", runDir };
+
+    await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
+    const state = readDeliveryState(rec);
+    expect(state).toMatchObject({ takenReason: "captured_result" });
+    expect(state?.takenAt).toEqual(expect.any(String));
+    const eventBefore = readFileSync(join(runDir, "events.jsonl"), "utf8");
+    await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
+    expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toBe(eventBefore);
+    expect(existsSync(join(runDir, "final/patch.diff"))).toBe(true);
+  });
+
+  it("refuses taken on a continuable or non-terminal run with typed reasons", async () => {
+    const continuableDir = temp("taken-continuable");
+    mkdirSync(join(continuableDir, "final"), { recursive: true });
+    writeFileSync(
+      join(continuableDir, "final/resumable.yaml"),
+      "cause: cancelled\nresetsAt: null\nlimitWindow: null\nlimitEvidence: null\ncarriers: []\nlimitCode: null\nsession: null\nworkspace:\n  kind: none\n  root: null\n",
+    );
+    const continuable: DaemonRunRecord = {
+      id: "job-c",
+      runId: "run-c",
+      state: "cancelled",
+      runDir: continuableDir,
+    };
+    await expect(takeRunResult(continuable)).rejects.toMatchObject({
+      status: 409,
+      code: "run_taken_continuable",
+      context: { reason: "continuable" },
+    });
+
+    const live: DaemonRunRecord = {
+      id: "job-live",
+      runId: "run-live",
+      state: "running",
+      runDir: continuableDir,
+    };
+    await expect(takeRunResult(live)).rejects.toMatchObject({
+      status: 409,
+      code: "run_taken_non_terminal",
+      context: { reason: "non_terminal" },
+    });
   });
 });

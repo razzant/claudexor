@@ -383,6 +383,29 @@ describe("a replayed apply never records over what happened after it", () => {
   });
 });
 
+describe("taken decision", () => {
+  it("acknowledges a captured terminal patch and is a no-op with another key", async () => {
+    const f = await fixture();
+    const first = await f.post(
+      "/decision",
+      { action: "taken", reason: "captured_result" },
+      "taken-1",
+    );
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ accepted: true, status: "taken" });
+    const second = await f.post(
+      "/decision",
+      { action: "taken", reason: "captured_result" },
+      "taken-2",
+    );
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ accepted: true, status: "taken" });
+    expect(parse(readFileSync(join(f.run, "final/delivery_state.yaml"), "utf8"))).toMatchObject({
+      takenReason: "captured_result",
+    });
+  });
+});
+
 describe("a refused delivery answers its typed reason as the 409 problem code", () => {
   it.each(CASES)("POST /runs/:id/apply: $code", async ({ code, mode }) => {
     const f = await fixture();

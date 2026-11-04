@@ -291,6 +291,46 @@ describe("runRetentionPass", () => {
       true,
     );
   });
+  it("retires a captured no-change patch but keeps non-empty, refused, files, and legacy results", async () => {
+    const { project } = sandbox();
+    const rows = [
+      [
+        "run-no-change",
+        "kind: patch\nmeta:\n  capturedNoGitChange: true\n  apply_state: not_applied\n",
+      ],
+      [
+        "run-changed",
+        "kind: patch\nmeta:\n  capturedNoGitChange: false\n  apply_state: not_applied\n",
+      ],
+      ["run-refused", "kind: patch\nmeta:\n  capture_refused: true\n  apply_state: not_applied\n"],
+      ["run-taken", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
+      ["run-files", "kind: files\nmeta:\n  apply_state: not_applied\n"],
+      ["run-legacy", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
+    ] as const;
+    for (const [runId, workProduct] of rows) {
+      const runDir = seedRun(project.runsDir, runId, { workProduct });
+      if (runId === "run-taken")
+        writeFileSync(
+          join(runDir, "final/delivery_state.yaml"),
+          "applyState: not_applied\ntakenAt: 2026-07-01T00:00:00.000Z\ntakenReason: captured_result\n",
+        );
+    }
+    const receipt = await runRetentionPass(
+      { ...POLICY, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      deps(project, {
+        records: () =>
+          rows.map(([runId]) => ({ runId, state: "succeeded", finishedAt: daysAgo(90) })),
+      }),
+    );
+    expect(receipt.deleted_runs.map((row) => row.run_id).sort()).toEqual([
+      "run-no-change",
+      "run-taken",
+    ]);
+    expect(receipt.kept.actionable).toBe(4);
+    for (const runId of ["run-changed", "run-refused", "run-files", "run-legacy"])
+      expect(existsSync(join(project.runsDir, runId, "final/work_product.yaml"))).toBe(true);
+  });
   it("deletes only old terminal unreferenced trees, keeps newest-N, leaves a tombstone", async () => {
     const { project } = sandbox();
     seedRun(project.runsDir, "run-old-a");

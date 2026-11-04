@@ -62,7 +62,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs/:id/artifacts/<path>": "Fetch one artifact file from a run tree.",
   "POST /v2/runs/:id/control":
     "Cancel a queued or running run and hold its pending next message, also after the run ended.",
-  "POST /v2/runs/:id/decision": "Record an operator unblock/rerun decision on a run.",
+  "POST /v2/runs/:id/decision":
+    "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, or non-patch results with typed reasons and is idempotent.",
   "GET /v2/runs/:id/events": "Replay + tail a run's event stream (SSE).",
   "POST /v2/runs/:id/interactions/:id/answer": "Answer a run's pending interactive question.",
   "POST /v2/runs/:id/messages":

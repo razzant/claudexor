@@ -25,6 +25,7 @@ describe("AgentCapabilityCatalog surfaces", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
+      runDecisionActions: ["taken"],
       outputSchemaDialects: [
         {
           dialect: "draft-07",

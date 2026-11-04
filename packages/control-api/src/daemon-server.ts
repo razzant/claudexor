@@ -36,6 +36,7 @@ import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
 import { discardRunResult } from "./run-discard.js";
+import { handleTakenDecision } from "./run-taken-route.js";
 import { applyFilesResult } from "./files-apply-route.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import {
@@ -1250,7 +1251,18 @@ export class DaemonControlApiServer {
           return this.requestError(res, error);
         }
       }
-
+      if (body.action === "taken") {
+        return handleTakenDecision({
+          services: this.opts.services,
+          record: rec,
+          body,
+          key: decisionKey,
+          chainMutation: (record, work) => this.chainRunMutation(record, work),
+          response: res,
+          json: (response, status, result) => this.json(response, status, result),
+          requestError: (response, error) => this.requestError(response, error),
+        });
+      }
       if (body.action === "accept_clean_patch") {
         if (readFilesWorkProduct(rec)) {
           try {

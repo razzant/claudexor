@@ -488,6 +488,17 @@ export const RunDeliveryState = z
       .nullable()
       .default(null)
       .describe("Tree SHA right after the operator apply; revert refuses if the tree diverged."),
+    takenAt: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        "When the caller acknowledged that it captured a terminal patch result; null/absent until the taken decision.",
+      ),
+    takenReason: z
+      .literal("captured_result")
+      .optional()
+      .describe("Why the caller acknowledged the result; currently only captured_result."),
   })
   .describe(
     "Mutable delivery/apply state of a run (final/delivery_state.yaml); the only run record that changes after the run terminates.",
@@ -991,11 +1002,18 @@ export const RunDecisionAction = z
      * refuses if the tree has diverged from the recorded post-turn state). */
     "revert_run",
     "discard",
+    /** The caller already captured a terminal patch result; release its actionable hold. */
+    "taken",
   ])
   .describe(
-    "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, or discard remaining copied files without applying them.",
+    "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, acknowledge a captured terminal patch result, or discard remaining copied files without applying them.",
   );
 export type RunDecisionAction = z.infer<typeof RunDecisionAction>;
+
+export const RunTakenReason = z
+  .literal("captured_result")
+  .describe("The caller has captured the terminal patch result and holds its own copy.");
+export type RunTakenReason = z.infer<typeof RunTakenReason>;
 
 export const ControlRunDecisionRequest = z
   .object({
@@ -1018,8 +1036,25 @@ export const ControlRunDecisionRequest = z
       .optional()
       .describe("Delivery mode for accept_clean_patch."),
     target: ApplyTarget.optional().describe("Delivery target for accept_clean_patch."),
+    reason: RunTakenReason.optional().describe(
+      "Reason for the taken decision; required only for action=taken.",
+    ),
   })
   .strict()
+  .superRefine((value, ctx) => {
+    if (value.action === "taken" && value.reason === undefined)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "reason is required",
+      });
+    if (value.action !== "taken" && value.reason !== undefined)
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "reason is valid only for action=taken",
+      });
+  })
   .describe("Typed operator decision on a run or its pending copied result.");
 export type ControlRunDecisionRequest = z.infer<typeof ControlRunDecisionRequest>;
 
@@ -1027,8 +1062,10 @@ export const ControlRunDecisionResponse = z
   .object({
     accepted: z.boolean().describe("Whether the decision was accepted."),
     status: z
-      .enum(["applied", "requeued", "rejected", "unsupported", "discarded"])
-      .describe("Outcome: applied, requeued (a new turn was enqueued), rejected, or unsupported."),
+      .enum(["applied", "requeued", "rejected", "unsupported", "discarded", "taken"])
+      .describe(
+        "Outcome: applied, requeued (a new turn was enqueued), rejected, unsupported, discarded, or taken.",
+      ),
     /** New run id when the decision re-enqueues a turn (rerun_with_feedback). */
     newRunId: Id.optional().describe(
       "New run id when the decision re-enqueues a turn (rerun_with_feedback).",
