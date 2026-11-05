@@ -143,7 +143,7 @@ export async function pruneRunAnchors(input: {
     if (!entry.isFile() || !anchor) continue;
     if (input.named.has(`sha256:${anchor[1]}`)) continue;
     await yieldToAdmission();
-    if (input.signal?.aborted || !input.current()) break;
+    if (input.signal?.aborted) break;
     for (const parent of parents) {
       const current = lstatSync(parent.path);
       if (
@@ -154,6 +154,9 @@ export async function pruneRunAnchors(input: {
         throw new Error(`anchor directory changed: ${parent.path}`);
     }
     const path = join(objects, entry.name);
+    const observed = lstatSync(path);
+    if (!observed.isFile() || observed.mtimeMs >= input.cutoff) continue;
+    if (!input.current()) break;
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.mtimeMs >= input.cutoff) continue;
     const key = `${stat.dev}:${stat.ino}`;

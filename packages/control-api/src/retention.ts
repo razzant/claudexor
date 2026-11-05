@@ -414,7 +414,7 @@ export async function runRetentionPass(
     }
   }
   let namedAnchors: Set<string> | undefined;
-  if (!deps.anchorsHeld && anchorsCurrent()) {
+  if (!deps.anchorsHeld && proofCurrent()) {
     try {
       namedAnchors = await survivingAnchorIds(
         projects,

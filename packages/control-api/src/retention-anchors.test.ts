@@ -123,6 +123,19 @@ it("reports anchor deferral for a runtime absent from the opening inventory", as
   expect(completed.truncated).toBe(false);
   expect(onTruncated).not.toHaveBeenCalled();
 });
+it("does not hold or truncate for young anchors during an unlisted deferral", async () => {
+  const f = fixture();
+  const anchor = f.anchor("young unlisted deferral", new Date());
+  const deferred = new Set([join(f.root, "late-runtime")]);
+  const onTruncated = vi.fn();
+  f.deps.deferredRuntimes = () => deferred;
+  f.deps.onTruncated = onTruncated;
+  const receipt = await runRetentionPass(policy, { dry_run: false }, f.deps);
+  expect(existsSync(anchor.path)).toBe(true);
+  expect(receipt.holds).toEqual([]);
+  expect(receipt.truncated).toBe(false);
+  expect(onTruncated).not.toHaveBeenCalled();
+});
 it.each(["bad-meta", "held-namespace", "linked-namespace"])(
   "keeps all anchors on %s uncertainty",
   async (kind) => {
