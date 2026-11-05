@@ -6,6 +6,8 @@
  */
 import {
   ControlRunDecisionResponse,
+  DecisionRecord,
+  needsDecision,
   RunResumable,
   WorkProduct,
   type RunTakenReason,
@@ -20,6 +22,8 @@ import {
   readDeliveryState,
 } from "./run-delivery-state.js";
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
+import { readFailure } from "./run-card-facts.js";
+import { runOutcomeFacts } from "./run-projection.js";
 import type { DaemonRunRecord } from "./run-record.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 
@@ -79,8 +83,12 @@ export async function discardRunResult(rec: DaemonRunRecord): Promise<ControlRun
 }
 
 function refuseTaken(
-  code: "run_taken_non_terminal" | "run_taken_continuable" | "run_taken_not_patch",
-  reason: "non_terminal" | "continuable" | "not_patch",
+  code:
+    | "run_taken_non_terminal"
+    | "run_taken_continuable"
+    | "run_taken_not_patch"
+    | "run_taken_needs_decision",
+  reason: "non_terminal" | "continuable" | "not_patch" | "needs_decision",
   message: string,
 ): never {
   throw Object.assign(new Error(message), {
@@ -105,6 +113,16 @@ export async function takeRunResult(
       "Only a terminal run's patch result can be acknowledged as taken",
     );
 
+  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+  const facts = runOutcomeFacts(rec, decision, readFailure(rec));
+  // Retention keeps blocked-review/failed-check evidence regardless of takenAt.
+  if (facts && needsDecision(facts, false))
+    refuseTaken(
+      "run_taken_needs_decision",
+      "needs_decision",
+      "Use the apply or accept workflow for this blocked-review or failed-check run; taken cannot release its retention hold",
+    );
+
   const alreadyTaken = readDeliveryState(rec);
   if (alreadyTaken?.takenAt) {
     return ControlRunDecisionResponse.parse({
@@ -121,7 +139,7 @@ export async function takeRunResult(
     refuseTaken(
       "run_taken_continuable",
       "continuable",
-      "A continuable run must be continued or discarded before its result can be acknowledged as taken",
+      "Continue this run with continueFrom; taken is only available for non-continuable results",
     );
 
   const workProduct = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);

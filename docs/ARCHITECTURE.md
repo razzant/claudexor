@@ -4121,7 +4121,7 @@ not retry automatically.
   the caller-owned acknowledgement for a terminal `kind: patch` result it has
   already captured: it is idempotent, records the mutable delivery-state
   overlay and audit reason, refuses `run_taken_non_terminal`,
-  `run_taken_continuable` and `run_taken_not_patch`, and leaves the engine copy
+  `run_taken_continuable`, `run_taken_needs_decision` and `run_taken_not_patch`, and leaves the engine copy
   under the existing age/keep-last retention window.
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS workspace
@@ -5200,6 +5200,13 @@ the actionable hold for a terminal patch that the caller already captured. It
 uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
 with no second retention window, while the engine's copy remains until ordinary
 retention removes it.
+
+Residual: needs-decision patch runs (blocked review or failed checks) end only
+through the apply or accept workflow. `taken` refuses them with
+`run_taken_needs_decision`; it cannot clear those holds. A continuable run is
+refused with `run_taken_continuable` and names `continueFrom` as its remedy.
+Discarding a retained envelope does not remove the terminal resumable record,
+so it does not make that run eligible for `taken`.
 
 A `quarantined` generation and project generations owned by its replaced global registry are retired journal evidence: its rows do not own references or keep unsettled commands active, and completed quarantine does not stop retention. Terminal metadata may still date its old payloads. Archived projects in the current registry remain reference owners. Pending or unknown recovery states hold all run namespaces, with one named partition/status hold per pending generation in `errors[]`: scope roots do not bound cross-project dependencies. Partial file delivery retains that protection; explicit discard
 ends pending delivery but does not delete artifacts immediately or bypass other
