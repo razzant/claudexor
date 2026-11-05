@@ -1,9 +1,18 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { projectRuntimeDir } from "@claudexor/util";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
+import { quarantineGeneration } from "../../daemon/dist/store/generations.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 
@@ -73,29 +82,67 @@ it("sweeps the last orphan after its ephemeral thread is purged, including witho
   expect(existsSync(held)).toBe(false);
 });
 
-it("keeps quarantined and archived lanes while sweeping an unregistered namespace", async () => {
-  const kept: string[] = [];
-  for (const status of ["quarantined", "archived"]) {
-    const repo = join(root, status);
-    mkdirSync(repo);
-    const project = sql.graph.projects.register({
-      root: repo,
-      idempotencyKey: status,
-      clientId: "test",
-    }).project;
-    kept.push(lane(repo, "th-held"));
-    if (status === "archived") sql.graph.projects.unregister(project.id);
-    else
-      sql.store.transaction(() =>
-        sql.store
-          .prepare("UPDATE partition SET status='quarantined' WHERE id=?")
-          .run(sql.graph.projects.partition(project.id)!.pid),
-      );
-  }
+it("keeps lanes through real quarantine and archive while sweeping an unregistered namespace", async () => {
+  const archivedRepo = join(root, "archived");
+  mkdirSync(archivedRepo);
+  const archivedProject = sql.graph.projects.register({
+    root: archivedRepo,
+    idempotencyKey: "archived",
+    clientId: "test",
+  }).project;
+  const archivedLane = lane(archivedRepo, "th-archived");
+  sql.graph.projects.unregister(archivedProject.id);
+
+  const quarantinedRepo = join(root, "quarantined");
+  mkdirSync(quarantinedRepo);
+  const quarantinedProject = sql.graph.projects.register({
+    root: quarantinedRepo,
+    idempotencyKey: "quarantined",
+    clientId: "test",
+  }).project;
+  const quarantinedThread = sql.graph.threads.createThread({
+    title: "quarantined",
+    repoRoot: quarantinedRepo,
+    workspace: "in_place",
+  });
+  const quarantinedLane = lane(quarantinedRepo, quarantinedThread.id);
+  const quarantinedPid = sql.graph.projects.partition(quarantinedProject.id)!.pid;
+  const quarantine = quarantineGeneration(sql.store, sql.graph.blobs, {
+    oldPid: quarantinedPid,
+    keyDigest: "quarantined-lanes",
+    requestDigest: "quarantined-lanes",
+    operationId: "op-quarantined-lanes",
+    payload: { operationId: "op-quarantined-lanes" },
+  });
+  expect(quarantine.replay).toBe(false);
+  // Quarantined bodies are evidence and may be malformed; lane ownership uses
+  // the indexed id only and must not decode this row.
+  sql.store.transaction(() =>
+    sql.store.prepare("UPDATE thread SET body=x'00' WHERE id=?").run(quarantinedThread.id),
+  );
+
   const orphan = lane(join(root, "unregistered"), "th-orphan");
   expect((await runner()({ dry_run: false })).errors).toEqual([]);
   expect(existsSync(orphan)).toBe(false);
-  for (const path of kept) expect(existsSync(path)).toBe(true);
+  expect(existsSync(archivedLane)).toBe(true);
+  expect(existsSync(quarantinedLane)).toBe(true);
+});
+
+it("keeps a symlink-spelled live thread lane after its root vanishes", async () => {
+  const target = join(root, "symlink-target");
+  const spelling = join(root, "symlink-spelling");
+  mkdirSync(target);
+  symlinkSync(target, spelling, "dir");
+  const thread = sql.graph.threads.createThread({
+    title: "symlink",
+    repoRoot: spelling,
+    ephemeral: true,
+    workspace: "in_place",
+  });
+  const held = lane(spelling, thread.id);
+  rmSync(target, { recursive: true, force: true });
+  expect((await runner()({ dry_run: false })).errors).toEqual([]);
+  expect(existsSync(held)).toBe(true);
 });
 
 it("protects a late ephemeral lane even when namespace inventory had no root name", async () => {

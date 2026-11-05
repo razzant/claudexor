@@ -213,16 +213,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
               try {
                 const ids =
                   references.laneThreadIds?.(root, runtime) ??
-                  new Set(
-                    deps.threads
-                      .listThreads()
-                      .filter(
-                        (thread) =>
-                          thread.state !== "purged" &&
-                          projectRuntimeDir(thread.repo?.root ?? noProjectRoot) === runtime,
-                      )
-                      .map((thread) => thread.id),
-                  );
+                  new Set(deps.threads.listThreads().map((thread) => thread.id));
                 // No yield between the live read and the synchronous sweep.
                 if (
                   projectHeld(project) ||
