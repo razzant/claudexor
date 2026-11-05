@@ -376,6 +376,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   booleanFlag("override", null),
   booleanFlag("revert", null),
   booleanFlag("discard", "Discard a retained directory result without claiming rollback"),
+  booleanFlag("taken", "Acknowledge a captured terminal patch result"),
   booleanFlag("accept-clean-patch", null),
   booleanFlag("rerun", null),
   valueFlag("apply-mode", "<m>", null),

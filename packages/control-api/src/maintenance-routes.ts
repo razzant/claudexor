@@ -61,6 +61,13 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlGcLastResponse",
     responseKind: "json",
     summary: "Read the durable last retention pass; never starts cleanup.",
+    parameters: [
+      queryParam({
+        name: "retention_report",
+        enum: ["true", "false"],
+        description: "Include completion history fields; requested only by lockstep clients.",
+      }),
+    ],
   },
   {
     method: "POST",
@@ -143,11 +150,26 @@ export async function handleMaintenanceRoute(
   const services = ctx.services;
   if (method === "GET" && path === "/maintenance/gc") {
     if (!services?.lastRetention) return false;
+    const report = await routeValue(ctx, res, 400, () => {
+      const query = new URL(req.url ?? "/", "http://localhost");
+      assertOnlyQueryParams(query, ["retention_report"]);
+      return optionalBooleanQuery(query, "retention_report") === true;
+    });
+    if (!report.ok) return true;
     const value = await routeValue(ctx, res, 500, () => services.lastRetention!());
     if (!value.ok) return true;
-    return serviceResponse(ctx, res, "lastRetention", () =>
-      ctx.json(res, 200, ControlGcLastResponse.parse(value.value)),
-    );
+    return serviceResponse(ctx, res, "lastRetention", () => {
+      const parsed = ControlGcLastResponse.parse(value.value);
+      if (report.value || !parsed.last) ctx.json(res, 200, parsed);
+      else {
+        const {
+          last_completed_at: _completed,
+          failed_or_held_streak: _streak,
+          ...last
+        } = parsed.last;
+        ctx.json(res, 200, { ...parsed, last });
+      }
+    });
   }
   if (method === "POST" && path === "/maintenance/gc") {
     const service = services?.runRetention;
@@ -167,6 +189,7 @@ export async function handleMaintenanceRoute(
           holds: _holds,
           truncated: _truncated,
           effects: _effects,
+          deleted_lanes: _deletedLanes,
           ...legacy
         } = parsed;
         ctx.json(res, 200, legacy);

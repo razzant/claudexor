@@ -35,7 +35,10 @@ export function retentionGenerations(store: EngineStore) {
     let row = known.get(pid);
     if (!row) {
       row = read(pid);
-      if (row) known.set(pid, row);
+      if (row) {
+        known.set(pid, row);
+        observe(row);
+      }
     }
     if (!row) throw new Error(`retention owner names missing partition ${pid}`);
     return owns(row);
@@ -47,6 +50,8 @@ export function retentionGenerations(store: EngineStore) {
     const before = known.get(pid);
     const after = read(pid);
     if (!after) return null;
+    observe(after);
+    if (blocked) return blocked;
     if (!before) {
       known.set(pid, after);
       return null;
@@ -82,42 +87,51 @@ export function retentionGenerations(store: EngineStore) {
   const errors: string[] = [];
   const holds: GcHold[] = [];
   let blocked: string | undefined;
-  for (const row of rows) {
-    if (retained(row.id) || retired(row)) continue;
+  const recoveryHolds = new Set<number>();
+  const observe = (row: PartitionRow) => {
+    if (owns(row) || retired(row) || recoveryHolds.has(row.id)) return;
+    recoveryHolds.add(row.id);
     const reason = `partition ${row.name} (${row.id}, ${row.status}) awaits journal recovery`;
-    // Scope roots do not bound dependencies: a continuation may name any namespace.
     blocked ??= reason;
     errors.push(`all namespaces kept: ${reason}`);
     holds.push({ class: "recovery_pending", count: 1, example: reason });
-  }
+  };
+  for (const row of rows) observe(row);
   const bindingHolds = new Set<string>();
-  for (const row of store
-    .prepare(
-      `SELECT p.root,p.current_pid FROM project p
+  const refreshProject = (id?: string) => {
+    for (const row of store
+      .prepare(
+        `SELECT p.root,p.current_pid FROM project p
     JOIN partition g ON g.id=p.pid LEFT JOIN partition q ON q.id=p.current_pid
     WHERE g.status IN ('ready','archived') AND
       ((p.current_pid IS NOT NULL AND q.id IS NULL) OR
-       (p.status='active' AND p.current_pid IS NULL))`,
-    )
-    .all() as Array<{
-    root: string;
-    current_pid: number | null;
-  }>) {
-    const reason = row.current_pid === null ? "unbound_active_registration" : "missing_partition";
-    const holdKey = `${reason}\0${row.root}`;
-    if (!bindingHolds.has(holdKey)) holds.push({ class: reason, count: 1, example: row.root });
-    bindingHolds.add(holdKey);
-    protectedProjectRoots.add(row.root);
-    errors.push(`namespace ${row.root} kept: ${reason} (${row.current_pid ?? "NULL"})`);
-  }
+       (p.status='active' AND p.current_pid IS NULL))${id === undefined ? "" : " AND p.id=?"}`,
+      )
+      .all(...(id === undefined ? [] : [id])) as Array<{
+      root: string;
+      current_pid: number | null;
+    }>) {
+      const reason = row.current_pid === null ? "unbound_active_registration" : "missing_partition";
+      const holdKey = `${reason}\0${row.root}`;
+      if (bindingHolds.has(holdKey)) continue;
+      holds.push({ class: reason, count: 1, example: row.root });
+      bindingHolds.add(holdKey);
+      protectedProjectRoots.add(row.root);
+      errors.push(`namespace ${row.root} kept: ${reason} (${row.current_pid ?? "NULL"})`);
+    }
+  };
+  refreshProject();
   return {
     retained,
     changed,
+    refreshProject,
     registeredProjectRoots,
     archivedProjectRoots,
     protectedProjectRoots,
     errors,
     holds,
-    blocked,
+    get blocked() {
+      return blocked;
+    },
   };
 }

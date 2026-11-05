@@ -60,6 +60,8 @@ export type LaterSettlementListener = (settlement: LaterScopeSettlement) => void
  */
 export class LateScopeSettlement {
   private flight: Promise<void> | null = null;
+  private attemptFailure: string | null = null;
+  private readonly reportFailures = new WeakMap<LaterSettlementListener, Map<string, string>>();
   private readonly listeners = new Set<LaterSettlementListener>();
   /** Earliest next attempt per marker in this daemon life. */
   private readonly due = new Map<string, number>();
@@ -73,15 +75,21 @@ export class LateScopeSettlement {
 
   subscribe(listener: LaterSettlementListener): () => void {
     this.listeners.add(listener);
-    return () => void this.listeners.delete(listener);
+    return () => {
+      this.listeners.delete(listener);
+      this.reportFailures.delete(listener);
+    };
   }
 
   /** At most one attempt in flight; the capture tick starts it and never waits for it. */
   tick(): Promise<void> {
     this.flight ??= this.once()
-      .catch((error: unknown) =>
-        this.deps.log(`run-scope index: a later settlement attempt failed (${String(error)})`),
-      )
+      .catch((error: unknown) => {
+        const message = String(error);
+        if (message !== this.attemptFailure)
+          this.deps.log(`run-scope index: a later settlement attempt failed (${message})`);
+        this.attemptFailure = message;
+      })
       .finally(() => {
         this.flight = null;
       });
@@ -108,6 +116,10 @@ export class LateScopeSettlement {
       ...reapSources(entry),
       ...(this.deps.table ? { table: this.deps.table } : {}),
     });
+    if (this.attemptFailure !== null) {
+      this.attemptFailure = null;
+      this.deps.log("run-scope index: later settlement attempts recovered");
+    }
     if (this.listeners.size === 0) {
       this.deps.log(
         `run-scope index: a later attempt on ${entry.run_id} finished after its listener closed; the scope stays unresolved`,
@@ -135,9 +147,20 @@ export class LateScopeSettlement {
     for (const listener of [...listeners].filter((item) => this.listeners.has(item))) {
       try {
         await listener(settlement);
+        if (this.reportFailures.get(listener)?.delete(settlement.marker))
+          this.deps.log(
+            `run-scope index: later settlement report for ${settlement.runId} recovered`,
+          );
       } catch (error) {
         failed.add(listener);
-        this.deps.log(`run-scope index: a later settlement report is owed (${String(error)})`);
+        const messages = this.reportFailures.get(listener) ?? new Map<string, string>();
+        const message = String(error);
+        if (messages.get(settlement.marker) !== message)
+          this.deps.log(
+            `run-scope index: a later settlement report is owed for ${settlement.runId} (${message})`,
+          );
+        messages.set(settlement.marker, message);
+        this.reportFailures.set(listener, messages);
       }
     }
     return failed;

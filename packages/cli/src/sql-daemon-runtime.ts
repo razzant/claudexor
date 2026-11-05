@@ -157,7 +157,6 @@ export function createSqlDaemonExecutors(
     {
       run: (runId) => graph.commands.queries.getByRunId(runId),
       settled: (jobId) => options.deferred().processScopeSettled(jobId),
-      log: (message) => options.warn?.(message),
     },
   );
   return {

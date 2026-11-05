@@ -22,6 +22,11 @@ describe("resolveDecisionBody", () => {
       action: "discard",
       body: { action: "discard" },
     });
+    expect(resolve(["run-1", "--taken"])).toMatchObject({
+      ok: true,
+      action: "taken",
+      body: { action: "taken", reason: "captured_result" },
+    });
     expect(resolve(["run-1", "--discard", "--revert"])).toMatchObject({ ok: false });
     expect(resolve(["run-1", "--accept-clean-patch"])).toMatchObject({
       ok: true,

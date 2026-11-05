@@ -147,6 +147,14 @@ describe("compact coalesced run-scope publication (#613)", () => {
     // An already published revision needs no write.
     await publisher.publish(2);
     expect(body).toHaveBeenCalledTimes(2);
+    // A newly requested revision with the SAME serialized state still answers its receipt,
+    // without rewriting the file; a subsequent real change still publishes.
+    await publisher.publish(publisher.changed());
+    expect(written).toHaveLength(2);
+    state = 4;
+    await publisher.publish(publisher.changed());
+    expect(written).toHaveLength(3);
+    expect(JSON.parse(written[2]!).entries).toEqual([{ state: 4 }]);
   });
 
   it("repeats a failed write on a bare publish with the current state, and never a clean one", async () => {
@@ -256,8 +264,127 @@ describe("later bounded settlement of finished owned runs (INV-144, #613)", () =
     expect(settlements[0]!.outcome.settled).toBe(true);
     // A new reap with its own budget, never a prolonged terminal attempt.
     expect(calls).toHaveLength(2);
-    expect(calls[1]).toMatchObject({ marker, deadlineMs: 1 });
+    expect(calls[0]?.settledAt).toBeNull();
+    expect(calls[1]).toMatchObject({
+      marker,
+      deadlineMs: 1,
+      settledAt: "2026-11-04T00:00:00.000Z",
+    });
     await vi.waitFor(() => expect(readIndex(path).entries).toEqual([]));
+  });
+
+  it("keeps the first settlement through later and startup attempts and logs only changed outcomes", async () => {
+    const path = join(tempRoot(), RUN_SCOPE_INDEX_FILE);
+    const calls: ScopeReapOptions[] = [];
+    const logs: string[] = [];
+    let result = expired;
+    const subject = index(
+      path,
+      async (opts) => {
+        calls.push(opts);
+        return result;
+      },
+      (line) => logs.push(line),
+    );
+    subject.onLaterSettlement(() => {});
+    const { marker } = await subject.open("run-stuck");
+    await subject.settle("run-stuck", marker);
+    const first = subject.list()[0]!.settled_at;
+    logs.length = 0;
+    const attempt = async (n: number) => {
+      await subject.captureTick();
+      await vi.waitFor(() => expect(readIndex(path).entries[0]?.late_attempts).toBe(n));
+    };
+    await attempt(1);
+    expect(logs).toEqual([]);
+    result = outcome({ settled: false, survivors: [{ pid: 42, startToken: "ps:42" }] });
+    await attempt(2);
+    expect(logs).toHaveLength(1);
+    result = { ...result, durationMs: 37 };
+    await attempt(3);
+    expect(logs).toHaveLength(1);
+    expect(calls.slice(1).every((call) => call.settledAt === first)).toBe(true);
+    const startupCalls: ScopeReapOptions[] = [];
+    const next = new DaemonRunScopeIndex({
+      path,
+      roots: () => [],
+      table,
+      now: () => "2026-11-05T00:00:00.000Z",
+      identity: { read: async (pid) => ({ status: "missing", pid, platform: "linux" }) },
+      reap: async (opts) => {
+        startupCalls.push(opts);
+        return result;
+      },
+    });
+    await next.settleDeadOwners();
+    await next.settleDeadOwners();
+    expect(startupCalls.map((call) => call.settledAt)).toEqual([first, first]);
+    expect(readIndex(path).entries[0]?.settled_at).toBe(first);
+    result = outcome();
+    await subject.captureTick();
+    await vi.waitFor(() => expect(readIndex(path).entries).toEqual([]));
+    expect(logs).toHaveLength(2);
+  });
+
+  it("retries failing reaps and reports but discloses only changed failures and recovery", async () => {
+    const entry = parseEntry({
+      marker: mintRunScopeMarker(),
+      run_id: "quiet",
+      owner: self,
+      state: "unresolved",
+      opened_at: "2026-11-04T00:00:00.000Z",
+      settled_at: "2026-11-04T00:00:00.000Z",
+      root_groups: [],
+      captured: [],
+    })!;
+    const logs: string[] = [];
+    let failure: string | null = "first";
+    let reportFailure: string | null = "report";
+    let now = Date.parse("2026-11-05T00:00:00.000Z");
+    const reap = vi.fn(async () => {
+      if (failure) throw new Error(failure);
+      return expired;
+    });
+    const record = vi.fn(async () => {});
+    const subject = new LateScopeSettlement({
+      entries: () => [entry],
+      owner: async () => self,
+      reap,
+      table,
+      deadlineMs: 1,
+      record,
+      log: (line) => logs.push(line),
+      now: () => now,
+      iso: () => new Date(now).toISOString(),
+    });
+    const listener = vi.fn(async () => {
+      if (reportFailure) throw new Error(reportFailure);
+    });
+    subject.subscribe(listener);
+    await subject.tick();
+    await subject.tick();
+    expect(reap).toHaveBeenCalledTimes(2);
+    expect(logs).toHaveLength(1);
+    failure = "second";
+    await subject.tick();
+    expect(logs).toHaveLength(2);
+    failure = null;
+    await subject.tick();
+    expect(logs).toHaveLength(4); // attempt recovery, first owed report
+    await subject.tick();
+    await subject.tick();
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(logs).toHaveLength(4);
+    reportFailure = "changed report";
+    await subject.tick();
+    expect(logs).toHaveLength(5);
+    reportFailure = null;
+    await subject.tick();
+    expect(logs).toHaveLength(6);
+    now += 10;
+    await subject.tick();
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(logs).toHaveLength(6);
   });
 
   it("owes a report its listener failed and repeats it without reaping again", async () => {
@@ -304,7 +431,6 @@ describe("later bounded settlement of finished owned runs (INV-144, #613)", () =
       {
         run: (runId) => (runId === "run-a" ? { id: "job-a", runDir } : { id: "job-b" }),
         settled,
-        log: () => {},
       },
     );
     const settlement = {
@@ -795,7 +921,6 @@ describe("later bounded settlement of finished owned runs (INV-144, #613)", () =
     bindLaterScopeSettlements(subject, {
       run: (runId) => (runId === "run-outage" ? { id: "job-outage", runDir } : undefined),
       settled: async (jobId) => void returned.push(jobId),
-      log: () => {},
     });
     const seen: LaterScopeSettlement[] = [];
     subject.onLaterSettlement((settlement) => void seen.push(settlement));
@@ -891,7 +1016,6 @@ describe("later bounded settlement of finished owned runs (INV-144, #613)", () =
     bindLaterScopeSettlements(subject, {
       run: () => ({ id: "job-group", runDir }),
       settled: async (jobId) => void returned.push(jobId),
-      log: () => {},
     });
     const later = () => JSON.parse(readFileSync(join(runDir, LATER_PROCESS_SCOPE), "utf8"));
     await vi.waitFor(async () => {

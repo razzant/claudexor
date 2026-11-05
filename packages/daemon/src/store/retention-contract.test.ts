@@ -157,14 +157,14 @@ describe("SQL command retention contract", () => {
     const runId = "run-π",
       interactionId = "question:β",
       fullId = `${runId}\0${interactionId}`;
-    const changes: Array<{ table: unknown; id: unknown; operation: unknown }> = [];
+    const changes: Array<{ table: unknown; id: unknown }> = [];
     const register = f.store.db.function.bind(f.store.db);
     vi.spyOn(f.store.db, "function").mockImplementation((name, callback) => {
       if (name !== "disk_retention_changed") return register(name, callback);
-      register(name, (table, id, operation) => {
-        changes.push({ table, id, operation });
+      register(name, (table, id, root) => {
+        changes.push({ table, id });
         // Emulate Node 24.15's TEXT truncation on newer Node too; BLOBs stay intact.
-        return callback(table, typeof id === "string" ? id.split("\0")[0]! : id, operation);
+        return callback(table, typeof id === "string" ? id.split("\0")[0]! : id, root);
       });
     });
     const refresh = vi.spyOn(RetentionReferenceReader.prototype, "refresh");
@@ -190,9 +190,7 @@ describe("SQL command retention contract", () => {
     await proof.refresh!();
     expect(proof.referencedRunIds).toEqual(new Set([runId]));
     expect(refresh).toHaveBeenCalledExactlyOnceWith("interaction", fullId);
-    expect(changes).toEqual([
-      { table: "interaction", id: expect.any(Uint8Array), operation: "INSERT" },
-    ]);
+    expect(changes).toEqual([{ table: "interaction", id: expect.any(Uint8Array) }]);
     expect(Buffer.from(changes[0]!.id as Uint8Array).toString("utf8")).toBe(fullId);
   });
 

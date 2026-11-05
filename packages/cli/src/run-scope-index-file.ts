@@ -106,6 +106,7 @@ export function runScopeIndexBody(loaded: {
 export class RunScopeIndexPublisher {
   private revision = 0;
   private published = 0;
+  private lastPublishedText: string | undefined;
   private writing = false;
   /** The last write failed: its changes are unpublished. */
   private failing = false;
@@ -154,7 +155,10 @@ export class RunScopeIndexPublisher {
         let failure: unknown;
         try {
           const text = measureSync("scope.persist", () => JSON.stringify(this.body()));
-          await this.write(this.path, text);
+          if (text !== this.lastPublishedText) {
+            await this.write(this.path, text);
+            this.lastPublishedText = text;
+          }
           this.published = Math.max(this.published, target);
         } catch (error) {
           failure = error ?? new Error("run-scope index write failed");

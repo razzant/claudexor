@@ -77,4 +77,15 @@ describe("operation catalog wording (QA-039 / QA-049)", () => {
     });
     expect(patch?.summary).toContain("expected revision");
   });
+
+  it("advertises the typed taken decision for captured terminal patches", () => {
+    const decision = op("POST", "/v2/runs/:id/decision");
+    expect(decision).toMatchObject({
+      requestSchema: "ControlRunDecisionRequest",
+      responseSchema: "ControlRunDecisionResponse",
+      idempotency: "key_required",
+    });
+    expect(decision?.summary).toMatch(/taken/);
+    expect(decision?.summary).toMatch(/captured_result/);
+  });
 });

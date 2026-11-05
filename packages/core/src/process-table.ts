@@ -95,7 +95,8 @@ export function scopeFloorSeconds(
  * does not reuse a pid as a group id while that group has members, so G is
  * still ours when (i) every live member of G was born at or after the scope
  * and (ii) a live process with pid == G has the birth we recorded for G's
- * leader; otherwise G is skipped entirely. A live process with pid == G of
+ * leader; a later reap also requires a member born by the first settlement.
+ * Otherwise G is skipped entirely. A live process with pid == G of
  * ANOTHER birth proves the recorded group gone. Any other skip (no floor, a
  * birth that cannot be read, a member older than the scope, a leader that cannot
  * be told) proves nothing: `unproven` lists the live members that could still be
@@ -107,6 +108,7 @@ export function capturedCandidates(
   scopeStart: string | null | undefined,
   options: {
     scopeStartAt?: string | null;
+    settledAt?: string | null;
     rootGroups?: ReadonlyArray<ScopeRootGroup>;
     /** For a root group known only by its leader identity (computed by the caller). */
     leaderVerdict?: ReadonlyMap<number, GroupLeaderVerdict>;
@@ -121,6 +123,7 @@ export function capturedCandidates(
     if (row && row.birth === item.birth) candidates.set(row.pid, row.birth);
   }
   const floor = scopeFloorSeconds(scopeStart, options.scopeStartAt);
+  const settlement = scopeFloorSeconds(null, options.settledAt);
   const age = (row: ProcessTableRow): "older" | "in_scope" | "unknown" => {
     const at = birthEpochSeconds(row.birth);
     if (floor === null || at === null) return "unknown";
@@ -150,7 +153,13 @@ export function capturedCandidates(
     }
     const leaderUntold =
       liveLeader !== undefined && recordedLeaderBirth === undefined && verdict !== "same";
-    if (leaderUntold || !members.every((row) => age(row) === "in_scope")) {
+    const onlyNewMembers =
+      settlement !== null &&
+      members.every((row) => {
+        const at = birthEpochSeconds(row.birth);
+        return at !== null && at > settlement;
+      });
+    if (leaderUntold || onlyNewMembers || !members.every((row) => age(row) === "in_scope")) {
       reusedGroups.push(group);
       for (const row of members)
         if (age(row) !== "older" && !candidates.has(row.pid)) unproven.push(row.pid);

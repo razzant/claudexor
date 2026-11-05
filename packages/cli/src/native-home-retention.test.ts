@@ -211,7 +211,7 @@ it("keeps homes during setup work, then retires after setup settles", async () =
   expect((await gc(request())).freedBytes).toBe(9);
 });
 
-it.each(["SQL session", "completed run capsule", "active setup"])(
+it.each(["SQL session", "new project session", "completed run capsule", "active setup"])(
   "keeps newly owned rollouts when %s appears during an asynchronous profile scan",
   async (kind) => {
     const held = seed(4);
@@ -221,11 +221,15 @@ it.each(["SQL session", "completed run capsule", "active setup"])(
       admitted = true;
       if (kind === "active setup") busy = true;
       else {
+        const repoRoot = kind === "new project session" ? join(root, "late-project") : undefined;
+        if (repoRoot) mkdirSync(repoRoot);
         const thread = sql.graph.threads.createThread({
+          ...(repoRoot ? { repoRoot } : {}),
           title: "Concurrent admission",
           workspace: "in_place",
         });
-        if (kind === "SQL session") sql.graph.threads.recordSession(thread.id, "codex", id(4));
+        if (kind === "SQL session" || kind === "new project session")
+          sql.graph.threads.recordSession(thread.id, "codex", id(4));
         else {
           const path = capsule(4);
           const commands = sql.graph.commands.current();

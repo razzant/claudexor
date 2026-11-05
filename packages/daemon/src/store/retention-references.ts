@@ -18,6 +18,8 @@ export interface DiskRetentionReferences {
   /** Cooperatively absorb changed owners, then synchronously recheck before expiry. */
   refresh?: () => Promise<void>;
   recheck?: () => boolean;
+  /** Latched changed-owner cause when the proof is no longer current. */
+  held?: () => string | null;
   /** Native callers absorb the same changed owners before per-file rechecks. */
   nativeCurrent?: () => boolean;
   /** Pass-local ownership, refreshed synchronously at each lane sweep boundary. */
@@ -115,24 +117,25 @@ export async function diskRetentionReferences(
     const version = (changes.get() as { n: number }).n;
     const isCurrent = () => (changes.get() as { n: number }).n === version;
     const generations = retentionGenerations(store);
-    // Old roots by project id: a relink or re-registration defers both namespaces.
-    const projectRows = store.prepare("SELECT id,root FROM project").all() as Array<{
-      id: string;
-      root: string;
-    }>;
-    const projectRoots = new Map(projectRows.map((row) => [row.id, row.root]));
+    // The observer retains every spelling through queued relinks and deletion.
     const deferred = new Set<string>();
-    const deferProject = (id: string) => {
-      const current = store.prepare("SELECT root FROM project WHERE id=?").get(id) as
-        { root: string } | undefined;
-      for (const root of [projectRoots.get(id), current?.root])
-        if (root) deferred.add(projectRuntimeDir(root));
+    const runtimeByRoot = new Map<string, string>();
+    const deferRoots = (changedRoots: ReadonlySet<string>) => {
+      for (const root of changedRoots) {
+        let runtime = runtimeByRoot.get(root);
+        if (!runtime) {
+          runtime = projectRuntimeDir(root);
+          runtimeByRoot.set(root, runtime);
+        }
+        deferred.add(runtime);
+      }
     };
     const { registeredProjectRoots, archivedProjectRoots, protectedProjectRoots, errors, blocked } =
       generations;
     const roots = new Set([...registeredProjectRoots, ...protectedProjectRoots]);
     const retained = blocked ? () => false : generations.retained;
     const reader = new RetentionReferenceReader(store, ignoreThreadIds, retained);
+    reader.addQuarantinedLaneThreadIds();
     for await (const rows of retentionPages<{
       id: string;
       pid: number;
@@ -182,6 +185,7 @@ export async function diskRetentionReferences(
     const readChange = ({
       table,
       id,
+      roots: changedRoots,
     }: Parameters<Parameters<typeof changesObserved.current>[0]>[0]) => {
       if (table === "command") commands.refresh(id);
       else if (table === "deferred_message") refreshDraft(id);
@@ -195,13 +199,16 @@ export async function diskRetentionReferences(
           throw new Error(
             `immutable retention command ${owner.id} in partition ${owner.pid}: params blob ${id} changed during inventory`,
           );
-      } else if (table === "project") deferProject(id);
-      else if (table === "partition") {
+      } else if (table === "project") {
+        deferRoots(changedRoots);
+        generations.refreshProject(id);
+      } else if (table === "partition") {
         const reason = generations.changed(Number(id));
-        if (reason) changesObserved.hold(`${reason}; its rows were never inventoried`);
+        if (reason) changesObserved.hold(reason);
+        reader.addQuarantinedLaneThreadIds(Number(id));
       } else reader.refresh(table, id);
     };
-    const recheck = () => changesObserved.current(readChange);
+    const recheck = () => changesObserved.current(readChange) && !generations.blocked;
     const refresh = () => changesObserved.refresh(readChange, signal);
     await refresh();
     for (const root of reader.roots) roots.add(root);
@@ -209,11 +216,12 @@ export async function diskRetentionReferences(
       isCurrent,
       refresh,
       recheck,
+      held: changesObserved.held,
       nativeCurrent: recheck,
-      laneThreadIds: (root) => {
+      laneThreadIds: () => {
         if (!recheck())
           throw new Error("lane ownership changed; a fresh retention pass must resume");
-        return reader.lanes.get(root) ?? new Set<string>();
+        return reader.laneThreadIds;
       },
       nativeRunDirs: commands.nativeRunDirs,
       nativeWatchRunDirs: commands.nativeWatchRunDirs,
@@ -221,7 +229,9 @@ export async function diskRetentionReferences(
       hasActiveCommands: commands.hasActiveCommands,
       deferredRuntimes: () => deferred,
       close: changesObserved.close,
-      blocked,
+      get blocked() {
+        return generations.blocked;
+      },
       errors,
       holds: generations.holds,
       projectRoots: [...roots],

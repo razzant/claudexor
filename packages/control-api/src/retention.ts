@@ -24,7 +24,7 @@ import { pruneProjectObjectStore } from "@claudexor/workspace";
 export { readRunTombstone } from "./run-tombstone.js";
 import { treeReclaimableBytes } from "./retention-bytes.js";
 import { ageStampOf, runKeepReason } from "./retention-candidates.js";
-import { survivingAnchorIds, pruneRunAnchors } from "./retention-anchors.js";
+import { survivingAnchorIds, pruneRunAnchors, retentionDeferral } from "./retention-anchors.js";
 import { pruneEmptyRuntimeDirectories } from "./retention-directories.js";
 import { scanDataRootUnrecognized, type DataRootMode } from "./retention-data-root.js";
 import {
@@ -72,6 +72,8 @@ export interface RetentionDeps {
   referencedRunIds: () => Set<string>;
   /** Fresh proof that asynchronous inventory still describes the SQL owners. */
   referencesCurrent?: () => boolean;
+  /** The observer's latched reason for a failed current proof, when available. */
+  referencesHeld?: () => string | null;
   /** Reread changed owners cooperatively before the synchronous final proof. */
   refreshReferences?: () => Promise<void>;
   /** Runtime namespaces whose registration changed during the pass: held, not deleted. */
@@ -136,6 +138,7 @@ export async function runRetentionPass(
   let deletions = 0;
   let truncated = false;
   let invalidated = false;
+  let invalidationReason = "retention references changed during inventory";
   // A committed finish that throws may already have removed part of its tree: the
   // receipt then reports freed_bytes as a lower bound, never a measured total.
   let effectsUnknown = false;
@@ -150,10 +153,14 @@ export async function runRetentionPass(
   const proofCurrent = () => {
     if (invalidated || deps.signal?.aborted) return false;
     try {
-      if (deps.referencesCurrent?.() === false) invalidated = true;
+      if (deps.referencesCurrent?.() === false) {
+        invalidated = true;
+        invalidationReason = deps.referencesHeld?.() ?? invalidationReason;
+      }
     } catch (error) {
       invalidated = true;
-      errors.push(`retention reference recheck failed: ${String(error)}`);
+      invalidationReason = `retention reference recheck failed: ${String(error)}`;
+      errors.push(invalidationReason);
     }
     return !invalidated;
   };
@@ -163,25 +170,12 @@ export async function runRetentionPass(
       await deps.refreshReferences?.();
     } catch (error) {
       invalidated = true;
-      errors.push(`retention reference refresh failed: ${String(error)}`);
+      invalidationReason = `retention reference refresh failed: ${String(error)}`;
+      errors.push(invalidationReason);
     }
   };
-  // A namespace whose registration changed during this pass keeps everything (#503).
-  const heldNamespaces = new Set<string>();
-  const deferred = (project: RetentionProject) => {
-    const runtime = dirname(project.runsDir);
-    if (!deps.deferredRuntimes?.().has(runtime)) return false;
-    if (!heldNamespaces.has(runtime)) {
-      heldNamespaces.add(runtime);
-      holds.push({
-        class: "references_changed",
-        count: 1,
-        example: `namespace ${project.root} kept: its registration changed during this pass`,
-      });
-      deps.onTruncated?.();
-    }
-    return true;
-  };
+  const deferral = retentionDeferral(deps, holds, proofCurrent);
+  const { deferred, anchorsCurrent } = deferral;
   const recoverPending = async (parent: string, kind: "runs" | "reviews", projectRoot: string) => {
     for await (const retirement of pendingRetirements(parent, kind, dryRun, errors, deps.signal)) {
       if (deps.signal?.aborted) break;
@@ -420,7 +414,7 @@ export async function runRetentionPass(
     }
   }
   let namedAnchors: Set<string> | undefined;
-  if (!deps.anchorsHeld && !invalidated && !deps.signal?.aborted) {
+  if (!deps.anchorsHeld && proofCurrent()) {
     try {
       namedAnchors = await survivingAnchorIds(
         projects,
@@ -452,7 +446,7 @@ export async function runRetentionPass(
           cutoff: runCutoff,
           dryRun,
           planned: plannedUnlinks,
-          current: proofCurrent,
+          current: anchorsCurrent,
           signal: deps.signal,
         });
       freedBytes += await prunePatchObjects(
@@ -502,7 +496,7 @@ export async function runRetentionPass(
     holds.push({
       class: "references_changed",
       count: 1,
-      example: "remaining candidates kept; retry with a fresh snapshot",
+      example: invalidationReason,
     });
     deps.onTruncated?.();
     errors.push(
@@ -549,7 +543,7 @@ export async function runRetentionPass(
     deleted_runs: deletedRuns,
     kept,
     holds,
-    truncated: truncated || invalidated || deps.signal?.aborted === true,
+    truncated: truncated || deferral.anchorDeferral || invalidated || deps.signal?.aborted === true,
     deleted_reviews: deletedReviews,
     freed_bytes: freedBytes,
     ...(effectsUnknown ? { effects: "unknown" } : {}),

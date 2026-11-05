@@ -4132,7 +4132,12 @@ not retry automatically.
   `revert_run` uses an immutable external content-addressed anchor and restores
   only recorded postimage bytes that still match; overlapping later user edits
   are refused instead of overwritten. The anchor remains reachable independently
-  of Git garbage collection.
+  of Git garbage collection. `action: taken` with `reason: captured_result` is
+  the caller-owned acknowledgement for a terminal `kind: patch` result it has
+  already captured: it is idempotent, records the mutable delivery-state
+  overlay and audit reason, refuses `run_taken_non_terminal`,
+  `run_taken_continuable`, `run_taken_needs_decision` and `run_taken_not_patch`, and leaves the engine copy
+  under the existing age/keep-last retention window.
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS workspace
   Artifacts-tab source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
@@ -5165,8 +5170,8 @@ and lifecycle records refresh before the synchronous last proof and expiration m
 Large change batches yield between reads. A partition first seen during the pass is read
 on demand, so a late registration's fresh generation contributes its owners through the
 observer instead of failing the pass; a project registered, relinked or re-generated
-during the pass keeps the namespaces of its old and new root for this pass (their
-keep-last and ownership are unknown) while other namespaces progress. An unreadable
+during the pass keeps the namespaces of every old, intermediate and new root for this pass (their
+keep-last and ownership are unknown) while other namespaces progress. A partition entering pending recovery holds the whole pass with its named cause. An unreadable
 owner, a generation the pass excluded that becomes a retained owner (its rows were never
 inventoried), a registry status change, or a burst exceeding one final synchronous read
 page keeps every remaining candidate and schedules a fresh pass. An existing tombstone is
@@ -5191,7 +5196,21 @@ itself carries `effects: "unknown"` (stripped from a legacy request's reply) and
 `claudexor gc` prints "freed at least", and a failure message names thread purges it
 had already done), run keep counts, separate counts of held roots and vetoed native homes,
 per-class hold counts with one example and the first continuously held `since`,
-and error count/first error. A clean observed pass clears holds; previews never replace it.
+and error count/first error. Hold examples carry the available cause and affected owner,
+including registration changes, unreadable references, recovery partitions and latched
+generation/registry transitions. A failed proof without an owner-specific cause uses
+the generic references-changed message.
+`last_completed_at` retains the last successful completion across failed, held and
+truncated passes; it is null when no completion is known. `failed_or_held_streak`
+increments for each failed or held pass, survives truncation, and resets only on
+completion. A failed durability barrier preserves the preceding completion and counts
+as a failure. Older saved summaries default the history fields; a prior completed
+summary still supplies its finish time. `gc --last` prints both history fields so
+repeated failures cannot look like fresh successful cleanup.
+A clean observed pass clears holds; previews never replace it. A registration that
+arrives mid-pass defers its namespaces and schedules a fresh, truncated pass. Such
+truncation preserves the streak rather than incrementing it; a later clean pass
+clears the history. A one-pass registration hold is not by itself a stuck loop.
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
 `since` while reporting its own failure or truncation. A truncated pass also carries
@@ -5204,8 +5223,10 @@ unknown entries remain untouched and counted in `kept_unknown`. `held.native_hom
 counts vetoed homes only. Absence is `last: null`. An unreadable stored summary
 also returns `last: null` with a diagnostic shown by `gc --last`; it cannot prevent
 the next pass from replacing the record. Engines predating this read surface have no GET operation. New POST
-hold/truncation fields require `retention_report`, requested by a lockstep CLI;
-older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
+hold/truncation fields and `deleted_lanes` require `retention_report`, requested by a lockstep CLI;
+GET omits `last_completed_at` and `failed_or_held_streak` unless its query includes
+`retention_report=true`, which `gc --last` sends only when CLI and daemon versions match.
+Older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
 the configured age (`retention.*` in the global config: runs 30d, reviews
 14d, newest N for active registrations and archived registrations whose roots exist,
 and the built-in no-project scope): an orphaned namespace has no keep-last owner,
@@ -5216,7 +5237,29 @@ referenced by any non-purged thread's lineage or retained command dependencies
 Exact Retry sources and frozen plans, plus durable continuation source lists after
 command-history pruning), undelivered/applyable
 patches or copied-file results, and trees with no terminal evidence are protected
-fail-closed. Lane sweeping derives root ownership once from the shared thread inventory and synchronously rereads changed owners immediately before each root’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including topology changes during the loop. A per-root ownership failure names only the skipped root.
+fail-closed. Lane sweeping visits inventoried runtime namespaces, including unregistered roots whose last thread was purged. Healthy registrations and unregistered namespaces use one globally unique thread-ID owner set from the shared inventory; archived and quarantined registrations keep their lanes, and quarantined IDs are read without decoding their bodies. This also protects a late ephemeral thread when the namespace inventory has no root name or a live thread’s root spelling later vanishes. The pass synchronously rereads changed owners immediately before each namespace’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including recovery or unreadable changes during the loop. Project registration changes skip the affected roots and schedule a fresh pass. A per-root ownership failure names only the skipped root. Removed lane directories are counted in `deleted_lanes`; this sweep still skips previews, does not add their bytes to `freed_bytes`, and is outside the run/review deletion cap.
+
+The producer records `meta.capturedNoGitChange: true` only when a complete Git
+capture proves that the base and candidate trees are equal. Refused, missing or
+directory captures remain unknown, and a false or absent fact (including legacy
+rows) keeps a patch actionable; copied-file results remain actionable as well.
+Failed-check and blocked-review holds take precedence over the no-change fact.
+The caller-owned `action=taken` decision with `reason=captured_result` clears only
+the actionable hold for a terminal patch that the caller already captured. Legacy
+`kind: patch` rows with `result_kind: none` or `answer` remain eligible for this
+explicit decision; `result_kind: files` and non-patch work-product kinds are refused.
+It uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
+with no second retention window, while the engine's copy remains until ordinary
+retention removes it.
+
+Residual: needs-decision patch runs (blocked review or failed checks) end only
+through the apply or accept workflow. `taken` refuses them with
+`run_taken_needs_decision`; it cannot clear those holds. A continuable run is
+refused with `run_taken_continuable` and names `continueFrom` as its remedy.
+Discarding a retained envelope does not remove the terminal resumable record,
+so it does not make that run eligible for `taken`.
+For a non-ephemeral run whose registration is retired, `taken` returns 404
+`project_not_registered`, so send `taken` before retiring that registration.
 
 A `quarantined` generation and project generations owned by its replaced global registry are retired journal evidence: its rows do not own references or keep unsettled commands active, and completed quarantine does not stop retention. Terminal metadata may still date its old payloads. Archived projects in the current registry remain reference owners. Pending or unknown recovery states hold all run namespaces, with one named partition/status hold per pending generation in `errors[]`: scope roots do not bound cross-project dependencies. Partial file delivery retains that protection; explicit discard
 ends pending delivery but does not delete artifacts immediately or bypass other
@@ -5242,8 +5285,11 @@ from run survivor counts.
 Private revert/exact-patch anchors are run-owned. After run retirement, a pass
 collects `meta.revert_anchor_id`, `meta.exact_patch_object` and delivery-state
 `revertAnchorId` from every surviving run across all runtime namespaces. Unreadable
-metadata or any skipped/held namespace preserves every anchor that pass. An
-unnamed anchor is unlinked only beyond `runs_max_age_days`, using a fresh mtime
+metadata or any skipped/held namespace preserves every anchor for that pass:
+anchors are held install-wide by any held namespace. A deferred namespace absent
+from the opening inventory still reports a `references_changed` anchor hold and
+requests a fresh, truncated pass. An unnamed anchor is unlinked
+only beyond `runs_max_age_days`, using a fresh mtime
 check immediately before synchronous unlink. Every anchor publication, create or
 reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
 names are then pruned at their last link; bytes count only when the inode loses
@@ -5297,7 +5343,7 @@ session capsule, and every retained run's typed resumable record protect their
 native session IDs across all homes of that harness. Archived threads and pinned
 account continuations retain that protection. Missing artifacts have no reference;
 malformed or unreadable references, linked artifact directories, unavailable
-project generations, uncertain command ownership, or active/unconfirmed setup work prevent
+project bindings, pending recovery, uncertain command ownership, or active/unconfirmed setup work prevent
 native pruning. SQL rows and filesystem inventory yield to admission. Active and
 queued product work protects its named sessions and continuation sources, without
 holding unrelated cold sessions. The pass rereads changed SQL owners and each active
@@ -5470,7 +5516,16 @@ member and receives no signal. Once known members settle, that discovery
 uncertainty limits completeness without forcing `settled` false; a host may
 release its copy under the known-member settlement policy while disclosing
 `not_provable`. Unsupported or failed census, surviving known members and
-unknown receipts do not certify that release.
+unknown receipts do not certify that release. Later attempts and startup re-reaps
+preserve the first `settled_at` and use it as an upper birth bound for recorded
+groups: if every live member was born after that settlement, the group is skipped
+without signals. Its potentially owned members remain unproven, keeping the scope
+unresolved under the same conservative rule as other unverified groups. An older
+surviving member still admits its later children. Individual measured identities
+and marker membership retain their authority. Repeated identical diagnostics stay
+silent; changes, recovery and retirement are logged. Each later attempt still
+publishes its counter, time and report under the mechanism above. A revision whose
+serialized index equals the last successful publication needs no filesystem write.
 A host cancel that arrives during the settlement barrier does not rewrite a
 completed run as cancelled: the cancellation decision is frozen when the
 strategy's terminal is held.
@@ -5491,7 +5546,8 @@ moved aside. An
 `duration_ms`, and later attempts add `late_attempts` and `last_attempt_at`.
 Its compact schema, in the field names the daemon writes:
 `{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`,
-`state` (`open` | `unresolved`), `opened_at` (ISO time: the floor the daemon
+`state` (`open` | `unresolved`), optional `settled_at` (ISO time of the first
+settlement, preserved on retries), `opened_at` (ISO time: the floor the daemon
 uses while no `lstart` birth exists), `scope_start` (`lstart` text or null),
 `root_groups[{pgid, leader_pid, leader_birth | null, leader_identity?}]`
 (`leader_identity` is the daemon's opaque kernel birth token, comparable only
@@ -5503,8 +5559,9 @@ another `lstart` reading, never with the identity token. A host without the
 identity helper follows this rule when `leader_birth` is null: a live process
 with `pid == pgid` cannot be verified as the recorded leader, so the host
 skips that group; when no process with `pid == pgid` is alive, the group's
-remaining members born at or after the floor belong to the scope (the kernel
-does not hand out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
+remaining members born at or after the floor belong to the scope, provided at
+least one was born by `settled_at` when it is recorded (the kernel does not hand
+out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating

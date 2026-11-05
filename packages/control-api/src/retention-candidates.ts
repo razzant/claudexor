@@ -79,6 +79,13 @@ function hasActionableWorkProduct(runRoot: string): boolean {
     ["cancelled", "failed", "interrupted"].includes(String(meta.lifecycle))
   )
     return false;
+  // A caller that has captured a terminal patch result has taken ownership of
+  // the actionable copy; failed-check and blocked-review holds above still win.
+  if (doc.kind === "patch" && typeof delivery?.takenAt === "string") return false;
+  // A producer-declared complete Git capture whose trees agree has no
+  // actionable result. The fact is deliberately exact: legacy rows without
+  // it, refused/missing captures, and directory results remain held.
+  if (doc.kind === "patch" && meta.capturedNoGitChange === true) return false;
   const applyState = delivery?.applyState ?? meta.apply_state;
   return applyState !== "applied" && applyState !== "reverted" && applyState !== "discarded";
 }
