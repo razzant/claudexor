@@ -76,6 +76,8 @@ async function createFixture(
     maxConcurrent?: DaemonOptions["maxConcurrent"];
     holdModel?: boolean;
     holdPreparation?: boolean;
+    /** Hold dispatch's own request read, which follows the create's validation read. */
+    holdDispatchRead?: boolean;
     delegation?: boolean;
     fromConfig?: boolean;
     /** The flusher's own seam: every automatic pass sleeps before its barrier. */
@@ -116,9 +118,18 @@ async function createFixture(
   const resources = graph.resources;
   const preparation = barrier(),
     modelResult = barrier(),
-    dispatchBarrier = barrier();
+    dispatchBarrier = barrier(),
+    dispatchRead = barrier();
   if (!options.holdPreparation) preparation.release();
   if (!options.holdModel) modelResult.release();
+  if (options.holdDispatchRead) {
+    const read = resources.readModelAsync.bind(resources);
+    let reads = 0;
+    vi.spyOn(resources, "readModelAsync").mockImplementation(async (ref) => {
+      if (++reads === 2) await dispatchRead.promise;
+      return read(ref);
+    });
+  } else dispatchRead.release();
   if (options.holdDispatchBarrier) {
     const flushed = sql.flushed.bind(sql);
     vi.spyOn(sql, "flushed").mockImplementation(async () => {
@@ -130,6 +141,7 @@ async function createFixture(
   const startedAgents: string[] = [];
   let completedAgents = 0;
   let sends = 0;
+  let preparations = 0;
   let server!: DaemonServer;
   const client = new DaemonLocalClient(() => server);
   const profile = CredentialProfile.parse({
@@ -155,6 +167,7 @@ async function createFixture(
     enqueue: (envelope) => client.call("claudexor.enqueue", envelope),
     cancel: (id, reason) => client.cancel(id, reason),
     resolve: async () => {
+      preparations++;
       await preparation.promise;
       return { adapter, profile };
     },
@@ -290,9 +303,14 @@ async function createFixture(
   };
   const sent = (id: string) =>
     vi.waitFor(() => expect(sends, phase(id)).toBe(1), { timeout: SETTLE_MS });
+  /** A running operation may still be reading its request off the request thread;
+   * preparation begins only once that read returns. */
+  const preparing = (id: string) =>
+    vi.waitFor(() => expect(preparations, phase(id)).toBe(1), { timeout: SETTLE_MS });
   removals.push(() => rmSync(root, { recursive: true, force: true }));
   disposers.push(async () => {
     dispatchBarrier.release();
+    dispatchRead.release();
     preparation.release();
     modelResult.release();
     for (const release of agents.values()) release();
@@ -316,15 +334,20 @@ async function createFixture(
     detail,
     done,
     sent,
+    preparing,
     upload,
     sql,
     preparation,
     modelResult,
     dispatchBarrier,
+    dispatchRead,
     agents,
     startedAgents,
     get sends() {
       return sends;
+    },
+    get preparations() {
+      return preparations;
     },
     get completedAgents() {
       return completedAgents;
@@ -580,6 +603,7 @@ describe.each(["sql"] as const)(
         dispatch: { state: "not_started" },
         admission: { phase: "active" },
       });
+      await f.preparing(raw.id);
       await f.call(`/model-operations/${raw.id}/control`, "POST", { action: "cancel" });
       expect((await f.health()).active).toBe(1);
       expect(f.sends).toBe(0);
@@ -591,6 +615,28 @@ describe.each(["sql"] as const)(
         state: "cancelled",
         dispatch: { state: "not_started" },
       });
+      expect(f.sends).toBe(0);
+    });
+
+    it("cancel during the request read never prepares or sends and keeps lifetime until the read returns", async () => {
+      const f = await fixture({ holdDispatchRead: true });
+      const raw = await f.createModel("reading");
+      expect(raw).toMatchObject({
+        state: "running",
+        dispatch: { state: "not_started" },
+        admission: { phase: "active" },
+      });
+      await f.call(`/model-operations/${raw.id}/control`, "POST", { action: "cancel" });
+      expect((await f.health()).active).toBe(1);
+      await expect(
+        f.client.call("claudexor.shutdownForRuntimeReplacement", f.target),
+      ).rejects.toMatchObject({ code: "runtime_replacement_busy" });
+      f.dispatchRead.release();
+      expect(await f.done(raw.id)).toMatchObject({
+        state: "cancelled",
+        dispatch: { state: "not_started" },
+      });
+      expect(f.preparations).toBe(0);
       expect(f.sends).toBe(0);
     });
 
