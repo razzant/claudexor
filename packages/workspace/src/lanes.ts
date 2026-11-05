@@ -241,8 +241,8 @@ function renameLanes(projectRoot: string, fromSeg: string, toSeg: string): numbe
  * Lifecycle owner (c): orphan retention GC. Remove lane dirs whose thread no
  * longer exists (trashed-then-purged, or lost out-of-band). Bounded to the
  * inventoried runtime namespace's lanes root; the live-thread set is the caller's fail-closed
- * truth (a quarantined partition contributes no ids, so its lanes are left
- * alone by the caller, never swept as orphans).
+ * truth (the retention reference reader contributes quarantined thread ids
+ * without decoding their bodies, so those lanes are left alone by the caller).
  */
 export function sweepOrphanLanes(runtime: string, liveThreadIds: Set<string>): string[] {
   const actions: string[] = [];

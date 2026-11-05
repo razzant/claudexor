@@ -1,4 +1,3 @@
-import { projectRuntimeDir } from "@claudexor/util";
 import { Thread, type GcHold } from "@claudexor/schema";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { access } from "node:fs/promises";
@@ -21,7 +20,8 @@ export interface DiskRetentionReferences {
   /** Native callers absorb the same changed owners before per-file rechecks. */
   nativeCurrent?: () => boolean;
   /** Pass-local ownership, refreshed synchronously at each lane sweep boundary. */
-  laneThreadIds?: (root: string, runtime?: string) => Set<string>;
+  /** One global owner set: lane directory names are globally unique thread ids. */
+  laneThreadIds?: (root?: string, runtime?: string) => Set<string>;
   nativeRunDirs?: ReadonlySet<string>;
   nativeWatchRunDirs?: ReadonlySet<string>;
   nativeReferenceError?: () => string | null;
@@ -122,6 +122,7 @@ export async function diskRetentionReferences(
     const heldProjectRoots = new Set<string>();
     const retained = blocked ? () => false : generations.retained;
     const reader = new RetentionReferenceReader(store, ignoreThreadIds, retained);
+    reader.addQuarantinedLaneThreadIds();
     for await (const rows of retentionPages<{
       id: string;
       pid: number;
@@ -188,8 +189,10 @@ export async function diskRetentionReferences(
       } else if (table === "project") {
         for (const root of changedRoots) heldProjectRoots.add(root);
         generations.refreshProject(id);
-      } else if (table === "partition") generations.refreshPartition(Number(id));
-      else reader.refresh(table, id);
+      } else if (table === "partition") {
+        const partition = generations.refreshPartition(Number(id));
+        if (partition.status === "quarantined") reader.addQuarantinedLaneThreadIds(partition.id);
+      } else reader.refresh(table, id);
     };
     const recheck = () => changesObserved.current(readChange) && !generations.blocked;
     const refresh = () => changesObserved.refresh(readChange, signal);
@@ -200,10 +203,10 @@ export async function diskRetentionReferences(
       refresh,
       recheck,
       nativeCurrent: recheck,
-      laneThreadIds: (root, runtime = projectRuntimeDir(root)) => {
+      laneThreadIds: () => {
         if (!recheck())
           throw new Error("lane ownership changed; a fresh retention pass must resume");
-        return reader.lanes.get(runtime) ?? new Set<string>();
+        return reader.laneThreadIds;
       },
       nativeRunDirs: commands.nativeRunDirs,
       nativeWatchRunDirs: commands.nativeWatchRunDirs,

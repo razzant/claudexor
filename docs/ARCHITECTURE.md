@@ -5178,7 +5178,10 @@ completion. A failed durability barrier preserves the preceding completion and c
 as a failure. Older saved summaries default the history fields; a prior completed
 summary still supplies its finish time. `gc --last` prints both history fields so
 repeated failures cannot look like fresh successful cleanup.
-A clean observed pass clears holds; previews never replace it.
+A clean observed pass clears holds; previews never replace it. A registration that
+arrives mid-pass is recorded as `held` with the resulting
+`failed_or_held_streak`, then a later clean pass clears it; that one-pass hold is
+progress evidence, not a stuck retention loop.
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
 `since` while reporting its own failure or truncation. A truncated pass also carries
@@ -5203,7 +5206,7 @@ referenced by any non-purged thread's lineage or retained command dependencies
 Exact Retry sources and frozen plans, plus durable continuation source lists after
 command-history pruning), undelivered/applyable
 patches or copied-file results, and trees with no terminal evidence are protected
-fail-closed. Lane sweeping visits inventoried runtime namespaces, including unregistered roots whose last thread was purged. Healthy registrations and unregistered namespaces use lane ownership keyed by runtime namespace from the shared thread inventory; archived and quarantined registrations keep their lanes. This also protects a late ephemeral thread when the namespace inventory has no root name. The pass synchronously rereads changed owners immediately before each namespace’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including recovery or unreadable changes during the loop. Project registration changes skip only the affected roots. A per-root ownership failure names only the skipped root.
+ fail-closed. Lane sweeping visits inventoried runtime namespaces, including unregistered roots whose last thread was purged. Healthy registrations and unregistered namespaces use one globally unique thread-ID owner set from the shared inventory; archived and quarantined registrations keep their lanes, and quarantined IDs are read without decoding their bodies. This also protects a late ephemeral thread when the namespace inventory has no root name or a live thread’s root spelling later vanishes. The pass synchronously rereads changed owners immediately before each namespace’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including recovery or unreadable changes during the loop. Project registration changes skip only the affected roots. A per-root ownership failure names only the skipped root.
 
 The producer records `meta.capturedNoGitChange: true` only when a complete Git
 capture proves that the base and candidate trees are equal. Refused, missing or
@@ -5240,8 +5243,9 @@ from run survivor counts.
 Private revert/exact-patch anchors are run-owned. After run retirement, a pass
 collects `meta.revert_anchor_id`, `meta.exact_patch_object` and delivery-state
 `revertAnchorId` from every surviving run across all runtime namespaces. Unreadable
-metadata or any skipped/held namespace preserves every anchor that pass. An
-unnamed anchor is unlinked only beyond `runs_max_age_days`, using a fresh mtime
+metadata or any skipped/held namespace preserves every anchor for that pass:
+anchors are held install-wide by any held namespace. An unnamed anchor is unlinked
+only beyond `runs_max_age_days`, using a fresh mtime
 check immediately before synchronous unlink. Every anchor publication, create or
 reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
 names are then pruned at their last link; bytes count only when the inode loses
