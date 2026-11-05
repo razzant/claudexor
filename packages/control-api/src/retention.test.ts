@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,7 @@ import {
   releaseEnvelopeCustody,
   retainForInspection,
 } from "@claudexor/workspace";
+import { writePatchObject } from "@claudexor/util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   runRetentionPass,
@@ -481,6 +483,49 @@ describe("runRetentionPass", () => {
     expect(receipt.deleted_reviews.map((d) => d.path)).toEqual([canonicalOldReview]);
     expect(existsSync(freshReview)).toBe(true);
     expect(existsSync(foreign)).toBe(true);
+  });
+
+  it("skips every held namespace surface through the project-held proof", async () => {
+    const { project, root } = sandbox();
+    const old = new Date(NOW - 90 * DAY_MS);
+
+    const review = join(project.reviewsDir!, "diff-held");
+    mkdirSync(review, { recursive: true });
+    writeFileSync(join(review, "evidence.md"), "held review");
+    utimesSync(review, old, old);
+
+    const runtime = root;
+    const patch = join(runtime, "patches", `${"a".repeat(64)}.patch`);
+    mkdirSync(join(runtime, "patches"), { recursive: true });
+    writeFileSync(patch, "held patch");
+    utimesSync(patch, old, old);
+
+    const anchor = join(runtime, "anchors", "objects", `${"b".repeat(64)}.patch`);
+    writePatchObject(runtime, anchor, "held anchor");
+    utimesSync(anchor, old, old);
+
+    const store = join(runtime, "git-store");
+    execFileSync("git", ["init", "--bare", "-q", store]);
+    const objectId = execFileSync("git", ["--git-dir", store, "hash-object", "-w", "--stdin"], {
+      input: "held object\n",
+      encoding: "utf8",
+    }).trim();
+    const object = join(store, "objects", objectId.slice(0, 2), objectId.slice(2));
+    utimesSync(object, old, old);
+
+    const projectHeld = (candidate: RetentionProject) => candidate.root === project.root;
+    const receipt = await runRetentionPass(
+      { ...POLICY, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      deps(project, { projectHeld }),
+    );
+
+    expect(receipt.deleted_reviews).toEqual([]);
+    expect(receipt.errors).toEqual([]);
+    expect(existsSync(review)).toBe(true);
+    expect(existsSync(anchor)).toBe(true);
+    expect(existsSync(patch)).toBe(true);
+    expect(existsSync(object)).toBe(true);
   });
 
   it("bounded batches disclose truncation instead of silently stopping", async () => {

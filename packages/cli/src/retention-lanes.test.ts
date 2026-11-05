@@ -104,6 +104,44 @@ it("names the root when live lane ownership cannot be read", async () => {
   expect(existsSync(otherLane)).toBe(false);
 });
 
+it("skips held runtime namespaces when sweeping lanes", async () => {
+  const repo = join(root, "held-repo");
+  mkdirSync(repo);
+  sql.graph.projects.register({ root: repo, idempotencyKey: "held-repo", clientId: "fixture" });
+  const lane = join(projectRuntimeDir(repo), "lanes", "th-held-namespace", "default", "home");
+  mkdirSync(lane, { recursive: true });
+  writeFileSync(join(lane, "session.jsonl"), "held lane state");
+
+  const read = sql.graph.threads.retentionReferences.bind(sql.graph.threads);
+  vi.spyOn(sql.graph.threads, "retentionReferences").mockImplementation(async (...args) => {
+    const refs = await read(...args);
+    return {
+      ...refs,
+      heldProjectRoots: new Set([repo]),
+    };
+  });
+  const gc = createRetentionRunner({
+    projects: () => sql.graph.projects,
+    threads: sql.graph.threads,
+    daemonJobs: () => [],
+    purgeThread: async () => {},
+    hasPurgeLeftovers: () => false,
+  });
+
+  const receipt = await gc({ dry_run: false });
+
+  expect(existsSync(lane)).toBe(true);
+  expect(receipt.deleted_lanes).toBe(0);
+  expect(receipt.holds).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        class: "references_changed",
+        example: expect.stringContaining(repo),
+      }),
+    ]),
+  );
+});
+
 it.each(["before-loop", "during-loop"])(
   "sweeps unrelated lanes after project insertion %s",
   async (when) => {
