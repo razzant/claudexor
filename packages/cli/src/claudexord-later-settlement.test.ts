@@ -391,7 +391,7 @@ class Fixture {
       signal: AbortSignal.timeout(20_000),
     });
     const value: unknown = await response.json();
-    if (!response.ok) throw new Error(`${method} ${path} ${response.status}: ${String(value)}`);
+    if (!response.ok) throw new Error(`${method} ${path} ${response.status}: ${JSON.stringify(value)}`);
     return value as T;
   }
   /** A run with one live owned child, connected and measured. */
@@ -632,10 +632,17 @@ describe.skipIf(process.platform === "win32")("claudexord's later settlement", (
       .request("/v2/runs", "POST", { mode: "ask", prompt: "corrupt", scope: { kind: "none" } })
       .catch(() => null);
     await f.mode("recovery_only");
-    const inspected = await f.request<ControlJournalInspection>(
-      "/v2/recovery/partitions/engine-state",
-    );
-    expect(inspected.status).toBe("recovery_required");
+    let previousFingerprint = "";
+    let stableReads = 0;
+    const inspected = await f.wait(async () => {
+      const current = await f.request<ControlJournalInspection>(
+        "/v2/recovery/partitions/engine-state",
+      );
+      if (current.status !== "recovery_required") return null;
+      stableReads = current.fingerprint === previousFingerprint ? stableReads + 1 : 1;
+      previousFingerprint = current.fingerprint;
+      return stableReads >= 3 ? current : null;
+    }, "the corrupt engine state fingerprint to stabilize");
     await f.request("/v2/recovery/partitions/engine-state/quarantine", "POST", {
       expectedFingerprint: inspected.fingerprint,
       confirmation: "quarantine_and_start_fresh",
