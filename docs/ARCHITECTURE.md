@@ -5173,7 +5173,10 @@ completion. A failed durability barrier preserves the preceding completion and c
 as a failure. Older saved summaries default the history fields; a prior completed
 summary still supplies its finish time. `gc --last` prints both history fields so
 repeated failures cannot look like fresh successful cleanup.
-A clean observed pass clears holds; previews never replace it.
+A clean observed pass clears holds; previews never replace it. A registration that
+arrives mid-pass is recorded as `held` with the resulting
+`failed_or_held_streak`, then a later clean pass clears it; that one-pass hold is
+progress evidence, not a stuck retention loop.
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
 `since` while reporting its own failure or truncation. A truncated pass also carries
@@ -5224,8 +5227,9 @@ from run survivor counts.
 Private revert/exact-patch anchors are run-owned. After run retirement, a pass
 collects `meta.revert_anchor_id`, `meta.exact_patch_object` and delivery-state
 `revertAnchorId` from every surviving run across all runtime namespaces. Unreadable
-metadata or any skipped/held namespace preserves every anchor that pass. An
-unnamed anchor is unlinked only beyond `runs_max_age_days`, using a fresh mtime
+metadata or any skipped/held namespace preserves every anchor for that pass:
+anchors are held install-wide by any held namespace. An unnamed anchor is unlinked
+only beyond `runs_max_age_days`, using a fresh mtime
 check immediately before synchronous unlink. Every anchor publication, create or
 reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache
 names are then pruned at their last link; bytes count only when the inode loses
