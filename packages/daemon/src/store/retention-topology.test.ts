@@ -5,6 +5,7 @@ import { expect, it } from "vitest";
 import { projectRuntimeDir } from "@claudexor/util";
 // The fixture's store is the package build's; its partition helper is the same one.
 import { createPartition } from "@claudexor/daemon";
+import { retentionGenerations } from "../../dist/store/retention-generations.js";
 import { sqlFixture } from "./test-support/sql-fixture.js";
 
 async function fixture() {
@@ -25,6 +26,67 @@ async function fixture() {
     },
   };
 }
+
+it("absorbs a partition and continuation born during inventory, but rejects a missing live pid", async () => {
+  const f = await fixture();
+  try {
+    const { store, graph } = f.sql;
+    const generations = retentionGenerations(store);
+    const pending = graph.threads.retentionReferences();
+    const { project } = graph.projects.register({
+      root: f.dir("late"),
+      idempotencyKey: "late",
+      clientId: "test",
+    });
+    const params = { scope: { kind: "project", root: project.root }, continueFrom: "source" };
+    graph.commands.forRequest(params).accept({
+      id: "late-command",
+      params,
+      idempotencyKey: "late",
+      clientId: "test",
+    });
+    const proof = await pending;
+    try {
+      expect(proof.isCurrent()).toBe(false);
+      expect(proof.recheck!()).toBe(true);
+      expect(proof.referencedRunIds.has("source")).toBe(true);
+      expect(generations.retained(graph.projects.partition(project.id)!.pid)).toBe(true);
+      expect(() => generations.retained(999999)).toThrow("missing partition 999999");
+    } finally {
+      proof.close!();
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+it("latches unreadable changed owners while unrelated project insertion stays current", async () => {
+  const f = await fixture();
+  try {
+    const { store, graph } = f.sql;
+    const thread = graph.threads.createThread({ title: "owner", workspace: "in_place" });
+    const proof = await graph.threads.retentionReferences();
+    try {
+      graph.projects.register({
+        root: f.dir("unrelated"),
+        idempotencyKey: "unrelated",
+        clientId: "test",
+      });
+      expect(proof.recheck!()).toBe(true);
+      store.transaction(() =>
+        store.prepare("UPDATE thread SET body=? WHERE id=?").run(Buffer.from("broken"), thread.id),
+      );
+      expect(() => proof.recheck!()).toThrow(/retention thread/);
+      expect(proof.recheck!()).toBe(false);
+      await proof.refresh!();
+      expect(proof.recheck!()).toBe(false);
+    } finally {
+      proof.close!();
+    }
+  } finally {
+    await f.close();
+  }
+});
 
 it("absorbs a late registration's fresh generation, reads its owners and defers its namespace (#503)", async () => {
   const f = await fixture();
