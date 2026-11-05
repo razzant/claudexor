@@ -93,6 +93,8 @@ export interface ResourceStorePort {
   /** `heldBy`: an accepted owner reading its own refs (a released ID it holds still resolves). */
   resolve(refs: ResourceAttachmentRef[] | undefined, heldBy?: ResourceUseHolder): Attachment[];
   readModel(raw: ModelPayloadRef): Buffer;
+  /** Off the request thread. Result GET stays on `readModel` so ACK cannot race it. */
+  readModelAsync(raw: ModelPayloadRef): Promise<Buffer>;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(raw: ModelPayloadRef): void;
   expireModel(raw: ModelPayloadRef, expiredAt: string): void;

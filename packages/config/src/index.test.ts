@@ -351,7 +351,7 @@ describe("retired-key sweep (B9)", () => {
 });
 
 describe("trust config enumeration", () => {
-  it("updateTrustConfig stamps repo_root provenance; listTrustConfigs enumerates entries (legacy files -> null root)", () => {
+  it("updateTrustConfig stamps repo_root provenance; listTrustConfigs enumerates entries (legacy files -> null root)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-trust-list-"));
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = dir;
@@ -365,13 +365,13 @@ describe("trust config enumeration", () => {
         join(dir, "trust", `${repoHash("/legacy/proj")}.yaml`),
         "version: 1\naccess_default: workspace_write\nallow_full_access: true\n",
       );
-      const entries = listTrustConfigs();
+      const entries = await listTrustConfigs();
       expect(entries).toHaveLength(2);
       const roots = entries.map((e) => e.config.repo_root).sort();
       expect(roots).toEqual([repoA, null].sort());
       // Revoke keeps the file enumerable with the flag off (Settings shows truth).
       updateTrustConfig(repoA, (cfg) => ({ ...cfg, allow_full_access: false }));
-      const after = listTrustConfigs().find((e) => e.config.repo_root === repoA);
+      const after = (await listTrustConfigs()).find((e) => e.config.repo_root === repoA);
       expect(after?.config.allow_full_access).toBe(false);
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;

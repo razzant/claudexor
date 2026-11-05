@@ -22,7 +22,7 @@ import type { ModelResourceQueries } from "./store/command-queries.js";
 import {
   emptyDispatch,
   operationError,
-  readModelPayload,
+  readModelPayloadAsync,
   executeModelOperation,
   type Evidence,
 } from "./model-operation-execution.js";
@@ -32,6 +32,7 @@ export const MODEL_OPERATION_ID = "model.operation.create";
 /** Existing ResourceStore supplies these purpose-bound byte operations. */
 export interface ModelPayloadStore {
   readModel(ref: ModelPayloadRef): Buffer;
+  readModelAsync(ref: ModelPayloadRef): Promise<Buffer>;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(ref: ModelPayloadRef): void;
   expireModel(ref: ModelPayloadRef, expiredAt: string): void;
@@ -131,11 +132,19 @@ export class ModelOperations {
     let id = replay?.id;
     if (!id) {
       // Validate only a NEW request. A settled replay's input has been released.
-      // model_request_invalid from this boundary proves no command was accepted:
-      // the idempotency lookup above succeeded and validation precedes enqueue.
-      if (requestKind === "image") this.readImageRequest(request);
-      else this.readRequest(request);
-      id = (await this.deps.enqueue(envelope)).id;
+      // The read yields to the event loop, so a same-key call may be accepted, settle
+      // and release this input meanwhile: a failed read asks the idempotency record
+      // again and answers with that accepted handle. Only when none exists does the
+      // failure stand, and then model_request_invalid proves no command was accepted.
+      try {
+        if (requestKind === "image") await this.readImageRequest(request);
+        else await this.readRequest(request);
+      } catch (error) {
+        const accepted = findAcceptedCommand(this.deps.commands, envelope);
+        if (!accepted) throw error;
+        id = accepted.id;
+      }
+      id ??= (await this.deps.enqueue(envelope)).id;
     }
     // Re-uploaded copies can lose either the early lookup or the enqueue race.
     // Release only the unused copy; another live command may still own it.
@@ -286,14 +295,14 @@ export class ModelOperations {
     return (this.deps.now ?? (() => new Date()))();
   }
 
-  private readRequest(ref: ModelPayloadRef): ModelCallRequest {
-    return readModelPayload(this.deps.resources(), ref, ModelCallRequest, "ModelCallRequest");
+  private readRequest(ref: ModelPayloadRef): Promise<ModelCallRequest> {
+    return readModelPayloadAsync(this.deps.resources(), ref, ModelCallRequest, "ModelCallRequest");
   }
 
-  private readImageRequest(ref: ModelPayloadRef): ImageCallRequest {
+  private readImageRequest(ref: ModelPayloadRef): Promise<ImageCallRequest> {
     if (ref.sizeBytes > 144 * 1024 * 1024)
       throw operationError("image_request_too_large", "The image request exceeds 144 MiB", 413);
-    return readModelPayload(this.deps.resources(), ref, ImageCallRequest, "ImageCallRequest");
+    return readModelPayloadAsync(this.deps.resources(), ref, ImageCallRequest, "ImageCallRequest");
   }
 
   private record(id: string): JobRecord {

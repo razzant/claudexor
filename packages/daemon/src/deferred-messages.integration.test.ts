@@ -1089,7 +1089,7 @@ describe("the production stop's fence while a retention pass is held (#603)", ()
       daemon: productionDaemonStop({
         abort: () => undefined,
         server: () => f.daemon,
-        closeModels: () => undefined,
+        closeExecutors: () => undefined,
         stopRetention: () => pass.promise,
         opening: () => null,
       }),

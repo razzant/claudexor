@@ -7,7 +7,15 @@
  * as the real one does). No harness, credential, installed engine or live data root.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -127,7 +135,7 @@ async function engine() {
     expect(sent.status).toBe(200);
     const ready = await post("/uploads/imports", importRequest, key);
     expect(ready.body.state).toBe("ready");
-    return ready.body.resource as { resourceId: string; sha256: string };
+    return ready.body.resource as { resourceId: string; sha256: string; deduplicated: boolean };
   };
   return {
     sql,
@@ -200,6 +208,69 @@ describe("a keyed managed import's life over the wire", () => {
     const [attachment] = f.sql.graph.resources.resolve(refs, holder);
     expect(readFileSync(attachment!.path, "utf8")).toBe("started bytes\n");
     expect(() => f.sql.graph.resources.resolve(refs)).toThrow(/released/);
+  });
+});
+
+describe("managed bytes published from the write-time digest", () => {
+  type Engine = Awaited<ReturnType<typeof engine>>;
+  const parts = (f: Engine) =>
+    readdirSync(f.sql.store.paths.uploads).filter((name) => name.endsWith(".part"));
+  const blob = (f: Engine, resource: { sha256: string }) =>
+    join(f.sql.store.paths.blobs, resource.sha256.slice("sha256:".length));
+
+  it("frees the part and the bytes of an ID released before publication cleared", async () => {
+    const f = await engine();
+    const resource = await f.importManaged("import", "released at once\n");
+    // No wait: this release may land before the publication's durability barrier clears.
+    expect((await f.release(resource)).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(parts(f)).toEqual([]);
+      expect(existsSync(blob(f, resource))).toBe(false);
+    });
+  });
+
+  it("keeps released bytes for an accepted holder and frees them after its end, for reuse", async () => {
+    const f = await engine();
+    const text = "held bytes\n";
+    const first = await f.importManaged("first", text);
+    expect(first.deduplicated).toBe(false);
+    const refs = [{ resourceId: first.resourceId }];
+    const refused = await f.post(
+      "/runs",
+      { mode: "ask", prompt: REFUSED_AT_START, scope: { kind: "none" }, attachments: refs },
+      "start",
+    );
+    expect(refused.status).toBe(403);
+    const accepted = (
+      f.sql.store.prepare("SELECT id FROM command").all() as Array<{ id: string }>
+    ).map((row) => row.id);
+    expect(accepted).toHaveLength(1);
+    expect(f.holders(first.resourceId)).toEqual(["command"]);
+
+    // A duplicate shares the digest on the verified path; releasing both frees neither copy.
+    const second = await f.importManaged("second", text);
+    expect(second).toMatchObject({ deduplicated: true, sha256: first.sha256 });
+    expect((await f.release(first)).status).toBe(200);
+    expect((await f.release(second)).status).toBe(200);
+    await f.sql.graph.resources.drainCleanup();
+    await vi.waitFor(() => expect(parts(f)).toEqual([]));
+    expect(readFileSync(blob(f, first), "utf8")).toBe(text);
+    const holder = { owner: "command", id: accepted[0]! } as const;
+    expect(f.sql.graph.resources.resolve(refs, holder)[0]!.path).toBe(blob(f, first));
+    expect(() => f.sql.graph.resources.resolve(refs)).toThrow(/released/);
+
+    // The holder's end frees the file after commit; the digest then starts over.
+    f.sql.graph.pruner.prune(accepted);
+    expect(f.holders(first.resourceId)).toEqual([]);
+    await vi.waitFor(() => expect(existsSync(blob(f, first))).toBe(false));
+    const third = await f.importManaged("third", text);
+    expect(third).toMatchObject({ deduplicated: false, sha256: first.sha256 });
+    expect(third.resourceId).not.toBe(first.resourceId);
+    expect(readFileSync(blob(f, third), "utf8")).toBe(text);
+    expect(await f.post("/uploads/imports", f.importRequest, "first")).toMatchObject({
+      status: 200,
+      body: { state: "released", resource: { resourceId: first.resourceId } },
+    });
   });
 });
 
@@ -280,8 +351,26 @@ describe("a dispatch after an accepted one is a new reference", () => {
     expect(accepted).toHaveLength(1);
     expect((await f.release(resource)).status).toBe(200);
 
+    const refusal = {
+      status: 410,
+      body: {
+        code: "resource_released",
+        retryable: false,
+        requiredActions: [expect.stringContaining("new import key")],
+      },
+    };
     const retried = await f.post(`/threads/${threadId}/turns/${turnId}/retry`, {}, "retry");
-    expect(retried).toMatchObject({ status: 410, body: { code: "resource_released" } });
+    expect(retried).toMatchObject(refusal);
+    expect(f.commandsOf(turnId)).toEqual(accepted);
+    // The durable refusal says the same, so no surface offers a retry that can never pass.
+    expect(f.sql.graph.threads.getTurn(turnId)?.enqueue_error).toMatchObject({
+      code: "resource_released",
+      retryable: false,
+    });
+    // Asking again reaches the same owner and gets the same answer.
+    expect(await f.post(`/threads/${threadId}/turns/${turnId}/retry`, {}, "again")).toMatchObject(
+      refusal,
+    );
     expect(f.commandsOf(turnId)).toEqual(accepted);
 
     // Retention ends the command, its binding and its hold; the dispatch fact stays.

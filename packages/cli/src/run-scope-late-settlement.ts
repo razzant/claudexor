@@ -23,7 +23,8 @@ export interface LateSettlementDeps {
   table: ProcessTableReader | null;
   /** Each attempt's own absolute budget (the same size as a terminal settlement's). */
   deadlineMs: number;
-  /** Record the attempt on its entry (retired only when settled) and await its publication. */
+  /** Record the attempt on its entry (retired only when settled) and await its publication.
+   * A write that fails is the index's to repeat: it owes neither a reap nor a report. */
   record: (entry: RunScopeEntry, outcome: ScopeReapOutcome) => Promise<void>;
   log: (message: string) => void;
   now: () => number;
@@ -50,7 +51,12 @@ export type LaterSettlementListener = (settlement: LaterScopeSettlement) => void
  * by a newer attempt of its scope, whose report reaches every listener with the
  * fresher fact: a failing listener never stops the reaping, and a run records only
  * its latest attempt. The debt lives with this daemon; after a restart the held
- * draft stays held.
+ * draft stays held. With no listener bound (between store generations, once
+ * shutdown has unbound them) no attempt starts: a settled one would retire its entry
+ * with nobody told, so the entry stays unresolved for the next listener or start. A
+ * reap already running when the last listener closes cannot be recalled: it finishes,
+ * and its entry stays unresolved the same way. Listeners are told before an entry is
+ * recorded, so a close during that write cannot leave it retired unreported.
  */
 export class LateScopeSettlement {
   private flight: Promise<void> | null = null;
@@ -90,6 +96,8 @@ export class LateScopeSettlement {
     }
     const self = await this.deps.owner();
     if (!self) return;
+    // No await between this check and the reap's start: with no listener it never starts.
+    if (this.listeners.size === 0) return;
     const now = this.deps.now();
     const entry = this.deps.entries().find((candidate) => this.eligible(candidate, self, now));
     if (!entry) return;
@@ -100,16 +108,22 @@ export class LateScopeSettlement {
       ...reapSources(entry),
       ...(this.deps.table ? { table: this.deps.table } : {}),
     });
+    if (this.listeners.size === 0) {
+      this.deps.log(
+        `run-scope index: a later attempt on ${entry.run_id} finished after its listener closed; the scope stays unresolved`,
+      );
+      return;
+    }
     const at = this.deps.iso();
     entry.late_attempts = attempt;
     entry.last_attempt_at = at;
     this.due.set(entry.marker, this.deps.now() + attempt * this.deps.deadlineMs);
-    await this.deps.record(entry, outcome);
     const settlement = { runId: entry.run_id, marker: entry.marker, outcome, attempt, at };
     // A newer attempt of the same scope replaces any unsettled report still owed for it.
     this.owed.delete(entry.marker);
     const failed = await this.report(settlement, this.listeners);
     if (failed.size > 0) this.owed.set(entry.marker, { settlement, listeners: failed });
+    await this.deps.record(entry, outcome);
   }
 
   /** Report to each still-subscribed listener; returns those that failed. */

@@ -1019,7 +1019,12 @@ invariant or operator decision before proceeding.
   one retires the index entry and may return a next message held only for that
   custody. A settled report that could not be recorded or returned is owed and
   repeated by that daemon without another reap, and an unsettled one gives way to
-  the next attempt's report; after a restart the draft stays held.
+  the next attempt's report; after a restart the draft stays held. An index write
+  that failed is repeated too, without a reap or a report. Reports bind
+  with each store generation's executors and end before that store closes or the
+  daemon stops; while none is bound no attempt starts, a reap already running finishes
+  without retiring its entry, and a consumer is told before its entry is recorded, so
+  nothing settles unreported.
   Rationale: on a loaded host the single terminal deadline expired before
   every source was read, leaving scopes unresolved although a later bounded proof
   could show their processes gone; the terminal verdict and record stay as they were.
@@ -1028,7 +1033,8 @@ invariant or operator decision before proceeding.
   the orchestrator run-scope barrier tests (terminal after settlement), the
   cli run-scope index spawn-seed and start/settle tests,
   `packages/cli/src/run-scope-late-settlement.test.ts` (bounded, uncapped later attempts
-  and owed reports), the control-api
+  and owed reports and index writes), `packages/cli/src/claudexord-later-settlement.test.ts`
+  (the built daemon's attach, store replacement and shutdown), the control-api
   run-detail projection test and CLI joined Codex drain/detail integration test.
 
 ## 12. Keep The Codebase Small And Direct

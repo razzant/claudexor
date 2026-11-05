@@ -158,13 +158,25 @@ describe("keyed upload import over the upload owner", () => {
     const begun = f.resources.importUpload(body(f, { content }), "k");
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
-    async function* slow(): AsyncIterable<Uint8Array> {
-      yield bytes.subarray(0, 4);
-      await gate;
-      yield bytes.subarray(4);
-    }
-    const writing = f.resources.write(begun.uploadId, slow());
-    await vi.waitFor(() => expect(f.resources.status(begun.uploadId).receivedBytes).toBe(4));
+    let paused!: () => void;
+    const writing = f.resources.write(
+      begun.uploadId,
+      (async function* () {
+        yield bytes.subarray(0, 4);
+        paused();
+        await gate;
+        yield bytes.subarray(4);
+      })(),
+    );
+    await new Promise<void>((resolve) => {
+      paused = resolve;
+    });
+    // The begin receipt is visible while the PUT is still in flight. The byte
+    // count lands with the finish receipt, not with each chunk.
+    expect(f.resources.status(begun.uploadId)).toMatchObject({
+      state: "uploading",
+      receivedBytes: 0,
+    });
     expect(f.resources.cancel(begun.uploadId).state).toBe("cancelled");
     release();
     await expect(writing).rejects.toMatchObject({ code: "upload_cancelled" });

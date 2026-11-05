@@ -31,6 +31,8 @@ type ModelOptions = Pick<
   Parameters<typeof createModelServices>[0],
   "sources" | "registry" | "config" | "migrationGate"
 >;
+/** Later settlements of finished runs (#613); the daemon's run-scope index by default. */
+type LaterScopes = Parameters<typeof bindLaterScopeSettlements>[0];
 
 /** Compose the existing queue and runners with one SQL graph. This factory
  * neither opens storage nor starts a listener; the startup owner admits it
@@ -52,8 +54,7 @@ export function createSqlDaemonRuntime(
     bus?: RunEventBus;
     agent?: typeof createDaemonAgentRunner;
     warn?: (message: string) => void;
-    /** Later settlements of finished runs (#613); the daemon's run-scope index by default. */
-    laterScopes?: Parameters<typeof bindLaterScopeSettlements>[0];
+    laterScopes?: LaterScopes;
   },
 ) {
   const bus = options.bus ?? new RunEventBus();
@@ -65,6 +66,7 @@ export function createSqlDaemonRuntime(
     authority,
     bus,
     admission: (id) => server.admission(id),
+    deferred: () => server.deferred,
     runtimeConcurrencyCaps: options.server.runtimeConcurrencyCaps,
   });
   const server = new DaemonServer({
@@ -79,14 +81,6 @@ export function createSqlDaemonRuntime(
     deferredStart: options.server.deferredStart ?? (() => executors.deferredStart),
   });
   bind(server);
-  const unbindLaterScopes = bindLaterScopeSettlements(
-    options.laterScopes ?? daemonRunScopeIndex(),
-    {
-      run: (runId) => graph.commands.queries.getByRunId(runId),
-      settled: (jobId) => server.deferred.processScopeSettled(jobId),
-      log: (message) => options.warn?.(message),
-    },
-  );
   return {
     server,
     client,
@@ -94,27 +88,31 @@ export function createSqlDaemonRuntime(
     bus,
     terminalFilesPending: (id: string) => graph.terminalFiles.pending(id),
     async stop() {
-      unbindLaterScopes();
-      executors.models.close();
+      executors.close();
       await server.stop();
     },
   };
 }
 
 /** Storage-dependent executors bind after import; the already listening server
- * keeps its one queue, cancellation owner and in-process client throughout. */
+ * keeps its one queue, cancellation owner and in-process client throughout. This
+ * is the one composition the daemon entrypoint and the runtime factory share, so
+ * what must live and end with a store's graph belongs here, behind `close`. */
 export function createSqlDaemonExecutors(
   graph: SqlServices,
   options: {
     client: DaemonLocalClient;
     authority: DelegationBudgetAuthority;
     admission: (id: string) => JobAdmission | null;
+    /** The serving daemon's deferred owner, read when a settlement arrives. */
+    deferred: () => Pick<DaemonServer["deferred"], "processScopeSettled">;
     authReadiness: () => Pick<AuthReadinessService, "invalidate">;
     bus: RunEventBus;
     runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
     models?: ModelOptions;
     agent?: typeof createDaemonAgentRunner;
     warn?: (message: string) => void;
+    laterScopes?: LaterScopes;
   },
 ) {
   const models = createModelServices({
@@ -154,7 +152,20 @@ export function createSqlDaemonExecutors(
     terminalStaging: (jobId) => (event, telemetry) =>
       graph.threads.stageTerminal(jobId, event, telemetry),
   });
+  const unbindLaterScopes = bindLaterScopeSettlements(
+    options.laterScopes ?? daemonRunScopeIndex(),
+    {
+      run: (runId) => graph.commands.queries.getByRunId(runId),
+      settled: (jobId) => options.deferred().processScopeSettled(jobId),
+      log: (message) => options.warn?.(message),
+    },
+  );
   return {
+    /** Ends what reads this graph, before its store closes. Repeating it changes nothing. */
+    close() {
+      unbindLaterScopes();
+      models.close();
+    },
     deferredStart: createDeferredStartPreparation({
       resources: graph.resources,
       accounts: graph.accounts,

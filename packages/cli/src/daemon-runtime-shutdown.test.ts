@@ -285,7 +285,7 @@ describe("productionDaemonStop", () => {
     const participant = productionDaemonStop({
       abort: () => void events.push("abort"),
       server: () => server,
-      closeModels: () => void events.push("models"),
+      closeExecutors: () => void events.push("models"),
       stopRetention: () => retention(),
       opening: () => opening,
     });
@@ -317,7 +317,7 @@ describe("productionDaemonStop", () => {
       productionDaemonStop({
         abort: () => undefined,
         server: () => ({ stop: server }),
-        closeModels: models,
+        closeExecutors: models,
         stopRetention: retention,
         opening: () => null,
       }).stop();
@@ -428,7 +428,7 @@ async function composition(
     daemon: productionDaemonStop({
       abort: () => void events.push("abort"),
       server: () => server,
-      closeModels: () => void events.push("models-close"),
+      closeExecutors: () => void events.push("models-close"),
       stopRetention: () => stopRetention(),
       opening: () => null,
     }),

@@ -97,17 +97,24 @@ export function runScopeIndexBody(loaded: {
  * serialized at least that revision was renamed into place, and rejects when
  * the write that carried it failed. One write runs at a time; mutations that
  * arrive during it are carried together by the next one, so the open, seed and
- * terminal barriers keep their meaning at a fraction of the writes.
+ * terminal barriers keep their meaning at a fraction of the writes. A failed write
+ * publishes nothing: its receipts stay rejected and its revisions stay above
+ * `published` until `repeat`, or any later write, carries them. The log says so once
+ * when that starts and once when it ends. The debt lives with this daemon: a restart
+ * before a write lands reads the stale row and settles it again by identity.
  */
 export class RunScopeIndexPublisher {
   private revision = 0;
   private published = 0;
   private writing = false;
+  /** The last write failed: its changes are unpublished. */
+  private failing = false;
   private waiters: Array<{ revision: number; settle: (error?: unknown) => void }> = [];
 
   constructor(
     private readonly path: string,
     private readonly body: () => RunScopeIndexFile,
+    private readonly log: (message: string) => void,
     private readonly write: (path: string, text: string) => Promise<void> = writeAtomically,
   ) {}
 
@@ -128,6 +135,16 @@ export class RunScopeIndexPublisher {
     return receipt;
   }
 
+  /**
+   * Write again what a failed write left unpublished, with the current state; with
+   * nothing owed it writes nothing. Only the file is repeated, never what the state
+   * records. A running write is left to finish, so one that hangs collects nothing.
+   */
+  repeat(): void {
+    // A failure here is `disclose`'s, which has told the log.
+    if (!this.writing) void this.publish().catch(() => {});
+  }
+
   private async drain(): Promise<void> {
     if (this.writing) return;
     this.writing = true;
@@ -145,10 +162,24 @@ export class RunScopeIndexPublisher {
         const settled = this.waiters.filter((waiter) => waiter.revision <= target);
         this.waiters = this.waiters.filter((waiter) => waiter.revision > target);
         for (const waiter of settled) waiter.settle(failure);
+        this.disclose(failure);
       }
     } finally {
       this.writing = false;
     }
+  }
+
+  /** Whoever's write it was: only a change between failing and landing is news. */
+  private disclose(failure: unknown): void {
+    if ((failure !== undefined) === this.failing) return;
+    this.failing = failure !== undefined;
+    this.log(
+      this.failing
+        ? `run-scope index: changes stay unpublished after a failed write; the capture tick repeats it (${
+            failure instanceof Error ? failure.message : String(failure)
+          })`
+        : "run-scope index: the unpublished changes have now landed",
+    );
   }
 }
 

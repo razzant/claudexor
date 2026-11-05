@@ -14,6 +14,7 @@ import {
 import { link, open, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { mapStoreError } from "./errors.js";
+import { withUploadWriteSlot } from "./libuv-pool.js";
 
 /** What an external write carries; a slow write names it in the daemon log. */
 export type ExternalWritePurpose = "blob_body" | "terminal_receipt" | "terminal_log" | "import";
@@ -204,6 +205,66 @@ export async function writeStagedTemp(
   } catch (error) {
     if (!closed) await handle.close().catch(() => undefined);
     await unlink(temp).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
+ * Incremental `O_DSYNC` write of an existing file on the libuv pool, using the
+ * same flags as `writeStagedTemp`. The caller owns the path (an upload part).
+ * `accept` runs on the request thread before each chunk is submitted and may
+ * throw to stop the transfer; `committed` runs after that chunk's write returns.
+ * A write already sitting in the pool finishes before the next `accept`.
+ * Each pool operation (the open with its truncate, every write, the close)
+ * holds one slot of the upload gate until it returns, so a transfer waiting for
+ * its next chunk from the network holds none. `cancelled` runs while the open
+ * or a write waits for a slot and may throw. The close waits for its slot even
+ * after a cancel, so the descriptor is closed on every exit.
+ */
+export async function writeExternalIncremental(
+  path: string,
+  chunks: AsyncIterable<Uint8Array>,
+  hooks?: {
+    accept?: (chunk: Uint8Array, received: number) => void;
+    committed?: (chunk: Uint8Array, received: number) => void;
+    cancelled?: () => void;
+  },
+): Promise<number> {
+  const handle = await withUploadWriteSlot(hooks?.cancelled, async () => {
+    const opened = await open(path, externalWriteFlags(constants.O_RDWR));
+    try {
+      await opened.truncate(0);
+      return opened;
+    } catch (error) {
+      await opened.close().catch(() => undefined);
+      throw error;
+    }
+  });
+  let received = 0;
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
+    await withUploadWriteSlot(undefined, () => handle.close());
+  };
+  try {
+    for await (const chunk of chunks) {
+      hooks?.accept?.(chunk, received);
+      let offset = 0;
+      while (offset < chunk.byteLength) {
+        const { bytesWritten } = await withUploadWriteSlot(hooks?.cancelled, () =>
+          handle.write(chunk, offset, chunk.byteLength - offset, received + offset),
+        );
+        if (bytesWritten <= 0) throw new Error(`short write of ${path}`);
+        offset += bytesWritten;
+      }
+      received += chunk.byteLength;
+      hooks?.committed?.(chunk, received);
+    }
+    await close();
+    return received;
+  } catch (error) {
+    await close().catch(() => undefined);
     throw error;
   }
 }

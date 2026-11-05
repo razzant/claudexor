@@ -114,8 +114,10 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     this.deadlineMs = options.deadlineMs ?? scopeReapDeadlineMs();
     this.log = options.log ?? (() => {});
     this.now = options.now ?? (() => new Date().toISOString());
-    this.publisher = new RunScopeIndexPublisher(options.path, () =>
-      runScopeIndexBody({ entries: this.load(), unrecognized: this.unrecognized }),
+    this.publisher = new RunScopeIndexPublisher(
+      options.path,
+      () => runScopeIndexBody({ entries: this.load(), unrecognized: this.unrecognized }),
+      this.log,
     );
     this.late = new LateScopeSettlement({
       entries: () => this.load(),
@@ -340,6 +342,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   captureTick(): Promise<void> {
     // A later settlement attempt rides the same tick but is never waited for here.
     if (this.options.laterAttempts) void this.late.tick();
+    this.publisher.repeat();
     if (this.capturing) return this.capturing;
     this.capturing = this.captureOnce().finally(() => {
       this.capturing = null;

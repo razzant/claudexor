@@ -3293,7 +3293,9 @@ their permit stays occupied until runner settlement, including cancellation, but
 not while awaiting a client's result-digest ACK, and they are not Agent Runs. The command store holds content hashes and resource references, not the
 conversation. A model-purpose upload uses `ResourceStore`'s atomic finalization;
 its contents are delivered exactly like every other working input (INV-146),
-and it cannot resolve as an ordinary Agent attachment. Engine authorization
+and it cannot resolve as an ordinary Agent attachment. Create and dispatch
+read those request bytes off the request thread. Result GET stays on the
+synchronous read, so acknowledgement cannot interleave with it. Engine authorization
 never enters the model payload.
 
 Result GET returns exact digest-bound bytes without acknowledging them. A client
@@ -3449,7 +3451,12 @@ validator dump, and validates the per-run SSE cursor as a nonnegative integer
 for 65 s (longer than clients' idle-reuse windows, such as httpx's 5 s, which
 would otherwise race the server's close), allows 66 s for request headers, and
 does not bound the receipt of a request body, so a large upload during a busy
-period is not cut; none of these limits applies to responses or SSE streams.
+period is not cut. The PUT writes its bytes on the libuv pool, and the request
+thread can answer other control requests while that write is in flight.
+Concurrent PUTs share a gate that leaves pool threads for DNS and other
+filesystem work; a PUT holds a slot only while one of its writes is in the
+pool, not while it waits for the body. None of
+these limits applies to responses or SSE streams.
 Once stopping, it closes each kept-alive socket as soon as its response finishes,
 so the longer keep-alive window never delays shutdown.
 
@@ -4077,7 +4084,15 @@ not retry automatically.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
-  pre-provenance files show a null root), and the POST accepts `repoRoot` plus
+  pre-provenance files show a null root). A scoped GET does not walk that
+  directory. Its `source` is `default` only when no trust file exists at that
+  repo's path, and `file` whenever one does, including an empty, comment-only
+  or unreadable file whose values read as the schema default. A path that
+  cannot be checked also reports `file`. A caller can therefore tell a missing
+  grant from an explicit refusal, and granting on `default` never overwrites a
+  file the daemon could not read. Older daemons and the unscoped list omit
+  `source`. The unscoped list reads the directory
+  off the request thread. The POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
   update one repo. Versioned project test commands are canonical typed argv,
   never implicit shell text. Their external grant binds the project/config/
@@ -5424,7 +5439,13 @@ A report whose record or return failed is owed: each later tick of the same daem
 repeats it to the listener that failed, before any new attempt. A settled report
 retired its entry, so it is never reaped again; an unsettled one is replaced by a
 newer attempt of its scope, so a failing listener never stops the reaping. The debt
-is not durable, so after a restart that draft stays held.
+is not durable, so after a restart that draft stays held. The daemon and the runtime
+factory bind these reports in one place, `createSqlDaemonExecutors`: each store
+generation's executors bind them and their close ends that before the store closes
+or the daemon stops. While none is bound no attempt starts, so an entry is never
+retired with nobody told; it stays `unresolved` for the next binding or start. A
+reap already running when the last binding closes finishes and leaves its entry the
+same way, and a binding is told before an entry is recorded.
 `GET /v2/runs/:id` projects the record compactly as `summary.processScope`,
 which an engine that has the field always sends: the compact object for a
 terminal run whose record is readable and valid, otherwise an explicit `null`
@@ -5456,7 +5477,12 @@ strategy's terminal is held.
 `daemon/run-scopes.json` is a stable contract a host may read directly when
 the daemon is dead. It is written compactly (no indentation) and coalesced: changes
 that arrive during a write share the next one, and each open, seed and settlement
-still waits for a write that carries it. A row this engine cannot parse, including
+still waits for a write that carries it. A failed write leaves the file as it was,
+whoever waited for it still sees it fail, and the daemon log says so once and once
+more when a write lands. The pids tick repeats the write with the current state and
+repeats nothing else, no reap and no report. Until one lands the file lags the daemon,
+and a restart before that reads the stale row and settles it again by identity, with no
+later report. A row this engine cannot parse, including
 one whose marker is not a run-scope marker or whose present `outcome` has no known
 `census`, stays in `entries` verbatim and is never acted on, so its obligations
 remain explicitly unknown beside the recognized rows; only an unusable file is
@@ -5610,6 +5636,40 @@ kept only for cold import and an independent frozen copy kept for tests.
   whose sequence moved while it was staged) has no owner and is not collected
   until the orphan sweep of the next start reclaims it; this costs disk space
   only.
+  An upload part is that same write-through file, written incrementally on the
+  libuv pool. Concurrent incremental uploads share one gate of that process's
+  pool minus two threads (never below one). Each pool operation of a transfer
+  (the open, every chunk write, the close) takes one slot and releases it when
+  the operation returns, so a PUT waiting for its next bytes from the network,
+  however long, holds no slot and cannot hold up other uploads. A writer that
+  finds the gate full waits on the event loop, and cancellation wakes the wait;
+  the close still runs after a cancel. When the operator has not set
+  `UV_THREADPOOL_SIZE`, the daemon entry sets it from the host's available
+  parallelism (at least 8, at most libuv's 1024) before the rest of the daemon
+  graph is imported, and submits one stat so that libuv creates the pool at that
+  size at once (a later assignment would not resize it). The entry then keeps
+  the size in a process global for the gate and removes the variable again, so
+  harness children and what they start (MCP servers, test runners, a nested
+  daemon) inherit the user's environment rather than the daemon's pool size. An
+  operator-set value stays in the environment, and children inherit it. The
+  bound is the size of that pool, not a policy. Windows caveat, not verified on
+  a Windows host: libuv may read the C runtime's copy of the environment, which
+  an in-process assignment does not update there, so the pool may stay at
+  libuv's 4 while the gate assumes the host size and keeps no DNS reserve. That
+  is no worse than before the gate existed, and a value the operator sets before
+  the daemon starts applies on every platform. The request thread commits once
+  when the PUT begins and once when the bytes are durable; it does not commit
+  each chunk, and it calls no Node storage-sync primitive. `receivedBytes` is
+  the finished total, so a status read during the PUT reports `uploading` and
+  zero received bytes. This process keeps the sha256 of those bytes in memory
+  for the following finalize and does not store it in `upload.finalize_sha`,
+  which remains the publication's ownership reference. Finalize of a transfer
+  this process just wrote uses that digest and does not read the part again.
+  Finalize drops the in-memory copy as soon as its first commit records the
+  publication; a rejected `expectedSha256` keeps it for the next attempt. Dedup,
+  replay and recovery still read and check the bytes. A restart drops the
+  digest, so publication reads the part as before, and an unfinished PUT reopens
+  at byte zero.
 - Schema version 2 adds the INV-135 `account_last_service` table to the
   version-1 DDL in place; no other row changes. Opening the store applies it
   automatically, before startup advances the root-authority floor, and the
@@ -7768,7 +7828,11 @@ its Git objects and revert anchors stay root-keyed in that root's project
 namespace). A thread created on such a root leaves it unregistered and keeps its
 commands in the global partition, but its turns are not one-shot runs: a thread's
 lanes, worktrees and purge are per root, so they share that root's unregistered
-project namespace, which retention keeps while the thread references it. A run's
+project namespace as thread-owned state: retention keeps it while the thread
+references it. After the purge, runs retire, an envelope stays until its own
+owner ends it, and empty containers go. Two limits remain: a retired run's tombstone
+stays, and with it the namespace directory, and crash GC cannot reach an orphan
+envelope once the recorded root no longer exists. A run's
 recorded `runDir` is the address every reader uses:
 
 ```text
@@ -8884,9 +8948,13 @@ code touching one of these areas must honor it or change it explicitly here.
   caller-owned `execution.workspaceRoot` recorded by a delegated command (global
   or project partition), it disposes only Claudexor's envelope scratch under that
   root's runtime namespace; it never deletes the caller's tree or its Git refs. The
-  one-shot namespace is swept only as plain directories: like retention, the sweep
-  discloses and keeps a store or `workspaces` directory that is a link, which may
-  hold another store's envelopes.
+  sweep follows no link below the config root, which may itself be a link: like the
+  lane, worktree and retention owners, it discloses and keeps a project namespace,
+  its `workspaces` or `threads`, a thread worktree, the one-shot store or a task or
+  attempt entry that is a link, before anything reads, recovers or disposes through
+  it, because that link may reach another store. A namespace kept this way keeps its
+  project's attempt branches too, since it hides which of them are owned. Moving this
+  tree means moving the whole root with `CLAUDEXOR_CONFIG_DIR`.
 - Web use is optional under `auto`, `cached`, and `live`; no
   did-this-task-NEED-web resolver or mandatory evidence gate is inferred from
   those policies. `off` remains the only strict external-context policy.

@@ -11,7 +11,9 @@
  * trees) and the one-shot namespace are sweepable — a project never run through
  * this daemon is not. Each envelope is disposed against the execution root its
  * owner record names (#503); a legacy record belongs to its namespace's own root,
- * and an envelope with neither is kept: cleanup never moves to another tree.
+ * and an envelope with neither is kept: cleanup never moves to another tree. Below
+ * the config root, which may itself be a link, the sweep follows none: what a link
+ * leads to may be another store's, so it stays, with the branches it hides the owner of.
  *
  * LIVE-OWNER GUARD: envelopes carry owner.json (pid + kernel start time);
  * a live owner's envelopes survive the sweep. When start-time recycling
@@ -37,7 +39,7 @@ import {
   readEnvelopeRecoveryRecord,
   recoverOrphanCustody,
 } from "@claudexor/workspace";
-import { oneShotRuntimeDir, projectRuntimeDir } from "@claudexor/util";
+import { oneShotRuntimeDir, ownedProjectRuntimeDir, projectRuntimeDir } from "@claudexor/util";
 
 const RO_HOME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -58,15 +60,17 @@ export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]
 
   for (const root of roots) {
     const project = projectRuntimeDir(root);
-    for (const tree of [root, ...threadTreesUnder(root)]) {
-      actions.push(...(await sweepEnvelopeNamespace(projectRuntimeDir(tree), tree)));
-      // A current envelope of an isolated thread lives in its project's namespace.
-      actions.push(...(await sweepAttemptBranches(tree, [projectRuntimeDir(tree), project])));
+    for (const tree of [root, ...threadTreesUnder(root, actions)]) {
+      const swept = await sweepTreeNamespace(tree, actions);
+      // A current envelope of an isolated thread lives in its project's namespace. One
+      // that cannot be walked hides which branches are owned, so they all stay.
+      if (swept && !runtimeLink(root, "workspaces"))
+        actions.push(...(await sweepAttemptBranches(tree, [projectRuntimeDir(tree), project])));
     }
   }
   const executionRoots = knownProjectRoots(input.knownExecutionRoots ?? (() => []));
   for (const root of executionRoots.filter((candidate) => !roots.includes(candidate))) {
-    actions.push(...(await sweepEnvelopeNamespace(projectRuntimeDir(root), root)));
+    await sweepTreeNamespace(root, actions);
   }
   // Explicitly ephemeral runs keep their envelopes in the one-shot namespace (#503).
   // Like retention, this never follows a linked store: it may hold another one's envelopes.
@@ -76,6 +80,28 @@ export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]
   else actions.push(...(await sweepEnvelopeNamespace(oneShot, null)));
   actions.push(...sweepReadOnlyHomes());
   return actions;
+}
+
+/** The refusal to walk these segments of a tree's namespace: a link below the config root.
+ * Only a check: every path stays as recorded, so a linked config root keeps its spelling. */
+function runtimeLink(tree: string, ...segments: string[]): string | null {
+  try {
+    ownedProjectRuntimeDir(tree, ...segments);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function sweepTreeNamespace(tree: string, actions: string[]): Promise<boolean> {
+  const runtime = projectRuntimeDir(tree);
+  const link = runtimeLink(tree, "workspaces");
+  if (link) {
+    actions.push(`kept namespace ${runtime}: ${link}`);
+    return false;
+  }
+  actions.push(...(await sweepEnvelopeNamespace(runtime, tree)));
+  return true;
 }
 
 function presentButNotPlainDirectory(path: string): boolean {
@@ -104,13 +130,21 @@ function knownProjectRoots(read: () => readonly string[]): string[] {
 }
 
 /** Isolated-thread worktrees live in the external per-project runtime namespace. */
-function threadTreesUnder(root: string): string[] {
+function threadTreesUnder(root: string, actions: string[]): string[] {
   const threadsDir = join(projectRuntimeDir(root), "threads");
   if (!existsSync(threadsDir)) return [];
+  const link = runtimeLink(root, "threads");
+  if (link) {
+    actions.push(`kept thread trees of ${root}: ${link}`);
+    return [];
+  }
   try {
-    return readdirSync(threadsDir)
-      .map((tid) => join(threadsDir, tid, "tree"))
-      .filter((tree) => existsSync(tree));
+    return readdirSync(threadsDir).flatMap((tid) => {
+      const treeLink = runtimeLink(root, "threads", tid, "tree");
+      if (treeLink) actions.push(`kept thread tree ${tid} of ${root}: ${treeLink}`);
+      const tree = join(threadsDir, tid, "tree");
+      return !treeLink && existsSync(tree) ? [tree] : [];
+    });
   } catch {
     return [];
   }
@@ -127,7 +161,19 @@ async function sweepEnvelopeNamespace(
   if (!existsSync(workspacesDir)) return actions;
   for (const taskId of safeReaddir(workspacesDir)) {
     const taskDir = join(workspacesDir, taskId);
+    // Every path below this one is read, recovered or removed, so a link here would
+    // carry all of that into whatever it reaches (#503). Checked before anything is.
+    if (presentButNotPlainDirectory(taskDir)) {
+      actions.push(`kept envelope ${taskId} under ${runtimeRoot}: not a plain directory`);
+      continue;
+    }
     for (const attemptId of safeReaddir(taskDir)) {
+      if (presentButNotPlainDirectory(join(taskDir, attemptId))) {
+        actions.push(
+          `kept envelope ${taskId}/${attemptId} under ${runtimeRoot}: not a plain directory`,
+        );
+        continue;
+      }
       const execRoot =
         readEnvelopeRecoveryRecord(join(taskDir, attemptId))?.executionRoot ?? legacyRoot;
       const where = execRoot ?? runtimeRoot;
@@ -258,8 +304,18 @@ async function sweepAttemptBranches(execRoot: string, namespaces: string[]): Pro
     }
     const [taskId, attemptId] = rest.split("/");
     if (!taskId || !attemptId) continue;
-    // Still owned in either layout (sweep order: envelopes first).
-    if (namespaces.some((runtime) => existsSync(join(runtime, "workspaces", taskId, attemptId))))
+    // A kept link can be dangling: it hides ownership, it does not prove absence.
+    if (
+      namespaces.some((runtime) => {
+        const task = join(runtime, "workspaces", taskId);
+        const attempt = join(task, attemptId);
+        return (
+          presentButNotPlainDirectory(task) ||
+          presentButNotPlainDirectory(attempt) ||
+          existsSync(attempt)
+        );
+      })
+    )
       continue;
     const del = await git(execRoot, ["branch", "-D", branch]);
     if (del.code === 0) actions.push(`deleted orphan attempt branch ${branch} under ${execRoot}`);

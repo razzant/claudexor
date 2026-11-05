@@ -11,9 +11,11 @@ import type { ResourceAttachmentRef, TurnEnqueueProblem } from "@claudexor/schem
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 import { delegatedThreadExecution } from "./thread-delegated-execution.js";
 import {
+  errCode,
   errStatus,
   preStartRefusalStatus,
   problemFromError,
+  RESOURCE_RELEASED,
   turnEnqueueProblemResponse,
 } from "./thread-turn-problems.js";
 import type { RunStartNormalizationOptions } from "./run-start.js";
@@ -450,8 +452,11 @@ export function handleThreadTurnRetry(
       const turn = turns.find((t) => t["id"] === turnId);
       if (!turn)
         throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
-      const recorded = turn["enqueue_error"] as { retryable?: unknown } | null | undefined;
-      if (!turn["run_id"] && recorded?.retryable === false) {
+      const recorded = turn["enqueue_error"] as
+        { retryable?: unknown; code?: unknown } | null | undefined;
+      // A released resource's refusal is the exception: its job exists, so a repeat
+      // still resolves an accepted key and otherwise asks the owner that refused it.
+      if (!turn["run_id"] && recorded?.retryable === false && recorded.code !== RESOURCE_RELEASED) {
         // No job exists to replay, and a purged thread takes no new message either.
         assertThreadAdmitsWork(threadId, detail.thread);
         throw Object.assign(
@@ -528,9 +533,10 @@ export function handleThreadTurnRetry(
         });
       } catch (err) {
         // A failed replay ENQUEUE is a fresh refusal — but the ORIGINAL job
-        // params remain in the registry, so the turn STAYS replayable.
+        // params remain in the registry, so the turn STAYS replayable, unless a
+        // resource they name was released, which no replay can ever pass (#249).
         // Untyped throws are infra failures — 500 (matching POST /runs).
-        const problem = problemFromError(err, true);
+        const problem = problemFromError(err, errCode(err) !== RESOURCE_RELEASED);
         try {
           ctx.setTurnEnqueueError?.(turnId, problem);
         } catch {

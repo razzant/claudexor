@@ -3131,7 +3131,7 @@
                             "retryable": {
                               "type": "boolean",
                               "default": true,
-                              "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay."
+                              "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
                             },
                             "required_actions": {
                               "type": "array",
