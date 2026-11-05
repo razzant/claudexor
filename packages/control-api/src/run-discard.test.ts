@@ -20,6 +20,8 @@ import {
   retainedEnvelopeOfRun,
 } from "@claudexor/workspace";
 import { afterAll, describe, expect, it } from "vitest";
+import { DecisionRecord, makeOutcomeFacts } from "@claudexor/schema";
+import { stringify } from "yaml";
 import { discardRunResult, takeRunResult } from "./run-discard.js";
 import { readDeliveryState } from "./run-delivery-state.js";
 import type { DaemonRunRecord } from "./run-record.js";
@@ -44,6 +46,18 @@ function initRepo(): string {
   execFileSync("git", ["-C", dir, "add", "-A"]);
   execFileSync("git", ["-C", dir, "commit", "-qm", "init"]);
   return dir;
+}
+
+function terminalPatch(): DaemonRunRecord {
+  const runDir = temp("taken");
+  mkdirSync(join(runDir, "final"), { recursive: true });
+  writeFileSync(join(runDir, "events.jsonl"), "");
+  writeFileSync(
+    join(runDir, "final/work_product.yaml"),
+    "id: wp-1\nkind: patch\nsource_task_id: task-1\nmeta:\n  result_kind: patch\n  apply_state: not_applied\n",
+  );
+  writeFileSync(join(runDir, "final/patch.diff"), "diff --git a/a b/a\n");
+  return { id: "job-t", runId: "run-t", state: "succeeded", runDir };
 }
 
 describe("discard decision", () => {
@@ -146,15 +160,8 @@ describe("discard decision", () => {
   });
 
   it("marks a terminal patch as taken, keeps the patch bytes, and repeats as a no-op", async () => {
-    const runDir = temp("taken");
-    mkdirSync(join(runDir, "final"), { recursive: true });
-    writeFileSync(join(runDir, "events.jsonl"), "");
-    writeFileSync(
-      join(runDir, "final/work_product.yaml"),
-      "id: wp-1\nkind: patch\nsource_task_id: task-1\nmeta:\n  result_kind: patch\n  apply_state: not_applied\n",
-    );
-    writeFileSync(join(runDir, "final/patch.diff"), "diff --git a/a b/a\n");
-    const rec: DaemonRunRecord = { id: "job-t", runId: "run-t", state: "succeeded", runDir };
+    const rec = terminalPatch();
+    const runDir = rec.runDir!;
 
     await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
     const state = readDeliveryState(rec);
@@ -164,6 +171,98 @@ describe("discard decision", () => {
     await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
     expect(readFileSync(join(runDir, "events.jsonl"), "utf8")).toBe(eventBefore);
     expect(existsSync(join(runDir, "final/patch.diff"))).toBe(true);
+  });
+
+  it("refuses taken for blocked review or failed checks while accepting a clean patch", async () => {
+    const rec = terminalPatch();
+    const arbitration = join(rec.runDir!, "arbitration");
+    mkdirSync(arbitration);
+    for (const facts of [
+      makeOutcomeFacts("succeeded", { review: "blocked", checks: "passed" }),
+      makeOutcomeFacts("succeeded", { review: "approved", checks: "failed" }),
+    ]) {
+      writeFileSync(
+        join(arbitration, "decision.yaml"),
+        stringify(DecisionRecord.parse({ winner: "a01", facts })),
+      );
+      await expect(takeRunResult(rec)).rejects.toMatchObject({
+        status: 409,
+        code: "run_taken_needs_decision",
+        context: { reason: "needs_decision" },
+      });
+      expect(readDeliveryState(rec)).toBeNull();
+    }
+    writeFileSync(
+      join(arbitration, "decision.yaml"),
+      stringify(
+        DecisionRecord.parse({
+          winner: "a01",
+          facts: makeOutcomeFacts("succeeded", { review: "approved", checks: "passed" }),
+        }),
+      ),
+    );
+    await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
+  });
+
+  it("refuses real non-patch results but takes legacy no-change patch rows", async () => {
+    const rec = terminalPatch();
+    const workProduct = join(rec.runDir!, "final/work_product.yaml");
+    const write = (kind: string, resultKind: string | undefined) =>
+      writeFileSync(
+        workProduct,
+        stringify({
+          id: "wp-1",
+          kind,
+          source_task_id: "task-1",
+          meta: { result_kind: resultKind, apply_state: "not_applied" },
+        }),
+      );
+    for (const [kind, resultKind] of [
+      ["patch", "files"],
+      ["files", "files"],
+      ["report", "answer"],
+      ["new_repo", "patch"],
+    ] as const) {
+      write(kind, resultKind);
+      await expect(takeRunResult(rec)).rejects.toMatchObject({
+        status: 409,
+        code: "run_taken_not_patch",
+        context: { reason: "not_patch" },
+      });
+      expect(readDeliveryState(rec)).toBeNull();
+    }
+    for (const resultKind of ["none", "answer", undefined]) {
+      write("patch", resultKind);
+      await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
+      expect(readDeliveryState(rec)?.takenReason).toBe("captured_result");
+      rmSync(join(rec.runDir!, "final/delivery_state.yaml")); // Each variant reaches admission afresh.
+    }
+  });
+
+  it("refuses taken for a retained continuation source but accepts inspection-only custody", async () => {
+    const rec = terminalPatch();
+    const holder = { runId: rec.runId!, runDir: rec.runDir! };
+    const env = await new WorkspaceManager(initRepo()).create({
+      taskId: "task-t",
+      attemptId: "a01",
+      baseRef: "HEAD",
+      custody: holder,
+    });
+    retainForContinuation(env, holder, "cancelled");
+    try {
+      expect(existsSync(join(holder.runDir, "final/resumable.yaml"))).toBe(false);
+      await expect(takeRunResult(rec)).rejects.toMatchObject({
+        status: 409,
+        code: "run_taken_continuable",
+        context: { reason: "continuable" },
+      });
+      expect(readDeliveryState(rec)).toBeNull();
+      retainForInspection(env, holder);
+      await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
+      expect(existsSync(env.worktree_path)).toBe(true);
+    } finally {
+      await discardRunResult(rec);
+    }
   });
 
   it("refuses taken on a continuable or non-terminal run with typed reasons", async () => {
@@ -183,6 +282,7 @@ describe("discard decision", () => {
       status: 409,
       code: "run_taken_continuable",
       context: { reason: "continuable" },
+      message: expect.stringContaining("continueFrom"),
     });
 
     const live: DaemonRunRecord = {
@@ -195,6 +295,19 @@ describe("discard decision", () => {
       status: 409,
       code: "run_taken_non_terminal",
       context: { reason: "non_terminal" },
+    });
+    // The projection derives host-restart continuation even without a terminal artifact.
+    const interrupted = { ...terminalPatch(), state: "interrupted" } as const;
+    expect(existsSync(join(interrupted.runDir!, "final/resumable.yaml"))).toBe(false);
+    await expect(takeRunResult(interrupted)).rejects.toMatchObject({
+      status: 409,
+      code: "run_taken_continuable",
+      context: { reason: "continuable" },
+    });
+    expect(readDeliveryState(interrupted)).toBeNull();
+    await expect(takeRunResult(terminalPatch())).resolves.toMatchObject({
+      accepted: true,
+      status: "taken",
     });
   });
 });

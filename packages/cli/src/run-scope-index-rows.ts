@@ -45,6 +45,7 @@ export interface RunScopeEntry {
   owner: KnownProcessIdentity | null;
   state: "open" | "unresolved";
   opened_at: string;
+  /** First settlement, never advanced by a retry: the recorded group's upper birth bound. */
   settled_at?: string;
   /** Birth floor of the scope: the earliest harness root's `lstart`. */
   scope_start: string | null;
@@ -136,6 +137,7 @@ export function reapSources(entry: RunScopeEntry) {
     captured: entry.captured,
     scopeStart: entry.scope_start,
     scopeStartAt: entry.opened_at || null,
+    settledAt: entry.settled_at ?? null,
     rootGroups: entry.root_groups.map((g) => ({
       pgid: g.pgid,
       leaderPid: g.leader_pid,

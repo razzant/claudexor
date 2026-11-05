@@ -94,8 +94,8 @@ export interface ScopeReapOutcome {
   unreadable: ScopeUnreadableRecord[];
   /**
    * Recorded groups skipped entirely because the pgid-reuse rule failed (a
-   * live process owns the group id with a different birth, or a member was
-   * born before the scope): disclosed residual, never signalled.
+   * live leader has a different birth, a member predates the scope, or all
+   * live members postdate settlement): disclosed residual, never signalled.
    */
   reusedGroups: number[];
   /** True only when every census source succeeded and nothing survived or stayed unreadable. */
@@ -144,6 +144,8 @@ export interface ScopeReapOptions {
   /** Wall-clock floor (ISO) known from the moment the scope was opened; used
    * when no `lstart` floor exists yet (a root that exited within milliseconds). */
   scopeStartAt?: string | null;
+  /** Prior settlement time (ISO); a group with only newer members has been reused. */
+  settledAt?: string | null;
   /**
    * The harness roots' own process groups, recorded SYNCHRONOUSLY at spawn
    * from the registry handle: pgid plus the leader's measured identity, and
@@ -195,9 +197,9 @@ export function scopeFloorSeconds(
  * every individually captured pid still alive with its recorded birth, plus
  * every live member of a recorded group G under the pgid-reuse rule — POSIX
  * does not reuse a pid as a group id while that group has members, so G is
- * still ours when (i) every live member of G was born at or after the scope
- * and (ii) a live process with pid == G has the birth we recorded for G's
- * leader; otherwise G was reused and is skipped entirely. Pure.
+ * still ours when every member was born at or after the scope, a live leader
+ * matches its recorded birth, and on a re-reap at least one member was alive
+ * at the prior settlement. Otherwise G was reused and is skipped. Pure.
  */
 export function capturedCandidates(
   captured: readonly CapturedProcess[],
@@ -205,6 +207,7 @@ export function capturedCandidates(
   scopeStart: string | null | undefined,
   options: {
     scopeStartAt?: string | null;
+    settledAt?: string | null;
     rootGroups?: ReadonlyArray<ScopeRootGroup>;
     /** For a root group known only by its leader identity: whether a live
      * process with pid == G is still that leader (computed by the caller). */
@@ -219,6 +222,7 @@ export function capturedCandidates(
     if (row && row.birth === item.birth) candidates.set(row.pid, row.birth);
   }
   const floor = scopeFloorSeconds(scopeStart, options.scopeStartAt);
+  const settlement = scopeFloorSeconds(null, options.settledAt);
   const rootByPgid = new Map((options.rootGroups ?? []).map((g) => [g.pgid, g] as const));
   const groups = new Set([...captured.map((item) => item.pgid), ...rootByPgid.keys()]);
   for (const group of groups) {
@@ -228,21 +232,16 @@ export function capturedCandidates(
     const recordedLeaderBirth =
       captured.find((item) => item.pid === group)?.birth ?? root?.leaderBirth ?? undefined;
     const liveLeader = byPid.get(group);
-    // Rule (ii): a live process with pid == G must be the recorded leader —
-    // by its `lstart` when one was recorded, else by the caller's identity
-    // verdict against the spawn-time handle; otherwise G was reused.
+    // A live leader must match its recorded birth or spawn-time identity.
     const leaderReused =
       liveLeader !== undefined &&
       (recordedLeaderBirth !== undefined
         ? liveLeader.birth !== recordedLeaderBirth
         : options.leaderVerdict?.get(group) !== "same");
-    const bornBefore =
-      floor === null ||
-      members.some((row) => {
-        const at = birthEpochSeconds(row.birth);
-        return at === null || at < floor;
-      });
-    if (leaderReused || bornBefore) {
+    const births = members.map((row) => birthEpochSeconds(row.birth));
+    const bornBefore = floor === null || births.some((at) => at === null || at < floor);
+    const bornAfter = settlement !== null && births.every((at) => at !== null && at > settlement);
+    if (leaderReused || bornBefore || bornAfter) {
       reusedGroups.push(group);
       continue;
     }
@@ -470,6 +469,7 @@ async function reapOnce(opts: ScopeReapOptions): Promise<ScopeReapOutcome> {
     }
     const found = capturedCandidates(captured ?? [], rows, opts.scopeStart, {
       scopeStartAt: opts.scopeStartAt,
+      settledAt: opts.settledAt,
       rootGroups: opts.rootGroups,
       leaderVerdict,
     });

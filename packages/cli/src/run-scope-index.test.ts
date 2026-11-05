@@ -1,5 +1,13 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -30,6 +38,7 @@ function tempRoot(): string {
 
 const T0 = "Mon Oct 12 14:00:00 2026";
 const T1 = "Mon Oct 12 14:00:05 2026";
+const T2 = "Mon Oct 12 14:00:09 2026";
 
 function known(pid: number, token: string): KnownProcessIdentity {
   return {
@@ -116,6 +125,7 @@ describe("DaemonRunScopeIndex", () => {
     const index = new DaemonRunScopeIndex({
       path: join(root, RUN_SCOPE_INDEX_FILE),
       owner: async () => me,
+      identity: fakeIdentity({ [process.pid]: me }),
       reap: fakeReaper().reap,
       table: fakeTable([]),
       roots: () => [],
@@ -131,6 +141,15 @@ describe("DaemonRunScopeIndex", () => {
       captured: [],
       scope_start: null,
     });
+    const path = join(root, RUN_SCOPE_INDEX_FILE);
+    const inode = statSync(path).ino;
+    // Startup still calls persist after skipping the live owner. Equal bytes
+    // must leave the actual file alone, not just rewrite the same content.
+    await index.settleDeadOwners();
+    expect(statSync(path).ino).toBe(inode);
+    await index.open("run-2");
+    expect(statSync(path).ino).not.toBe(inode);
+    expect(readIndex(root).entries).toHaveLength(2);
   });
 
   it("captures a live root's descendants (pid, pgid, birth) and the scope start on the tick, persisted", async () => {
@@ -233,18 +252,29 @@ describe("DaemonRunScopeIndex", () => {
       roots: () => [],
     });
     const { marker: m2 } = await second.open("run-2");
+    const firstSettlement = new Date(T1).toISOString();
+    let settlementClock = firstSettlement;
     const kept = new DaemonRunScopeIndex({
       path,
       owner: async () => known(process.pid, "7"),
       reap: fakeReaper({ [m2]: survivor }).reap,
       table: fakeTable([]),
       roots: () => [],
+      now: () => settlementClock,
     });
     await kept.settle("run-2", m2);
     expect(readIndex(root).entries[0]).toMatchObject({
       marker: m2,
       state: "unresolved",
+      settled_at: firstSettlement,
       outcome: { survivors: [4711], reused_groups: [77], ended: 0 },
+    });
+    settlementClock = new Date(T2).toISOString();
+    survivor.unreadable.push({ pid: 4712, reason: "identity_unreadable" });
+    await kept.settle("run-2", m2);
+    expect(readIndex(root).entries[0]).toMatchObject({
+      settled_at: firstSettlement,
+      outcome: { unreadable: [4712] },
     });
   });
 
@@ -267,6 +297,7 @@ describe("DaemonRunScopeIndex", () => {
       identity: fakeIdentity({ 5151: owner }),
       roots: () => [],
       deadlineMs: 321,
+      now: () => new Date(T1).toISOString(),
     });
     const { marker } = await first.open("run-live-unresolved");
     await first.settle("run-live-unresolved", marker);
@@ -288,12 +319,98 @@ describe("DaemonRunScopeIndex", () => {
       deadlineMs: 321,
     });
     await second.captureTick();
+    await vi.waitFor(() => expect(second.list()).toEqual([]));
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ marker, deadlineMs: 321 });
-    expect(second.list()).toEqual([]);
+    expect(calls[0]).toMatchObject({
+      marker,
+      deadlineMs: 321,
+      settledAt: new Date(T1).toISOString(),
+    });
+    await vi.waitFor(() => expect(readIndex(root).entries).toEqual([]));
   });
 
-  it("keeps a survivor outcome on a live retry and does not rewrite identical bytes", async () => {
+  it("pids ticks keep capturing while a retry runs and retry every stuck entry in oldest-first rounds", async () => {
+    const root = tempRoot();
+    const owner = known(5151, "5151");
+    const survivor = settledOutcome({
+      settled: false,
+      survivors: [{ pid: 4711, startToken: "ps:x" }],
+    });
+    let now = "2026-10-12T14:00:00Z";
+    let finish: ((outcome: ScopeReapOutcome) => void) | undefined;
+    let retry = false;
+    const calls: ScopeReapOptions[] = [];
+    const table = fakeTable([{ pid: 100, ppid: 5151, pgid: 100, birth: T0 }]);
+    const snapshot = vi.spyOn(table, "snapshot");
+    const live: Record<number, KnownProcessIdentity> = { 5151: owner, 100: known(100, "100") };
+    const identity = fakeIdentity(live);
+    const readIdentity = vi.spyOn(identity, "read");
+    let roots: LiveChildProcess[] = [];
+    const index = new DaemonRunScopeIndex({
+      path: join(root, RUN_SCOPE_INDEX_FILE),
+      owner: async () => owner,
+      identity,
+      table,
+      roots: () => roots,
+      now: () => now,
+      reap: async (opts) => {
+        if (!retry) return survivor;
+        calls.push(opts);
+        return new Promise<ScopeReapOutcome>((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    const markers: string[] = [];
+    // Deliberately insert out of settlement order to exercise the ordering seam.
+    for (const minute of [3, 1, 2]) {
+      now = `2026-10-12T14:0${minute}:00Z`;
+      const { marker } = await index.open(`stuck-${minute}`);
+      markers.push(marker);
+      await index.settle(`stuck-${minute}`, marker);
+    }
+    roots = [fakeRoot(100, (await index.open("live-run")).marker)];
+    retry = true;
+    try {
+      let ticks = 0;
+      for (const marker of [markers[1], markers[2], markers[0], markers[1]]) {
+        const before = calls.length;
+        const capture = index.captureTick();
+        expect(index.captureTick()).toBe(capture); // Concurrent capture still coalesces.
+        await capture;
+        ticks += 1;
+        await vi.waitFor(() => expect(calls).toHaveLength(before + 1));
+        expect(calls.at(-1)?.marker).toBe(marker);
+        // This reap spans multiple ticks: capture completes on each, with no new reap.
+        await index.captureTick();
+        await index.captureTick();
+        ticks += 2;
+        expect(snapshot).toHaveBeenCalledTimes(ticks);
+        expect(calls).toHaveLength(before + 1);
+        finish!(survivor);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(calls).toHaveLength(before + 1); // Finishing cannot drain the queue this tick.
+      }
+      expect(index.list().filter((entry) => entry.state === "unresolved")).toHaveLength(3);
+      // A missing owner must not turn the tick into a scan of every stuck PID.
+      roots = [];
+      delete live[5151];
+      readIdentity.mockClear();
+      await index.captureTick();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(readIdentity).toHaveBeenCalledExactlyOnceWith(5151);
+      expect(calls).toHaveLength(4);
+      live[5151] = owner;
+      await index.captureTick();
+      await vi.waitFor(() => expect(calls).toHaveLength(5));
+      expect(calls.at(-1)?.marker).toBe(markers[0]);
+    } finally {
+      finish?.(survivor);
+      index.dispose();
+    }
+  });
+
+  it("keeps a survivor outcome and logs only changed retry outcomes or removal, never identical retries", async () => {
     const root = tempRoot();
     const path = join(root, RUN_SCOPE_INDEX_FILE);
     const owner = known(6161, "6161");
@@ -316,20 +433,57 @@ describe("DaemonRunScopeIndex", () => {
     await first.settle("run-live-survivor", marker);
     const before = readFileSync(path, "utf8");
     const calls: ScopeReapOptions[] = [];
+    const log = vi.fn();
+    let outcome = survivor;
+    let failure: string | undefined;
     const second = new DaemonRunScopeIndex({
       path,
       reap: async (opts) => {
         calls.push(opts);
-        return survivor;
+        if (failure) throw new Error(failure);
+        return outcome;
       },
       table: fakeTable([]),
       identity: fakeIdentity({ 6161: owner }),
       roots: () => [],
+      log,
     });
-    await second.captureTick();
+    const tick = async () => {
+      await second.captureTick();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    await tick();
     expect(calls).toHaveLength(1);
     expect(second.list()).toMatchObject([{ marker, state: "unresolved" }]);
     expect(readFileSync(path, "utf8")).toBe(before);
+    expect(log).not.toHaveBeenCalled();
+
+    outcome = { ...survivor, unreadable: [{ pid: 4713, reason: "birth_unreadable" }] };
+    await tick();
+    await vi.waitFor(() =>
+      expect(readIndex(root).entries[0]?.["outcome"]).toMatchObject({ unreadable: [4713] }),
+    );
+    expect(log).toHaveBeenCalledTimes(1);
+    await tick();
+    expect(log).toHaveBeenCalledTimes(1);
+
+    failure = "table unavailable";
+    await tick();
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("table unavailable"));
+    await tick();
+    expect(log).toHaveBeenCalledTimes(2);
+    failure = "identity unavailable";
+    await tick();
+    expect(log).toHaveBeenCalledTimes(3);
+    failure = undefined;
+    await tick();
+    expect(log).toHaveBeenCalledTimes(4); // Recovery from an exception is an outcome change.
+    outcome = settledOutcome();
+    await tick();
+    await vi.waitFor(() => expect(readIndex(root).entries).toEqual([]));
+    expect(log).toHaveBeenCalledTimes(5);
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining(": settled"));
   });
 
   it("settle hands the reaper the entry's opening time as scopeStartAt (the census skips older processes); a row without opened_at hands null, the full census (round 5)", async () => {
@@ -352,6 +506,7 @@ describe("DaemonRunScopeIndex", () => {
     await index.settle("run-1", marker);
     expect(reaper.calls).toHaveLength(1);
     expect(reaper.calls[0]?.scopeStartAt).toBe(openedAt);
+    expect(reaper.calls[0]?.settledAt).toBeNull();
 
     // A startup settlement of an entry recorded without an opening time keeps
     // the full census: the reaper is handed no age.
@@ -403,7 +558,8 @@ describe("DaemonRunScopeIndex", () => {
             marker: deadMarker,
             run_id: "run-dead",
             owner: deadDaemon,
-            state: "open",
+            state: "unresolved",
+            settled_at: new Date(T1).toISOString(),
             opened_at: "x",
             scope_start: T0,
             root_groups: [],
@@ -434,6 +590,7 @@ describe("DaemonRunScopeIndex", () => {
     expect(reaper.calls.map((c) => c.marker)).toEqual([deadMarker]);
     expect(reaper.calls[0]).toMatchObject({
       scopeStart: T0,
+      settledAt: new Date(T1).toISOString(),
       captured: [{ pid: 210, pgid: 200, birth: T1 }],
     });
     expect(reaper.calls.some((c) => c.marker === strangerMarker)).toBe(false);

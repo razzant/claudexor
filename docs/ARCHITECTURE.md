@@ -4121,7 +4121,7 @@ not retry automatically.
   the caller-owned acknowledgement for a terminal `kind: patch` result it has
   already captured: it is idempotent, records the mutable delivery-state
   overlay and audit reason, refuses `run_taken_non_terminal`,
-  `run_taken_continuable` and `run_taken_not_patch`, and leaves the engine copy
+  `run_taken_continuable`, `run_taken_needs_decision` and `run_taken_not_patch`, and leaves the engine copy
   under the existing age/keep-last retention window.
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS workspace
@@ -5214,10 +5214,19 @@ directory captures remain unknown, and a false or absent fact (including legacy
 rows) keeps a patch actionable; copied-file results remain actionable as well.
 Failed-check and blocked-review holds take precedence over the no-change fact.
 The caller-owned `action=taken` decision with `reason=captured_result` clears only
-the actionable hold for a terminal patch that the caller already captured. It
-uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
+the actionable hold for a terminal patch that the caller already captured. Legacy
+`kind: patch` rows with `result_kind: none` or `answer` remain eligible for this
+explicit decision; `result_kind: files` and non-patch work-product kinds are refused.
+It uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
 with no second retention window, while the engine's copy remains until ordinary
 retention removes it.
+
+Residual: needs-decision patch runs (blocked review or failed checks) end only
+through the apply or accept workflow. `taken` refuses them with
+`run_taken_needs_decision`; it cannot clear those holds. A continuable run is
+refused with `run_taken_continuable` and names `continueFrom` as its remedy.
+Discarding a retained envelope does not remove the terminal resumable record,
+so it does not make that run eligible for `taken`.
 
 A `quarantined` generation and project generations owned by its replaced global registry are retired journal evidence: its rows do not own references or keep unsettled commands active, and completed quarantine does not stop retention. Terminal metadata may still date its old payloads. Archived projects in the current registry remain reference owners. Pending or unknown recovery states hold all run namespaces, with one named partition/status hold per pending generation in `errors[]`: scope roots do not bound cross-project dependencies. Partial file delivery retains that protection; explicit discard
 ends pending delivery but does not delete artifacts immediately or bypass other
@@ -5449,11 +5458,21 @@ release its copy under the known-member settlement policy while disclosing
 `not_provable`. Unsupported or failed census, surviving known members and
 unknown receipts do not certify that release. On the existing pids tick, an
 `unresolved` entry whose recorded owner is still this live daemon is retried
-with a fresh settlement budget. Only a fresh `settled` census removes it from
+with a fresh settlement budget. Capture and retry have separate in-flight guards:
+retry starts after capture resolves and never delays the next tick's capture.
+At most one entry is reaped per tick, visiting unresolved entries in rounds ordered
+by oldest `settled_at` first; identical outcomes remain eligible on the next round.
+Retries and startup re-reaps use the entry's first `settled_at` as a group birth
+bound: a recorded group whose live members were all born after settlement is
+reused and skipped. A surviving member born by settlement keeps the group eligible,
+including its later children. Changed retry outcomes never advance this bound.
+Only a fresh `settled` census removes it from
 `run-scopes.json`; survivors or a deadline miss keep the entry and its outcome.
 Darwin's `completeness: not_provable` remains compatible with `settled` once
 the known members have settled. The index is compact JSON and an unchanged
-capture or retry does not rewrite its bytes. Windows keeps its existing
+capture or retry does not rewrite its bytes. Retry logs report only changed
+outcomes (including failures and recovery) or removal; identical retries are silent.
+Windows keeps its existing
 `unsupported` retirement behavior.
 A host cancel that arrives during the settlement barrier does not rewrite a
 completed run as cancelled: the cancellation decision is frozen when the
@@ -5461,7 +5480,8 @@ strategy's terminal is held.
 `daemon/run-scopes.json` is a stable contract a host may read directly when
 the daemon is dead. Its compact schema, in the field names the daemon writes:
 `{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`,
-`state` (`open` | `unresolved`), `opened_at` (ISO time: the floor the daemon
+`state` (`open` | `unresolved`), optional `settled_at` (ISO time of the first
+settlement, preserved on retries), `opened_at` (ISO time: the floor the daemon
 uses while no `lstart` birth exists), `scope_start` (`lstart` text or null),
 `root_groups[{pgid, leader_pid, leader_birth | null, leader_identity?}]`
 (`leader_identity` is the daemon's opaque kernel birth token, comparable only
@@ -5473,8 +5493,9 @@ another `lstart` reading, never with the identity token. A host without the
 identity helper follows this rule when `leader_birth` is null: a live process
 with `pid == pgid` cannot be verified as the recorded leader, so the host
 skips that group; when no process with `pid == pgid` is alive, the group's
-remaining members born at or after the floor belong to the scope (the kernel
-does not hand out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
+remaining members born at or after the floor belong to the scope, provided at
+least one was born by `settled_at` when it is recorded (the kernel does not hand
+out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating

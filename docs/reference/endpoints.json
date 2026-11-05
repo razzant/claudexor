@@ -1143,7 +1143,7 @@
       "path": "/v2/runs/:id/decision",
       "mutating": true,
       "applicability": "run",
-      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, or non-patch results with typed reasons and is idempotent.",
+      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunDecisionRequest",
       "parameters": [

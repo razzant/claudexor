@@ -201,8 +201,8 @@ async function fixture() {
       })
     ).json()) as { summary?: { result?: { applyState?: string; revertable?: boolean } } };
   /** The durable journal row of one route's command. */
-  const journal = (path: string, key: string) =>
-    commands.get(`${path === "/apply" ? "run.apply" : "run.decision.accept_clean_patch"}${key}`);
+  const journal = (path: string, key: string, action = "accept_clean_patch") =>
+    commands.get(`${path === "/apply" ? "run.apply" : `run.decision.${action}`}${key}`);
   return { project, run, git, post, get, journal };
 }
 
@@ -268,7 +268,10 @@ async function refusedTwice(f: Fixture, path: string, body: unknown, key: string
     context: problem.context,
   });
   // A refusal is a failed command in the durable journal, never a succeeded one.
-  expect(f.journal(path, key)).toMatchObject({ state: "failed", errorCode: problem.code });
+  expect(f.journal(path, key, (body as { action?: string }).action)).toMatchObject({
+    state: "failed",
+    errorCode: problem.code,
+  });
   return problem;
 }
 
@@ -386,6 +389,19 @@ describe("a replayed apply never records over what happened after it", () => {
 describe("taken decision", () => {
   it("acknowledges a captured terminal patch and is a no-op with another key", async () => {
     const f = await fixture();
+    writeFileSync(join(f.run, "arbitration/decision.yaml"), decision("failed"));
+    const refused = await refusedTwice(
+      f,
+      "/decision",
+      { action: "taken", reason: "captured_result" },
+      "taken-blocked",
+    );
+    expect(refused).toMatchObject({
+      code: "run_taken_needs_decision",
+      context: { reason: "needs_decision" },
+    });
+    expect(existsSync(join(f.run, "final/delivery_state.yaml"))).toBe(false);
+    writeFileSync(join(f.run, "arbitration/decision.yaml"), decision("passed"));
     const first = await f.post(
       "/decision",
       { action: "taken", reason: "captured_result" },

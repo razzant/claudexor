@@ -306,12 +306,13 @@ describe("runRetentionPass", () => {
       ],
       ["run-refused", "kind: patch\nmeta:\n  capture_refused: true\n  apply_state: not_applied\n"],
       ["run-taken", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
+      ["run-taken-young", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
       ["run-files", "kind: files\nmeta:\n  apply_state: not_applied\n"],
       ["run-legacy", "kind: patch\nmeta:\n  apply_state: not_applied\n"],
     ] as const;
     for (const [runId, workProduct] of rows) {
       const runDir = seedRun(project.runsDir, runId, { workProduct });
-      if (runId === "run-taken")
+      if (runId === "run-taken" || runId === "run-taken-young")
         writeFileSync(
           join(runDir, "final/delivery_state.yaml"),
           "applyState: not_applied\ntakenAt: 2026-07-01T00:00:00.000Z\ntakenReason: captured_result\n",
@@ -322,7 +323,11 @@ describe("runRetentionPass", () => {
       { dry_run: false },
       deps(project, {
         records: () =>
-          rows.map(([runId]) => ({ runId, state: "succeeded", finishedAt: daysAgo(90) })),
+          rows.map(([runId]) => ({
+            runId,
+            state: "succeeded",
+            finishedAt: daysAgo(runId === "run-taken-young" ? 2 : 90),
+          })),
       }),
     );
     expect(receipt.deleted_runs.map((row) => row.run_id).sort()).toEqual([
@@ -330,6 +335,10 @@ describe("runRetentionPass", () => {
       "run-taken",
     ]);
     expect(receipt.kept.actionable).toBe(4);
+    expect(receipt.kept.young).toBe(1);
+    expect(existsSync(join(project.runsDir, "run-taken-young", "final/work_product.yaml"))).toBe(
+      true,
+    );
     for (const runId of ["run-changed", "run-refused", "run-files", "run-legacy"])
       expect(existsSync(join(project.runsDir, runId, "final/work_product.yaml"))).toBe(true);
   });
