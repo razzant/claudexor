@@ -11,7 +11,6 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
-  RunTelemetry,
   SCHEMA_VERSION,
   requiredActionsFor,
   validateRunFactsInvariants,
@@ -27,10 +26,14 @@ export { buildRunFacts };
 
 export interface PreparedRunFactsReceipt {
   facts: RunFacts;
-  telemetry: RunTelemetry | null;
-  /** Publish telemetry compatibility + the canonical receipt commit marker. */
+  /** The retired `telemetry.run_facts` mirror: final/run_facts.yaml, the
+   * terminal event and SQL are the authority, so the terminal hands no
+   * telemetry rewrite to the terminal-files owner. Old artifacts that still
+   * carry a non-null mirror stay parseable through the nullable schema field. */
+  telemetry: null;
+  /** Publish the canonical receipt commit marker. */
   commit: () => void;
-  /** Restore the exact pre-commit marker/telemetry bytes after event failure. */
+  /** Restore the exact pre-commit marker bytes after event failure. */
   rollback: () => void;
 }
 
@@ -119,32 +122,23 @@ function persistPreparedRunFacts(
   ctx: AnnouncedRunContext,
   facts: RunFacts,
 ): PreparedRunFactsReceipt {
-  const telemetryPath = join(ctx.paths.finalDir, "telemetry.yaml");
   const receiptPath = join(ctx.paths.finalDir, "run_facts.yaml");
-  const parsedTelemetry = RunTelemetry.safeParse(ctx.store.readYaml(telemetryPath));
-  const telemetry = parsedTelemetry.success ? parsedTelemetry.data : null;
-  const embedded = telemetry ? RunTelemetry.parse({ ...telemetry, run_facts: facts }) : null;
-  let priorTelemetry: TextSnapshot | null = null;
   let priorReceipt: TextSnapshot | null = null;
   let committed = false;
   let rolledBack = false;
   const rollback = () => {
     if (rolledBack) return;
     if (priorReceipt) restoreSnapshot(receiptPath, priorReceipt);
-    if (priorTelemetry) restoreSnapshot(telemetryPath, priorTelemetry);
     rolledBack = true;
   };
   const commit = () => {
     if (committed) return;
     if (rolledBack) throw new Error("cannot commit a rolled-back RunFacts receipt");
-    priorTelemetry = textSnapshot(telemetryPath);
     priorReceipt = textSnapshot(receiptPath);
-    if (embedded) writeYamlAtomically(ctx, telemetryPath, embedded);
-    // Land the canonical marker last, after its telemetry compatibility copy.
     writeYamlAtomically(ctx, receiptPath, facts);
     committed = true;
   };
-  return { facts, telemetry: embedded, commit, rollback };
+  return { facts, telemetry: null, commit, rollback };
 }
 
 /**

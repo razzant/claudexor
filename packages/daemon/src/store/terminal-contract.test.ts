@@ -89,6 +89,8 @@ function facts() {
     generated_at: TIME,
   });
 }
+/** A legacy-shaped hook telemetry carrying the retired `run_facts` mirror; the
+ * terminal-files owner ignores it and never writes telemetry.yaml. */
 function telemetry() {
   return RunTelemetry.parse({
     schema_version: SCHEMA_VERSION,
@@ -233,9 +235,7 @@ describe("SQL terminal transaction and real EventLog", () => {
     expect(JSON.parse(readFileSync(join(f.runDir, "final/run_facts.yaml"), "utf8"))).toEqual(
       facts(),
     );
-    expect(JSON.parse(readFileSync(join(f.runDir, "final/telemetry.yaml"), "utf8"))).toEqual(
-      telemetry(),
-    );
+    expect(existsSync(join(f.runDir, "final/telemetry.yaml"))).toBe(false);
     expect(readEvents(f.runDir).map((row) => row.type)).toEqual(["run.created", "run.failed"]);
     expect(() => f.commands.persistTerminal("job", event, telemetry())).toThrow(
       /UNIQUE|constraint/i,
@@ -261,7 +261,7 @@ describe("SQL terminal transaction and real EventLog", () => {
     expect(syncSpies.fdatasyncSync).not.toHaveBeenCalled();
   });
 
-  it.each(["run_facts.yaml", "telemetry.yaml", "events.jsonl"])(
+  it.each(["run_facts.yaml", "events.jsonl"])(
     "T-TRM-1/4: repeated EIO in %s keeps SQL terminal and immediate repair later completes without another terminal INSERT",
     async (name) => {
       const f = await fixture();
@@ -346,7 +346,7 @@ describe("SQL terminal transaction and real EventLog", () => {
   it("settlement repairs an already terminal command and preserves canonical outcome through another EIO", async () => {
     const f = await fixture();
     const running = f.commands.get("job")!;
-    f.setFault("telemetry.yaml");
+    f.setFault("run_facts.yaml");
     let thrown: unknown;
     try {
       f.log.emit("run.failed", terminal().payload);

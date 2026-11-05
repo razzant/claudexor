@@ -399,7 +399,8 @@ export class SqlCommandStore implements CommandStorePort {
           errorContext: undefined,
           finishedAt: terminal.ts,
         },
-        this.options.terminalFiles.prepareRecoveryTelemetry(current.runDir!, facts),
+        // Re-create the terminal-files obligation; no telemetry mirror is rebuilt.
+        null,
       );
     } else if (
       current.state !== facts.outcome.lifecycle ||

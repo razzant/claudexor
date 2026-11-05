@@ -5,10 +5,8 @@ import {
   RunTelemetry,
   validateRunFactsInvariants,
   type RunEvent,
-  type RunFacts,
 } from "@claudexor/schema";
 import { appendLine, hashJson } from "@claudexor/util";
-import { parse as parseYaml } from "yaml";
 import type { JobRecord } from "../job-record.js";
 import {
   lstatOrNull,
@@ -66,15 +64,6 @@ async function readTail(path: string): Promise<{ tail: Buffer; whole: boolean }>
   }
 }
 
-/** The telemetry receipt for a terminal's RunFacts; a mismatch is refused. */
-function telemetryReceipt(telemetry: unknown, facts: RunFacts): Buffer | null {
-  if (telemetry === null || telemetry === undefined) return null;
-  const prepared = RunTelemetry.parse(telemetry);
-  if (hashJson(prepared.run_facts) !== hashJson(facts))
-    throw new Error("durable terminal telemetry does not match SQL authority");
-  return receipt(prepared);
-}
-
 /** What a terminal needs of its per-run log: nothing, its line appended, or a rewrite. */
 function eventsRepair(
   bytes: Buffer,
@@ -119,17 +108,6 @@ export class SqlTerminalFiles {
     this.obligations.materialize("terminal_files", runId);
   }
 
-  prepareRecoveryTelemetry(runDir: string, facts: RunFacts): RunTelemetry | null {
-    try {
-      const telemetry = RunTelemetry.safeParse(
-        parseYaml(readFileSync(join(runDir, "final", "telemetry.yaml"), "utf8")),
-      );
-      return telemetry.success ? RunTelemetry.parse({ ...telemetry.data, run_facts: facts }) : null;
-    } catch {
-      return null;
-    }
-  }
-
   /**
    * Off the request thread, before the synchronous terminal hook: write the
    * receipts (and a needed per-run log rewrite) its file step will publish, as
@@ -138,8 +116,12 @@ export class SqlTerminalFiles {
    * first. The hook renames a temp
    * into place, after its SQL commit and in the same synchronous section, only
    * when its bytes equal what it would write; anything else it writes itself.
+   *
+   * `final/telemetry.yaml` is never rewritten here: its `run_facts` mirror is
+   * retired (final/run_facts.yaml + SQL/event are the authority), and a legacy
+   * obligation payload's telemetry is ignored rather than compared or written.
    */
-  async stage(record: JobRecord, event: RunEvent, telemetry: RunTelemetry | null): Promise<void> {
+  async stage(record: JobRecord, event: RunEvent, _telemetry: RunTelemetry | null): Promise<void> {
     this.discard(event.run_id);
     const files: TerminalFile[] = [];
     let staging: string;
@@ -153,14 +135,6 @@ export class SqlTerminalFiles {
         bytes: receipt(facts),
         purpose: "terminal_receipt",
       });
-      const telemetryBytes = telemetryReceipt(telemetry, facts);
-      if (telemetryBytes)
-        files.push({
-          dir: finalDir,
-          name: "telemetry.yaml",
-          bytes: telemetryBytes,
-          purpose: "terminal_receipt",
-        });
       // The usual log needs only the terminal appended, which the commit does;
       // only a log whose tail says otherwise is read whole and a rewrite staged.
       const eventsPath = join(record.runDir!, "events.jsonl");
@@ -243,19 +217,6 @@ export class SqlTerminalFiles {
       purpose: "terminal_receipt",
     });
     effects.register(finalDir);
-    const telemetry = telemetryReceipt(
-      (row.payload as { telemetry?: unknown } | null)?.telemetry,
-      facts,
-    );
-    if (telemetry) {
-      this.publish(row.key, {
-        dir: finalDir,
-        name: "telemetry.yaml",
-        bytes: telemetry,
-        purpose: "terminal_receipt",
-      });
-      effects.register(finalDir);
-    }
     const eventsPath = join(root, "events.jsonl");
     const existing = lstatOrNull(eventsPath);
     if (existing && (!existing.isFile() || existing.isSymbolicLink()))

@@ -995,7 +995,7 @@ describe("DaemonServer", () => {
     }
   });
 
-  it("embeds journal facts into readable telemetry and fences a conflicting embedded receipt", () => {
+  it("keeps legacy telemetry mirrors readable without rebuilding or fencing them", () => {
     const baseTelemetry = (facts: ReturnType<typeof recoveredFailureFacts>) => ({
       schema_version: SCHEMA_VERSION,
       run_id: facts.run_id,
@@ -1039,9 +1039,7 @@ describe("DaemonServer", () => {
     } finally {
       recovered.journal.close();
     }
-    expect(RunTelemetry.parse(parseYaml(readFileSync(telemetryPath, "utf8"))).run_facts).toEqual(
-      embed.facts,
-    );
+    expect(RunTelemetry.parse(parseYaml(readFileSync(telemetryPath, "utf8"))).run_facts).toBeNull();
 
     const conflict = recoveryFixture("telemetry-conflict");
     conflict.first.store.update("job-telemetry-conflict", provisional);
@@ -1055,9 +1053,11 @@ describe("DaemonServer", () => {
         }),
       )}\n`,
     );
-    expect(() => commandAuthority(conflict.dir)).toThrow(
-      /telemetry does not match journal authority/,
-    );
+    expect(() => commandAuthority(conflict.dir)).not.toThrow();
+    expect(
+      RunTelemetry.parse(parseYaml(readFileSync(join(conflict.runDir, "final", "telemetry.yaml"), "utf8")))
+        .run_facts,
+    ).toMatchObject({ generated_at: "2026-07-27T09:09:09.000Z" });
   });
 
   it("fails loud when a schema-valid receipt disagrees with journal authority", () => {

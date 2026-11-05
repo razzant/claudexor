@@ -10221,7 +10221,7 @@ describe("Orchestrator", () => {
       path: "final/plan.md",
       producer_attempt_id: "p01",
     });
-    expect(JSON.stringify(telemetry?.run_facts)).toBe(JSON.stringify(runFacts));
+    expect(telemetry?.run_facts).toBeNull();
   });
 
   it("an untagged plan is DISCLOSED as unverified, never silently ready", async () => {
@@ -10820,7 +10820,7 @@ describe("Orchestrator", () => {
       { attempt_id: "p02", role: "planner" },
       { attempt_id: "p03", role: "merge" },
     ]);
-    expect(telemetry).toMatchObject({ run_facts: runFacts });
+    expect(telemetry).toMatchObject({ run_facts: null });
   });
 
   it("council discloses an estimate-headroom member refusal below the floor", async () => {
