@@ -65,7 +65,9 @@ it("sweeps the last orphan after its ephemeral thread is purged, including witho
   const gc = runner();
   expect((await gc({ dry_run: true })).errors).toEqual([]);
   expect(existsSync(orphan)).toBe(true);
-  expect((await gc({ dry_run: false })).errors).toEqual([]);
+  const receipt = await gc({ dry_run: false });
+  expect(receipt.errors).toEqual([]);
+  expect(receipt.deleted_lanes).toBe(1);
   expect(existsSync(orphan)).toBe(false);
   expect(existsSync(held)).toBe(true);
   sql.graph.threads.trashThread(thread.id);
@@ -122,7 +124,9 @@ it("keeps lanes through real quarantine and archive while sweeping an unregister
   );
 
   const orphan = lane(join(root, "unregistered"), "th-orphan");
-  expect((await runner()({ dry_run: false })).errors).toEqual([]);
+  const receipt = await runner()({ dry_run: false });
+  expect(receipt.errors).toEqual([]);
+  expect(receipt.deleted_lanes).toBe(1);
   expect(existsSync(orphan)).toBe(false);
   expect(existsSync(archivedLane)).toBe(true);
   expect(existsSync(quarantinedLane)).toBe(true);

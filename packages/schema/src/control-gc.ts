@@ -237,6 +237,12 @@ export const ControlGcReceipt = z
       )
       .default([])
       .describe("Standalone diff-review trees deleted (or would-be under dry_run)."),
+    deleted_lanes: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Number of orphan lane directories removed during this pass."),
     freed_bytes: z
       .number()
       .int()

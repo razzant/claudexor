@@ -166,6 +166,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
         const heldRoots = new Set(references.protectedProjectRoots);
         const changedRoots = new Set<string>();
+        let deletedLanes = 0;
         const projectHeld = (project: { root: string; runsDir: string }) => {
           for (const root of references.heldProjectRoots ?? []) {
             if (project.root !== root && dirname(project.runsDir) !== projectRuntimeDir(root))
@@ -222,7 +223,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
                   )
                 )
                   continue;
-                sweepOrphanLanes(runtime, ids);
+                deletedLanes += sweepOrphanLanes(runtime, ids).length;
               } catch (error) {
                 if (!laneProofCurrent()) {
                   inventoryErrors.push(deferred);
@@ -268,6 +269,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             dataRootMode: claudexorOwnedRoot() === userConfigDir() ? "override" : "default",
           },
         );
+        receipt.deleted_lanes = deletedLanes;
         receipt.held.roots = heldRoots.size;
         const reportedGenerationHolds = references.holds?.length ?? 0;
         receipt.holds.push(...(references.holds ?? []), ...inventoryHolds);
