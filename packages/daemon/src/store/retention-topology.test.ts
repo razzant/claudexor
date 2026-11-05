@@ -1,12 +1,14 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { createCodexAdapter } from "../../../harness-codex/dist/index.js";
 import { projectRuntimeDir } from "@claudexor/util";
 // The fixture's store is the package build's; its partition helper is the same one.
 import { createPartition } from "@claudexor/daemon";
 import { retentionGenerations } from "../../dist/store/retention-generations.js";
 import { sqlFixture } from "./test-support/sql-fixture.js";
+import { createNativeHomeRetention } from "../../../cli/src/native-home-retention.js";
 
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "retention-topology-")));
@@ -202,3 +204,71 @@ it("keeps a late recovery hold install-wide for the rest of the pass", async () 
   fresh.close!();
   await f.close();
 });
+
+it.each([null, 999999])(
+  "holds native homes when a late binding becomes %s, but permits a relink",
+  async (pid) => {
+    const f = await fixture();
+    try {
+      const { store, graph } = f.sql;
+      const { project } = graph.projects.register({
+        root: f.dir("bound"),
+        idempotencyKey: "bound",
+        clientId: "test",
+      });
+      const proof = await graph.threads.retentionReferences();
+      try {
+        const relinked = f.dir("relinked");
+        graph.projects.relink(project.id, relinked);
+        const prune = vi.fn(async () => ({
+          deleted_files: [],
+          errors: [],
+          freed_bytes: 0,
+          kept_referenced: 0,
+          kept_recent: 0,
+          kept_unknown: 0,
+          truncated: false,
+        }));
+        const adapter = createCodexAdapter();
+        const home = f.dir("native-home");
+        adapter.nativeHomeLifetime = {
+          status: "managed",
+          preserves: "fixture",
+          home: () => home,
+          prune,
+        };
+        const native = createNativeHomeRetention({
+          threads: graph.threads,
+          isBusy: () => false,
+          registry: () => new Map([["codex", adapter]]),
+          profiles: () => [],
+        });
+        const request = {
+          references: proof,
+          dryRun: false,
+          olderThan: Date.now(),
+          ignoredRunIds: new Set<string>(),
+          ignoredThreadIds: new Set<string>(),
+        };
+        expect((await native(request)).errors).toEqual([]);
+        expect(prune).toHaveBeenCalledTimes(1);
+        expect(proof.recheck!()).toBe(true);
+        expect(proof.protectedProjectRoots.size).toBe(0);
+        store.transaction(() =>
+          store.prepare("UPDATE project SET current_pid=? WHERE id=?").run(pid, project.id),
+        );
+        const held = await native(request);
+        const reason = pid === null ? "unbound_active_registration" : "missing_partition";
+        expect(proof.holds).toContainEqual({ class: reason, count: 1, example: relinked });
+        expect(proof.protectedProjectRoots.has(relinked)).toBe(true);
+        expect(held.heldHomes).toBe(1);
+        expect(held.errors.join()).toContain(reason);
+        expect(prune).toHaveBeenCalledTimes(1);
+      } finally {
+        proof.close!();
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);

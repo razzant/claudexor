@@ -10,10 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
-import { projectRuntimeDir } from "@claudexor/util";
+import { globalRunStores, projectRuntimeDir } from "@claudexor/util";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { quarantineGeneration } from "../../daemon/dist/store/generations.js";
-import { createRetentionRunner } from "./retention-service.js";
+import { createRetentionRunner, type RetentionRunnerDeps } from "./retention-service.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 let root: string;
@@ -41,13 +41,14 @@ function lane(repo: string, thread: string) {
   writeFileSync(join(path, "session"), "native state");
   return path;
 }
-function runner() {
+function runner(nativeHomes?: RetentionRunnerDeps["nativeHomes"]) {
   return createRetentionRunner({
     projects: () => sql.graph.projects,
     threads: sql.graph.threads,
     daemonJobs: () => [],
     purgeThread: async () => {},
     hasPurgeLeftovers: () => false,
+    nativeHomes,
   });
 }
 
@@ -82,6 +83,101 @@ it("sweeps the last orphan after its ephemeral thread is purged, including witho
   expect(sql.graph.projects.list()).toEqual([]);
   expect((await gc({ dry_run: false })).errors).toEqual([]);
   expect(existsSync(held)).toBe(false);
+});
+
+it("excludes global run stores from lane sweeping while removing a namespace orphan", async () => {
+  const stores = globalRunStores();
+  for (const store of stores) mkdirSync(store.runsDir, { recursive: true });
+  const orphan = lane(join(root, "unregistered"), "th-orphan");
+  const receipt = await runner()({ dry_run: false });
+  expect(receipt.errors).toEqual([]);
+  expect(receipt.holds).toEqual([]);
+  expect(receipt.deleted_lanes).toBe(1);
+  expect(existsSync(orphan)).toBe(false);
+});
+
+it("keeps a purged quarantined thread lane only while its purge obligation remains", async () => {
+  const repo = join(root, "purged-quarantine");
+  mkdirSync(repo);
+  const { project } = sql.graph.projects.register({
+    root: repo,
+    idempotencyKey: "purged-quarantine",
+    clientId: "test",
+  });
+  const thread = sql.graph.threads.createThread({
+    title: "purge pending",
+    repoRoot: repo,
+    workspace: "in_place",
+  });
+  const held = lane(repo, thread.id);
+  const orphan = lane(repo, "th-orphan");
+  sql.graph.threads.trashThread(thread.id);
+  sql.graph.threads.purgeThread(thread.id);
+  quarantineGeneration(sql.store, sql.graph.blobs, {
+    oldPid: sql.graph.projects.partition(project.id)!.pid,
+    keyDigest: "purged",
+    requestDigest: "purged",
+    operationId: "op-purged",
+    payload: { operationId: "op-purged" },
+  });
+  expect(
+    sql.store
+      .prepare("SELECT 1 FROM effect_obligation WHERE kind='purge_fs' AND key=?")
+      .get(thread.id),
+  ).toBeDefined();
+  const gc = runner();
+  expect((await gc({ dry_run: false })).errors).toEqual([]);
+  expect(existsSync(held)).toBe(true);
+  expect(existsSync(orphan)).toBe(false);
+  sql.store.transaction(() =>
+    sql.store
+      .prepare("DELETE FROM effect_obligation WHERE kind='purge_fs' AND key=?")
+      .run(thread.id),
+  );
+  expect((await gc({ dry_run: false })).errors).toEqual([]);
+  expect(existsSync(held)).toBe(false);
+});
+
+it("appends holds discovered during native cleanup without repeating earlier holds", async () => {
+  const register = (name: string) => {
+    const repo = join(root, name);
+    mkdirSync(repo);
+    return sql.graph.projects.register({ root: repo, idempotencyKey: name, clientId: "test" })
+      .project;
+  };
+  const unbound = register("unbound");
+  const recovering = register("recovering");
+  const unboundPid = sql.graph.projects.partition(unbound.id)!.pid;
+  const recoveringPid = sql.graph.projects.partition(recovering.id)!.pid;
+  sql.store.transaction(() =>
+    sql.store.prepare("UPDATE project SET current_pid=NULL WHERE id=?").run(unbound.id),
+  );
+  let change = true;
+  const gc = runner(async ({ references }) => {
+    if (change) {
+      sql.store.transaction(() =>
+        sql.store
+          .prepare("UPDATE partition SET status='recovery_required' WHERE id=?")
+          .run(recoveringPid),
+      );
+      expect(references!.recheck!()).toBe(false);
+    }
+    return { reports: [], errors: [], freedBytes: 0, truncated: false };
+  });
+  const held = await gc({ dry_run: false });
+  expect(held.holds.map((hold) => hold.class)).toEqual([
+    "unbound_active_registration",
+    "recovery_pending",
+  ]);
+  expect(held.holds[1]!.example).toContain("recovery_required");
+  change = false;
+  sql.store.transaction(() => {
+    sql.store.prepare("UPDATE project SET current_pid=? WHERE id=?").run(unboundPid, unbound.id);
+    sql.store.prepare("UPDATE partition SET status='ready' WHERE id=?").run(recoveringPid);
+  });
+  const completed = await gc({ dry_run: false });
+  expect(completed.errors).toEqual([]);
+  expect(completed.holds).toEqual([]);
 });
 
 it("keeps lanes through real quarantine and archive while sweeping an unregistered namespace", async () => {
