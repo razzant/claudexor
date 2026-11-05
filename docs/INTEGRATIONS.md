@@ -733,6 +733,13 @@ already in place and have no separate apply/full-rollback promise. The source
 root, preimages, verifier and retention boundaries are defined once in
 [ARCHITECTURE](ARCHITECTURE.md#directory-execution).
 
+Gate `taken` on `runDecisionActions` in `GET /v2/agent-capabilities`. Once the
+caller has captured a terminal patch result, send `POST /v2/runs/:id/decision`
+with `{action: "taken", reason: "captured_result"}` and an `Idempotency-Key`.
+The acknowledgement leaves the engine's copy under ordinary retention; needs-decision,
+continuable and non-patch results return typed refusals. The eligibility and
+retention rules are defined in [ARCHITECTURE](ARCHITECTURE.md#7-control-api).
+
 Unfinished work is continued, never restarted: a terminal run whose work is
 unfinished carries `resumable` on `GET /v2/runs/:id` (cause, the vendor's
 reset when known, the available `carriers`, the native session and where the

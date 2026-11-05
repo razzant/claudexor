@@ -296,6 +296,15 @@ describe("discard decision", () => {
       code: "run_taken_non_terminal",
       context: { reason: "non_terminal" },
     });
+    // The projection derives host-restart continuation even without a terminal artifact.
+    const interrupted = { ...terminalPatch(), state: "interrupted" } as const;
+    expect(existsSync(join(interrupted.runDir!, "final/resumable.yaml"))).toBe(false);
+    await expect(takeRunResult(interrupted)).rejects.toMatchObject({
+      status: 409,
+      code: "run_taken_continuable",
+      context: { reason: "continuable" },
+    });
+    expect(readDeliveryState(interrupted)).toBeNull();
     await expect(takeRunResult(terminalPatch())).resolves.toMatchObject({
       accepted: true,
       status: "taken",

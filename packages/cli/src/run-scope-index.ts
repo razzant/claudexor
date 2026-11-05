@@ -317,7 +317,6 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     while (this.retryQueue.length > 0) {
       const entry = this.retryQueue.shift()!;
       if (!entries.includes(entry) || entry.state !== "unresolved") continue;
-      const beforeState = entry.state;
       const beforeOutcome = JSON.stringify(entry.outcome ?? null);
       let outcome: ScopeReapOutcome;
       try {
@@ -339,8 +338,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
       const recovered = this.retryFailures.delete(entry);
       const message = this.retireOrKeep(entry, outcome);
       const stillPresent = this.load().includes(entry);
-      const outcomeChanged =
-        entry.state !== beforeState || JSON.stringify(entry.outcome ?? null) !== beforeOutcome;
+      const outcomeChanged = JSON.stringify(entry.outcome ?? null) !== beforeOutcome;
       if (!stillPresent || outcomeChanged || recovered) this.log(message);
       if (stillPresent && outcomeChanged) changed = true;
       changed ||= !stillPresent;

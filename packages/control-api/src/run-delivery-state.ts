@@ -128,6 +128,8 @@ export function markRunApplyState(
     const next = RunDeliveryState.parse({
       appliedPaths: appliedPaths ?? prev?.appliedPaths,
       discardedAt: state === "discarded" ? nowIso() : prev?.discardedAt,
+      takenAt: prev?.takenAt,
+      takenReason: prev?.takenReason,
       applyState: state,
       deliveredAt: state === "applied" ? nowIso() : (prev?.deliveredAt ?? null),
       revertAnchorId:

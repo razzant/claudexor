@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { RunDeliveryState } from "@claudexor/schema";
-import { controlRunResult, markRunApplyState } from "./run-delivery-state.js";
+import { controlRunResult, markRunApplyState, markRunTaken } from "./run-delivery-state.js";
 
 // The overlay's revert anchor has three states: omitted (a state file that never
 // spoke about it, or a write with nothing to say: the earlier value stands) and
@@ -34,7 +34,20 @@ const stateOf = (record: { runDir: string }) =>
   parse(readFileSync(join(record.runDir, "final/delivery_state.yaml"), "utf8"));
 const dirOf = (record: unknown) => (record as { runDir: string }).runDir;
 
-describe("the revert anchor of the delivery-state overlay", () => {
+describe("the delivery-state overlay", () => {
+  it("carries a taken acknowledgement across apply-state writes without inventing one", () => {
+    const record = run();
+    const state = () => stateOf({ runDir: dirOf(record) });
+    markRunApplyState(record, "applied_review_blocked");
+    expect(state().takenAt).toBeUndefined();
+    expect(state().takenReason).toBeUndefined();
+    markRunTaken(record, "captured_result");
+    const takenAt = state().takenAt;
+    expect(takenAt).toEqual(expect.any(String));
+    markRunApplyState(record, "applied_review_blocked");
+    expect(state()).toMatchObject({ takenAt, takenReason: "captured_result" });
+  });
+
   it("a first write with nothing to say carries the work product's anchor", () => {
     const record = run();
     markRunApplyState(record, "applied");

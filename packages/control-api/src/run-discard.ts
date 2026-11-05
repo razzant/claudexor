@@ -8,7 +8,6 @@ import {
   ControlRunDecisionResponse,
   DecisionRecord,
   needsDecision,
-  RunResumable,
   WorkProduct,
   type RunTakenReason,
 } from "@claudexor/schema";
@@ -23,6 +22,7 @@ import {
 } from "./run-delivery-state.js";
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { readFailure } from "./run-card-facts.js";
+import { continuationSummary } from "./run-continuation-projection.js";
 import { runOutcomeFacts } from "./run-projection.js";
 import type { DaemonRunRecord } from "./run-record.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
@@ -133,9 +133,9 @@ export async function takeRunResult(
     });
   }
 
-  const sources = rec.runDir && rec.runId ? retainedSourcesOfRun(rec.runDir, rec.runId) : [];
-  const resumable = safeReadStructuredArtifact(rec, "final/resumable.yaml", RunResumable);
-  if (resumable || sources.some((source) => source.continuation_eligible !== false))
+  // Keep unreadable custody a decision failure; the projection owns resumability.
+  if (rec.runDir && rec.runId) retainedSourcesOfRun(rec.runDir, rec.runId);
+  if (continuationSummary(rec).resumable)
     refuseTaken(
       "run_taken_continuable",
       "continuable",
