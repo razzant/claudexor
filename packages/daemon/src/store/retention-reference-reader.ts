@@ -1,5 +1,4 @@
 import { Session, Thread, ThreadTurn } from "@claudexor/schema";
-import { noProjectRepoRoot } from "@claudexor/util";
 import type { EngineStore } from "./store.js";
 import { decodeBody } from "./thread-rows.js";
 
@@ -15,7 +14,9 @@ export class RetentionReferenceReader {
   readonly runs = new Set<string>();
   readonly sessions = new Map<string, Set<string>>();
   readonly roots = new Set<string>();
-  readonly lanes = new Map<string, Set<string>>();
+  /** Lane directories are named by globally unique thread id, independent of
+   * the project spelling that happened to produce their runtime namespace. */
+  readonly laneThreadIds = new Set<string>();
 
   constructor(
     private readonly store: EngineStore,
@@ -28,21 +29,18 @@ export class RetentionReferenceReader {
   };
 
   thread(row: ThreadRow): Thread | undefined {
-    if (!this.retained(row.pid)) return;
     if (row.state === "purged") {
       this.purgedLane(row);
       return;
     }
+    if (!this.retained(row.pid)) return;
     const thread = this.read("thread", row, () => Thread.parse(decodeBody(row)));
     if (thread.state !== row.state || thread.id !== row.id)
       throw new Error(
         `thread ${row.id} in partition ${row.pid}: retention state or identity disagrees`,
       );
     if (thread.repo) this.roots.add(thread.repo.root);
-    const root = thread.repo?.root ?? noProjectRepoRoot();
-    const lanes = this.lanes.get(root) ?? new Set<string>();
-    lanes.add(thread.id);
-    this.lanes.set(root, lanes);
+    this.laneThreadIds.add(thread.id);
     if (this.ignored.has(thread.id) && thread.state === "trashed") return;
     thread.run_ids.forEach(this.add);
     this.add(thread.head_run_id);
@@ -59,11 +57,21 @@ export class RetentionReferenceReader {
         .get(row.id)
     )
       return;
-    const thread = this.read("thread", row, () => Thread.parse(decodeBody(row)));
-    const root = thread.repo?.root ?? noProjectRepoRoot();
-    const lanes = this.lanes.get(root) ?? new Set<string>();
-    lanes.add(thread.id);
-    this.lanes.set(root, lanes);
+    this.laneThreadIds.add(row.id);
+  }
+
+  /** Add lane owners from a quarantined partition without decoding its body.
+   * Quarantine is precisely the state in which the body may be malformed. */
+  addQuarantinedLaneThreadIds(pid?: number): void {
+    const rows = this.store
+      .prepare(
+        `SELECT t.id FROM thread t JOIN partition q ON q.id=t.pid
+         LEFT JOIN project p ON p.id=q.project_id LEFT JOIN partition g ON g.id=p.pid
+         WHERE t.state<>'purged' AND (q.status='quarantined' OR g.status='quarantined')
+         ${pid === undefined ? "" : "AND (q.id=? OR p.pid=?)"}`,
+      )
+      .all(...(pid === undefined ? [] : [pid, pid])) as Array<{ id: string }>;
+    for (const row of rows) this.laneThreadIds.add(row.id);
   }
 
   turn(row: TurnRow, owner = this.owner(row.thread_id)): void {

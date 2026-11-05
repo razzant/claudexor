@@ -1,5 +1,13 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -116,6 +124,7 @@ describe("DaemonRunScopeIndex", () => {
     const index = new DaemonRunScopeIndex({
       path: join(root, RUN_SCOPE_INDEX_FILE),
       owner: async () => me,
+      identity: fakeIdentity({ [me.pid]: me }),
       reap: fakeReaper().reap,
       table: fakeTable([]),
       roots: () => [],
@@ -131,6 +140,13 @@ describe("DaemonRunScopeIndex", () => {
       captured: [],
       scope_start: null,
     });
+    const path = join(root, RUN_SCOPE_INDEX_FILE);
+    const inode = lstatSync(path).ino;
+    await index.settleDeadOwners(); // reaches the publisher, with nothing changed
+    expect(lstatSync(path).ino).toBe(inode);
+    await index.open("run-2");
+    expect(lstatSync(path).ino).not.toBe(inode);
+    expect(readIndex(root).entries).toHaveLength(2);
   });
 
   it("captures a live root's descendants (pid, pgid, birth) and the scope start on the tick, persisted", async () => {

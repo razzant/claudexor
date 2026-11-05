@@ -1,11 +1,14 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { createCodexAdapter } from "../../../harness-codex/dist/index.js";
 import { projectRuntimeDir } from "@claudexor/util";
 // The fixture's store is the package build's; its partition helper is the same one.
 import { createPartition } from "@claudexor/daemon";
+import { retentionGenerations } from "../../dist/store/retention-generations.js";
 import { sqlFixture } from "./test-support/sql-fixture.js";
+import { createNativeHomeRetention } from "../../../cli/src/native-home-retention.js";
 
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "retention-topology-")));
@@ -17,6 +20,7 @@ async function fixture() {
   };
   return {
     sql,
+    root,
     dir,
     async close() {
       await sql.close();
@@ -24,6 +28,67 @@ async function fixture() {
     },
   };
 }
+
+it("absorbs a partition and continuation born during inventory, but rejects a missing live pid", async () => {
+  const f = await fixture();
+  try {
+    const { store, graph } = f.sql;
+    const generations = retentionGenerations(store);
+    const pending = graph.threads.retentionReferences();
+    const { project } = graph.projects.register({
+      root: f.dir("late"),
+      idempotencyKey: "late",
+      clientId: "test",
+    });
+    const params = { scope: { kind: "project", root: project.root }, continueFrom: "source" };
+    graph.commands.forRequest(params).accept({
+      id: "late-command",
+      params,
+      idempotencyKey: "late",
+      clientId: "test",
+    });
+    const proof = await pending;
+    try {
+      expect(proof.isCurrent()).toBe(false);
+      expect(proof.recheck!()).toBe(true);
+      expect(proof.referencedRunIds.has("source")).toBe(true);
+      expect(generations.retained(graph.projects.partition(project.id)!.pid)).toBe(true);
+      expect(() => generations.retained(999999)).toThrow("missing partition 999999");
+    } finally {
+      proof.close!();
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+it("latches unreadable changed owners while unrelated project insertion stays current", async () => {
+  const f = await fixture();
+  try {
+    const { store, graph } = f.sql;
+    const thread = graph.threads.createThread({ title: "owner", workspace: "in_place" });
+    const proof = await graph.threads.retentionReferences();
+    try {
+      graph.projects.register({
+        root: f.dir("unrelated"),
+        idempotencyKey: "unrelated",
+        clientId: "test",
+      });
+      expect(proof.recheck!()).toBe(true);
+      store.transaction(() =>
+        store.prepare("UPDATE thread SET body=? WHERE id=?").run(Buffer.from("broken"), thread.id),
+      );
+      expect(() => proof.recheck!()).toThrow(/retention thread/);
+      expect(proof.recheck!()).toBe(false);
+      await proof.refresh!();
+      expect(proof.recheck!()).toBe(false);
+    } finally {
+      proof.close!();
+    }
+  } finally {
+    await f.close();
+  }
+});
 
 it("absorbs a late registration's fresh generation, reads its owners and defers its namespace (#503)", async () => {
   const f = await fixture();
@@ -73,3 +138,137 @@ it("defers both roots of a relink, and holds the pass when never-inventoried row
     await f.close();
   }
 });
+
+it("holds every old and new root through relink and removal without vetoing unrelated proof", async () => {
+  const f = await fixture();
+  const sql = {
+    ...f.sql,
+    root: f.root,
+    register: (name: string) =>
+      f.sql.graph.projects.register({ root: f.dir(name), idempotencyKey: name, clientId: "test" })
+        .project,
+  };
+  const project = sql.register("original");
+  const proof = await sql.graph.threads.retentionReferences();
+  const middle = join(sql.root, "middle");
+  const last = join(sql.root, "last");
+  mkdirSync(middle);
+  mkdirSync(last);
+  sql.graph.projects.relink(project.id, middle);
+  sql.graph.projects.relink(project.id, last);
+  sql.store.transaction(() => sql.store.prepare("DELETE FROM project WHERE id=?").run(project.id));
+  try {
+    expect(proof.recheck!()).toBe(true);
+    expect(proof.deferredRuntimes!()).toEqual(
+      new Set([project.root, middle, last].map(projectRuntimeDir)),
+    );
+    expect(proof.protectedProjectRoots.size).toBe(0);
+  } finally {
+    proof.close!();
+    await f.close();
+  }
+});
+
+it("keeps a late recovery hold install-wide for the rest of the pass", async () => {
+  const f = await fixture();
+  const sql = {
+    ...f.sql,
+    root: f.root,
+    register: (name: string) =>
+      f.sql.graph.projects.register({ root: f.dir(name), idempotencyKey: name, clientId: "test" })
+        .project,
+  };
+  const project = sql.register("recovering");
+  const pid = sql.graph.projects.partition(project.id)!.pid;
+  const proof = await sql.graph.threads.retentionReferences();
+  try {
+    sql.store.transaction(() =>
+      sql.store.prepare("UPDATE partition SET status='recovery_required' WHERE id=?").run(pid),
+    );
+    expect(proof.recheck!()).toBe(false);
+    expect(proof.blocked).toContain("recovery_required");
+    expect(proof.holds).toContainEqual({
+      class: "recovery_pending",
+      count: 1,
+      example: expect.stringContaining("recovery_required"),
+    });
+    sql.store.transaction(() =>
+      sql.store.prepare("UPDATE partition SET status='ready' WHERE id=?").run(pid),
+    );
+    expect(proof.recheck!()).toBe(false);
+  } finally {
+    proof.close!();
+  }
+  const fresh = await sql.graph.threads.retentionReferences();
+  expect(fresh.recheck!()).toBe(true);
+  fresh.close!();
+  await f.close();
+});
+
+it.each([null, 999999])(
+  "holds native homes when a late binding becomes %s, but permits a relink",
+  async (pid) => {
+    const f = await fixture();
+    try {
+      const { store, graph } = f.sql;
+      const { project } = graph.projects.register({
+        root: f.dir("bound"),
+        idempotencyKey: "bound",
+        clientId: "test",
+      });
+      const proof = await graph.threads.retentionReferences();
+      try {
+        const relinked = f.dir("relinked");
+        graph.projects.relink(project.id, relinked);
+        const prune = vi.fn(async () => ({
+          deleted_files: [],
+          errors: [],
+          freed_bytes: 0,
+          kept_referenced: 0,
+          kept_recent: 0,
+          kept_unknown: 0,
+          truncated: false,
+        }));
+        const adapter = createCodexAdapter();
+        const home = f.dir("native-home");
+        adapter.nativeHomeLifetime = {
+          status: "managed",
+          preserves: "fixture",
+          home: () => home,
+          prune,
+        };
+        const native = createNativeHomeRetention({
+          threads: graph.threads,
+          isBusy: () => false,
+          registry: () => new Map([["codex", adapter]]),
+          profiles: () => [],
+        });
+        const request = {
+          references: proof,
+          dryRun: false,
+          olderThan: Date.now(),
+          ignoredRunIds: new Set<string>(),
+          ignoredThreadIds: new Set<string>(),
+        };
+        expect((await native(request)).errors).toEqual([]);
+        expect(prune).toHaveBeenCalledTimes(1);
+        expect(proof.recheck!()).toBe(true);
+        expect(proof.protectedProjectRoots.size).toBe(0);
+        store.transaction(() =>
+          store.prepare("UPDATE project SET current_pid=? WHERE id=?").run(pid, project.id),
+        );
+        const held = await native(request);
+        const reason = pid === null ? "unbound_active_registration" : "missing_partition";
+        expect(proof.holds).toContainEqual({ class: reason, count: 1, example: relinked });
+        expect(proof.protectedProjectRoots.has(relinked)).toBe(true);
+        expect(held.heldHomes).toBe(1);
+        expect(held.errors.join()).toContain(reason);
+        expect(prune).toHaveBeenCalledTimes(1);
+      } finally {
+        proof.close!();
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);

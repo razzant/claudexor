@@ -219,6 +219,10 @@ const BOOLEAN_FLAG_MAP = {
     mcp: null,
     reason: "decision subcommand flag; public MCP has no result-disposition mutation tool",
   },
+  taken: {
+    mcp: null,
+    reason: "decision subcommand flag; public MCP has no result-disposition mutation tool",
+  },
   "accept-clean-patch": { mcp: null, reason: "decision subcommand flag" },
   rerun: { mcp: null, reason: "decision subcommand flag" },
   help: { mcp: null, reason: "CLI affordance" },

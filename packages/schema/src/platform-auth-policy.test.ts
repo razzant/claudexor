@@ -178,6 +178,7 @@ describe("setup-login wire compatibility", () => {
       availableHarnesses: ["agy"],
       modes: ["ask", "plan", "agent"],
       runControlKeys: [],
+      runDecisionActions: [],
       outputSchemaDialects: [
         {
           dialect: "draft-07",

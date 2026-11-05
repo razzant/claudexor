@@ -126,9 +126,15 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
       table: this.table,
       deadlineMs: this.deadlineMs,
       record: async (entry, outcome) => {
-        const settledAt = entry.settled_at;
-        this.log(`${this.retireOrKeep(entry, outcome)}; later attempt ${entry.late_attempts}`);
-        if (settledAt !== undefined && entry.state === "unresolved") entry.settled_at = settledAt;
+        const before = entry.outcome;
+        const message = this.retireOrKeep(entry, outcome);
+        // Timing/attempt counters remain publication facts, not repeated diagnostics.
+        const diagnostic = (value: typeof before) => value && { ...value, duration_ms: 0 };
+        if (
+          outcome.settled ||
+          JSON.stringify(diagnostic(before)) !== JSON.stringify(diagnostic(entry.outcome))
+        )
+          this.log(`${message}; later attempt ${entry.late_attempts}`);
         await this.persistQuietly(`later settlement of ${entry.run_id}`);
       },
       log: this.log,
@@ -469,7 +475,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         : `${describe(entry, outcome)}; retired without proof (no environment census on this platform)`;
     }
     entry.state = "unresolved";
-    entry.settled_at = this.now();
+    entry.settled_at ??= this.now();
     entry.outcome = summarize(outcome);
     return describe(entry, outcome);
   }

@@ -15,9 +15,10 @@
             "requeued",
             "rejected",
             "unsupported",
-            "discarded"
+            "discarded",
+            "taken"
           ],
-          "description": "Outcome: applied, requeued (a new turn was enqueued), rejected, or unsupported."
+          "description": "Outcome: applied, requeued (a new turn was enqueued), rejected, unsupported, discarded, or taken."
         },
         "newRunId": {
           "type": "string",

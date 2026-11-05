@@ -32,18 +32,13 @@ export function bindLaterScopeSettlements(
   deps: {
     run: (runId: string) => { id: string; runDir?: string | null } | undefined;
     settled: (jobId: string) => Promise<void>;
-    log: (message: string) => void;
   },
 ): () => void {
   return source.onLaterSettlement(async (settlement: LaterScopeSettlement) => {
     const record = deps.run(settlement.runId);
     if (!record?.runDir) return;
-    try {
-      writeLaterProcessScope(record.runDir, settlement);
-      if (settlement.outcome.settled) await deps.settled(record.id);
-    } catch (error) {
-      deps.log(`later process-scope report of ${settlement.runId} is owed: ${String(error)}`);
-      throw error;
-    }
+    // The settlement owner records report debt and discloses failure/recovery once.
+    writeLaterProcessScope(record.runDir, settlement);
+    if (settlement.outcome.settled) await deps.settled(record.id);
   });
 }

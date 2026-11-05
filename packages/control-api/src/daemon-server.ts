@@ -35,7 +35,7 @@ import { safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
-import { discardRunResult } from "./run-discard.js";
+import { handleRunDisposition } from "./run-taken-route.js";
 import { applyFilesResult } from "./files-apply-route.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import {
@@ -1241,23 +1241,18 @@ export class DaemonControlApiServer {
         }
       }
 
-      if (body.action === "discard") {
-        try {
-          const response = await this.chainRunMutation(rec, () =>
-            runIdempotentDelivery(this.opts.services, {
-              params: rec.params,
-              key: decisionKey,
-              operation: "run.decision.discard",
-              request: { runId: rec.runId ?? rec.id, body },
-              work: () => discardRunResult(rec),
-            }),
-          );
-          return this.json(res, 200, response);
-        } catch (error) {
-          return this.requestError(res, error);
-        }
+      if (body.action === "taken" || body.action === "discard") {
+        return handleRunDisposition({
+          services: this.opts.services,
+          record: rec,
+          body,
+          key: decisionKey,
+          chainMutation: (record, work) => this.chainRunMutation(record, work),
+          response: res,
+          json: (response, status, result) => this.json(response, status, result),
+          requestError: (response, error) => this.requestError(response, error),
+        });
       }
-
       if (body.action === "accept_clean_patch") {
         if (readFilesWorkProduct(rec)) {
           try {

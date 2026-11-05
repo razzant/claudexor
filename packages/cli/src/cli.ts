@@ -801,7 +801,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
   if (!runId) {
     return printUsageError(
       json,
-      'usage: claudexor decision <run_id> --accept-risk | --override | --revert | --accept-clean-patch [--apply-mode <m>] | --rerun --feedback "<text>"',
+      'usage: claudexor decision <run_id> --accept-risk | --override | --revert | --discard | --taken | --accept-clean-patch [--apply-mode <m>] | --rerun --feedback "<text>"',
     );
   }
   const resolved = resolveDecisionBody(args);

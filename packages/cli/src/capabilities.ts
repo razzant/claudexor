@@ -7,6 +7,7 @@ import {
   OUTPUT_SCHEMA_DIALECTS,
   RUN_START_CLIENT_REJECTED_KEYS,
   RunApplyState,
+  RunDecisionAction,
   WorkspaceMode,
   WorkspaceKind,
   type CatalogHarness,
@@ -143,6 +144,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
     availableHarnesses: harnesses.filter((h) => h.status === "ok" && h.enabled).map((h) => h.id),
     modes: [...ModeKind.options],
     runControlKeys,
+    runDecisionActions: [...RunDecisionAction.options],
     outputSchemaDialects: OUTPUT_SCHEMA_DIALECTS.map((dialect) => ({ ...dialect })),
     mutability: {
       workspaceKinds: [...WorkspaceKind.options],

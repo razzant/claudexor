@@ -146,6 +146,8 @@ export interface ScopeReapOptions {
   /** Wall-clock floor (ISO) known from the moment the scope was opened; used
    * when no `lstart` floor exists yet (a root that exited within milliseconds). */
   scopeStartAt?: string | null;
+  /** First settlement bounds expansion of recorded groups on later reaps. */
+  settledAt?: string | null;
   /**
    * The harness roots' own process groups, recorded SYNCHRONOUSLY at spawn
    * from the registry handle: pgid plus the leader's measured identity, and
@@ -391,6 +393,7 @@ async function reapOnce(opts: ScopeReapOptions): Promise<ScopeReapOutcome> {
     }
     const found = capturedCandidates(captured ?? [], rows, opts.scopeStart, {
       scopeStartAt: opts.scopeStartAt,
+      settledAt: opts.settledAt,
       rootGroups: opts.rootGroups,
       leaderVerdict,
     });

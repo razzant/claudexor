@@ -556,6 +556,23 @@
           },
           "description": "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these)."
         },
+        "runDecisionActions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "accept_clean_patch",
+              "rerun_with_feedback",
+              "accept_risk",
+              "override_needs_human",
+              "revert_run",
+              "discard",
+              "taken"
+            ],
+            "description": "Operator decision: apply an accepted result, rerun with feedback, accept risk, override needs-human, revert a recorded Git effect, acknowledge a captured terminal patch result, or discard remaining copied files without applying them."
+          },
+          "description": "Actions accepted by POST /runs/:id/decision; taken acknowledges a captured terminal patch result."
+        },
         "outputSchemaDialects": {
           "type": "array",
           "items": {
@@ -740,6 +757,7 @@
         "availableHarnesses",
         "modes",
         "runControlKeys",
+        "runDecisionActions",
         "outputSchemaDialects",
         "mutability",
         "cliCommands",

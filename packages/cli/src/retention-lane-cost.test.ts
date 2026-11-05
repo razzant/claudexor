@@ -1,4 +1,4 @@
-// INV-034: per-root lane ownership reuses the pass inventory, with fresh SQL proof.
+// INV-034: global thread-id lane ownership reuses the pass inventory, with fresh SQL proof.
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +29,7 @@ it("reads thousands of global thread bodies once and absorbs late lane owners be
       expect(count).toBe(3000);
       const start = performance.now();
       for (let i = 0; i < 150; i++)
-        expect(inventory.laneThreadIds!(join(root, `repo-${i}`)).size).toBe(0);
+        expect(inventory.laneThreadIds!(join(root, `repo-${i}`)).size).toBe(3000);
       console.log("LANE-COST 3000 threads / 150 roots ms:", performance.now() - start);
       expect(parse.mock.calls.length).toBe(count);
       parse.mockClear();

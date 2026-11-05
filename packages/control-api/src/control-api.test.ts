@@ -5640,6 +5640,7 @@ describe("DaemonControlApiServer", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: [],
+      runDecisionActions: [],
       outputSchemaDialects: [
         {
           dialect: "draft-07",

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import {
   capturedNoGitChange,
+  capturedNoGitChangeValue,
   convergenceOutcomeFacts,
   isWorkingCandidate,
   needsPostTurnFence,
@@ -84,6 +85,8 @@ describe("capturedNoGitChange (#502: the post-turn fence's only skip)", () => {
   it("is true only for a complete Git capture whose trees agree", () => {
     expect(capturedNoGitChange(candidate({ result: result("t1", "t1") }))).toBe(true);
     expect(capturedNoGitChange(candidate({ result: result("t1", "t2") }))).toBe(false);
+    expect(capturedNoGitChangeValue(candidate({ result: result("t1", "t1") }))).toBe(true);
+    expect(capturedNoGitChangeValue(candidate({ result: result("t1", "t2") }))).toBe(false);
   });
 
   it("an unknown capture is never unchanged: no result, a refusal, a refused continuation, files", () => {
@@ -108,6 +111,18 @@ describe("capturedNoGitChange (#502: the post-turn fence's only skip)", () => {
         }),
       ),
     ).toBe(false);
+    expect(capturedNoGitChangeValue(candidate({ diff: "", errored: true }))).toBeNull();
+    expect(
+      capturedNoGitChangeValue(candidate({ result: result("t1", "t1"), captureRefusal: refusal })),
+    ).toBeNull();
+    expect(
+      capturedNoGitChangeValue(
+        candidate({
+          result: result("t1", "t1"),
+          files: { noChanges: true } as CandidateRun["files"],
+        }),
+      ),
+    ).toBeNull();
   });
 });
 

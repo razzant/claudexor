@@ -396,6 +396,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
+      runDecisionActions: ["taken"],
       outputSchemaDialects: [
         {
           dialect: "draft-07",

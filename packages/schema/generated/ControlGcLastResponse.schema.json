@@ -24,6 +24,20 @@
                 "finished_at": {
                   "type": "string"
                 },
+                "last_completed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Last completed non-preview pass time, or null when no completion is known."
+                },
+                "failed_or_held_streak": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 0,
+                  "description": "Failed or held passes since the last completion; truncated passes preserve the count. Only a completed pass resets it."
+                },
                 "freed_bytes": {
                   "type": "integer",
                   "minimum": 0

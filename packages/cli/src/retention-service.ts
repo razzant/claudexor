@@ -9,6 +9,7 @@
  * through the same owner finishes every purge whose directory cleanup failed
  * after the purge was journaled.
  */
+import { dirname } from "node:path";
 import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import type { ControlGcReceipt, ControlGcRequest, Thread } from "@claudexor/schema";
 import { findActiveThreadRun, runRetentionPass } from "@claudexor/control-api";
@@ -16,7 +17,7 @@ import { loadConfig } from "@claudexor/config";
 import {
   claudexorOwnedRoot,
   noProjectRepoRoot,
-  projectRuntimeDir,
+  globalRunStores,
   userConfigDir,
 } from "@claudexor/util";
 import { sweepOrphanLanes } from "@claudexor/workspace";
@@ -159,8 +160,8 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       const references = await deps.threads.retentionReferences(previewPurged, signal);
       try {
         const healthyRoots = new Set(references.blocked ? [] : deps.threads.healthyProjectRoots());
-        const inventoryErrors = [...(references.errors ?? [])];
-        const inventoryHolds = [...(references.holds ?? [])];
+        const inventoryErrors: string[] = [];
+        const inventoryHolds: ControlGcReceipt["holds"] = [];
         const laneHold = (example: string) =>
           inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
         const heldRoots = new Set(references.protectedProjectRoots);
@@ -172,13 +173,10 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           signal,
           heldRoots,
         );
-        // Lane sweeping still uses only served healthy roots; archived lanes can
-        // belong to retained threads invisible to the public listing.
-        const roots = [...healthyRoots, noProjectRoot].filter((root) => !heldRoots.has(root));
-        // INV-034 lifecycle owner (c): remove durable per-lane read-only homes whose
-        // thread no longer exists. Bounded to HEALTHY roots only (same fail-closed
-        // set as the run GC): a recovery-pending partition cannot
-        // supply live ownership and is excluded until recovery completes. Skip in dry-run — a GC preview must not delete bytes.
+        let deletedLanes = 0;
+        const globalStores = new Set(globalRunStores().map((store) => store.runsDir));
+        // Inventory finds orphan namespaces after their last thread disappears.
+        // Global stores hold runs, not per-thread lanes. Archived roots stay held.
         if (!request.dry_run && !references.blocked) {
           const laneProofCurrent = references.recheck ?? references.isCurrent;
           const deferred =
@@ -192,29 +190,25 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           };
           if (!laneProofCurrent()) deferLanes();
           else
-            for (const root of roots) {
+            for (const project of gcProjects) {
+              const { root } = project;
+              const runtime = dirname(project.runsDir);
+              if (globalStores.has(project.runsDir) || heldRoots.has(root)) continue;
+              if (!healthyRoots.has(root) && references.registeredProjectRoots.has(root)) continue;
               await yieldToAdmission();
               if (signal.aborted) break;
               try {
                 const ids =
                   references.laneThreadIds?.(root) ??
-                  new Set(
-                    deps.threads
-                      .listThreads()
-                      .filter(
-                        (thread) =>
-                          thread.state !== "purged" &&
-                          (thread.repo?.root ?? noProjectRoot) === root,
-                      )
-                      .map((thread) => thread.id),
-                  );
+                  new Set(deps.threads.listThreads().map((thread) => thread.id));
                 // No yield between the live read and the synchronous sweep. A namespace
                 // whose registration changed during this pass keeps its lanes, like its
                 // runs, while the others progress: its owners are unknown (#503).
-                if (references.deferredRuntimes?.().has(projectRuntimeDir(root))) {
+                if (references.deferredRuntimes?.().has(runtime)) {
                   deferLanes();
                   morePending = true;
-                } else sweepOrphanLanes(root, ids);
+                } else if (!references.protectedProjectRoots.has(root))
+                  deletedLanes += sweepOrphanLanes(runtime, ids).length;
               } catch (error) {
                 if (!laneProofCurrent()) {
                   deferLanes();
@@ -240,6 +234,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             records: () => references.records,
             referencedRunIds: () => references.referencedRunIds,
             referencesCurrent: references.recheck ?? references.isCurrent,
+            referencesHeld: references.held,
             refreshReferences: references.refresh,
             ...(references.deferredRuntimes
               ? { deferredRuntimes: references.deferredRuntimes }
@@ -261,8 +256,10 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             dataRootMode: claudexorOwnedRoot() === userConfigDir() ? "override" : "default",
           },
         );
+        receipt.deleted_lanes = deletedLanes;
         receipt.held.roots = heldRoots.size;
-        receipt.holds.push(...inventoryHolds);
+        const reportedGenerationHolds = references.holds?.length ?? 0;
+        receipt.holds.push(...(references.holds ?? []), ...inventoryHolds);
         const unclassified = [...heldRoots].filter(
           (root) => !references.protectedProjectRoots.has(root),
         );
@@ -301,7 +298,13 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           receipt.held.native_homes = native.heldHomes ?? 0;
           if (request.native_home_report) receipt.native_homes = native.reports;
         }
-        receipt.errors.unshift(...leftovers.errors, ...trash.errors, ...inventoryErrors);
+        receipt.holds.push(...(references.holds ?? []).slice(reportedGenerationHolds));
+        receipt.errors.unshift(
+          ...leftovers.errors,
+          ...trash.errors,
+          ...(references.errors ?? []),
+          ...inventoryErrors,
+        );
         if (request.trash_purge_report) {
           receipt.purged_threads = trash.purged;
           receipt.purge_leftovers = leftovers.finished;
