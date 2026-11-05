@@ -49,6 +49,27 @@ it("GET reads the saved record only, including absence, and the catalog declares
     }),
   );
 });
+it("rejects unknown GET query parameters but accepts the retention report option", async () => {
+  const unknown = fixture();
+  unknown.req.url += "?unexpected=true";
+  expect(
+    await handleMaintenanceRoute(unknown.ctx, "GET", "/maintenance/gc", unknown.req, unknown.res),
+  ).toBe(true);
+  expect(unknown.ctx.requestError).toHaveBeenCalledWith(
+    unknown.res,
+    expect.objectContaining({ message: "unsupported query parameter: unexpected" }),
+    400,
+  );
+  expect(unknown.lastRetention).not.toHaveBeenCalled();
+
+  const known = fixture();
+  known.req.url += "?retention_report=true";
+  expect(
+    await handleMaintenanceRoute(known.ctx, "GET", "/maintenance/gc", known.req, known.res),
+  ).toBe(true);
+  expect(known.lastRetention).toHaveBeenCalledTimes(1);
+  expect(known.ctx.json).toHaveBeenCalledWith(known.res, 200, { last: null });
+});
 it.each([false, true])("POST exposes new fields only with retention_report=%s", async (optIn) => {
   const f = fixture();
   f.ctx.readBody = async () => ({ retention_report: optIn });
