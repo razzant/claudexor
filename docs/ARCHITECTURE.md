@@ -5282,7 +5282,9 @@ Private revert/exact-patch anchors are run-owned. After run retirement, a pass
 collects `meta.revert_anchor_id`, `meta.exact_patch_object` and delivery-state
 `revertAnchorId` from every surviving run across all runtime namespaces. Unreadable
 metadata or any skipped/held namespace preserves every anchor for that pass:
-anchors are held install-wide by any held namespace. An unnamed anchor is unlinked
+anchors are held install-wide by any held namespace. A deferred namespace absent
+from the opening inventory still reports a `references_changed` anchor hold and
+requests a fresh, truncated pass. An unnamed anchor is unlinked
 only beyond `runs_max_age_days`, using a fresh mtime
 check immediately before synchronous unlink. Every anchor publication, create or
 reuse, touches its mtime; unlinking a sibling does not renew its age. Patch-cache

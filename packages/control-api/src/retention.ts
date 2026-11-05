@@ -24,7 +24,7 @@ import { pruneProjectObjectStore } from "@claudexor/workspace";
 export { readRunTombstone } from "./run-tombstone.js";
 import { treeReclaimableBytes } from "./retention-bytes.js";
 import { ageStampOf, runKeepReason } from "./retention-candidates.js";
-import { survivingAnchorIds, pruneRunAnchors } from "./retention-anchors.js";
+import { survivingAnchorIds, pruneRunAnchors, retentionDeferral } from "./retention-anchors.js";
 import { pruneEmptyRuntimeDirectories } from "./retention-directories.js";
 import { scanDataRootUnrecognized, type DataRootMode } from "./retention-data-root.js";
 import {
@@ -169,22 +169,8 @@ export async function runRetentionPass(
       errors.push(invalidationReason);
     }
   };
-  // A namespace whose registration changed during this pass keeps everything (#503).
-  const heldNamespaces = new Set<string>();
-  const deferred = (project: RetentionProject) => {
-    const runtime = dirname(project.runsDir);
-    if (!deps.deferredRuntimes?.().has(runtime)) return false;
-    if (!heldNamespaces.has(runtime)) {
-      heldNamespaces.add(runtime);
-      holds.push({
-        class: "references_changed",
-        count: 1,
-        example: `namespace ${project.root} kept: its registration changed during this pass`,
-      });
-      deps.onTruncated?.();
-    }
-    return true;
-  };
+  const deferral = retentionDeferral(deps, holds, proofCurrent);
+  const { deferred, anchorsCurrent } = deferral;
   const recoverPending = async (parent: string, kind: "runs" | "reviews", projectRoot: string) => {
     for await (const retirement of pendingRetirements(parent, kind, dryRun, errors, deps.signal)) {
       if (deps.signal?.aborted) break;
@@ -422,7 +408,6 @@ export async function runRetentionPass(
       }
     }
   }
-  const anchorsCurrent = () => proofCurrent() && !deps.deferredRuntimes?.().size;
   let namedAnchors: Set<string> | undefined;
   if (!deps.anchorsHeld && anchorsCurrent()) {
     try {
@@ -553,7 +538,7 @@ export async function runRetentionPass(
     deleted_runs: deletedRuns,
     kept,
     holds,
-    truncated: truncated || invalidated || deps.signal?.aborted === true,
+    truncated: truncated || deferral.anchorDeferral || invalidated || deps.signal?.aborted === true,
     deleted_reviews: deletedReviews,
     freed_bytes: freedBytes,
     ...(effectsUnknown ? { effects: "unknown" } : {}),

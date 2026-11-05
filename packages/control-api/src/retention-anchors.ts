@@ -3,7 +3,56 @@ import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { parse } from "yaml";
-import type { RetentionProject } from "./retention.js";
+import type { GcHold } from "@claudexor/schema";
+import type { RetentionDeps, RetentionProject } from "./retention.js";
+
+/** Namespace deferral and its install-wide anchor consequence share one disclosure. */
+export function retentionDeferral(
+  deps: Pick<RetentionDeps, "deferredRuntimes" | "onTruncated">,
+  holds: GcHold[],
+  proofCurrent: () => boolean,
+) {
+  // A namespace whose registration changed during this pass keeps everything (#503).
+  const heldNamespaces = new Set<string>();
+  const deferred = (project: RetentionProject) => {
+    const runtime = dirname(project.runsDir);
+    if (!deps.deferredRuntimes?.().has(runtime)) return false;
+    if (!heldNamespaces.has(runtime)) {
+      heldNamespaces.add(runtime);
+      holds.push({
+        class: "references_changed",
+        count: 1,
+        example: `namespace ${project.root} kept: its registration changed during this pass`,
+      });
+      deps.onTruncated?.();
+    }
+    return true;
+  };
+  let anchorDeferral = false;
+  const anchorsCurrent = () => {
+    if (!proofCurrent()) return false;
+    if (!deps.deferredRuntimes?.().size) return true;
+    // Listed namespaces already disclose their hold and request continuation.
+    // A newly registered namespace can veto anchors without appearing in that list.
+    if (!heldNamespaces.size && !anchorDeferral) {
+      anchorDeferral = true;
+      holds.push({
+        class: "references_changed",
+        count: 1,
+        example: "anchors kept: a registration changed during this pass",
+      });
+      deps.onTruncated?.();
+    }
+    return false;
+  };
+  return {
+    deferred,
+    anchorsCurrent,
+    get anchorDeferral() {
+      return anchorDeferral;
+    },
+  };
+}
 
 const ID = /^sha256:[0-9a-f]{64}$/;
 

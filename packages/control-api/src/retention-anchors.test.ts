@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   existsSync,
   linkSync,
@@ -98,6 +98,30 @@ it("frees zero bytes when another hard link still owns the inode", async () => {
   expect(result.freed_bytes).toBe(0);
   expect(existsSync(anchor.path)).toBe(false);
   expect(readFileSync(retained, "utf8")).toBe("shared");
+});
+it("reports anchor deferral for a runtime absent from the opening inventory", async () => {
+  const f = fixture();
+  const anchor = f.anchor("unlisted deferral");
+  const deferred = new Set([join(f.root, "late-runtime")]);
+  const onTruncated = vi.fn();
+  f.deps.deferredRuntimes = () => deferred;
+  f.deps.onTruncated = onTruncated;
+  const held = await runRetentionPass(policy, { dry_run: false }, f.deps);
+  expect(existsSync(anchor.path)).toBe(true);
+  expect(held.holds).toContainEqual({
+    class: "references_changed",
+    count: 1,
+    example: "anchors kept: a registration changed during this pass",
+  });
+  expect(held.truncated).toBe(true);
+  expect(onTruncated).toHaveBeenCalledTimes(1);
+  deferred.clear();
+  onTruncated.mockClear();
+  const completed = await runRetentionPass(policy, { dry_run: false }, f.deps);
+  expect(existsSync(anchor.path)).toBe(false);
+  expect(completed.holds).toEqual([]);
+  expect(completed.truncated).toBe(false);
+  expect(onTruncated).not.toHaveBeenCalled();
 });
 it.each(["bad-meta", "held-namespace", "linked-namespace"])(
   "keeps all anchors on %s uncertainty",
