@@ -5434,6 +5434,10 @@ with a fresh settlement budget. Capture and retry have separate in-flight guards
 retry starts after capture resolves and never delays the next tick's capture.
 At most one entry is reaped per tick, visiting unresolved entries in rounds ordered
 by oldest `settled_at` first; identical outcomes remain eligible on the next round.
+Retries and startup re-reaps use the entry's first `settled_at` as a group birth
+bound: a recorded group whose live members were all born after settlement is
+reused and skipped. A surviving member born by settlement keeps the group eligible,
+including its later children. Changed retry outcomes never advance this bound.
 Only a fresh `settled` census removes it from
 `run-scopes.json`; survivors or a deadline miss keep the entry and its outcome.
 Darwin's `completeness: not_provable` remains compatible with `settled` once
@@ -5446,7 +5450,8 @@ strategy's terminal is held.
 `daemon/run-scopes.json` is a stable contract a host may read directly when
 the daemon is dead. Its compact schema, in the field names the daemon writes:
 `{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`,
-`state` (`open` | `unresolved`), `opened_at` (ISO time: the floor the daemon
+`state` (`open` | `unresolved`), optional `settled_at` (ISO time of the first
+settlement, preserved on retries), `opened_at` (ISO time: the floor the daemon
 uses while no `lstart` birth exists), `scope_start` (`lstart` text or null),
 `root_groups[{pgid, leader_pid, leader_birth | null, leader_identity?}]`
 (`leader_identity` is the daemon's opaque kernel birth token, comparable only
@@ -5458,8 +5463,9 @@ another `lstart` reading, never with the identity token. A host without the
 identity helper follows this rule when `leader_birth` is null: a live process
 with `pid == pgid` cannot be verified as the recorded leader, so the host
 skips that group; when no process with `pid == pgid` is alive, the group's
-remaining members born at or after the floor belong to the scope (the kernel
-does not hand out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
+remaining members born at or after the floor belong to the scope, provided at
+least one was born by `settled_at` when it is recorded (the kernel does not hand
+out a pid that is still a live process-group id). The sweep covers orphaned envelopes (with their
 seeded-credential homes), dead per-attempt `claudexor/<task>/<attempt>`
 branches, leaked `claudexor/verify-*` branches, and stale
 `claudexor-ro-*`/`claudexor-verify-*` tmp dirs. Envelopes whose creating

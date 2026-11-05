@@ -519,6 +519,7 @@ function reapCaptured(
   world: ReturnType<typeof tableWorld>,
   captured: CapturedProcess[],
   scopeStart: string | null = T0,
+  settledAt?: string,
 ) {
   return new ScopeReaper().reap({
     marker: A,
@@ -526,6 +527,7 @@ function reapCaptured(
     table: world.table,
     captured,
     scopeStart,
+    settledAt,
     signal: world.signal,
     now: world.now,
     sleep: world.sleep,
@@ -555,13 +557,35 @@ describe("capturedCandidates (DIRECTIVE 1 rule 2, pure)", () => {
     expect(found.reusedGroups).toEqual([]);
   });
 
-  it("includes a fork born inside a recorded group after the capture", () => {
+  it("keeps a leftover's later child but never signals a leaderless group reused after settlement", async () => {
+    const settledAt = new Date(Date.parse(T1) + 1_000).toISOString();
     const rows: ProcessTableRow[] = [
       { pid: 210, ppid: 1, pgid: 200, birth: T1 },
       { pid: 230, ppid: 210, pgid: 200, birth: T2 }, // never individually captured
     ];
-    const found = capturedCandidates(captured, rows, T0);
+    const found = capturedCandidates(captured, rows, T0, { settledAt });
     expect([...found.candidates.keys()].sort()).toEqual([210, 230]);
+    expect(found.reusedGroups).toEqual([]);
+    const leftover = tableWorld({ rows });
+    const ended = await reapCaptured(leftover, captured, T0, settledAt);
+    expect(ended.ended.map((member) => member.pid).sort()).toEqual([210, 230]);
+    expect(leftover.signals).toEqual([
+      { pid: 210, signal: "SIGTERM" },
+      { pid: 230, signal: "SIGTERM" },
+      { pid: 210, signal: "SIGKILL" },
+      { pid: 230, signal: "SIGKILL" },
+    ]);
+
+    // The old group emptied and its new leader has already exited: only a stranger remains.
+    const strangers: ProcessTableRow[] = [{ pid: 300, ppid: 1, pgid: 200, birth: T2 }];
+    const reused = capturedCandidates(captured, strangers, T0, { settledAt });
+    expect(reused.reusedGroups).toEqual([200]);
+    expect(reused.candidates.size).toBe(0);
+    const stranger = tableWorld({ rows: strangers });
+    const skipped = await reapCaptured(stranger, captured, T0, settledAt);
+    expect(skipped.reusedGroups).toEqual([200]);
+    expect(stranger.signals).toEqual([]);
+    expect(stranger.isAlive(300)).toBe(true);
   });
 
   it("skips a group whose id is now owned by a process with another birth (pid reused as leader)", () => {

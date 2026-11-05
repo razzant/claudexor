@@ -487,7 +487,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     )
       return describe(entry, outcome);
     entry.state = "unresolved";
-    entry.settled_at = this.now();
+    entry.settled_at ??= this.now();
     entry.outcome = summary;
     return describe(entry, outcome);
   }

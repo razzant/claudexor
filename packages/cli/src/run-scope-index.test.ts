@@ -30,6 +30,7 @@ function tempRoot(): string {
 
 const T0 = "Mon Oct 12 14:00:00 2026";
 const T1 = "Mon Oct 12 14:00:05 2026";
+const T2 = "Mon Oct 12 14:00:09 2026";
 
 function known(pid: number, token: string): KnownProcessIdentity {
   return {
@@ -233,18 +234,29 @@ describe("DaemonRunScopeIndex", () => {
       roots: () => [],
     });
     const { marker: m2 } = await second.open("run-2");
+    const firstSettlement = new Date(T1).toISOString();
+    let settlementClock = firstSettlement;
     const kept = new DaemonRunScopeIndex({
       path,
       owner: async () => known(process.pid, "7"),
       reap: fakeReaper({ [m2]: survivor }).reap,
       table: fakeTable([]),
       roots: () => [],
+      now: () => settlementClock,
     });
     await kept.settle("run-2", m2);
     expect(readIndex(root).entries[0]).toMatchObject({
       marker: m2,
       state: "unresolved",
+      settled_at: firstSettlement,
       outcome: { survivors: [4711], reused_groups: [77], ended: 0 },
+    });
+    settlementClock = new Date(T2).toISOString();
+    survivor.unreadable.push({ pid: 4712, reason: "identity_unreadable" });
+    await kept.settle("run-2", m2);
+    expect(readIndex(root).entries[0]).toMatchObject({
+      settled_at: firstSettlement,
+      outcome: { unreadable: [4712] },
     });
   });
 
@@ -267,6 +279,7 @@ describe("DaemonRunScopeIndex", () => {
       identity: fakeIdentity({ 5151: owner }),
       roots: () => [],
       deadlineMs: 321,
+      now: () => new Date(T1).toISOString(),
     });
     const { marker } = await first.open("run-live-unresolved");
     await first.settle("run-live-unresolved", marker);
@@ -290,7 +303,11 @@ describe("DaemonRunScopeIndex", () => {
     await second.captureTick();
     await vi.waitFor(() => expect(second.list()).toEqual([]));
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ marker, deadlineMs: 321 });
+    expect(calls[0]).toMatchObject({
+      marker,
+      deadlineMs: 321,
+      settledAt: new Date(T1).toISOString(),
+    });
     await vi.waitFor(() => expect(readIndex(root).entries).toEqual([]));
   });
 
@@ -434,6 +451,7 @@ describe("DaemonRunScopeIndex", () => {
     await index.settle("run-1", marker);
     expect(reaper.calls).toHaveLength(1);
     expect(reaper.calls[0]?.scopeStartAt).toBe(openedAt);
+    expect(reaper.calls[0]?.settledAt).toBeNull();
 
     // A startup settlement of an entry recorded without an opening time keeps
     // the full census: the reaper is handed no age.
@@ -485,7 +503,8 @@ describe("DaemonRunScopeIndex", () => {
             marker: deadMarker,
             run_id: "run-dead",
             owner: deadDaemon,
-            state: "open",
+            state: "unresolved",
+            settled_at: new Date(T1).toISOString(),
             opened_at: "x",
             scope_start: T0,
             root_groups: [],
@@ -516,6 +535,7 @@ describe("DaemonRunScopeIndex", () => {
     expect(reaper.calls.map((c) => c.marker)).toEqual([deadMarker]);
     expect(reaper.calls[0]).toMatchObject({
       scopeStart: T0,
+      settledAt: new Date(T1).toISOString(),
       captured: [{ pid: 210, pgid: 200, birth: T1 }],
     });
     expect(reaper.calls.some((c) => c.marker === strangerMarker)).toBe(false);
