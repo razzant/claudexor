@@ -234,6 +234,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             records: () => references.records,
             referencedRunIds: () => references.referencedRunIds,
             referencesCurrent: references.recheck ?? references.isCurrent,
+            referencesHeld: references.held,
             refreshReferences: references.refresh,
             ...(references.deferredRuntimes
               ? { deferredRuntimes: references.deferredRuntimes }

@@ -72,6 +72,8 @@ export interface RetentionDeps {
   referencedRunIds: () => Set<string>;
   /** Fresh proof that asynchronous inventory still describes the SQL owners. */
   referencesCurrent?: () => boolean;
+  /** The observer's latched reason for a failed current proof, when available. */
+  referencesHeld?: () => string | null;
   /** Reread changed owners cooperatively before the synchronous final proof. */
   refreshReferences?: () => Promise<void>;
   /** Runtime namespaces whose registration changed during the pass: held, not deleted. */
@@ -151,7 +153,10 @@ export async function runRetentionPass(
   const proofCurrent = () => {
     if (invalidated || deps.signal?.aborted) return false;
     try {
-      if (deps.referencesCurrent?.() === false) invalidated = true;
+      if (deps.referencesCurrent?.() === false) {
+        invalidated = true;
+        invalidationReason = deps.referencesHeld?.() ?? invalidationReason;
+      }
     } catch (error) {
       invalidated = true;
       invalidationReason = `retention reference recheck failed: ${String(error)}`;

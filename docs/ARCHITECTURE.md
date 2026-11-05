@@ -5196,8 +5196,10 @@ itself carries `effects: "unknown"` (stripped from a legacy request's reply) and
 `claudexor gc` prints "freed at least", and a failure message names thread purges it
 had already done), run keep counts, separate counts of held roots and vetoed native homes,
 per-class hold counts with one example and the first continuously held `since`,
-and error count/first error. Each hold example names the actual cause and affected owner,
-including registration changes, unreadable references and recovery partitions.
+and error count/first error. Hold examples carry the available cause and affected owner,
+including registration changes, unreadable references, recovery partitions and latched
+generation/registry transitions. A failed proof without an owner-specific cause uses
+the generic references-changed message.
 `last_completed_at` retains the last successful completion across failed, held and
 truncated passes; it is null when no completion is known. `failed_or_held_streak`
 increments for each failed or held pass, survives truncation, and resets only on

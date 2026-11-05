@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
+import { createPartition } from "@claudexor/daemon";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { scheduleStartupRetention } from "./retention-schedule.js";
 import type { ControlGcReceipt } from "@claudexor/schema";
@@ -204,6 +205,27 @@ it("keeps remaining candidates when a changed reference owner becomes unreadable
     example: expect.stringContaining(thread.id),
   });
   expect(existsSync(join(held, "final", "failure.yaml"))).toBe(true);
+});
+
+it("names a latched generation hold and stays quiet once a fresh proof can retire", async () => {
+  const held = oldRun("held");
+  const generation = sql.store.transaction(() => createPartition(sql.store, "hidden-owner"));
+  sql.store.prepare("UPDATE partition SET status='quarantined' WHERE id=?").run(generation.pid);
+  hook.afterPrepare = () =>
+    sql.store.prepare("UPDATE partition SET status='ready' WHERE id=?").run(generation.pid);
+  const gc = runner();
+  const receipt = await gc({ dry_run: false });
+  expect(receipt.deleted_runs).toEqual([]);
+  expect(receipt.holds).toContainEqual({
+    class: "references_changed",
+    count: 1,
+    example: `partition hidden-owner (${generation.pid}) became a retained owner during inventory`,
+  });
+  expect(existsSync(join(held, "final", "failure.yaml"))).toBe(true);
+  hook.afterPrepare = undefined;
+  const completed = await gc({ dry_run: false });
+  expect(completed.deleted_runs.map((run) => run.run_id)).toEqual(["held"]);
+  expect(completed.holds).toEqual([]);
 });
 
 it("stops a scheduled pass promptly and resumes its remaining candidates", async () => {

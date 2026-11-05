@@ -18,6 +18,8 @@ export interface DiskRetentionReferences {
   /** Cooperatively absorb changed owners, then synchronously recheck before expiry. */
   refresh?: () => Promise<void>;
   recheck?: () => boolean;
+  /** Latched changed-owner cause when the proof is no longer current. */
+  held?: () => string | null;
   /** Native callers absorb the same changed owners before per-file rechecks. */
   nativeCurrent?: () => boolean;
   /** Pass-local ownership, refreshed synchronously at each lane sweep boundary. */
@@ -214,6 +216,7 @@ export async function diskRetentionReferences(
       isCurrent,
       refresh,
       recheck,
+      held: changesObserved.held,
       nativeCurrent: recheck,
       laneThreadIds: () => {
         if (!recheck())
