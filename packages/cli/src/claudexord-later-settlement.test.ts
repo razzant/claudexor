@@ -391,7 +391,8 @@ class Fixture {
       signal: AbortSignal.timeout(20_000),
     });
     const value: unknown = await response.json();
-    if (!response.ok) throw new Error(`${method} ${path} ${response.status}: ${JSON.stringify(value)}`);
+    if (!response.ok)
+      throw new Error(`${method} ${path} ${response.status}: ${JSON.stringify(value)}`);
     return value as T;
   }
   /** A run with one live owned child, connected and measured. */
