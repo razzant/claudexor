@@ -5221,8 +5221,10 @@ unknown entries remain untouched and counted in `kept_unknown`. `held.native_hom
 counts vetoed homes only. Absence is `last: null`. An unreadable stored summary
 also returns `last: null` with a diagnostic shown by `gc --last`; it cannot prevent
 the next pass from replacing the record. Engines predating this read surface have no GET operation. New POST
-hold/truncation fields require `retention_report`, requested by a lockstep CLI;
-older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
+hold/truncation fields and `deleted_lanes` require `retention_report`, requested by a lockstep CLI;
+GET omits `last_completed_at` and `failed_or_held_streak` unless its query includes
+`retention_report=true`, which `gc --last` sends only when CLI and daemon versions match.
+Older receipts parse with zero/empty defaults. It deletes ONLY terminal, unreferenced, non-actionable trees past
 the configured age (`retention.*` in the global config: runs 30d, reviews
 14d, newest N for active registrations and archived registrations whose roots exist,
 and the built-in no-project scope): an orphaned namespace has no keep-last owner,

@@ -397,7 +397,20 @@
       "summary": "Read the durable last retention pass; never starts cleanup.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "retention_report",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Include completion history fields; requested only by lockstep clients."
+        }
+      ],
       "response_schema": "ControlGcLastResponse",
       "error_schema": "ControlProblem"
     },

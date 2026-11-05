@@ -14,8 +14,9 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
   if (flagBool(args, "last")) {
     const connection = await connectDaemonIfRunning();
     if (!connection) throw new Error("Daemon is not running; no last retention pass is available.");
-    const { addr } = connection;
-    const response = await controlApiFetch(addr, "/maintenance/gc");
+    const { addr, engine } = connection;
+    const report = engine.engineVersion === CLAUDEXOR_VERSION ? "?retention_report=true" : "";
+    const response = await controlApiFetch(addr, `/maintenance/gc${report}`);
     if (!response.ok)
       throw new Error(
         response.status === 404
