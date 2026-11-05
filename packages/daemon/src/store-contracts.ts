@@ -9,6 +9,7 @@ import type {
   ControlPendingInteraction,
   ControlProjectListingProblem,
   ControlResource,
+  ControlResourceRelease,
   ControlUploadImport,
   ControlUploadStatus,
   ModelPayloadRef,
@@ -37,6 +38,7 @@ import type { JournalQuarantineRequest } from "./journal-recovery-operation.js";
 import type { JournalEventPage, JournalEventPageRequest } from "./store/cursors.js";
 import type { ThreadClosure } from "./store/thread-closure.js";
 import type { RetirementRefusal } from "./store/thread-retirement.js";
+import type { ResourceUseHolder } from "./store/resource-uses.js";
 export interface ProfileContinuityResult {
   sessions: number;
   checkpoints: number;
@@ -86,7 +88,10 @@ export interface ResourceStorePort {
   ): ControlResource;
   /** Keyed import: begin, read or replay, publishing verified bytes under the same key. */
   importUpload(raw: unknown, idempotencyKey: string): ControlUploadImport;
-  resolve(refs: ResourceAttachmentRef[] | undefined): Attachment[];
+  /** Release a managed ordinary ID: no new reference afterwards; accepted holders keep bytes. */
+  releaseResource(resourceId: string, raw: unknown): ControlResourceRelease;
+  /** `heldBy`: an accepted owner reading its own refs (a released ID it holds still resolves). */
+  resolve(refs: ResourceAttachmentRef[] | undefined, heldBy?: ResourceUseHolder): Attachment[];
   readModel(raw: ModelPayloadRef): Buffer;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(raw: ModelPayloadRef): void;

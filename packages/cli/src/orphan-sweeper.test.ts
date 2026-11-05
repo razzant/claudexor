@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -7,13 +7,14 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartTime, WorkspaceManager } from "@claudexor/workspace";
-import { projectRuntimeDir } from "@claudexor/util";
+import { oneShotRuntimeDir, projectRuntimeDir } from "@claudexor/util";
 import { commandExecutionRoots, commandScopeRoots } from "@claudexor/daemon";
 import { sweepOrphanWorkspaces } from "./orphan-sweeper.js";
 
@@ -213,6 +214,71 @@ describe("commandScopeRoots", () => {
       ]),
     ).toEqual(["/a", "/b"]);
   });
+});
+
+describe("crash-GC of the one-shot namespace (#503)", () => {
+  /** An orphan a one-shot run left: its record names its execution root, its owner is dead. */
+  function oneShotEnvelope(store: string, executionRoot: string): string {
+    const base = join(store, "workspaces", "task-one", "a01");
+    mkdirSync(join(base, "home"), { recursive: true });
+    writeFileSync(
+      join(base, "owner.json"),
+      JSON.stringify({
+        pid: 999_999_990,
+        started: "Thu Jan  1 00:00:00 1970",
+        created_at: new Date().toISOString(),
+        envelope_id: "env-one",
+        workspace_mode: "in_place",
+        execution_root: executionRoot,
+      }) + "\n",
+    );
+    return base;
+  }
+  const inConfig = async (run: (config: string, tree: string) => Promise<void>) => {
+    const config = mkdtempSync(join(tmpdir(), "claudexor-sweep-config-"));
+    const tree = initRepo();
+    vi.stubEnv("CLAUDEXOR_CONFIG_DIR", config);
+    try {
+      await run(config, tree);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(config, { recursive: true, force: true });
+      rmSync(tree, { recursive: true, force: true });
+    }
+  };
+  const sweep = () => sweepOrphanWorkspaces({ knownProjectRoots: () => [] });
+
+  it("disposes an orphan of the plain store", () =>
+    inConfig(async (_config, tree) => {
+      const base = oneShotEnvelope(oneShotRuntimeDir(), tree);
+      const actions = await sweep();
+      expect(existsSync(base)).toBe(false);
+      expect(actions).toContain(`disposed orphan envelope task-one/a01 under ${tree}`);
+    }));
+
+  it("never follows a linked store, and leaves what it links to intact", () =>
+    inConfig(async (config, tree) => {
+      const moved = join(config, "another-store");
+      const base = oneShotEnvelope(moved, tree);
+      symlinkSync(moved, oneShotRuntimeDir());
+      const actions = await sweep();
+      expect(existsSync(base)).toBe(true);
+      expect(actions).toContain(`kept namespace ${oneShotRuntimeDir()}: not a plain directory`);
+      expect(actions.filter((action) => action.includes("task-one"))).toEqual([]);
+    }));
+
+  it("never follows a linked workspaces directory of a plain store", () =>
+    inConfig(async (config, tree) => {
+      const moved = join(config, "another-store");
+      const base = oneShotEnvelope(moved, tree);
+      mkdirSync(oneShotRuntimeDir());
+      const linked = join(oneShotRuntimeDir(), "workspaces");
+      symlinkSync(join(moved, "workspaces"), linked);
+      const actions = await sweep();
+      expect(existsSync(base)).toBe(true);
+      expect(actions).toContain(`kept namespace ${linked}: not a plain directory`);
+      expect(actions.filter((action) => action.includes("task-one"))).toEqual([]);
+    }));
 });
 
 describe("crash-GC reach into caller-owned execution roots", () => {

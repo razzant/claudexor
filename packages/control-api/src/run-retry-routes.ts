@@ -157,8 +157,19 @@ async function exactRetry(
           );
         }
         params = runStart.normalizeRunStart(ControlRunStartRequest.parse(recordedParams));
-        await ctx.services?.validateResources?.(params.attachments ?? []);
-        await ctx.services?.preflightRunRequirements?.(params);
+        // A same-key repeat whose recovery turn was recorded before its first enqueue
+        // (#249) reads the refs as that turn, which holds them; otherwise this Exact
+        // Retry is a new reference. A changed request under the key conflicts here.
+        const recorded = threadId
+          ? await ctx.services?.findThreadTurnByIdempotency?.(threadId, {
+              key: idempotencyKey,
+              client: "control-api",
+              request: idempotencyRequest,
+            })
+          : null;
+        const heldBy = recorded ? { owner: "turn" as const, id: recorded.id } : undefined;
+        await ctx.services?.validateResources?.(params.attachments ?? [], heldBy);
+        await ctx.services?.preflightRunRequirements?.(params, heldBy);
       },
     );
     if (prior) {

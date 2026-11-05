@@ -87,7 +87,7 @@ export function threadExportService(
     laneDirectory: (thread) => ownedProjectRuntimeDir(rootOf(thread), "lanes", thread.id),
     isolatedWorktreeExists: (thread) =>
       thread.workspace.worktree_path !== null || threadWorktreeDirExists(rootOf(thread), thread.id),
-    resolveAttachments: (refs) => resources.resolve(refs),
+    resolveAttachments: (refs, heldBy) => resources.resolve(refs, heldBy),
     retire: (id, request, acceptedLane) => threads.retireThread(id, request, acceptedLane),
     operation: (id, operationId) => threads.retirementOperation(id, operationId),
     settle: (id, operationId, refusal) =>

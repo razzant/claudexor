@@ -9,6 +9,7 @@ import {
 } from "./retention.js";
 import type { EngineStore } from "./store.js";
 import { collectReleasedBodies } from "./event-store.js";
+import { dropResourceUsesInTx } from "./resource-uses.js";
 
 type PruneRow = {
   id: string;
@@ -36,6 +37,7 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
     for (const draft of drafts) {
       keys.push(`draft:${draft.id}`);
       if (draft.body_sha) released.push(draft.body_sha);
+      released.push(...dropResourceUsesInTx(sql, { owner: "deferred_message", id: draft.id }));
       deleteTargetIdempotencyInTx(sql, "deferred_message", row.pid, draft.id);
     }
     if (row.run_id) {
@@ -66,6 +68,8 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
     }
     released.push(...deleteEventKeysInTx(sql, row.pid, keys), row.params_sha);
     if (row.result_sha) released.push(row.result_sha);
+    // Its managed attachments lose this holder; a released ID's bytes may now go.
+    released.push(...dropResourceUsesInTx(sql, { owner: "command", id: row.id }));
     deleteTargetIdempotencyInTx(sql, "command", row.pid, row.id);
     sql.prepare("DELETE FROM command WHERE id=? AND pid=?").run(row.id, row.pid);
     if (row.scope_root)

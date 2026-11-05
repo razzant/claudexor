@@ -128,7 +128,8 @@ export function controlServices(
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   const lazyResources: Pick<ResourceStorePort, "resolve"> = {
-    resolve: (refs) => resources().resolve(refs),
+    // The holder rides along (#249): a recorded turn's own refs, never a new reference.
+    resolve: (refs, heldBy) => resources().resolve(refs, heldBy),
   };
   const { preflightRunRequirements, preflightThreadRunRequirements } =
     createThreadAwareRunRequirementsPreflights(lazyResources, NO_PROJECT_ROOT, threads);
@@ -143,8 +144,11 @@ export function controlServices(
     preflightRunRequirements,
     preflightThreadRunRequirements,
     ...uploadServices(resources),
-    validateResources: async (refs: ResourceAttachmentRef[]) => {
-      resources().resolve(refs);
+    validateResources: async (
+      refs: ResourceAttachmentRef[],
+      heldBy?: { owner: "turn"; id: string },
+    ) => {
+      resources().resolve(refs, heldBy);
     },
     runRetention: createRetentionRunner({
       projects,

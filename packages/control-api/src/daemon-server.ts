@@ -215,8 +215,15 @@ export interface DaemonControlApiOptions {
         harnessIds?: string[];
       }) => Promise<unknown>;
       agentCapabilities?: () => Promise<unknown>;
-      preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
-      preflightThreadRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+      /** `heldBy` (both preflights): a recorded turn reading its own refs at its first dispatch. */
+      preflightRunRequirements?: (
+        request: ControlRunStartRequest,
+        heldBy?: { owner: "turn"; id: string },
+      ) => Promise<void>;
+      preflightThreadRunRequirements?: (
+        request: ControlRunStartRequest,
+        heldBy?: { owner: "turn"; id: string },
+      ) => Promise<void>;
       harnessModels?: (input: {
         harnessId: string;
         route?: "local_session" | "api_key";

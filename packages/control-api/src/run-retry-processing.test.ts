@@ -119,3 +119,74 @@ describe("exact retry processing custody", () => {
     expect(f.json.mock.calls[0]?.[2]).toMatchObject({ runId: "retry", retryOf: "source" });
   });
 });
+
+/** A thread run's Exact Retry; `recorded` is its recovery turn left before a first enqueue. */
+function threadRetry(recorded: { id: string } | null) {
+  const f = fixture();
+  f.source.params = { ...(f.source.params as object), threadId: "th-1", turnId: "tn-source" };
+  const turns: unknown[] = [
+    { id: "tn-source", run_id: "source", attachments: [{ resource_id: "res-1" }] },
+    ...(recorded ? [{ id: recorded.id, run_id: null }] : []),
+  ];
+  const validateResources = vi.fn(async (_refs: unknown, _heldBy?: unknown) => {});
+  const createThreadTurn = vi.fn(async () => ({ id: "tn-new" }));
+  const findThreadTurnByIdempotency = vi.fn(async () => recorded);
+  f.ctx.services = {
+    preflightRunRequirements: f.preflight,
+    validateResources,
+    createThreadTurn,
+    findThreadTurnByIdempotency,
+    threadDetail: async () => ({ thread: { id: "th-1", state: "active" }, sessions: [], turns }),
+    setTurnEnqueueError: vi.fn(),
+  } as unknown as RunRetryRouteContext["services"];
+  Object.assign(f.ctx.daemon, { list: vi.fn(async () => []) });
+  return { ...f, validateResources, createThreadTurn, findThreadTurnByIdempotency };
+}
+
+describe("Exact Retry whose recovery turn was recorded before its first enqueue (#249)", () => {
+  const refs = [{ resourceId: "res-1" }];
+  it("repeats as that recorded turn: its refs resolve as their holder and it is dispatched", async () => {
+    const f = threadRetry({ id: "tn-retry" });
+    await handleRunRetryRoute(f.ctx, "POST", "/runs/source/retry", f.req, {} as ServerResponse);
+    const holder = { owner: "turn", id: "tn-retry" };
+    expect(f.findThreadTurnByIdempotency).toHaveBeenCalledWith("th-1", {
+      key: "exact-retry",
+      client: "control-api",
+      request: { retryOf: "source" },
+    });
+    expect(f.validateResources).toHaveBeenCalledWith(refs, holder);
+    expect(f.preflight).toHaveBeenCalledWith(
+      expect.objectContaining({ retryOf: "source" }),
+      holder,
+    );
+    expect(f.createThreadTurn).not.toHaveBeenCalled();
+    expect(f.enqueue.mock.calls[0]?.[0]).toMatchObject({ turnId: "tn-retry", attachments: refs });
+  });
+
+  it("keeps a fresh Exact Retry a new reference with no holder", async () => {
+    const f = threadRetry(null);
+    await handleRunRetryRoute(f.ctx, "POST", "/runs/source/retry", f.req, {} as ServerResponse);
+    expect(f.validateResources).toHaveBeenCalledWith(refs, undefined);
+    expect(f.preflight).toHaveBeenCalledWith(
+      expect.objectContaining({ retryOf: "source" }),
+      undefined,
+    );
+    expect(f.createThreadTurn).toHaveBeenCalledTimes(1);
+    expect(f.enqueue.mock.calls[0]?.[0]).toMatchObject({ turnId: "tn-new" });
+  });
+
+  it("refuses a changed request under the key before any resource is read", async () => {
+    const f = threadRetry(null);
+    f.findThreadTurnByIdempotency.mockRejectedValueOnce(
+      Object.assign(new Error("idempotency key was already used with a different request"), {
+        code: "idempotency_conflict",
+        status: 409,
+      }),
+    );
+    await expect(
+      handleRunRetryRoute(f.ctx, "POST", "/runs/source/retry", f.req, {} as ServerResponse),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    expect(f.validateResources).not.toHaveBeenCalled();
+    expect(f.enqueue).not.toHaveBeenCalled();
+  });
+});

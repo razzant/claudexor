@@ -158,6 +158,7 @@ export function acceptRetirement(
       bindRetirementOutcome(tx, generation.pid, id, request.operationId, refused);
       return refused;
     }
+    // The shared reducer also ends the retired history's managed attachment holds.
     threads.applyInTx(tx, prepared);
     bindRetirementOutcome(tx, generation.pid, id, request.operationId, null, "accepted");
     obligations.create("purge_fs", id, generation.pid, {

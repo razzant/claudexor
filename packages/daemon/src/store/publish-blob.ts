@@ -109,6 +109,7 @@ export class PublishBlob {
     const resource = ControlResource.parse({
       resourceId: newId("res"),
       ...(upload.request.purpose ? { purpose: upload.request.purpose } : {}),
+      ...(upload.import?.lifetime ? { lifetime: upload.import.lifetime } : {}),
       kind: upload.request.kind,
       mime: upload.request.mime,
       name: upload.request.name,

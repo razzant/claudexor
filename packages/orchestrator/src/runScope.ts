@@ -99,7 +99,11 @@ export function runScopeGateEnv(marker: string | undefined): Record<string, stri
   return marker ? scopeMarkerEnv(marker) : undefined;
 }
 
-function toFacts(marker: string, outcome: ScopeReapOutcome): RunProcessScopeOutcomeType {
+/** The persisted record of one settlement outcome (terminal or later, #613). */
+export function runScopeFacts(
+  marker: string,
+  outcome: ScopeReapOutcome,
+): RunProcessScopeOutcomeType {
   return RunProcessScopeOutcome.parse({
     marker,
     coverage: outcome.coverage,
@@ -148,7 +152,7 @@ export function writeRunScopeFacts(
   outcome: ScopeReapOutcome,
 ): RunProcessScopeOutcomeType | null {
   try {
-    const facts = toFacts(marker, outcome);
+    const facts = runScopeFacts(marker, outcome);
     ctx.store.writeYaml(join(ctx.paths.finalDir, "process_scope.yaml"), facts);
     return facts;
   } catch {

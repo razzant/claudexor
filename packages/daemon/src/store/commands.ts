@@ -35,6 +35,13 @@ import type { PartitionGeneration } from "./partitions.js";
 import type { EngineStore } from "./store.js";
 import type { SqlTerminalFiles } from "./terminal-files.js";
 import { applyTerminalInTx, storedTerminal } from "./run-events.js";
+import {
+  claimResourceUsesInTx,
+  markTurnDispatchedInTx,
+  referencedResourceIds,
+  turnDispatchUses,
+  type ResourceUseHolder,
+} from "./resource-uses.js";
 
 /** A purged thread is terminal: no new work of it is accepted. Its accepted
  * commands still answer their replay, which every caller looks up first, and a
@@ -103,13 +110,32 @@ export class SqlCommandStore implements CommandStorePort {
   }
 
   /** Compose acceptance with its owner's other row reducers; never starts a
-   * transaction or publishes a queue entry. Replay remains first. */
-  acceptInTx(tx: MutationContext, acceptance: ReturnType<SqlCommandStore["prepareAcceptance"]>) {
+   * transaction or publishes a queue entry. Replay remains first. `resourcesFrom`:
+   * the accepted owner whose managed resources this command inherits (a draft); a
+   * thread turn's first dispatch inherits the turn's own (`turnDispatchUses`). Only
+   * product work references resources: a delivery of a run's retained result (whose
+   * params are that run's) and model or maintenance commands take no hold. */
+  acceptInTx(
+    tx: MutationContext,
+    acceptance: ReturnType<SqlCommandStore["prepareAcceptance"]>,
+    resourcesFrom?: ResourceUseHolder,
+  ) {
     requireTransaction(tx);
     const { input, digests, record, prepared, event } = acceptance;
     const prior = this.find(input);
     if (prior) return { record: prior, reused: true };
     assertThreadAdmits(tx, prepared.row);
+    if (prepared.row.kind === "product") {
+      const refs = (record.params as { attachments?: unknown } | null)?.attachments;
+      const turn = turnDispatchUses(tx, prepared.row.turn_id);
+      claimResourceUsesInTx(
+        tx,
+        { owner: "command", id: record.id },
+        [...new Set([...referencedResourceIds(refs), ...turn.ids])],
+        resourcesFrom ?? turn.from,
+      );
+      if (prepared.row.turn_id) markTurnDispatchedInTx(tx, prepared.row.turn_id, record.createdAt);
+    }
     applyCommandInTx(tx, prepared, "accept");
     bindIdempotencyInTx(tx, {
       owner: "command",

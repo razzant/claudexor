@@ -53,7 +53,11 @@ export class SqlUploadImports {
           name: request.name,
           sizeBytes: content.sizeBytes,
         },
-        { keyDigest: uploadKeyDigest("import", key), sha256: content.sha256 },
+        {
+          keyDigest: uploadKeyDigest("import", key),
+          sha256: content.sha256,
+          ...(request.lifetime ? { lifetime: request.lifetime } : {}),
+        },
         requestDigest,
       );
       return this.project(storeId, this.row(uploadId));
@@ -101,8 +105,17 @@ export class SqlUploadImports {
         state: row.status.state === "uploading" ? "uploading" : "open",
       });
     const resource = row.finalization!.result;
-    // Ordinary attachment resources are never released today; an absent row is not "ready".
-    if (readResourceRow(this.store, resource.resourceId)?.state !== "ready")
+    const current = readResourceRow(this.store, resource.resourceId);
+    // The original import answers as itself after its caller released the ID (#249).
+    if (current?.state === "released" && resource.lifetime === "managed")
+      return ControlUploadImport.parse({
+        ...base,
+        state: "released",
+        resource,
+        releasedAt: current.releasedAt ?? undefined,
+      });
+    // Only a managed ID is ever released; an absent row is not "ready".
+    if (current?.state !== "ready")
       throw resourceError(`no such resource: ${resource.resourceId}`, 404, "resource_not_found");
     return ControlUploadImport.parse({ ...base, state: "ready", resource });
   }

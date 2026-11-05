@@ -162,7 +162,13 @@ export async function handleMaintenanceRoute(
       const parsed = ControlGcReceipt.parse(receipt.value);
       if (request.value.retention_report) ctx.json(res, 200, parsed);
       else {
-        const { held: _held, holds: _holds, truncated: _truncated, ...legacy } = parsed;
+        const {
+          held: _held,
+          holds: _holds,
+          truncated: _truncated,
+          effects: _effects,
+          ...legacy
+        } = parsed;
         ctx.json(res, 200, legacy);
       }
     });

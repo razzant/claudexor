@@ -30,6 +30,12 @@ import {
   assertPlanAnswerSubmission,
 } from "./thread-plan-answer.js";
 
+/** `heldBy`: the accepted turn reading its own refs (a released ID it holds still resolves). */
+type TurnRequirementsPreflight = (
+  request: ControlRunStartRequest,
+  heldBy?: { owner: "turn"; id: string },
+) => Promise<void>;
+
 export interface ThreadTurnRouteCtx {
   json(res: ServerResponse, status: number, body: unknown): void;
   storeId?: () => string | undefined;
@@ -43,9 +49,9 @@ export interface ThreadTurnRouteCtx {
     parsed: ControlRunStartRequest,
     options?: RunStartNormalizationOptions,
   ): ControlRunStartRequest;
-  preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+  preflightRunRequirements?: TurnRequirementsPreflight;
   /** Non-durable request checks for a thread turn; Git runs inside its daemon job. */
-  preflightThreadRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+  preflightThreadRunRequirements?: TurnRequirementsPreflight;
   /** True for terminal job states (the server's TERMINAL_STATES set). */
   isTerminalState(state: string): boolean;
   daemon: DaemonFacadeClient;
@@ -356,7 +362,12 @@ export function handleThreadTurnCreate(
       // refusal now has a turnId to land on, so the outer catch persists it via
       // setTurnEnqueueError and the app renders an inline refusal card instead
       // of raw JSON with no turn to attach to.
-      await (ctx.preflightThreadRunRequirements ?? ctx.preflightRunRequirements)?.(params);
+      // The accepted turn already holds its resolved refs (#249): its own dispatch
+      // reads them as that holder, so a release during this await never refuses it.
+      await (ctx.preflightThreadRunRequirements ?? ctx.preflightRunRequirements)?.(params, {
+        owner: "turn",
+        id: turn.id,
+      });
       // The turn stores resolved immutable resources; enqueue carries no duplicate refs.
       const { attachments: _att, ...enqueueParams } = params;
       // ENQUEUE phase: a typed refusal recorded no job (retryable:false); a lost

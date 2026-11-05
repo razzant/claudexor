@@ -63,4 +63,8 @@ export interface DeferredMessageOwner {
     reused: boolean;
   };
   hold(id: string, reason: DeferredMessageHold): void;
+  /** #613: return an unchanged draft held only for process custody (false: not that hold). */
+  resume?(id: string, revision: number): boolean;
+  /** Replace a process-custody hold with another reason (a Stop), under the same check. */
+  rehold?(id: string, revision: number, reason: DeferredMessageHold): boolean;
 }

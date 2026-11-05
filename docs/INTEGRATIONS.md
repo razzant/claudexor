@@ -1106,7 +1106,8 @@ always means `state: ready` with `resource`. Typed failures carry `uploadId`,
 - `upload_import_in_progress`, `upload_import_incomplete` (no verified bytes yet)
   and `upload_import_uncertain` (retryable): repeat the identical call.
   `upload_import_cancelled`: the import ended without a resource; a new attempt
-  needs a new key.
+  needs a new key. `upload_import_released`: the key's managed resource was
+  released (see managed lifetime below); a new attachment needs a new key.
 
 Over HTTP the same contract is `POST /v2/uploads/imports` with a required
 `Idempotency-Key` and a `ControlUploadImportRequest` body `{expectedStoreId, kind,
@@ -1120,9 +1121,9 @@ the key and the daemon never reads, resolves or stores it. The key binds `kind`,
 bound key, so a client can replay before it touches its source; an unbound key
 then answers `404 upload_import_not_found`. That 404 means this store retains no
 binding for the key now. It does not prove the key was never accepted: upload
-bindings are pruned 30 days after their resource was released or expired (only
-model-purpose resources are released today), and another `storeId` is another
-store. After an unknown outcome a client replays its saved request and never
+bindings are pruned 30 days after their resource was released or expired
+(model-purpose resources and released managed imports), and another `storeId` is
+another store. After an unknown outcome a client replays its saved request and never
 silently mints a new key.
 
 | `state` | Next step |
@@ -1131,6 +1132,42 @@ silently mints a new key.
 | `uploading` | another transfer is in flight; repeat the POST later |
 | `ready` | use `resource.resourceId`; no source access |
 | `cancelled` | finished without a resource; a new attempt needs a new key |
+| `released` | a managed import's resource was released by its caller (below); `resource` and `releasedAt` describe it; a new attachment needs a new key |
+
+**Managed lifetime.** A keyed import may opt in with `lifetime: "managed"`, bound
+into the key like `kind`, `mime`, `name` and `source` (every replay sends it).
+Its resource carries `lifetime: "managed"`; stages, CLI `--attach` and MCP stage
+and import tools keep today's indefinite reuse. `POST /v2/resources/:id/release`
+with `{expectedStoreId, sha256}` relinquishes every FUTURE reference to that ID
+and answers `ControlResourceRelease` `{storeId, resourceId, sha256, state:
+"released", releasedAt}`; a repeat answers the first release unchanged. It
+refuses typed, without effect: `store_mismatch`, `resource_release_unavailable`
+(503, no durable store identity), `resource_not_found`,
+`resource_purpose_mismatch` (model resources keep their own acknowledgement),
+`resource_digest_mismatch`, `resource_lifetime_indefinite` (a default or legacy
+resource) and `resource_unavailable` (publication in progress; repeat). Release
+is not deletion. A new reference afterwards (a new run, `continueFrom`, Exact
+Retry, a thread turn or its retry, a next-message create or replace) is refused
+`410 resource_released` inside the transaction that would accept it, so a release
+racing an admission yields one of refused or accepted. A same-key, same-body
+repeat of an already accepted request is answered as that operation while its
+command is retained. Accepted work keeps the bytes: a queued or running command
+resolves its refs at execution, an accepted thread turn keeps its stored path for
+its own first dispatch and execution, also when the request that recorded it (a
+turn create or an Exact Retry) is repeated with the same key after a refusal
+recorded before any dispatch or after the daemon stopped before that dispatch.
+The turn's first accepted command records its dispatch durably, beyond command
+retention, so a Turn Retry, or any dispatch after that first one, is new. An
+accepted next message passes its hold to the run it dispatches, a delivery of a
+run's retained result (apply, discard, revert) is no new reference and takes no
+hold, and thread export reads retained history: a resource is missing from an
+export only when no retained document's own holder can read it. Bytes go right after the commit that retires the last accepted
+holder through its existing owner (command retention, next-message replace, clear
+or dispatch, thread purge, including a project removal that purges its trash) when
+no other live resource shares the digest; nothing promises a size. The
+`POST /v2/resources/:id/release` descriptor in `GET /v2/operations` marks support
+for both the field and the route; an engine without it refuses the field (strict
+schema), so a client sends it only where the descriptor exists.
 
 The daemon hashes an import's bytes while receiving them. A digest mismatch
 (`409 digest_mismatch`), a short, oversized or interrupted transfer, or a daemon
@@ -1498,7 +1535,15 @@ edited. A waiting or held draft reserves the predecessor's single continuation
 claim. Exact accepted replays keep their original applied revision and current
 handles. Failure, cancellation, interruption, incompatible typed outcome,
 unknown process custody, Stop, restart or admission refusal holds without retry;
-editing a held draft never rearms it. Native transient HTTP429/`willRetry`
+editing a held draft never rearms it. One exception: a draft held only for unknown
+process custody (`settlement_unknown`) returns by itself when a later bounded
+settlement of the predecessor's run, by the live daemon that ran it, proves its
+processes gone ([process scope](ARCHITECTURE.md)), and only while the draft is
+unchanged since that hold: a replace or clear keeps it held, and a Stop replaces
+the hold with `stop_requested`. It then takes the ordinary revision and admission
+path, which holds it again for any other reason; its projection shows
+`resumed: {from, reason: "process_scope_settled", at}`. A restart ends that return
+for the earlier daemon's scopes. Native transient HTTP429/`willRetry`
 progress does not settle the predecessor. On Windows the run-scope process
 census is unsupported, so a predecessor's process custody is never proven:
 every draft holds as `settlement_unknown`, and an automatic next message is not
@@ -2715,15 +2760,19 @@ One `daemon/engine.sqlite` under the selected config root owns command,
 project, thread and event state. Project run artifacts retain the external
 `~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/` namespace; the target
 repository's `.claudexor/` remains user-owned config. No-project Ask uses a
-synthetic cwd and writes artifacts under `~/.claudexor/v3/runs/`. An explicitly
+synthetic cwd and writes artifacts under `~/.claudexor/v3/runs/`; a one-shot run of an
+explicitly ephemeral root (`scope.ephemeral`) writes under `~/.claudexor/v3/one-shot/runs/`. A thread
+created on such a root stays unregistered with its commands in the global partition,
+while its turns share that root's project namespace with the thread's lanes. An explicitly
 bound host data root keeps its own location.
 
-The current SQLite schema is version 6. Its atomic 5→6 upgrade moves task-group
-membership into a lower-case column, backfilled from accepted summaries, and
-rebuilds both group indexes on it; summaries and other domain rows are untouched.
-Earlier versions follow 1→2 (account service), 2→3 (task-group indexes), 3→4
-(deferred messages), 4→5 (the guarded plan-answer index for thread history), then
-5→6. Reopening version 6 is write-free; older readers refuse an upgraded store. See [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store)
+The current SQLite schema is version 7. Its atomic 6→7 upgrade adds the
+managed-resource holders and two next-message columns without rewriting any row.
+The 5→6 upgrade moved task-group membership into a lower-case column, backfilled
+from accepted summaries, and rebuilt both group indexes on it. Earlier versions
+follow 1→2 (account service), 2→3 (task-group indexes), 3→4 (deferred messages),
+4→5 (the guarded plan-answer index for thread history), 5→6, then 6→7. Reopening
+version 7 is write-free; older readers refuse an upgraded store. See [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store)
 for migration and complete-backup downgrade precautions.
 
 The 4.0 migration requires Node 24.15.0 or newer with supported bundled SQLite.
@@ -2829,7 +2878,7 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_CODEX_NATIVE_HOME` / `CLAUDEXOR_CLAUDE_NATIVE_DIR` | adapters | Explicit Claudexor-owned Codex profile or Claude native config directory overrides. |
 | `CLAUDEXOR_FAKE_NATIVE_STORE` | fake harness | Test fixture store where `fake-session` writes its own session files; absent means none are written. |
 | `CLAUDEXOR_PROFILE_LOCATOR` | engine → adapter `continuity` (internal, never a child env) | The registry `isolation_locator` of the credential profile whose store holds (or will hold) a native session, named by the engine on the EnvMap it hands to the adapter's `continuity.locate` / `continuity.move`; the adapter maps it onto its own vendor store variable. Users never set it. |
-| `CLAUDEXOR_RUN_SCOPE_<id>` | orchestrator / daemon (internal child env) | The run's process-scope marker (`CLAUDEXOR_RUN_SCOPE_<32 hex>=1`), minted before the first launch and carried into every harness child of the run (it survives `clean` inheritance, which also forwards an enclosing host's markers of the same grammar). At the run's terminal and at the next daemon start after a crash, every live process still carrying it — plus the groups and descendants the daemon recorded — is ended by measured identity before the run's terminal is published, and the outcome is disclosed in `final/process_scope.yaml` (best-effort evidence: when that write fails the verdict is still published and the run has no record) (on macOS the census reads the environments only of processes no older than the scope, selected by `ps` elapsed time so that both sides come from the same clock at the same moment; a process older than the run cannot carry its marker; a backward wall-clock step of more than a minute during the run can hide a marker-only member) (INV-144; `completeness` is `complete` only on Linux when the census read every same-uid environment, `not_provable` on macOS and Windows or after an unreadable or deadline-bound census). `GET /v2/runs/:id` always carries `summary.processScope`: the compact record once the run is terminal and the record is readable and valid, otherwise an explicit `null` that means unknown, never clean (the run is still live, the record is absent — a run that predates it or whose write failed — or it is unreadable or invalid); engines that predate the field omit the key, which is equally unknown, and the generated JSON Schema lists the property as optional (it declares a default of `null`) although this engine always sends it. The list projection (`GET /v2/runs`) always leaves `processScope` null — read the detail. A host that must act while the daemon is dead may read `daemon/run-scopes.json` (`{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`, `state` (`open` \| `unresolved`), `opened_at` (ISO time: the floor the daemon uses while no lstart birth exists), `scope_start` (lstart text or null), `root_groups[{pgid, leader_pid, leader_birth \| null, leader_identity?}]` — `leader_identity` is the daemon's opaque kernel birth token, comparable only by the daemon's own identity helper — and `captured[{pid, pgid, birth}]`; births in the C-locale `ps -o lstart=` spelling. A host without the identity helper, when `leader_birth` is null: a live process with `pid == pgid` cannot be verified as the recorded leader, so skip that group; when no process with `pid == pgid` is alive, the group's remaining members born at or after the floor belong to the scope, because the kernel never hands out a pid that is still a live process-group id) and end recorded members by measured identity. Users never set it. |
+| `CLAUDEXOR_RUN_SCOPE_<id>` | orchestrator / daemon (internal child env) | The run's process-scope marker (`CLAUDEXOR_RUN_SCOPE_<32 hex>=1`), minted before the first launch and carried into every harness child of the run (it survives `clean` inheritance, which also forwards an enclosing host's markers of the same grammar). At the run's terminal and at the next daemon start after a crash, every live process still carrying it — plus the groups and descendants the daemon recorded — is ended by measured identity before the run's terminal is published, and the outcome is disclosed in `final/process_scope.yaml` (best-effort evidence: when that write fails the verdict is still published and the run has no record) (on macOS the census reads the environments only of processes no older than the scope, selected by `ps` elapsed time so that both sides come from the same clock at the same moment; a process older than the run cannot carry its marker; a backward wall-clock step of more than a minute during the run can hide a marker-only member) (INV-144; `completeness` is `complete` only on Linux when the census read every same-uid environment, `not_provable` on macOS and Windows or after an unreadable or deadline-bound census). `GET /v2/runs/:id` always carries `summary.processScope`: the compact record once the run is terminal and the record is readable and valid, otherwise an explicit `null` that means unknown, never clean (the run is still live, the record is absent — a run that predates it or whose write failed — or it is unreadable or invalid); engines that predate the field omit the key, which is equally unknown, and the generated JSON Schema lists the property as optional (it declares a default of `null`) although this engine always sends it. The list projection (`GET /v2/runs`) always leaves `processScope` null — read the detail. `summary.processScopeLater` is the latest later, separately bounded settlement attempt the live owning daemon made after the terminal (`final/process_scope_later.yaml`, beside the unchanged terminal record; null when none ran or it is unreadable: unknown, never clean). The index is written compactly; a row the engine cannot parse stays in `entries` verbatim and unknown. A host that must act while the daemon is dead may read `daemon/run-scopes.json` (`{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`, `state` (`open` \| `unresolved`), `opened_at` (ISO time: the floor the daemon uses while no lstart birth exists), `scope_start` (lstart text or null), `root_groups[{pgid, leader_pid, leader_birth \| null, leader_identity?}]` — `leader_identity` is the daemon's opaque kernel birth token, comparable only by the daemon's own identity helper — and `captured[{pid, pgid, birth}]`; births in the C-locale `ps -o lstart=` spelling. A host without the identity helper, when `leader_birth` is null: a live process with `pid == pgid` cannot be verified as the recorded leader, so skip that group; when no process with `pid == pgid` is alive, the group's remaining members born at or after the floor belong to the scope, because the kernel never hands out a pid that is still a live process-group id) and end recorded members by measured identity. Users never set it. |
 | `CLAUDEXOR_HOME_SCOPED` | orchestrator / review (internal child env) | `1` when the harness runs under a scoped native-state HOME (delegated, read-only and reviewer sessions). A fact for the model, not containment. |
 | `CLAUDEXOR_OPERATOR_HOME` | orchestrator / review (internal child env) | The operator's own home directory, captured from the daemon's unscoped env before HOME is rebased, so a scoped session knows where host caches live instead of searching for them. Set only together with `CLAUDEXOR_HOME_SCOPED`; `PLAYWRIGHT_BROWSERS_PATH` is exported alongside when the operator's Playwright cache exists and no explicit value (including `0`) was set. |
 | `CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE` | Claude adapter (internal child env) | Marker for the capability-declared macOS Keychain bridge in a disposable Claude-only HOME (`ready` / `unavailable`). Users never set it; generic scoped homes and other harnesses do not receive it (INV-067). |

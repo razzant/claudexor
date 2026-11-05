@@ -24,6 +24,13 @@ import {
 import type { EngineStore } from "./store.js";
 import { SqlUploadImports } from "./upload-imports.js";
 import { SqlUploads } from "./uploads.js";
+import { releaseManagedResource } from "./resource-release.js";
+import {
+  holdsResourceUse,
+  isManagedOrdinary,
+  releasedResourceError,
+  type ResourceUseHolder,
+} from "./resource-uses.js";
 
 /** Resource metadata and replay live in the one engine DB; only immutable bytes are files. */
 export class SqlResourceStore implements ResourceStorePort {
@@ -63,9 +70,10 @@ export class SqlResourceStore implements ResourceStorePort {
     return this.imports.import(raw, key);
   }
 
-  resolve(refs: ResourceAttachmentRef[] | undefined): Attachment[] {
+  /** `heldBy`: the accepted owner reading its own refs (a released ID it holds still resolves). */
+  resolve(refs: ResourceAttachmentRef[] | undefined, heldBy?: ResourceUseHolder): Attachment[] {
     return (refs ?? []).map(({ resourceId }) => {
-      const resource = this.metadata(resourceId);
+      const resource = this.metadata(resourceId, heldBy);
       if (resource.purpose === "model") throw purposeMismatch();
       const path = this.blobs.filePath(resourceSha(resource));
       verifiedResourceBytes(resource, path);
@@ -106,6 +114,12 @@ export class SqlResourceStore implements ResourceStorePort {
   }
   releaseModel(raw: ModelPayloadRef): void {
     this.release(raw, "released");
+  }
+  /** Caller relinquishes future reuse of a managed ordinary ID; accepted holders keep its bytes. */
+  releaseResource(id: string, raw: unknown) {
+    const { receipt, sha } = releaseManagedResource(this.store, id, raw);
+    if (sha) this.defer(this.blobs.gc(sha));
+    return receipt;
   }
 
   /** Expiry has an observed custody timestamp; callers must not infer it from file mtime. */
@@ -154,9 +168,15 @@ export class SqlResourceStore implements ResourceStorePort {
     });
     this.defer(this.blobs.gc(sha));
   }
-  private metadata(id: string): ControlResource {
+  private metadata(id: string, heldBy?: ResourceUseHolder): ControlResource {
     assertResourceId(id);
     const row = readResourceRow(this.store, id);
+    // A released managed ID resolves only for an accepted owner that holds it (its bytes are kept).
+    if (row?.state === "released" && isManagedOrdinary(row.resource)) {
+      if (!heldBy || !holdsResourceUse(this.store, heldBy, id))
+        throw releasedResourceError(id, row.releasedAt);
+      return row.resource;
+    }
     if (!row || row.state === "released" || row.state === "expired")
       throw resourceError(`no such resource: ${id}`, 404, "resource_not_found");
     if (row.state === "publishing")

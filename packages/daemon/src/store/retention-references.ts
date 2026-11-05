@@ -1,6 +1,7 @@
 import { Thread, type GcHold } from "@claudexor/schema";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { access } from "node:fs/promises";
+import { projectRuntimeDir } from "@claudexor/util";
 import type { EngineStore } from "./store.js";
 import { decodeBody } from "./thread-rows.js";
 import { isServedPid } from "./generations.js";
@@ -25,6 +26,9 @@ export interface DiskRetentionReferences {
   nativeWatchRunDirs?: ReadonlySet<string>;
   nativeReferenceError?: () => string | null;
   hasActiveCommands?: () => boolean;
+  /** Runtime namespaces whose registration (root, status, generation) changed during
+   * the pass: their keep-last and ownership are unknown until a fresh pass (#503). */
+  deferredRuntimes?: () => ReadonlySet<string>;
   /** Caller releases the observation after all deletions, including error paths. */
   close?: () => void;
   /** Recovery holds are receipt facts; completed quarantine is not a hold. */
@@ -111,6 +115,19 @@ export async function diskRetentionReferences(
     const version = (changes.get() as { n: number }).n;
     const isCurrent = () => (changes.get() as { n: number }).n === version;
     const generations = retentionGenerations(store);
+    // Old roots by project id: a relink or re-registration defers both namespaces.
+    const projectRows = store.prepare("SELECT id,root FROM project").all() as Array<{
+      id: string;
+      root: string;
+    }>;
+    const projectRoots = new Map(projectRows.map((row) => [row.id, row.root]));
+    const deferred = new Set<string>();
+    const deferProject = (id: string) => {
+      const current = store.prepare("SELECT root FROM project WHERE id=?").get(id) as
+        { root: string } | undefined;
+      for (const root of [projectRoots.get(id), current?.root])
+        if (root) deferred.add(projectRuntimeDir(root));
+    };
     const { registeredProjectRoots, archivedProjectRoots, protectedProjectRoots, errors, blocked } =
       generations;
     const roots = new Set([...registeredProjectRoots, ...protectedProjectRoots]);
@@ -178,7 +195,11 @@ export async function diskRetentionReferences(
           throw new Error(
             `immutable retention command ${owner.id} in partition ${owner.pid}: params blob ${id} changed during inventory`,
           );
-      } else if (table !== "project" && table !== "partition") reader.refresh(table, id);
+      } else if (table === "project") deferProject(id);
+      else if (table === "partition") {
+        const reason = generations.changed(Number(id));
+        if (reason) changesObserved.hold(`${reason}; its rows were never inventoried`);
+      } else reader.refresh(table, id);
     };
     const recheck = () => changesObserved.current(readChange);
     const refresh = () => changesObserved.refresh(readChange, signal);
@@ -198,6 +219,7 @@ export async function diskRetentionReferences(
       nativeWatchRunDirs: commands.nativeWatchRunDirs,
       nativeReferenceError: commands.nativeReferenceError,
       hasActiveCommands: commands.hasActiveCommands,
+      deferredRuntimes: () => deferred,
       close: changesObserved.close,
       blocked,
       errors,

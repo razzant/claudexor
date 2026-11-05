@@ -31,6 +31,11 @@
           "maxLength": 4096,
           "description": "Opaque caller identity of the selected source, such as the absolute path a local client read or a task artifact id. Bound into the key only; the daemon never reads, resolves, stores or returns it."
         },
+        "lifetime": {
+          "type": "string",
+          "const": "managed",
+          "description": "Opt in to a managed resource lifetime (support: the POST /v2/resources/:id/release catalog descriptor). Bound into the key like kind, mime, name and source."
+        },
         "content": {
           "type": "object",
           "properties": {

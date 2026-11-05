@@ -2,8 +2,10 @@
  * Run lookup for `claudexor inspect` (claudexor#235): find the ArtifactStore
  * that owns a run from any cwd, or say exactly why the lookup stopped.
  *
- * Order: the cwd project store, the user-level Ask store, then the run
- * registry of an ALREADY-running daemon (GET /runs/:id). A read-only lookup
+ * Order: the cwd project store, the user-level stores outside project namespaces
+ * (folderless Ask and one-shot, #503), then the run registry of an ALREADY-running
+ * daemon (GET /runs/:id). A one-shot run's compact tombstone therefore still answers
+ * "expired" after its command was pruned. A read-only lookup
  * never auto-starts a daemon (#93), so a typo'd id cannot launch one. A local
  * retained run answers even while the daemon is down; its files prove the run
  * exists, not that it is live.
@@ -30,7 +32,7 @@ import {
   isTerminalLifecycle,
   TaskGroupReceipt,
 } from "@claudexor/schema";
-import { noProjectRepoRoot, userConfigDir } from "@claudexor/util";
+import { globalRunStores, noProjectRepoRoot } from "@claudexor/util";
 import { CliError, controlProblemError, usageError } from "./cli-error.js";
 import { connectDaemonIfRunning } from "./daemon-run.js";
 import { EXTERNAL_DAEMON_REMEDY, daemonOwner } from "./daemon-owner.js";
@@ -66,7 +68,9 @@ export async function resolveRunStore(runId: string): Promise<ResolvedRunStore> 
   }
   for (const store of [
     new ArtifactStore(process.cwd()),
-    new ArtifactStore(noProjectRepoRoot(), { claudexorDir: userConfigDir() }),
+    ...globalRunStores().map(
+      ({ runtime }) => new ArtifactStore(noProjectRepoRoot(), { claudexorDir: runtime }),
+    ),
   ]) {
     const root = store.runPaths(runId).root;
     if (existsSync(root)) return { store, root, runId };

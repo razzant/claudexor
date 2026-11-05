@@ -124,6 +124,12 @@ export const GcLastPass = z
     started_at: z.string(),
     finished_at: z.string(),
     freed_bytes: z.number().int().nonnegative(),
+    effects: z
+      .enum(["measured", "unknown"])
+      .optional()
+      .describe(
+        "measured: freed_bytes counts this pass's deletions; unknown: the pass stopped before its receipt, or a deletion stopped partway, so freed_bytes is only a lower bound and earlier steps may already have had effects. Absent on records written before the field.",
+      ),
     kept: GcKeepCounts,
     held: GcHeldCounts,
     holds: z
@@ -225,6 +231,12 @@ export const ControlGcReceipt = z
       .int()
       .nonnegative()
       .describe("Total bytes freed (or reclaimable under dry_run)."),
+    effects: z
+      .literal("unknown")
+      .optional()
+      .describe(
+        "Present only when a deletion committed and then stopped partway: freed_bytes is a lower bound and a later pass finishes that tree. Absent: freed_bytes counts this pass's deletions.",
+      ),
     errors: z
       .array(z.string())
       .default([])

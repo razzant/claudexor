@@ -21,6 +21,8 @@ import { createHarnessMaintenance } from "./harness-maintenance-service.js";
 import { createModelServices } from "./model-services.js";
 import { createDeferredStartPreparation } from "./deferred-start-preparation.js";
 
+import { bindLaterScopeSettlements } from "./run-scope-later-record.js";
+import { daemonRunScopeIndex } from "./run-scope-index.js";
 import { afterRetention, type RetentionRunner } from "./retention-lifetime.js";
 import { readLastRetention, recordLastRetention } from "./retention-last-pass.js";
 
@@ -50,6 +52,8 @@ export function createSqlDaemonRuntime(
     bus?: RunEventBus;
     agent?: typeof createDaemonAgentRunner;
     warn?: (message: string) => void;
+    /** Later settlements of finished runs (#613); the daemon's run-scope index by default. */
+    laterScopes?: Parameters<typeof bindLaterScopeSettlements>[0];
   },
 ) {
   const bus = options.bus ?? new RunEventBus();
@@ -75,6 +79,14 @@ export function createSqlDaemonRuntime(
     deferredStart: options.server.deferredStart ?? (() => executors.deferredStart),
   });
   bind(server);
+  const unbindLaterScopes = bindLaterScopeSettlements(
+    options.laterScopes ?? daemonRunScopeIndex(),
+    {
+      run: (runId) => graph.commands.queries.getByRunId(runId),
+      settled: (jobId) => server.deferred.processScopeSettled(jobId),
+      log: (message) => options.warn?.(message),
+    },
+  );
   return {
     server,
     client,
@@ -82,6 +94,7 @@ export function createSqlDaemonRuntime(
     bus,
     terminalFilesPending: (id: string) => graph.terminalFiles.pending(id),
     async stop() {
+      unbindLaterScopes();
       executors.models.close();
       await server.stop();
     },

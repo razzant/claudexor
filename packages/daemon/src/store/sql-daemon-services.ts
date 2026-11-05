@@ -55,8 +55,8 @@ export function createSqlDaemonServices(store: EngineStore, options: SqlDaemonSe
       obligations,
       terminalFiles,
       pruner,
-      validateRefs: (refs) => {
-        resources.resolve(refs);
+      validateRefs: (refs, heldBy) => {
+        resources.resolve(refs, heldBy);
       },
     },
     maintenance,
