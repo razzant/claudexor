@@ -69,7 +69,6 @@ export interface DaemonRunScopeIndexOptions {
   identity?: AsyncProcessIdentityReader;
   table?: ProcessTableReader;
   reap?: (opts: ScopeReapOptions) => Promise<ScopeReapOutcome>;
-  /** Live harness roots with their markers (default: the process registry). */
   /** Live harness roots with their markers (default: the process registry,
    * whose registrations also seed each root's group at spawn). */
   roots?: () => ReadonlyArray<LiveChildProcess>;
@@ -85,6 +84,8 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   private writes: Promise<void> = Promise.resolve();
   private ownerIdentity: Promise<KnownProcessIdentity | null> | null = null;
   private capturing: Promise<void> | null = null;
+  private retrying: Promise<void> | null = null;
+  private retryQueue: RunScopeEntry[] = [];
   private readonly identity: AsyncProcessIdentityReader;
   private readonly table: ProcessTableReader | null;
   private readonly reap: (opts: ScopeReapOptions) => Promise<ScopeReapOutcome>;
@@ -141,11 +142,8 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         if (!child.scopeMarker) return;
         const entry = this.load().find((item) => item.marker === child.scopeMarker);
         if (!entry || entry.state !== "open") return;
-        // SYNCHRONOUS seed from the registry handle (fix round 2 item 10): the
-        // group id and the leader's measured identity are known the moment
-        // the root is registered, so a root that exits within milliseconds
-        // still leaves its group on record; the floor is `opened_at` until a
-        // birth is known.
+        // Seed synchronously from the spawn handle, even if the root exits
+        // before refinement; `opened_at` supplies the floor until birth is known.
         let group = entry.root_groups.find((g) => g.leader_pid === child.pid);
         if (!group) {
           group = {
@@ -158,10 +156,8 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
           await this.persistQuietly(`root group of ${child.pid}`);
         }
         if (!this.table) return;
-        // Refinement: the leader's lstart, read only while it is still the
-        // spawn-time leader BEFORE and AFTER the table read (item 8), and only
-        // while this run's settlement still waits for it: past that point no
-        // read starts and nothing more is recorded (the group above stands).
+        // Refine only while settlement waits and the spawn identity matches
+        // before AND after the table read; the synchronous group seed stands.
         const marker = child.scopeMarker;
         const waited = (): boolean => !this.expiredSeeds.has(marker);
         if (!waited() || !(await this.rootStillSame(child)) || !waited()) return;
@@ -209,14 +205,8 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     }
   }
 
-  /**
-   * Awaited by settle so THIS run's seed refinement in flight (the optional
-   * birth/identity read that follows the synchronous group record) is never
-   * raced by the reap — for at most the budget remainder: a refinement hung
-   * on a `ps -p` or identity read (bounded by their own longer timeouts) must
-   * not extend the cancel path, and the reap then runs on what is recorded;
-   * a refinement still pending then starts no read and records nothing more.
-   */
+  /** Wait only for this run's refinements within its remaining settlement budget;
+   * late refinements start no further reads and record nothing more. */
   private async seedsSettled(marker: string, deadlineMs: number): Promise<void> {
     const jobs = this.seeding.get(marker);
     if (!jobs || jobs.size === 0) return;
@@ -275,11 +265,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   }
 
   async settle(runId: string, marker: string): Promise<ScopeReapOutcome> {
-    // ONE absolute settlement budget starts HERE, when the custodian enters
-    // settlement for this run: this run's own seed refinement wait consumes
-    // part of it and the reap gets the remainder (every census, identity and
-    // table read and every signal race it; expiry is disclosed by the reap as
-    // `incomplete`). Other runs' seeds are never awaited.
+    // One budget covers this run's seeds and reap; other runs' seeds never delay it.
     const started = Date.now();
     await this.seedsSettled(marker, this.deadlineMs);
     const entry = this.load().find((item) => item.marker === marker);
@@ -313,7 +299,11 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     if (this.capturing) return this.capturing;
     this.capturing = (async () => {
       await this.captureOnce();
-      await this.retryLiveUnresolved();
+      if (!this.retrying) {
+        this.retrying = this.retryLiveUnresolved().finally(() => {
+          this.retrying = null;
+        });
+      }
     })().finally(() => {
       this.capturing = null;
     });
@@ -323,14 +313,21 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
    * only a fresh settled census removes the entry. */
   private async retryLiveUnresolved(): Promise<void> {
     if (!this.table) return; // Windows keeps its existing unsupported retirement.
-    const entries = this.load().filter((entry) => entry.state === "unresolved");
+    const entries = this.load();
+    // Oldest-first rounds keep identical outcomes eligible without moving settled_at.
+    if (this.retryQueue.length === 0)
+      this.retryQueue = entries
+        .filter((entry) => entry.state === "unresolved")
+        .sort((a, b) => (a.settled_at ?? "").localeCompare(b.settled_at ?? ""));
     let changed = false;
-    for (const entry of entries) {
-      if (!(await this.ownerLive(entry))) continue;
+    while (this.retryQueue.length > 0) {
+      const entry = this.retryQueue.shift()!;
+      if (!entries.includes(entry) || entry.state !== "unresolved") continue;
       const beforeState = entry.state;
       const beforeOutcome = JSON.stringify(entry.outcome ?? null);
       let outcome: ScopeReapOutcome;
       try {
+        if (!(await this.ownerLive(entry))) break;
         outcome = await this.reap({
           marker: entry.marker,
           deadlineMs: this.deadlineMs,
@@ -343,7 +340,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
             error instanceof Error ? error.message : String(error)
           }); kept`,
         );
-        continue;
+        break;
       }
       this.log(this.retireOrKeep(entry, outcome));
       const stillPresent = this.load().includes(entry);
@@ -351,6 +348,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         entry.state !== beforeState || JSON.stringify(entry.outcome ?? null) !== beforeOutcome;
       if (stillPresent && outcomeChanged) changed = true;
       changed ||= !stillPresent;
+      break; // At most one reap per tick, including a failed attempt.
     }
     if (!changed) return;
     try {

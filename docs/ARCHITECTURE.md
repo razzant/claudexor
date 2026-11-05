@@ -5430,7 +5430,11 @@ release its copy under the known-member settlement policy while disclosing
 `not_provable`. Unsupported or failed census, surviving known members and
 unknown receipts do not certify that release. On the existing pids tick, an
 `unresolved` entry whose recorded owner is still this live daemon is retried
-with a fresh settlement budget. Only a fresh `settled` census removes it from
+with a fresh settlement budget. Capture and retry have separate in-flight guards:
+retry starts after capture resolves and never delays the next tick's capture.
+At most one entry is reaped per tick, visiting unresolved entries in rounds ordered
+by oldest `settled_at` first; identical outcomes remain eligible on the next round.
+Only a fresh `settled` census removes it from
 `run-scopes.json`; survivors or a deadline miss keep the entry and its outcome.
 Darwin's `completeness: not_provable` remains compatible with `settled` once
 the known members have settled. The index is compact JSON and an unchanged

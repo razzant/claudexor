@@ -288,9 +288,91 @@ describe("DaemonRunScopeIndex", () => {
       deadlineMs: 321,
     });
     await second.captureTick();
+    await vi.waitFor(() => expect(second.list()).toEqual([]));
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ marker, deadlineMs: 321 });
-    expect(second.list()).toEqual([]);
+    await vi.waitFor(() => expect(readIndex(root).entries).toEqual([]));
+  });
+
+  it("pids ticks keep capturing while a retry runs and retry every stuck entry in oldest-first rounds", async () => {
+    const root = tempRoot();
+    const owner = known(5151, "5151");
+    const survivor = settledOutcome({
+      settled: false,
+      survivors: [{ pid: 4711, startToken: "ps:x" }],
+    });
+    let now = "2026-10-12T14:00:00Z";
+    let finish: ((outcome: ScopeReapOutcome) => void) | undefined;
+    let retry = false;
+    const calls: ScopeReapOptions[] = [];
+    const table = fakeTable([{ pid: 100, ppid: 5151, pgid: 100, birth: T0 }]);
+    const snapshot = vi.spyOn(table, "snapshot");
+    const live: Record<number, KnownProcessIdentity> = { 5151: owner, 100: known(100, "100") };
+    const identity = fakeIdentity(live);
+    const readIdentity = vi.spyOn(identity, "read");
+    let roots: LiveChildProcess[] = [];
+    const index = new DaemonRunScopeIndex({
+      path: join(root, RUN_SCOPE_INDEX_FILE),
+      owner: async () => owner,
+      identity,
+      table,
+      roots: () => roots,
+      now: () => now,
+      reap: async (opts) => {
+        if (!retry) return survivor;
+        calls.push(opts);
+        return new Promise<ScopeReapOutcome>((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    const markers: string[] = [];
+    // Deliberately insert out of settlement order to exercise the ordering seam.
+    for (const minute of [3, 1, 2]) {
+      now = `2026-10-12T14:0${minute}:00Z`;
+      const { marker } = await index.open(`stuck-${minute}`);
+      markers.push(marker);
+      await index.settle(`stuck-${minute}`, marker);
+    }
+    roots = [fakeRoot(100, (await index.open("live-run")).marker)];
+    retry = true;
+    try {
+      let ticks = 0;
+      for (const marker of [markers[1], markers[2], markers[0], markers[1]]) {
+        const before = calls.length;
+        const capture = index.captureTick();
+        expect(index.captureTick()).toBe(capture); // Concurrent capture still coalesces.
+        await capture;
+        ticks += 1;
+        await vi.waitFor(() => expect(calls).toHaveLength(before + 1));
+        expect(calls.at(-1)?.marker).toBe(marker);
+        // This reap spans multiple ticks: capture completes on each, with no new reap.
+        await index.captureTick();
+        await index.captureTick();
+        ticks += 2;
+        expect(snapshot).toHaveBeenCalledTimes(ticks);
+        expect(calls).toHaveLength(before + 1);
+        finish!(survivor);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(calls).toHaveLength(before + 1); // Finishing cannot drain the queue this tick.
+      }
+      expect(index.list().filter((entry) => entry.state === "unresolved")).toHaveLength(3);
+      // A missing owner must not turn the tick into a scan of every stuck PID.
+      roots = [];
+      delete live[5151];
+      readIdentity.mockClear();
+      await index.captureTick();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(readIdentity).toHaveBeenCalledExactlyOnceWith(5151);
+      expect(calls).toHaveLength(4);
+      live[5151] = owner;
+      await index.captureTick();
+      await vi.waitFor(() => expect(calls).toHaveLength(5));
+      expect(calls.at(-1)?.marker).toBe(markers[0]);
+    } finally {
+      finish?.(survivor);
+      index.dispose();
+    }
   });
 
   it("keeps a survivor outcome on a live retry and does not rewrite identical bytes", async () => {
