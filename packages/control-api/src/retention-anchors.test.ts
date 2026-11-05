@@ -104,7 +104,7 @@ it.each(["bad-meta", "held-namespace", "linked-namespace"])(
   async (kind) => {
     const f = fixture();
     const anchor = f.anchor("held");
-    if (kind === "held-namespace") f.deps.projectHeld = () => true;
+    if (kind === "held-namespace") f.deps.deferredRuntimes = () => new Set([f.other]);
     else if (kind === "linked-namespace") {
       rmSync(f.projects[1]!.runsDir, { recursive: true });
       symlinkSync(f.projects[0]!.runsDir, f.projects[1]!.runsDir, "dir");
@@ -122,7 +122,7 @@ it.each(["bad-meta", "held-namespace", "linked-namespace"])(
       rmSync(f.projects[1]!.runsDir);
       mkdirSync(f.projects[1]!.runsDir);
     }
-    f.deps.projectHeld = undefined;
+    f.deps.deferredRuntimes = undefined;
     f.deps.anchorsHeld = false;
     await runRetentionPass(policy, { dry_run: false }, f.deps);
     expect(existsSync(anchor.path)).toBe(false);

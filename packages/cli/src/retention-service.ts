@@ -9,15 +9,15 @@
  * through the same owner finishes every purge whose directory cleanup failed
  * after the purge was journaled.
  */
+import { dirname } from "node:path";
 import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import type { ControlGcReceipt, ControlGcRequest, Thread } from "@claudexor/schema";
 import { findActiveThreadRun, runRetentionPass } from "@claudexor/control-api";
 import { loadConfig } from "@claudexor/config";
-import { dirname } from "node:path";
 import {
   claudexorOwnedRoot,
   noProjectRepoRoot,
-  projectRuntimeDir,
+  globalRunStores,
   userConfigDir,
 } from "@claudexor/util";
 import { sweepOrphanLanes } from "@claudexor/workspace";
@@ -165,46 +165,6 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
         const laneHold = (example: string) =>
           inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
         const heldRoots = new Set(references.protectedProjectRoots);
-        const heldRuntimeDirs = new Set<string>();
-        const changedRuntimeDirs = new Map<string, string>();
-        const rememberRuntime = (root: string, target = projectRuntimeDir(root)) => {
-          heldRuntimeDirs.add(target);
-          return target;
-        };
-        for (const root of references.protectedProjectRoots) rememberRuntime(root);
-        for (const root of references.protectedLaneRoots ?? []) rememberRuntime(root);
-        const rememberChangedRoots = () => {
-          for (const root of references.heldProjectRoots ?? []) {
-            if (!changedRuntimeDirs.has(root)) changedRuntimeDirs.set(root, rememberRuntime(root));
-          }
-        };
-        const changedRoots = new Set<string>();
-        let deletedLanes = 0;
-        const projectHeld = (project: { root: string; runsDir: string }) => {
-          rememberChangedRoots();
-          const runtime = dirname(project.runsDir);
-          const changedRoot =
-            [...changedRuntimeDirs].find(
-              ([root, changedRuntime]) => project.root === root || runtime === changedRuntime,
-            )?.[0] ?? null;
-          if (changedRoot) {
-            heldRoots.add(project.root);
-            heldRuntimeDirs.add(runtime);
-            if (!changedRoots.has(project.root)) {
-              changedRoots.add(project.root);
-              inventoryHolds.push({
-                class: "references_changed",
-                count: 1,
-                example: `project registration changed: ${changedRoot}; namespace kept until next pass`,
-              });
-            }
-            return true;
-          }
-          if (!references.protectedProjectRoots.has(project.root)) return false;
-          heldRoots.add(project.root);
-          heldRuntimeDirs.add(runtime);
-          return true;
-        };
         const gcProjects = await retentionProjects(
           references,
           noProjectRoot,
@@ -213,36 +173,45 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           signal,
           heldRoots,
         );
-        for (const project of gcProjects)
-          if (heldRoots.has(project.root)) heldRuntimeDirs.add(dirname(project.runsDir));
-        // The namespace inventory finds the last orphan even after its root's
-        // last thread is purged. Archived/quarantined registrations keep lanes;
-        // healthy and unregistered namespaces use the shared live ownership proof.
+        let deletedLanes = 0;
+        const globalStores = new Set(globalRunStores().map((store) => store.runsDir));
+        // Inventory finds orphan namespaces after their last thread disappears.
+        // Global stores hold runs, not per-thread lanes. Archived roots stay held.
         if (!request.dry_run && !references.blocked) {
           const laneProofCurrent = references.recheck ?? references.isCurrent;
           const deferred =
             "lane sweep deferred: ownership changed; a fresh retention pass must resume";
-          if (!laneProofCurrent()) {
+          let lanesDeferred = false;
+          const deferLanes = () => {
+            if (lanesDeferred) return;
+            lanesDeferred = true;
             inventoryErrors.push(deferred);
             laneHold(deferred);
-          } else
+          };
+          if (!laneProofCurrent()) deferLanes();
+          else
             for (const project of gcProjects) {
               const { root } = project;
               const runtime = dirname(project.runsDir);
+              if (globalStores.has(project.runsDir) || heldRoots.has(root)) continue;
               if (!healthyRoots.has(root) && references.registeredProjectRoots.has(root)) continue;
               await yieldToAdmission();
               if (signal.aborted) break;
               try {
                 const ids =
-                  references.laneThreadIds?.(root, runtime) ??
+                  references.laneThreadIds?.(root) ??
                   new Set(deps.threads.listThreads().map((thread) => thread.id));
-                // No yield between the live read and the synchronous sweep.
-                if (projectHeld(project) || heldRuntimeDirs.has(runtime)) continue;
-                deletedLanes += sweepOrphanLanes(runtime, ids).length;
+                // No yield between the live read and the synchronous sweep. A namespace
+                // whose registration changed during this pass keeps its lanes, like its
+                // runs, while the others progress: its owners are unknown (#503).
+                if (references.deferredRuntimes?.().has(runtime)) {
+                  deferLanes();
+                  morePending = true;
+                } else if (!references.protectedProjectRoots.has(root))
+                  deletedLanes += sweepOrphanLanes(runtime, ids).length;
               } catch (error) {
                 if (!laneProofCurrent()) {
-                  inventoryErrors.push(deferred);
-                  laneHold(`${deferred}: ${String(error)}`);
+                  deferLanes();
                   break;
                 }
                 const detail = `lane sweep skipped for ${root}: ${String(error)}`;
@@ -260,13 +229,15 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           request,
           {
             signal,
-            anchorsHeld: !!references.blocked || heldRuntimeDirs.size > 0,
+            anchorsHeld: !!references.blocked || heldRoots.size > 0,
             projects: () => gcProjects,
             records: () => references.records,
             referencedRunIds: () => references.referencedRunIds,
             referencesCurrent: references.recheck ?? references.isCurrent,
             refreshReferences: references.refresh,
-            projectHeld,
+            ...(references.deferredRuntimes
+              ? { deferredRuntimes: references.deferredRuntimes }
+              : {}),
             maxDeletionsPerPass: deps.maxDeletionsPerPass,
             onTruncated: () => {
               morePending = true;
@@ -289,7 +260,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
         const reportedGenerationHolds = references.holds?.length ?? 0;
         receipt.holds.push(...(references.holds ?? []), ...inventoryHolds);
         const unclassified = [...heldRoots].filter(
-          (root) => !references.protectedProjectRoots.has(root) && !changedRoots.has(root),
+          (root) => !references.protectedProjectRoots.has(root),
         );
         if (unclassified.length && !references.blocked)
           receipt.holds.push({
@@ -297,16 +268,27 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
             count: unclassified.length,
             example: unclassified[0]!,
           });
-        const native = await deps.nativeHomes?.({
-          signal,
-          references,
-          dryRun: request.dry_run,
-          olderThan: Date.now() - retention.runs_max_age_days * 24 * 60 * 60_000,
-          ignoredRunIds: new Set(
-            request.dry_run ? receipt.deleted_runs.map((run) => run.run_id) : [],
-          ),
-          ignoredThreadIds: previewPurged,
-        });
+        // Run deletions already happened: a native-home failure is recorded on this
+        // receipt, never a lost receipt with freed 0 (#503).
+        const native = await deps
+          .nativeHomes?.({
+            signal,
+            references,
+            dryRun: request.dry_run,
+            olderThan: Date.now() - retention.runs_max_age_days * 24 * 60 * 60_000,
+            ignoredRunIds: new Set(
+              request.dry_run ? receipt.deleted_runs.map((run) => run.run_id) : [],
+            ),
+            ignoredThreadIds: previewPurged,
+          })
+          .catch((error: unknown) => {
+            if (signal.aborted) throw error;
+            receipt.errors.push(`native home retention stopped: ${String(error)}`);
+            // Files it removed before stopping are not in freed_bytes.
+            if (!request.dry_run) receipt.effects = "unknown";
+            morePending = true;
+            return undefined;
+          });
         if (native) {
           receipt.freed_bytes += native.freedBytes;
           receipt.errors.push(...native.errors);
@@ -315,7 +297,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           receipt.held.native_homes = native.heldHomes ?? 0;
           if (request.native_home_report) receipt.native_homes = native.reports;
         }
-        receipt.holds.push(...(references.holds?.slice(reportedGenerationHolds) ?? []));
+        receipt.holds.push(...(references.holds ?? []).slice(reportedGenerationHolds));
         receipt.errors.unshift(
           ...leftovers.errors,
           ...trash.errors,
@@ -335,7 +317,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
         references.close?.();
       }
     } catch (error) {
-      if (!signal.aborted) throw error;
+      if (!signal.aborted) throw partialRetentionFailure(error, leftovers, trash);
       // Cancellation during inventory has not retired any run. Preserve any
       // completed thread purges and use the same typed resumable receipt.
       const receipt = await runRetentionPass(
@@ -361,4 +343,19 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
   run.hasMore = (receipt = lastReceipt ?? undefined) =>
     receipt !== undefined && truncatedReceipts.has(receipt);
   return run;
+}
+
+/** A pass that stopped before its receipt still names what it had already done:
+ * finished purges and purged trash are effects, never reported as nothing. */
+function partialRetentionFailure(
+  error: unknown,
+  leftovers: { finished: string[] },
+  trash: { purged: string[] },
+): unknown {
+  const done = leftovers.finished.length + trash.purged.length;
+  if (done === 0) return error;
+  return new Error(
+    `${String(error)}; before it stopped, this pass had purged ${trash.purged.length} expired trash thread(s) and finished ${leftovers.finished.length} purge cleanup(s)`,
+    { cause: error },
+  );
 }

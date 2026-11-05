@@ -516,3 +516,67 @@ describe("the server's Stop inside one journal or transcript read", () => {
     });
   });
 });
+
+describe("attachments a delivery repeats from its run (#249)", () => {
+  /** A run's command and its delivery name one ref; `readable` says which holder reads it. */
+  function repeated(readable: (holder: { owner: string; id: string }) => boolean) {
+    const f = fixture();
+    const path = join(f.runDir, "..", "blob-res-1");
+    write(path, "attached bytes");
+    const attachment = {
+      resource_id: "res-1",
+      kind: "file" as const,
+      mime: "text/plain",
+      name: "note.txt",
+      sha256: `sha256:${"b".repeat(64)}`,
+      size_bytes: "attached bytes".length,
+      path,
+    };
+    const params = { prompt: "work", attachments: [{ resourceId: "res-1" }] };
+    // The delivery sorts first, so its unreadable copy is met before the run's own.
+    const values: Record<string, unknown> = {
+      "command:delivery-1": { id: "delivery-1", params },
+      "command:job-1": { id: "job-1", params },
+    };
+    const documents = Object.keys(values).map((key) => ({
+      key,
+      path: `sql/commands/${key.slice("command:".length)}.json`,
+    }));
+    const deps: ThreadExportDeps = {
+      ...f.deps,
+      closure: (threadId, signal) =>
+        ({
+          ...(f.deps.closure(threadId, signal) as unknown as Record<string, unknown>),
+          documents,
+        }) as unknown as ReturnType<ThreadExportDeps["closure"]>,
+      document: (_threadId, key) => Buffer.from(JSON.stringify(values[key])),
+      resolveAttachments: (_refs, heldBy) => {
+        if (heldBy && readable(heldBy)) return [attachment];
+        throw Object.assign(new Error("resource res-1 was released by its caller"), {
+          code: "resource_released",
+          status: 410,
+        });
+      },
+    };
+    return deps;
+  }
+
+  it("is answered by the run's own command, never a false gap from the delivery's copy", async () => {
+    const inventory = await buildInventory(
+      repeated((holder) => holder.id === "job-1"),
+      THREAD,
+    );
+    expect(inventory.manifest.gaps).toEqual([]);
+    expect(inventory.manifest.items.map((item) => item.path)).toContain("resources/res-1/note.txt");
+  });
+
+  it("still names a resource no document can read, once", async () => {
+    const inventory = await buildInventory(
+      repeated(() => false),
+      THREAD,
+    );
+    expect(inventory.manifest.gaps).toEqual([
+      expect.objectContaining({ code: "attachment_unavailable", subject: "res-1" }),
+    ]);
+  });
+});

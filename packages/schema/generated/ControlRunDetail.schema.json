@@ -2649,6 +2649,58 @@
               "description": "Compact process-scope outcome from final/process_scope.yaml (settled, coverage, completeness, survivors, unreadable, census). Always present in this engine's responses: null means unknown (the run is live, or the record is missing, unreadable or invalid), never clean. Engines that predate the field omit the key, which is equally unknown.",
               "default": null
             },
+            "processScopeLater": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "settled": {
+                      "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/processScope/anyOf/0/properties/settled"
+                    },
+                    "coverage": {
+                      "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/processScope/anyOf/0/properties/coverage"
+                    },
+                    "completeness": {
+                      "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/processScope/anyOf/0/properties/completeness"
+                    },
+                    "census": {
+                      "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/processScope/anyOf/0/properties/census"
+                    },
+                    "survivors": {
+                      "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/processScope/anyOf/0/properties/survivors"
+                    },
+                    "unreadable": {
+                      "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/processScope/anyOf/0/properties/unreadable"
+                    },
+                    "attempt": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "at": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "settled",
+                    "coverage",
+                    "completeness",
+                    "census",
+                    "survivors",
+                    "unreadable",
+                    "attempt",
+                    "at"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Compact process-scope outcome of a terminal run (full artifact: final/process_scope.yaml)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Latest later, separately bounded settlement attempt of this finished run's scope (final/process_scope_later.yaml), beside the unchanged terminal processScope. Null when none ran or it is unreadable: unknown, never clean.",
+              "default": null
+            },
             "route": {
               "anyOf": [
                 {
@@ -3079,7 +3131,7 @@
                             "retryable": {
                               "type": "boolean",
                               "default": true,
-                              "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay."
+                              "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
                             },
                             "required_actions": {
                               "type": "array",
@@ -3110,13 +3162,51 @@
                         "code"
                       ],
                       "additionalProperties": false,
-                      "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation."
+                      "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation."
+                  "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+                },
+                "resumed": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "$ref": "#/definitions/ControlRunDetail/properties/deferredMessage/anyOf/0/properties/hold/anyOf/0/properties/code"
+                        },
+                        "problem": {
+                          "$ref": "#/definitions/ControlRunDetail/properties/deferredMessage/anyOf/0/properties/hold/anyOf/0/properties/problem"
+                        }
+                      },
+                      "required": [
+                        "code"
+                      ],
+                      "additionalProperties": false,
+                      "description": "The hold the draft was returned from."
+                    },
+                    "reason": {
+                      "type": "string",
+                      "const": "process_scope_settled",
+                      "description": "A later settlement of the predecessor's run proved its processes gone; the draft was unchanged, not cleared, replaced or stopped."
+                    },
+                    "at": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "ISO-8601 timestamp string."
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "reason",
+                    "at"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Why this draft left its hold automatically. It then took the existing revision and admission path; any other reason holds it again."
                 },
                 "dispatchedRevision": {
                   "anyOf": [

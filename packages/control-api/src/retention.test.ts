@@ -534,14 +534,9 @@ describe("runRetentionPass", () => {
     expect(existsSync(foreign)).toBe(true);
   });
 
-  it("skips every held namespace surface through the project-held proof", async () => {
+  it("skips held patch, object and anchor cleanup through the shared deferred namespace proof", async () => {
     const { project, root } = sandbox();
     const old = new Date(NOW - 90 * DAY_MS);
-
-    const review = join(project.reviewsDir!, "diff-held");
-    mkdirSync(review, { recursive: true });
-    writeFileSync(join(review, "evidence.md"), "held review");
-    utimesSync(review, old, old);
 
     const runtime = root;
     const patch = join(runtime, "patches", `${"a".repeat(64)}.patch`);
@@ -562,16 +557,15 @@ describe("runRetentionPass", () => {
     const object = join(store, "objects", objectId.slice(0, 2), objectId.slice(2));
     utimesSync(object, old, old);
 
-    const projectHeld = (candidate: RetentionProject) => candidate.root === project.root;
+    const deferredRuntimes = () => new Set([root]);
     const receipt = await runRetentionPass(
       { ...POLICY, keepLastRunsPerProject: 0 },
       { dry_run: false },
-      deps(project, { projectHeld }),
+      deps(project, { deferredRuntimes }),
     );
 
     expect(receipt.deleted_reviews).toEqual([]);
     expect(receipt.errors).toEqual([]);
-    expect(existsSync(review)).toBe(true);
     expect(existsSync(anchor)).toBe(true);
     expect(existsSync(patch)).toBe(true);
     expect(existsSync(object)).toBe(true);

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -314,6 +314,86 @@ describe("deferred promotion in the existing daemon queue", () => {
     expect(f.validate).not.toHaveBeenCalled();
     expect(f.started).toHaveLength(1);
   });
+  describe("a later settlement of the predecessor's scope (#613)", () => {
+    const writeLater = (runDir: string, settled: boolean) =>
+      writeFileSync(
+        join(runDir, "final/process_scope_later.yaml"),
+        JSON.stringify({
+          attempt: 1,
+          at: new Date().toISOString(),
+          outcome: RunProcessScopeOutcome.parse({
+            marker: SCOPE_MARKER,
+            coverage: "marker+capture",
+            census: "ok",
+            settled,
+            incomplete: !settled,
+            survivors: [],
+            unreadable: [],
+            completeness: "not_provable",
+          }),
+        }),
+      );
+    async function custodyHeld() {
+      const f = await fixture("ask", { custody: false });
+      const draft = (await f.create()).draft;
+      f.done.release();
+      await vi.waitFor(() => expect(f.read(draft.draftId).hold?.code).toBe("settlement_unknown"));
+      return { f, draft, runDir: join(f.root, f.initial.id) };
+    }
+
+    it("returns the unchanged draft visibly once its scope is proved empty", async () => {
+      const { f, draft, runDir } = await custodyHeld();
+      writeLater(runDir, false);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      expect(f.read(draft.draftId).state).toBe("held");
+      writeLater(runDir, true);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      await vi.waitFor(() => expect(f.read(draft.draftId).state).toBe("dispatched"));
+      expect(f.read(draft.draftId).resumed).toMatchObject({
+        from: { code: "settlement_unknown" },
+        reason: "process_scope_settled",
+      });
+      expect(f.validate).toHaveBeenCalledTimes(1);
+      expect(f.started).toHaveLength(2);
+    });
+
+    it("never returns a replaced revision", async () => {
+      const { f, draft, runDir } = await custodyHeld();
+      await f.mutate({
+        request: {
+          action: "replace",
+          draftId: draft.draftId,
+          expectedRevision: draft.revision,
+          prompt: "edited",
+          attachments: [],
+        },
+        idempotencyKey: "edit",
+      });
+      writeLater(runDir, true);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      expect(f.read(draft.draftId)).toMatchObject({
+        state: "held",
+        revision: draft.revision + 1,
+        hold: { code: "settlement_unknown" },
+      });
+      expect(f.started).toHaveLength(1);
+    });
+
+    it("keeps a Stop's hold: a Stop turns the custody hold into its own", async () => {
+      const { f, draft, runDir } = await custodyHeld();
+      // The Stop's effect is reported as its own hold, never as "nothing to stop".
+      expect(f.daemon.deferred.stop(f.initial.id)).toMatchObject({
+        held: true,
+        draft: { draftId: draft.draftId, state: "held", hold: { code: "stop_requested" } },
+      });
+      expect(f.read(draft.draftId).hold?.code).toBe("stop_requested");
+      writeLater(runDir, true);
+      await f.daemon.deferred.processScopeSettled(f.initial.id);
+      expect(f.read(draft.draftId).state).toBe("held");
+      expect(f.read(draft.draftId).resumed).toBeUndefined();
+      expect(f.started).toHaveLength(1);
+    });
+  });
   it("reuses the freed slot while the next message's dispatch validation is pending", async () => {
     const f = await fixture("ask", { maxConcurrent: 1 });
     const other = (await f.daemon.dispatch("claudexor.enqueue", {
@@ -607,6 +687,7 @@ describe("public Stop of a predecessor with a next message", () => {
       body: {
         accepted: true,
         status: "applied",
+        message: "cancel requested; its next message is now held",
         deferredMessage: {
           draftId: draft.draftId,
           state: "held",
@@ -648,6 +729,7 @@ describe("public Stop of a predecessor with a next message", () => {
         accepted: true,
         status: "applied",
         cascadeRunIds: [],
+        message: "run is succeeded; cancel now holds its next message",
         deferredMessage: {
           draftId: draft.draftId,
           state: "held",
@@ -711,6 +793,35 @@ describe("public Stop of a predecessor with a next message", () => {
       expect(f.started).toHaveLength(1);
     },
   );
+
+  it("applies a Stop that takes over an ended predecessor's custody hold (#613)", async () => {
+    const f = await fixture("ask", { custody: false });
+    const stop = await publicStop(f);
+    const draft = (await f.create()).draft;
+    f.done.release();
+    await vi.waitFor(() => expect(f.read(draft.draftId).hold?.code).toBe("settlement_unknown"));
+    expect(await stop(f.initial.id)).toMatchObject({
+      status: 200,
+      body: {
+        accepted: true,
+        status: "applied",
+        // The same accurate sentence as for a waiting draft: no claim it was waiting.
+        message: "run is succeeded; cancel now holds its next message",
+        deferredMessage: {
+          draftId: draft.draftId,
+          state: "held",
+          hold: { code: "stop_requested" },
+        },
+      },
+    });
+    const audit = readFileSync(join(f.root, f.initial.id, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as { type: string }).type)
+      .filter((type) => type.startsWith("control."));
+    expect(audit).toEqual(["control.requested", "control.applied"]);
+    expect(f.started).toHaveLength(1);
+  });
 
   it("discloses an already held draft without claiming a new stop", async () => {
     const f = await fixture("ask", { failure: true });
@@ -978,7 +1089,7 @@ describe("the production stop's fence while a retention pass is held (#603)", ()
       daemon: productionDaemonStop({
         abort: () => undefined,
         server: () => f.daemon,
-        closeModels: () => undefined,
+        closeExecutors: () => undefined,
         stopRetention: () => pass.promise,
         opening: () => null,
       }),

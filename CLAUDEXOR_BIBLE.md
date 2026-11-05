@@ -364,7 +364,9 @@ invariant or operator decision before proceeding.
   tests.
 - **INV-051** Run artifacts live in two honest planes that are never
   conflated: the run tree under the external per-project runtime namespace
-  (`~/.claudexor/v3/projects/<project-sha256>/runs/<id>/`) is Claudexor's
+  (`~/.claudexor/v3/projects/<project-sha256>/runs/<id>/`; a one-shot run of an
+  explicitly ephemeral root lives in the one-shot namespace
+  `~/.claudexor/v3/one-shot/runs/<id>/`, CONCEPT-CHANGE(INV-051), #503) is Claudexor's
   internal orchestration evidence, while the project's produced outputs (the
   repo `artifacts/` dir served via `/runs/:id/produced`) are user
   deliverables. Surfaces label which plane they show. verify: control-api
@@ -487,7 +489,9 @@ invariant or operator decision before proceeding.
   `packages/orchestrator/src/capture-overflow.test.ts`; the Control API
   historical exact-object Apply and `patch_exact_bytes_unavailable` tests.
 - **INV-063** Scoped harness homes/config dirs stay outside every mutation
-  worktree, in the external per-project runtime namespace, so `git add -A`
+  worktree, in the external engine runtime namespace (the project's, or the
+  one-shot namespace of a one-shot run on an explicitly ephemeral root,
+  CONCEPT-CHANGE(INV-063)), so `git add -A`
   can never capture auth files, plugin downloads, sqlite logs, or transcripts
   into a patch. verify: workspace env tests; T3 audit sweep.
 - **INV-064** User attachments (images, files) are persisted only in a
@@ -500,6 +504,17 @@ invariant or operator decision before proceeding.
   file's name or content is never a reason to refuse it (INV-146), while
   digest and size integrity still are. verify: resource-store and control-api
   upload tests.
+  CONCEPT-CHANGE(INV-064), #249: a NEW ordinary keyed import may opt in to a
+  managed lifetime. Its caller may then release the ID: every new reference (a
+  run, continuation, Exact Retry, thread turn or Turn Retry, or next message;
+  only an accepted turn's own first dispatch inherits its hold) is refused typed
+  (`resource_released`) inside the transaction that would accept it, while the
+  commands, turns and next messages accepted before keep exactly those bytes
+  until their existing owners retire them, and other resources sharing the
+  digest keep theirs. Default and legacy resources keep indefinite reuse. No TTL
+  or age rule applies. Rationale: a host that knows all of its consumers are
+  finished had no way to let accepted work end the bytes' life. verify:
+  `packages/daemon/src/store/managed-resource-lifetime.test.ts`.
   Model resources use the same upload/blob owner with atomic, replayable
   finalization. Request bytes are released when the operation terminates;
   response bytes after explicit digest-bound acknowledgement, or 30 days from
@@ -592,7 +607,13 @@ invariant or operator decision before proceeding.
 - **INV-072** Ordinary project runs (and Best-of candidates) execute in
   isolated envelopes under the external per-project runtime namespace
   (`~/.claudexor/v3/projects/<project-sha256>/workspaces/.../tree`), with the
-  harness cwd at the envelope worktree. Explicit directory execution uses either
+  harness cwd at the envelope worktree. That is the project's own namespace even
+  when another tree executes (an isolated thread worktree, a delegated
+  workspace); a one-shot run of an explicitly ephemeral root keeps its envelopes
+  in the one-shot namespace beside, never inside, its run trees. Each envelope records
+  its execution root, and recovery, adoption and release act on its recorded
+  location; an envelope adopted by a successor keeps its path
+  (CONCEPT-CHANGE(INV-072), #503). Explicit directory execution uses either
   the selected live folder or an isolated copy of the caller-selected footprint,
   without initializing Git. Stable project identity and execution address remain
   separate facts. The repository's `.claudexor/`
@@ -973,7 +994,10 @@ invariant or operator decision before proceeding.
   is not retried and never changes the verdict; the detail still sends
   processScope as explicit null, meaning unknown, never clean. The next daemon start does the
   same for a crashed generation. What could not be ended or read is recorded
-  instead of declared clean, and the record states its completeness honestly:
+  instead of declared clean: a recorded group skipped because another birth now
+  holds its id is proved gone, and any other skip leaves its possibly owned live
+  members unread and unsignalled, so the scope stays unresolved until they leave.
+  The record states its completeness honestly:
   provable only where the census read every same-uid environment (Linux),
   never on macOS for a system binary started in the background by a shell
   that exited before capture, never on Windows, never after a settlement
@@ -984,10 +1008,33 @@ invariant or operator decision before proceeding.
   incomplete, never a late signal, never a verdict). The outcome is a disclosure, not a
   verdict axis: it never turns a delivered answer into a failure. Work meant
   to outlive a run belongs to a longer-lived custodian, never to pid 1.
+  CONCEPT-CHANGE(INV-144), #613: the expired attempt itself still never signals
+  late. While the daemon that opened a FINISHED run's scope stays live, a scope
+  left unresolved gets later attempts, one at a time and spaced by their own
+  budget times the attempt number, each a new census and identity proof under
+  the same pid, group and birth rules with its own budget; their number is not
+  capped, none extends or resumes the expired attempt, and none touches an open
+  run, another or an unreadable owner's scope, or a host without a census. Each is
+  recorded beside the unchanged terminal record (`processScopeLater`); a settled
+  one retires the index entry and may return a next message held only for that
+  custody. A settled report that could not be recorded or returned is owed and
+  repeated by that daemon without another reap, and an unsettled one gives way to
+  the next attempt's report; after a restart the draft stays held. An index write
+  that failed is repeated too, without a reap or a report. Reports bind
+  with each store generation's executors and end before that store closes or the
+  daemon stops; while none is bound no attempt starts, a reap already running finishes
+  without retiring its entry, and a consumer is told before its entry is recorded, so
+  nothing settles unreported.
+  Rationale: on a loaded host the single terminal deadline expired before
+  every source was read, leaving scopes unresolved although a later bounded proof
+  could show their processes gone; the terminal verdict and record stay as they were.
   verify: core scope census/reap tests (fake kernel and real orphan
   fixtures incl. a platform-binary child ended through its recorded group),
   the orchestrator run-scope barrier tests (terminal after settlement), the
-  cli run-scope index spawn-seed and start/settle tests, the control-api
+  cli run-scope index spawn-seed and start/settle tests,
+  `packages/cli/src/run-scope-late-settlement.test.ts` (bounded, uncapped later attempts
+  and owed reports and index writes), `packages/cli/src/claudexord-later-settlement.test.ts`
+  (the built daemon's attach, store replacement and shutdown), the control-api
   run-detail projection test and CLI joined Codex drain/detail integration test.
 
 ## 12. Keep The Codebase Small And Direct

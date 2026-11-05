@@ -32,6 +32,7 @@ export const BLOB_OWNER_PREDICATE = `EXISTS(SELECT 1 FROM command WHERE params_s
   OR EXISTS(SELECT 1 FROM turn WHERE prompt_sha = ?1)
   OR EXISTS(SELECT 1 FROM event WHERE payload_sha = ?1)
   OR EXISTS(SELECT 1 FROM resource WHERE sha256 = ?1 AND state IN ('publishing', 'ready'))
+  OR EXISTS(SELECT 1 FROM resource_use WHERE sha256 = ?1)
   OR EXISTS(SELECT 1 FROM upload WHERE finalize_sha = ?1)
   OR EXISTS(SELECT 1 FROM effect_obligation WHERE kind = 'publish_blob'
             AND json_extract(CAST(payload AS TEXT), '$.sha') = ?1)`;

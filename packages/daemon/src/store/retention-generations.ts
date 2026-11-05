@@ -1,42 +1,71 @@
-import type { SqlWriteContext } from "./mutation.js";
+import type { EngineStore } from "./store.js";
 import type { GcHold } from "@claudexor/schema";
+
+const PARTITIONS = `SELECT q.id,q.name,q.status,q.project_id,p.root,g.status AS registry_status
+  FROM partition q LEFT JOIN project p ON p.id=q.project_id LEFT JOIN partition g ON g.id=p.pid`;
+type PartitionRow = {
+  id: number;
+  name: string;
+  status: string;
+  root: string | null;
+  project_id: string | null;
+  registry_status: string | null;
+};
 
 /** Quarantine completes recovery: those rows are evidence, never live owners.
  * Archived generations remain restorable owners. Unknown/pending states cannot
- * prove absence and hold run retirement install-wide. */
-export function retentionGenerations(store: Pick<SqlWriteContext, "prepare">) {
-  const query = `SELECT q.id,q.name,q.status,q.project_id,p.root,g.status AS registry_status FROM partition q
-    LEFT JOIN project p ON p.id=q.project_id LEFT JOIN partition g ON g.id=p.pid`;
-  const rows = store.prepare(query).all() as Array<{
-    id: number;
-    name: string;
-    status: string;
-    root: string | null;
-    project_id: string | null;
-    registry_status: string | null;
-  }>;
+ * prove absence and hold run retirement install-wide. A partition created after
+ * the snapshot (a late registration's fresh generation) is read on demand; its
+ * rows were all written after the change observer subscribed, so they reach the
+ * pass through its queue. */
+export function retentionGenerations(store: EngineStore) {
+  const rows = store.prepare(PARTITIONS).all() as PartitionRow[];
   const known = new Map(rows.map((row) => [row.id, row]));
-  const protectedLaneRoots = new Set<string>();
-  const refreshLaneRoots = (pid?: number) => {
-    for (const row of store
-      .prepare(
-        `SELECT p.root FROM project p
-      JOIN partition g ON g.id=p.pid LEFT JOIN partition q ON q.id=p.current_pid
-      WHERE (q.status='quarantined' OR g.status='quarantined')
-      ${pid === undefined ? "" : "AND (p.pid=? OR p.current_pid=?)"}`,
-      )
-      .all(...(pid === undefined ? [] : [pid, pid])) as Array<{ root: string }>)
-      protectedLaneRoots.add(row.root);
-  };
-  refreshLaneRoots();
+  const read = (pid: number) =>
+    store.prepare(`${PARTITIONS} WHERE q.id=?`).get(pid) as PartitionRow | undefined;
   // A completed global quarantine also retires its project descendants. Their
   // own ready/archived/pending bits are historical, not an independent owner.
-  const retired = (row: (typeof rows)[number]) =>
+  const retired = (row: PartitionRow) =>
     row.status === "quarantined" || row.registry_status === "quarantined";
-  const isRetained = (row: (typeof rows)[number]) =>
+  const owns = (row: PartitionRow) =>
     !retired(row) &&
     (!row.project_id || row.registry_status === "ready" || row.registry_status === "archived") &&
     (row.status === "ready" || row.status === "archived");
+  const retained = (pid: number) => {
+    let row = known.get(pid);
+    if (!row) {
+      row = read(pid);
+      if (row) {
+        known.set(pid, row);
+        observe(row);
+      }
+    }
+    if (!row) throw new Error(`retention owner names missing partition ${pid}`);
+    return owns(row);
+  };
+  /** A partition row changed during the pass. A generation the pass excluded that
+   * now owns rows was never inventoried: the reason holds the whole pass. Growth
+   * of protection, and a fresh partition, need nothing more. */
+  const changed = (pid: number): string | null => {
+    const before = known.get(pid);
+    const after = read(pid);
+    if (!after) return null;
+    observe(after);
+    if (blocked) return blocked;
+    if (!before) {
+      known.set(pid, after);
+      return null;
+    }
+    if (!owns(before) && owns(after))
+      return `partition ${after.name} (${pid}) became a retained owner during inventory`;
+    // A registry's status decides many generations at once: none is rechecked alone.
+    if (
+      before.status !== after.status &&
+      store.prepare("SELECT 1 FROM project WHERE pid=? LIMIT 1").get(pid)
+    )
+      return `registry partition ${after.name} (${pid}) changed during inventory`;
+    return null;
+  };
   const registered = store
     .prepare(
       `SELECT p.root,p.status FROM project p
@@ -59,28 +88,15 @@ export function retentionGenerations(store: Pick<SqlWriteContext, "prepare">) {
   const holds: GcHold[] = [];
   let blocked: string | undefined;
   const recoveryHolds = new Set<number>();
-  const observe = (row: (typeof rows)[number]) => {
-    if (isRetained(row) || retired(row) || recoveryHolds.has(row.id)) return;
+  const observe = (row: PartitionRow) => {
+    if (owns(row) || retired(row) || recoveryHolds.has(row.id)) return;
     recoveryHolds.add(row.id);
     const reason = `partition ${row.name} (${row.id}, ${row.status}) awaits journal recovery`;
-    // Scope roots do not bound dependencies: a continuation may name any namespace.
     blocked ??= reason;
     errors.push(`all namespaces kept: ${reason}`);
     holds.push({ class: "recovery_pending", count: 1, example: reason });
   };
   for (const row of rows) observe(row);
-  const refreshPartition = (pid: number) => {
-    const row = store.prepare(`${query} WHERE q.id=?`).get(pid) as
-      (typeof rows)[number] | undefined;
-    if (!row) throw new Error(`retention owner names missing partition ${pid}`);
-    known.set(pid, row);
-    refreshLaneRoots(pid);
-    observe(row);
-    return row;
-  };
-  // A cooperative inventory can see owners born after its opening snapshot.
-  // The live read joins the same registry; the observer still rechecks their references.
-  const retained = (pid: number) => isRetained(known.get(pid) ?? refreshPartition(pid));
   const bindingHolds = new Set<string>();
   const refreshProject = (id?: string) => {
     for (const row of store
@@ -107,12 +123,11 @@ export function retentionGenerations(store: Pick<SqlWriteContext, "prepare">) {
   refreshProject();
   return {
     retained,
-    refreshPartition,
+    changed,
     refreshProject,
     registeredProjectRoots,
     archivedProjectRoots,
     protectedProjectRoots,
-    protectedLaneRoots,
     errors,
     holds,
     get blocked() {

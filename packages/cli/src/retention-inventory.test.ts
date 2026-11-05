@@ -1,7 +1,9 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -17,6 +19,7 @@ import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
+import { threadPurgeOwner } from "./thread-purge.js";
 
 let root: string;
 let configBefore: string | undefined;
@@ -61,6 +64,78 @@ function runner(cap?: number, threads = sql.graph.threads) {
     maxDeletionsPerPass: cap,
   });
 }
+/** Containers older than the pass: only an aged empty one may go (retention-directories). */
+function ageDirectories(path: string) {
+  for (const entry of readdirSync(path, { withFileTypes: true }))
+    if (entry.isDirectory()) ageDirectories(join(path, entry.name));
+  utimesSync(path, old, old);
+}
+/** A thread on a disposable root: what `scope.ephemeral` leaves, no registration (#503). */
+function disposableThread(name: string) {
+  const disposable = repo(name);
+  const thread = sql.graph.threads.createThread({
+    title: name,
+    repoRoot: disposable,
+    workspace: "in_place",
+    ephemeral: true,
+  });
+  expect(sql.graph.projects.list()).toEqual([]);
+  const runtime = projectRuntimeDir(disposable);
+  const lane = join(runtime, "lanes", thread.id, "default", "home");
+  mkdirSync(lane, { recursive: true });
+  const end = async () => {
+    sql.graph.threads.trashThread(thread.id);
+    await threadPurgeOwner(
+      sql.graph.threads,
+      noProjectRepoRoot(),
+      sql.graph.purgeFiles,
+    ).purgeThread(thread.id);
+    expect(existsSync(join(runtime, "lanes", thread.id))).toBe(false);
+  };
+  return { disposable, thread, runtime, lane, end };
+}
+it("retires an unregistered thread namespace as its thread, run and envelope end (#503)", async () => {
+  const { disposable, thread, runtime, lane, end } = disposableThread("thread-owned");
+  const turn = sql.graph.threads.createTurn(thread.id, "prompt");
+  sql.graph.threads.bindTurnRun(turn.id, "thread-run");
+  const tree = run(disposable, "thread-run");
+  const envelope = join(runtime, "workspaces", "task-one", "a01");
+  mkdirSync(join(envelope, "home"), { recursive: true });
+  const gc = runner();
+
+  // The live thread owns its run and lane, however old: this is persistent thread state.
+  const alive = await gc({ dry_run: false });
+  expect(alive.deleted_runs).toEqual([]);
+  expect(alive.kept.referenced).toBe(1);
+  expect(existsSync(join(tree, "final"))).toBe(true);
+  expect(existsSync(lane)).toBe(true);
+
+  await end();
+  const purged = await gc({ dry_run: false });
+  expect(purged.deleted_runs.map((row) => row.run_id)).toEqual(["thread-run"]);
+  expect(existsSync(join(tree, "final"))).toBe(false);
+  // An envelope belongs to its own lifecycle owner: retention never reaches into it.
+  expect(existsSync(join(envelope, "home"))).toBe(true);
+  ageDirectories(runtime);
+  await gc({ dry_run: false });
+  expect(existsSync(join(envelope, "home"))).toBe(true);
+
+  rmSync(envelope, { recursive: true });
+  ageDirectories(runtime);
+  await gc({ dry_run: false });
+  // Everything is gone but the limitation: a retired run keeps its tombstone, so readers
+  // can answer run_expired_by_retention, and the namespace directory stays for it.
+  expect(readdirSync(runtime)).toEqual(["runs"]);
+  expect(readdirSync(join(runtime, "runs"))).toEqual(["thread-run"]);
+  expect(readdirSync(tree)).toEqual(["tombstone.yaml"]);
+});
+it("removes an unregistered thread namespace outright when no run retired in it (#503)", async () => {
+  const { runtime, end } = disposableThread("never-ran");
+  await end();
+  ageDirectories(runtime);
+  await runner()({ dry_run: false });
+  expect(existsSync(runtime)).toBe(false);
+});
 it("reclaims old unregistered runs, preserves unproven and young runs, previews without writes", async () => {
   const project = repo("ghost");
   const expired = run(project, "expired");
@@ -213,6 +288,40 @@ it("preserves unavailable generations and never follows a linked runtime namespa
   expect(existsSync(join(protectedRun, "final"))).toBe(true);
   expect(existsSync(join(outside, "runs", "old", "final"))).toBe(true);
 });
+it("keeps a linked project namespace in a healthy pass and retires its plain neighbour", async () => {
+  // Nothing else stops this pass: only the namespace's own link can keep these bytes.
+  run(repo("ordinary"), "retired");
+  const outside = repo("outside");
+  mkdirSync(join(outside, "runs", "old", "final"), { recursive: true });
+  writeFileSync(join(outside, "runs", "old", "final", "failure.yaml"), "keep");
+  utimesSync(join(outside, "runs", "old"), old, old);
+  symlinkSync(outside, projectRuntimeDir(repo("linked")), "dir");
+
+  const result = await runner()({ dry_run: false });
+
+  expect(result.deleted_runs.map((row) => row.run_id)).toEqual(["retired"]);
+  expect(result.errors).toEqual([
+    expect.stringMatching(/^namespace .* kept: not a plain directory$/),
+  ]);
+  expect(existsSync(join(outside, "runs", "old", "final", "failure.yaml"))).toBe(true);
+});
+
+it("never walks a project's linked workspaces directory while its runs retire", async () => {
+  const project = repo("linked-workspaces");
+  const retired = run(project, "retired");
+  const outside = repo("outside-workspaces");
+  mkdirSync(join(outside, "task", "a01", "home"), { recursive: true });
+  const link = join(projectRuntimeDir(project), "workspaces");
+  symlinkSync(outside, link, "dir");
+
+  const result = await runner()({ dry_run: false });
+
+  expect(result.deleted_runs.map((row) => row.run_id)).toEqual(["retired"]);
+  expect(existsSync(join(retired, "final"))).toBe(false);
+  expect(existsSync(join(outside, "task", "a01", "home"))).toBe(true);
+  expect(lstatSync(link).isSymbolicLink()).toBe(true);
+});
+
 it("continues bounded passes until all eligible orphan runs retire", async () => {
   const projectRoot = repo("many");
   for (let i = 0; i < 5; i++) run(projectRoot, `run-${i}`);

@@ -65,9 +65,12 @@ export class RetentionReferenceReader {
   addQuarantinedLaneThreadIds(pid?: number): void {
     const rows = this.store
       .prepare(
-        `SELECT id FROM thread WHERE state<>'purged'${pid === undefined ? " AND pid IN (SELECT id FROM partition WHERE status='quarantined')" : " AND pid=?"}`,
+        `SELECT t.id FROM thread t JOIN partition q ON q.id=t.pid
+         LEFT JOIN project p ON p.id=q.project_id LEFT JOIN partition g ON g.id=p.pid
+         WHERE t.state<>'purged' AND (q.status='quarantined' OR g.status='quarantined')
+         ${pid === undefined ? "" : "AND (q.id=? OR p.pid=?)"}`,
       )
-      .all(...(pid === undefined ? [] : [pid])) as Array<{ id: string }>;
+      .all(...(pid === undefined ? [] : [pid, pid])) as Array<{ id: string }>;
     for (const row of rows) this.laneThreadIds.add(row.id);
   }
 

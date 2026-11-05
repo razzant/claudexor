@@ -83,9 +83,9 @@ it("names the root when live lane ownership cannot be read", async () => {
     const refs = await read(...args);
     return {
       ...refs,
-      laneThreadIds: (projectRoot, runtime) => {
+      laneThreadIds: (projectRoot) => {
         if (projectRoot === repoRoot) throw new Error("root ownership cannot be read");
-        return refs.laneThreadIds!(projectRoot, runtime);
+        return refs.laneThreadIds!(projectRoot);
       },
     };
   });
@@ -104,21 +104,42 @@ it("names the root when live lane ownership cannot be read", async () => {
   expect(existsSync(otherLane)).toBe(false);
 });
 
-it("skips held runtime namespaces when sweeping lanes", async () => {
-  const repo = join(root, "held-repo");
-  mkdirSync(repo);
-  sql.graph.projects.register({ root: repo, idempotencyKey: "held-repo", clientId: "fixture" });
-  const lane = join(projectRuntimeDir(repo), "lanes", "th-held-namespace", "default", "home");
-  mkdirSync(lane, { recursive: true });
-  writeFileSync(join(lane, "session.jsonl"), "held lane state");
-
+/** Twelve orphan lanes, one live lane, and a topology change at the chosen moment. */
+function topologyFixture(when: string, changeTopology: (projects: readonly string[]) => void) {
+  const lanes: string[] = [];
+  const projects: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const repo = join(root, `repo-${i}`);
+    mkdirSync(repo);
+    const { project } = sql.graph.projects.register({
+      root: repo,
+      idempotencyKey: `repo-${i}`,
+      clientId: "fixture",
+    });
+    const lane = join(projectRuntimeDir(repo), "lanes", "th-000000000001", "default", "home");
+    mkdirSync(lane, { recursive: true });
+    lanes.push(lane);
+    projects.push(project.id);
+  }
+  const thread = sql.graph.threads.createThread({ title: "live lane", workspace: "in_place" });
+  const held = join(projectRuntimeDir(noProjectRepoRoot()), "lanes", thread.id, "default", "home");
+  mkdirSync(held, { recursive: true });
   const read = sql.graph.threads.retentionReferences.bind(sql.graph.threads);
-  vi.spyOn(sql.graph.threads, "retentionReferences").mockImplementation(async (...args) => {
+  vi.spyOn(sql.graph.threads, "retentionReferences").mockImplementationOnce(async (...args) => {
     const refs = await read(...args);
-    return {
-      ...refs,
-      heldProjectRoots: new Set([repo]),
-    };
+    if (when === "before-loop") changeTopology(projects);
+    else {
+      const laneIds = refs.laneThreadIds!;
+      let changed = false;
+      refs.laneThreadIds = (projectRoot) => {
+        if (!changed) {
+          changed = true;
+          changeTopology(projects);
+        }
+        return laneIds(projectRoot);
+      };
+    }
+    return refs;
   });
   const gc = createRetentionRunner({
     projects: () => sql.graph.projects,
@@ -127,78 +148,48 @@ it("skips held runtime namespaces when sweeping lanes", async () => {
     purgeThread: async () => {},
     hasPurgeLeftovers: () => false,
   });
-
-  const receipt = await gc({ dry_run: false });
-
-  expect(existsSync(lane)).toBe(true);
-  expect(receipt.deleted_lanes).toBe(0);
-  expect(receipt.holds).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        class: "references_changed",
-        example: expect.stringContaining(repo),
-      }),
-    ]),
-  );
-});
+  return { gc, lanes, held };
+}
+const laneLines = (errors: readonly string[]) =>
+  errors.filter((error) => error.startsWith("lane sweep"));
 
 it.each(["before-loop", "during-loop"])(
-  "sweeps unrelated lanes after project insertion %s",
+  "a late registration %s stops no other namespace: orphan lanes retire in that pass",
   async (when) => {
-    const lanes: string[] = [];
-    for (let i = 0; i < 12; i++) {
-      const repo = join(root, `repo-${i}`);
-      mkdirSync(repo);
-      sql.graph.projects.register({ root: repo, idempotencyKey: `repo-${i}`, clientId: "fixture" });
-      const lane = join(projectRuntimeDir(repo), "lanes", "th-000000000001", "default", "home");
-      mkdirSync(lane, { recursive: true });
-      lanes.push(lane);
-    }
-    const thread = sql.graph.threads.createThread({ title: "live lane", workspace: "in_place" });
-    const held = join(
-      projectRuntimeDir(noProjectRepoRoot()),
-      "lanes",
-      thread.id,
-      "default",
-      "home",
-    );
-    mkdirSync(held, { recursive: true });
-    const changeTopology = () => {
+    const { gc, lanes, held } = topologyFixture(when, () => {
       const late = join(root, "late");
       mkdirSync(late);
       sql.graph.projects.register({ root: late, idempotencyKey: "late", clientId: "fixture" });
-    };
-    const read = sql.graph.threads.retentionReferences.bind(sql.graph.threads);
-    vi.spyOn(sql.graph.threads, "retentionReferences").mockImplementationOnce(async (...args) => {
-      const refs = await read(...args);
-      if (when === "before-loop") changeTopology();
-      else {
-        const laneIds = refs.laneThreadIds!;
-        let changed = false;
-        refs.laneThreadIds = (projectRoot, runtime) => {
-          if (!changed) {
-            changed = true;
-            changeTopology();
-          }
-          return laneIds(projectRoot, runtime);
-        };
-      }
-      return refs;
-    });
-    const gc = createRetentionRunner({
-      projects: () => sql.graph.projects,
-      threads: sql.graph.threads,
-      daemonJobs: () => [],
-      purgeThread: async () => {},
-      hasPurgeLeftovers: () => false,
     });
     const receipt = await gc({ dry_run: false });
-    expect(receipt.errors.filter((error) => error.startsWith("lane sweep"))).toEqual([]);
+    // Registered before the sweep, the new root is among its roots and holds itself alone.
+    expect(laneLines(receipt.errors)).toEqual(
+      when === "before-loop" ? [expect.stringContaining("lane sweep deferred")] : [],
+    );
     for (const lane of lanes) expect(existsSync(lane)).toBe(false);
+    expect(existsSync(held)).toBe(true);
+  },
+);
+
+it.each(["before-loop", "during-loop"])(
+  "a project relinked %s keeps its namespace's lanes, once named, while others retire",
+  async (when) => {
+    const moved = join(root, "moved");
+    let changed = "";
+    const { gc, lanes, held } = topologyFixture(when, (projects) => {
+      mkdirSync(moved);
+      changed = sql.graph.projects.relink(projects[0]!, moved).root;
+    });
+    const receipt = await gc({ dry_run: false });
+    expect(changed).toBe(moved);
+    expect(laneLines(receipt.errors)).toEqual([expect.stringContaining("lane sweep deferred")]);
+    expect(receipt.truncated).toBe(true);
+    // The relinked project's old namespace was never swept while its owners moved.
+    expect(existsSync(lanes[0]!)).toBe(true);
+    for (const lane of lanes.slice(1)) expect(existsSync(lane)).toBe(false);
     expect(existsSync(held)).toBe(true);
     const resumed = await gc({ dry_run: false });
     expect(resumed.errors).toEqual([]);
-    for (const lane of lanes) expect(existsSync(lane)).toBe(false);
     expect(existsSync(held)).toBe(true);
   },
 );

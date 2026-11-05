@@ -2466,6 +2466,58 @@
           "description": "Compact process-scope outcome from final/process_scope.yaml (settled, coverage, completeness, survivors, unreadable, census). Always present in this engine's responses: null means unknown (the run is live, or the record is missing, unreadable or invalid), never clean. Engines that predate the field omit the key, which is equally unknown.",
           "default": null
         },
+        "processScopeLater": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "settled": {
+                  "$ref": "#/definitions/ControlRunSummary/properties/processScope/anyOf/0/properties/settled"
+                },
+                "coverage": {
+                  "$ref": "#/definitions/ControlRunSummary/properties/processScope/anyOf/0/properties/coverage"
+                },
+                "completeness": {
+                  "$ref": "#/definitions/ControlRunSummary/properties/processScope/anyOf/0/properties/completeness"
+                },
+                "census": {
+                  "$ref": "#/definitions/ControlRunSummary/properties/processScope/anyOf/0/properties/census"
+                },
+                "survivors": {
+                  "$ref": "#/definitions/ControlRunSummary/properties/processScope/anyOf/0/properties/survivors"
+                },
+                "unreadable": {
+                  "$ref": "#/definitions/ControlRunSummary/properties/processScope/anyOf/0/properties/unreadable"
+                },
+                "attempt": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "at": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "settled",
+                "coverage",
+                "completeness",
+                "census",
+                "survivors",
+                "unreadable",
+                "attempt",
+                "at"
+              ],
+              "additionalProperties": false,
+              "description": "Compact process-scope outcome of a terminal run (full artifact: final/process_scope.yaml)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest later, separately bounded settlement attempt of this finished run's scope (final/process_scope_later.yaml), beside the unchanged terminal processScope. Null when none ran or it is unreadable: unknown, never clean.",
+          "default": null
+        },
         "route": {
           "anyOf": [
             {

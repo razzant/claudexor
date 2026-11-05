@@ -17,6 +17,7 @@ import { projectRuntimeDir } from "@claudexor/util";
 import { gitObserved, GitOperationError } from "./git-observed.js";
 import { repositoryObjectFormat, repositoryObjectFormatOrNull } from "./git-result.js";
 import { liveRootRecords, retainedPairOf, writeRootRecord } from "./object-store-roots.js";
+import { clearStoreSkeleton, retireEmptyObjectStore } from "./object-store-retire.js";
 import {
   acquirePruneLock,
   beginPendingRoots,
@@ -150,6 +151,7 @@ export async function ensureObjectStore(
   if (!existsSync(join(store, "objects")) || !existsSync(join(store, "HEAD"))) {
     // A store takes its project's format, never one a foreign repository brings.
     await assertProjectObjectFormat(projectRoot, format);
+    clearStoreSkeleton(store);
     const pending = initializing.get(store) ?? initializeStore(store, format);
     initializing.set(store, pending);
     try {
@@ -232,8 +234,14 @@ export async function retainInObjectStore(input: {
   /** The delivery pair these roots keep, recorded for a later replay. */
   pair?: GitDeliveryPair;
 }): Promise<RetainResult> {
-  const { store } = await ensureObjectStore(input.projectRoot, input.objectFormat);
-  const pending = await beginPendingRoots(store, input.roots);
+  let { store } = await ensureObjectStore(input.projectRoot, input.objectFormat);
+  let pending = await beginPendingRoots(store, input.roots);
+  if (!existsSync(join(store, "objects"))) {
+    // A strictly empty store was retired between ensure and this lease: make it again.
+    endPendingRoots(pending);
+    ({ store } = await ensureObjectStore(input.projectRoot, input.objectFormat));
+    pending = await beginPendingRoots(store, input.roots);
+  }
   try {
     const needed = await closureBeyond(input.source, input.roots, input.boundary);
     const target = storeEndpoint(store);
@@ -355,7 +363,13 @@ const PRUNE_ENTRIES_PER_TURN = 2_048;
  * `retiredOwners`: run directories this pass retires (a dry run included). */
 export async function pruneProjectObjectStore(
   runtimeDir: string,
-  options: { dryRun: boolean; graceMs?: number; retiredOwners?: ReadonlySet<string> },
+  options: {
+    dryRun: boolean;
+    graceMs?: number;
+    retiredOwners?: ReadonlySet<string>;
+    /** Retire the store when it ends strictly empty (#503). */
+    retireEmpty?: boolean;
+  },
 ): Promise<{ freedBytes: number; yielded: boolean }> {
   const store = join(runtimeDir, "git-store");
   if (!existsSync(join(store, "objects"))) return { freedBytes: 0, yielded: false };
@@ -365,6 +379,7 @@ export async function pruneProjectObjectStore(
     dryRun: options.dryRun,
     objectFormat: await repositoryObjectFormat(store, storeEnv(store)),
     ...(options.retiredOwners ? { retiredOwners: options.retiredOwners } : {}),
+    ...(options.retireEmpty ? { retireEmpty: true } : {}),
   });
 }
 
@@ -393,6 +408,8 @@ export async function pruneObjectStore(input: {
   objectFormat: GitObjectFormat;
   /** Owners retired by the calling retention pass (see liveRootRecords). */
   retiredOwners?: ReadonlySet<string>;
+  /** With no live root left, retire a strictly empty store (object-store-retire.ts). */
+  retireEmpty?: boolean;
 }): Promise<{ freedBytes: number; yielded: boolean }> {
   const { store } = input;
   if (!existsSync(join(store, "objects"))) return { freedBytes: 0, yielded: false };
@@ -479,6 +496,8 @@ export async function pruneObjectStore(input: {
       unlinkSync(pack);
       freedBytes += size;
     }
+    if (input.retireEmpty && !input.dryRun && roots.length === 0 && hold.stillHeld())
+      retireEmptyObjectStore(store, cutoff);
     return { freedBytes, yielded: false };
   } finally {
     hold.release();

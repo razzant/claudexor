@@ -87,7 +87,8 @@ export function revertAnchors(execRoot: string, projectRoot: string) {
     ): Promise<string | null> =>
       run.result
         ? createPairRevertAnchorOrNull(execRoot, delivered.deliveryPair, projectRoot)
-        : createRevertAnchorFromPatchOrNull(execRoot, run.diff),
+        : // The project keeps every anchor, whatever tree executed (#503).
+          createRevertAnchorFromPatchOrNull(projectRoot, run.diff),
   };
 }
 

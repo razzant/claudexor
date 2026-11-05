@@ -34,7 +34,7 @@ export interface DaemonRuntimeShutdownOptions {
 export interface ProductionDaemonStopOptions {
   abort(): void;
   server(): RuntimeStopParticipant;
-  closeModels(): void;
+  closeExecutors(): void;
   stopRetention(): Promise<void>;
   opening(): Promise<void> | null;
 }
@@ -49,7 +49,7 @@ export function productionDaemonStop(options: ProductionDaemonStopOptions): Runt
     stop: async () => {
       options.abort();
       const results = await Promise.allSettled(
-        [() => options.server().stop(), options.closeModels, options.stopRetention].map(
+        [() => options.server().stop(), options.closeExecutors, options.stopRetention].map(
           async (step) => step(),
         ),
       );

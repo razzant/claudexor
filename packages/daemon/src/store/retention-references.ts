@@ -1,6 +1,7 @@
 import { Thread, type GcHold } from "@claudexor/schema";
 import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { access } from "node:fs/promises";
+import { projectRuntimeDir } from "@claudexor/util";
 import type { EngineStore } from "./store.js";
 import { decodeBody } from "./thread-rows.js";
 import { isServedPid } from "./generations.js";
@@ -20,12 +21,14 @@ export interface DiskRetentionReferences {
   /** Native callers absorb the same changed owners before per-file rechecks. */
   nativeCurrent?: () => boolean;
   /** Pass-local ownership, refreshed synchronously at each lane sweep boundary. */
-  /** One global owner set: lane directory names are globally unique thread ids. */
-  laneThreadIds?: (root?: string, runtime?: string) => Set<string>;
+  laneThreadIds?: (root: string) => Set<string>;
   nativeRunDirs?: ReadonlySet<string>;
   nativeWatchRunDirs?: ReadonlySet<string>;
   nativeReferenceError?: () => string | null;
   hasActiveCommands?: () => boolean;
+  /** Runtime namespaces whose registration (root, status, generation) changed during
+   * the pass: their keep-last and ownership are unknown until a fresh pass (#503). */
+  deferredRuntimes?: () => ReadonlySet<string>;
   /** Caller releases the observation after all deletions, including error paths. */
   close?: () => void;
   /** Recovery holds are receipt facts; completed quarantine is not a hold. */
@@ -38,10 +41,6 @@ export interface DiskRetentionReferences {
   /** Archived-only registrations need an extant root to own recent history. */
   archivedProjectRoots?: Set<string>;
   protectedProjectRoots: Set<string>;
-  /** Registration changes hold only these roots until the next keep-last inventory. */
-  heldProjectRoots?: ReadonlySet<string>;
-  /** Quarantined lane owners cannot supply a live thread inventory. */
-  protectedLaneRoots?: ReadonlySet<string>;
   referencedRunIds: Set<string>;
   nativeSessions: Map<string, Set<string>>;
   records: Array<{ runId: string; state: string; finishedAt?: string }>;
@@ -116,10 +115,22 @@ export async function diskRetentionReferences(
     const version = (changes.get() as { n: number }).n;
     const isCurrent = () => (changes.get() as { n: number }).n === version;
     const generations = retentionGenerations(store);
+    // The observer retains every spelling through queued relinks and deletion.
+    const deferred = new Set<string>();
+    const runtimeByRoot = new Map<string, string>();
+    const deferRoots = (changedRoots: ReadonlySet<string>) => {
+      for (const root of changedRoots) {
+        let runtime = runtimeByRoot.get(root);
+        if (!runtime) {
+          runtime = projectRuntimeDir(root);
+          runtimeByRoot.set(root, runtime);
+        }
+        deferred.add(runtime);
+      }
+    };
     const { registeredProjectRoots, archivedProjectRoots, protectedProjectRoots, errors, blocked } =
       generations;
     const roots = new Set([...registeredProjectRoots, ...protectedProjectRoots]);
-    const heldProjectRoots = new Set<string>();
     const retained = blocked ? () => false : generations.retained;
     const reader = new RetentionReferenceReader(store, ignoreThreadIds, retained);
     reader.addQuarantinedLaneThreadIds();
@@ -187,11 +198,12 @@ export async function diskRetentionReferences(
             `immutable retention command ${owner.id} in partition ${owner.pid}: params blob ${id} changed during inventory`,
           );
       } else if (table === "project") {
-        for (const root of changedRoots) heldProjectRoots.add(root);
+        deferRoots(changedRoots);
         generations.refreshProject(id);
       } else if (table === "partition") {
-        const partition = generations.refreshPartition(Number(id));
-        if (partition.status === "quarantined") reader.addQuarantinedLaneThreadIds(partition.id);
+        const reason = generations.changed(Number(id));
+        if (reason) changesObserved.hold(reason);
+        reader.addQuarantinedLaneThreadIds(Number(id));
       } else reader.refresh(table, id);
     };
     const recheck = () => changesObserved.current(readChange) && !generations.blocked;
@@ -212,6 +224,7 @@ export async function diskRetentionReferences(
       nativeWatchRunDirs: commands.nativeWatchRunDirs,
       nativeReferenceError: commands.nativeReferenceError,
       hasActiveCommands: commands.hasActiveCommands,
+      deferredRuntimes: () => deferred,
       close: changesObserved.close,
       get blocked() {
         return generations.blocked;
@@ -222,8 +235,6 @@ export async function diskRetentionReferences(
       registeredProjectRoots,
       archivedProjectRoots,
       protectedProjectRoots,
-      heldProjectRoots,
-      protectedLaneRoots: generations.protectedLaneRoots,
       referencedRunIds: reader.runs,
       records: commands.records,
       nativeSessions: reader.sessions,

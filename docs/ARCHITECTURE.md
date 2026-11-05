@@ -244,6 +244,12 @@ at every wire boundary.
   semantic request and the first declared digest in the existing upload and
   idempotency tables, checks the saved store id first and publishes verified
   bytes on replay; the one-call MCP/CLI client asks before it reads its source.
+  An import may opt in to a managed lifetime: a release
+  (`POST /v2/resources/:id/release`, `packages/daemon/src/store/resource-release.ts`)
+  only changes the resource row, while accepted commands, turns and next messages
+  hold its bytes through typed `resource_use` rows written in their own acceptance
+  transaction and dropped by their existing retirement (`resource-uses.ts`); the
+  blob owner predicate counts them.
   MCP public/belt runs and thread turns forward strict resource refs;
   local import owns only a bounded host-file descriptor, never durable upload
   state. The [ingress contract](INTEGRATIONS.md#document-ingress-and-resource-references)
@@ -2633,7 +2639,15 @@ workspace work; they are never ignored or silently redirected.
 
 Envelope semantics are strict. Project runs execute under
 `~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
-the harness `cwd` is the envelope worktree. That worktree is a complete checkout of
+the harness `cwd` is the envelope worktree. That is the project's namespace also
+when another tree executes (an isolated thread worktree, a delegated workspace):
+the envelope's `owner.json` records that `execution_root`, and recovery, adoption
+and release act on the base its scoped HOME records, so an adopted envelope keeps
+its path and a missing execution root never redirects cleanup to the project. A
+one-shot run of an explicitly ephemeral root (`scope.ephemeral`) keeps its envelopes in
+`~/.claudexor/v3/one-shot/workspaces/`, beside, never inside, its run trees.
+Legacy envelopes under an execution root's own namespace stay readable and are
+swept there; nothing migrates. That worktree is a complete checkout of
 its base commit or the run does not start: when no object directory holds the
 content of some of its files (what a partial clone never fetched, or a sparse
 checkout of one left out), or Git cannot copy a shallow source because its branches
@@ -3645,6 +3659,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `POST /v2/recovery/partitions/:id/export`
 - `POST /v2/recovery/partitions/:id/quarantine`
 - `POST /v2/recovery/partitions/:id/validate`
+- `POST /v2/resources/:id/release`
 - `GET /v2/run-applicability`
 - `GET /v2/runs`
 - `POST /v2/runs`
@@ -5137,7 +5152,11 @@ engine-owned runtime artifacts — per-project run trees and standalone
 (never blocking boot), then hourly, with a one-second continuation after a capped
 500-tree pass. Shutdown and store recovery stop the timer and drain its current pass.
 It enumerates plain hashed project directories under the owned runtime root, including
-unregistered and archived projects. A private SQL reference read spans all retained
+unregistered and archived projects, plus the two run stores outside project namespaces:
+the folderless Ask store (`<config>/runs`, its own keep-last group, never pruned as a
+namespace) and the one-shot store of runs on explicitly ephemeral roots (`<config>/one-shot/runs`,
+no keep-last, like any unregistered namespace). Native-session references and
+`claudexor inspect` read the same list (`globalRunStores`). A private SQL reference read spans all retained
 generations (including archived threads and pending interactions); unreadable references
 fail closed, and unavailable project generations protect their namespaces. Unknown
 project roots are disclosed as their runtime namespace. Bulk inventory yields
@@ -5148,15 +5167,18 @@ triggers observe row identities while the pass runs; no durable schema or writer
 added. Typed reference reads are shared with the initial inventory. Each distinct immutable command request is parsed once per pass by its content digest, including changed-owner refreshes. Combined run/native retention shares one SQL inventory and observer; standalone native retention owns and closes its own inventory. No durable schema changes. Quota/event
 writes and unrelated metadata do not restart it. References accumulate during a pass
 and lifecycle records refresh before the synchronous last proof and expiration marker.
-A partition born during inventory is read live through the same registry join and cached;
-a genuinely missing partition still fails. Ready/archived births do not invalidate unrelated
-cleanup. Project INSERT/UPDATE/DELETE holds every old and new root it names for the rest
-of the pass, including a newly registered root whose keep-last policy changed after inventory.
-Run, review and runtime cleanup skip those namespaces. Large change batches yield between
-reads; an unreadable changed owner latches the shared proof closed for the rest of the pass,
-even after its pending change is consumed. That failure or a burst exceeding one final
-synchronous read page keeps remaining candidates and schedules a fresh pass. Pending
-partition recovery still holds install-wide; an unrelated project change does not. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
+Large change batches yield between reads. A partition first seen during the pass is read
+on demand, so a late registration's fresh generation contributes its owners through the
+observer instead of failing the pass; a project registered, relinked or re-generated
+during the pass keeps the namespaces of every old, intermediate and new root for this pass (their
+keep-last and ownership are unknown) while other namespaces progress. A partition entering pending recovery holds the whole pass with its named cause. An unreadable
+owner, a generation the pass excluded that becomes a retained owner (its rows were never
+inventoried), a registry status change, or a burst exceeding one final synchronous read
+page keeps every remaining candidate and schedules a fresh pass. An existing tombstone is
+skipped before any proof refresh, and no await separates a candidate's final proof from
+its expiration marker. A project's Git object store that ends a pass strictly empty (no
+root record, pending lease, object or recent entry) is retired under its prune lock; an
+import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
 retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
@@ -5167,7 +5189,12 @@ non-preview pass without starting cleanup. The engine stores one summary (at mos
 failures of those outer steps. Its flusher barrier completes before the pass returns,
 and shutdown drains that barrier; persistence failures propagate to the caller.
 The summary carries `outcome` (`completed`, `held`, `truncated`, `failed`), start/end
-timestamps, freed bytes, run keep counts, separate counts of held roots and vetoed native homes,
+timestamps, freed bytes with `effects` (`measured`, or `unknown` when the pass stopped
+before its receipt, or when a committed deletion, a namespace maintenance step or native
+home retention stopped partway: the bytes are then only a lower bound, the receipt
+itself carries `effects: "unknown"` (stripped from a legacy request's reply) and
+`claudexor gc` prints "freed at least", and a failure message names thread purges it
+had already done), run keep counts, separate counts of held roots and vetoed native homes,
 per-class hold counts with one example and the first continuously held `since`,
 and error count/first error. Each hold example names the actual cause and affected owner,
 including registration changes, unreadable references and recovery partitions.
@@ -5179,9 +5206,9 @@ as a failure. Older saved summaries default the history fields; a prior complete
 summary still supplies its finish time. `gc --last` prints both history fields so
 repeated failures cannot look like fresh successful cleanup.
 A clean observed pass clears holds; previews never replace it. A registration that
-arrives mid-pass is recorded as `held` with the resulting
-`failed_or_held_streak`, then a later clean pass clears it; that one-pass hold is
-progress evidence, not a stuck retention loop.
+arrives mid-pass defers its namespaces and schedules a fresh, truncated pass. Such
+truncation preserves the streak rather than incrementing it; a later clean pass
+clears the history. A one-pass registration hold is not by itself a stuck loop.
 A queued pass cancelled before it enters the runner writes nothing. A pass that
 starts but obtains no inventory preserves the preceding holds, held counts and
 `since` while reporting its own failure or truncation. A truncated pass also carries
@@ -5206,7 +5233,7 @@ referenced by any non-purged thread's lineage or retained command dependencies
 Exact Retry sources and frozen plans, plus durable continuation source lists after
 command-history pruning), undelivered/applyable
 patches or copied-file results, and trees with no terminal evidence are protected
- fail-closed. Lane sweeping visits inventoried runtime namespaces, including unregistered roots whose last thread was purged. Healthy registrations and unregistered namespaces use one globally unique thread-ID owner set from the shared inventory; archived and quarantined registrations keep their lanes, and quarantined IDs are read without decoding their bodies. This also protects a late ephemeral thread when the namespace inventory has no root name or a live thread’s root spelling later vanishes. The pass synchronously rereads changed owners immediately before each namespace’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including recovery or unreadable changes during the loop. Project registration changes skip only the affected roots. A per-root ownership failure names only the skipped root.
+fail-closed. Lane sweeping visits inventoried runtime namespaces, including unregistered roots whose last thread was purged. Healthy registrations and unregistered namespaces use one globally unique thread-ID owner set from the shared inventory; archived and quarantined registrations keep their lanes, and quarantined IDs are read without decoding their bodies. This also protects a late ephemeral thread when the namespace inventory has no root name or a live thread’s root spelling later vanishes. The pass synchronously rereads changed owners immediately before each namespace’s sweep, so unrelated writes do not starve cleanup or multiply global-thread parsing by root count. An invalid shared proof defers lane sweeping with one receipt line, including recovery or unreadable changes during the loop. Project registration changes skip the affected roots and schedule a fresh pass. A per-root ownership failure names only the skipped root. Removed lane directories are counted in `deleted_lanes`; this sweep still skips previews, does not add their bytes to `freed_bytes`, and is outside the run/review deletion cap.
 
 The producer records `meta.capturedNoGitChange: true` only when a complete Git
 capture proves that the base and candidate trees are equal. Refused, missing or
@@ -5421,7 +5448,9 @@ after a fresh birth read (a member is the same process by its kernel birth even
 after it moved to another process group; signalling a whole group still requires
 its recorded leader in that group) — and attempted to write `final/process_scope.yaml` (what was
 ended, what survived, what was unreadable, which recorded groups were skipped
-as reused, `completeness`, and `incomplete` when the single settlement
+as reused (another birth at the group id proves the recorded group gone; any other
+skip lists its possibly owned live members as unreadable, unsignalled, so the scope
+stays unresolved), `completeness`, and `incomplete` when the single settlement
 deadline expired first — one absolute budget that starts when the daemon's
 custodian enters settlement for the run, also bounds the run's own pending
 seed refinement and never waits for another run's seeds; scanning and
@@ -5432,6 +5461,29 @@ finds the settlement done and, when the write succeeded, the record on disk. The
 write is best-effort evidence, not a gate: a write failure, or an outcome that
 fails its schema, is swallowed, the verdict is published unchanged, and that run
 has no record. Recording is attempted once, without a second write or retry.
+While the daemon that opened a FINISHED run's scope stays live, an `unresolved`
+entry gets later attempts (`run-scope-late-settlement.ts`), one at a time, each a
+fresh reap under the same identity, group and birth rules with its own absolute
+budget, spaced by that budget times the attempt number, started from the pids tick
+without delaying capture; their number is not capped. A later attempt never extends,
+resumes or signals for the
+expired terminal attempt and never touches an open run, another or an unreadable
+owner's entry, or a host without a census; it retires the entry only when settled.
+Each attempt is recorded beside the unchanged terminal record as
+`final/process_scope_later.yaml` (the latest attempt, JSON text) and projected as
+`summary.processScopeLater`; a settled one returns a next message held only for that
+unknown custody ([next messages](INTEGRATIONS.md#observing-and-directing-an-existing-run)).
+A report whose record or return failed is owed: each later tick of the same daemon
+repeats it to the listener that failed, before any new attempt. A settled report
+retired its entry, so it is never reaped again; an unsettled one is replaced by a
+newer attempt of its scope, so a failing listener never stops the reaping. The debt
+is not durable, so after a restart that draft stays held. The daemon and the runtime
+factory bind these reports in one place, `createSqlDaemonExecutors`: each store
+generation's executors bind them and their close ends that before the store closes
+or the daemon stops. While none is bound no attempt starts, so an entry is never
+retired with nobody told; it stays `unresolved` for the next binding or start. A
+reap already running when the last binding closes finishes and leaves its entry the
+same way, and a binding is told before an entry is recorded.
 `GET /v2/runs/:id` projects the record compactly as `summary.processScope`,
 which an engine that has the field always sends: the compact object for a
 terminal run whose record is readable and valid, otherwise an explicit `null`
@@ -5456,29 +5508,35 @@ member and receives no signal. Once known members settle, that discovery
 uncertainty limits completeness without forcing `settled` false; a host may
 release its copy under the known-member settlement policy while disclosing
 `not_provable`. Unsupported or failed census, surviving known members and
-unknown receipts do not certify that release. On the existing pids tick, an
-`unresolved` entry whose recorded owner is still this live daemon is retried
-with a fresh settlement budget. Capture and retry have separate in-flight guards:
-retry starts after capture resolves and never delays the next tick's capture.
-At most one entry is reaped per tick, visiting unresolved entries in rounds ordered
-by oldest `settled_at` first; identical outcomes remain eligible on the next round.
-Retries and startup re-reaps use the entry's first `settled_at` as a group birth
-bound: a recorded group whose live members were all born after settlement is
-reused and skipped. A surviving member born by settlement keeps the group eligible,
-including its later children. Changed retry outcomes never advance this bound.
-Only a fresh `settled` census removes it from
-`run-scopes.json`; survivors or a deadline miss keep the entry and its outcome.
-Darwin's `completeness: not_provable` remains compatible with `settled` once
-the known members have settled. The index is compact JSON and an unchanged
-capture or retry does not rewrite its bytes. Retry logs report only changed
-outcomes (including failures and recovery) or removal; identical retries are silent.
-Windows keeps its existing
-`unsupported` retirement behavior.
+unknown receipts do not certify that release. Later attempts and startup re-reaps
+preserve the first `settled_at` and use it as an upper birth bound for recorded
+groups: if every live member was born after that settlement, the group is skipped
+without signals. Its potentially owned members remain unproven, keeping the scope
+unresolved under the same conservative rule as other unverified groups. An older
+surviving member still admits its later children. Individual measured identities
+and marker membership retain their authority. Repeated identical diagnostics stay
+silent; changes, recovery and retirement are logged. Each later attempt still
+publishes its counter, time and report under the mechanism above. A revision whose
+serialized index equals the last successful publication needs no filesystem write.
 A host cancel that arrives during the settlement barrier does not rewrite a
 completed run as cancelled: the cancellation decision is frozen when the
 strategy's terminal is held.
 `daemon/run-scopes.json` is a stable contract a host may read directly when
-the daemon is dead. Its compact schema, in the field names the daemon writes:
+the daemon is dead. It is written compactly (no indentation) and coalesced: changes
+that arrive during a write share the next one, and each open, seed and settlement
+still waits for a write that carries it. A failed write leaves the file as it was,
+whoever waited for it still sees it fail, and the daemon log says so once and once
+more when a write lands. The pids tick repeats the write with the current state and
+repeats nothing else, no reap and no report. Until one lands the file lags the daemon,
+and a restart before that reads the stale row and settles it again by identity, with no
+later report. A row this engine cannot parse, including
+one whose marker is not a run-scope marker or whose present `outcome` has no known
+`census`, stays in `entries` verbatim and is never acted on, so its obligations
+remain explicitly unknown beside the recognized rows; only an unusable file is
+moved aside. An
+`unresolved` entry's `outcome` carries `incomplete`, `completeness_reason` and
+`duration_ms`, and later attempts add `late_attempts` and `last_attempt_at`.
+Its compact schema, in the field names the daemon writes:
 `{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`,
 `state` (`open` | `unresolved`), optional `settled_at` (ISO time of the first
 settlement, preserved on retries), `opened_at` (ISO time: the floor the daemon
@@ -5730,6 +5788,19 @@ kept only for cold import and an independent frozen copy kept for tests.
   `sqlite_master`. Older readers refuse the upgraded file, and a cursor issued
   before the upgrade restarts with `stale_cursor`, because its view token used
   the case-sensitive domain.
+- Schema version 7 adds `resource_use` (resource, owner kind `command`, `turn`
+  or `deferred_message`, owner id, digest), the holders of managed ordinary
+  resources; `turn.dispatched_at`, the instant a turn's first product command was
+  accepted (written in that acceptance transaction and kept when command
+  retention prunes the command: a later dispatch is a new reference); and two
+  `deferred_message` columns: `held_revision`, the revision a hold was applied
+  at, and `resumed`, the visible return from a process-custody hold. The atomic
+  6→7 step only creates them; no existing row is rewritten, existing holds have
+  no `held_revision` and therefore never return by themselves, existing turns
+  have no dispatch fact (none of them names a managed resource), and existing
+  resources have no managed lifetime. Fresh DDL and
+  the migrated file run the same statements. Older readers refuse the upgraded
+  file.
 - The flusher worker owns the power-loss barrier. Every 200 ms it fsyncs each
   directory registered since the previous pass, reads `data_version`, runs a
   PASSIVE checkpoint for space, and — whenever anything was committed since
@@ -6209,8 +6280,10 @@ daemon abort closes the active harness stream and the process helper sends a
 cooperative interrupt with hard-kill fallback. (The former `interrupt` control
 kind was deleted as a fake knob — it mapped to the same daemon cancel.) For a
 run that already ended, the route asks the daemon (`deferredMessageStop`) to
-hold the run's waiting next message; for a live run the daemon cancel does it
-right after the ordinary stop and returns the same report. The hold is one
+hold the run's waiting next message, or to take over as its own a hold kept only
+for unknown process custody; for a live run the daemon cancel does it right after
+the ordinary stop and returns the same report. Both answer `applied`, naming the
+next message as now held. The hold is one
 synchronous step that promotion rechecks inside its acceptance transaction. The
 daemon fences the draft in memory before it writes the hold, so a hold that
 cannot be saved never sends the draft: a live run is still signalled, a restart
@@ -7798,7 +7871,18 @@ report an observed exit is a warning, decided by that typed fact; so is the
 
 Canonical project output lives under
 `~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; no-project Ask uses
-`~/.claudexor/v3/runs/<run_id>/`:
+`~/.claudexor/v3/runs/<run_id>/`, and a one-shot run of an explicitly ephemeral root uses
+`~/.claudexor/v3/one-shot/runs/<run_id>/` (saved patches in `one-shot/patches/`;
+its Git objects and revert anchors stay root-keyed in that root's project
+namespace). A thread created on such a root leaves it unregistered and keeps its
+commands in the global partition, but its turns are not one-shot runs: a thread's
+lanes, worktrees and purge are per root, so they share that root's unregistered
+project namespace as thread-owned state: retention keeps it while the thread
+references it. After the purge, runs retire, an envelope stays until its own
+owner ends it, and empty containers go. Two limits remain: a retired run's tombstone
+stays, and with it the namespace directory, and crash GC cannot reach an orphan
+envelope once the recorded root no longer exists. A run's
+recorded `runDir` is the address every reader uses:
 
 ```text
 events.jsonl
@@ -8912,7 +8996,14 @@ code touching one of these areas must honor it or change it explicitly here.
   in roots the daemon never saw are reclaimed only by their own process. For a
   caller-owned `execution.workspaceRoot` recorded by a delegated command (global
   or project partition), it disposes only Claudexor's envelope scratch under that
-  root's runtime namespace; it never deletes the caller's tree or its Git refs.
+  root's runtime namespace; it never deletes the caller's tree or its Git refs. The
+  sweep follows no link below the config root, which may itself be a link: like the
+  lane, worktree and retention owners, it discloses and keeps a project namespace,
+  its `workspaces` or `threads`, a thread worktree, the one-shot store or a task or
+  attempt entry that is a link, before anything reads, recovers or disposes through
+  it, because that link may reach another store. A namespace kept this way keeps its
+  project's attempt branches too, since it hides which of them are owned. Moving this
+  tree means moving the whole root with `CLAUDEXOR_CONFIG_DIR`.
 - Web use is optional under `auto`, `cached`, and `live`; no
   did-this-task-NEED-web resolver or mandatory evidence gate is inferred from
   those policies. `off` remains the only strict external-context policy.
@@ -8955,9 +9046,11 @@ code touching one of these areas must honor it or change it explicitly here.
   never an alternate of the user's repository; `<runtime>` is the project's also
   when the run executes elsewhere (a delegated workspace, an isolated thread's
   worktree: Git runs there, the objects and pair anchors stay with the project,
-  where delivery and retention look for them, and only the envelope's scoped
-  directories stay under the execution root's namespace, where the orphan
-  sweeper finds them). One project therefore keeps one Git object format: a
+  where delivery and retention look for them, and so do the envelope's scoped
+  directories, whose `owner.json` names the execution root; a one-shot run's
+  envelopes on an explicitly ephemeral root live in the one-shot namespace, and legacy ones under
+  an execution root's namespace are still swept there). One project therefore
+  keeps one Git object format: a
   capture, envelope, check or delivery whose repository uses the other one
   (sha1 or sha256) is refused, typed and naming both formats, before anything
   is written or the store is mounted (`capture_failed` at capture and envelope

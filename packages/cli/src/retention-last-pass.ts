@@ -87,6 +87,9 @@ function summarize(
     finished_at: finishedAt,
     ...passHistory(outcome, finishedAt, previous),
     freed_bytes: receipt?.freed_bytes ?? 0,
+    // Without a receipt, or with a deletion that stopped partway, nothing was fully
+    // measured; never a claim that nothing happened.
+    effects: receipt ? (receipt.effects ?? "measured") : "unknown",
     kept: receipt?.kept ?? GcKeepCounts.parse({}),
     held,
     holds: [...holds.values()].map((hold) => ({

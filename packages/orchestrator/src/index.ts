@@ -20,7 +20,7 @@ export { resolveAccountForRun } from "./account-resolution.js";
 export * from "./credential-execution.js";
 export * from "./account-evidence.js";
 export { profileQuotaBlock } from "./credential-cooldown.js";
-export { type RunScopeCustodian } from "./runScope.js";
+export { type RunScopeCustodian, runScopeFacts } from "./runScope.js";
 
 export { resolveCandidateHarnessIds } from "./route-admission.js";
 export { effectiveHarnessPool } from "./run-input-resolution.js";

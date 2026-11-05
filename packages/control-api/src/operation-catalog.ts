@@ -62,6 +62,15 @@ const operations: ControlOperationDescriptor[] = [
       idempotency: "key_required",
     },
   ),
+  // Its presence also marks the managed import lifetime (`lifetime: "managed"`).
+  j(
+    "POST",
+    "/v2/resources/:id/release",
+    "mutating",
+    "ControlResourceReleaseRequest",
+    "ControlResourceRelease",
+    { idempotency: "natural" },
+  ),
   j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse", {
     parameters: [STORE_IDENTITY_HEADER],
   }),

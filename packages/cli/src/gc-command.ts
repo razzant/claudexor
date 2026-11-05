@@ -27,9 +27,11 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
     else if (!result.last) print(result.diagnostic ?? "No retention pass has been recorded.");
     else {
       const last = result.last;
-      print(
-        `${last.outcome}: ${last.started_at} to ${last.finished_at}; freed ${last.freed_bytes} bytes`,
-      );
+      const freed =
+        last.effects === "unknown"
+          ? `freed at least ${last.freed_bytes} bytes; effects before it stopped are unknown`
+          : `freed ${last.freed_bytes} bytes`;
+      print(`${last.outcome}: ${last.started_at} to ${last.finished_at}; ${freed}`);
       print(
         `last completed: ${last.last_completed_at ?? "unknown"}; failed/held streak: ${last.failed_or_held_streak}`,
       );
@@ -66,7 +68,11 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
     printJson(receipt);
     return 0;
   }
-  const verb = receipt.dry_run ? "would free" : "freed";
+  const verb = receipt.dry_run
+    ? "would free"
+    : receipt.effects === "unknown"
+      ? "freed at least"
+      : "freed";
   const mb = (receipt.freed_bytes / (1024 * 1024)).toFixed(1);
   print(
     `${verb} ${mb} MiB: ${receipt.deleted_runs.length} run tree(s), ${receipt.deleted_reviews.length} review tree(s) ` +

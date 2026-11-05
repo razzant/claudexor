@@ -1,0 +1,27 @@
+{
+  "$ref": "#/definitions/ControlResourceReleaseRequest",
+  "definitions": {
+    "ControlResourceReleaseRequest": {
+      "type": "object",
+      "properties": {
+        "expectedStoreId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Store UUID saved with the import; a different store is refused before any effect."
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Digest of the resource receipt being released."
+        }
+      },
+      "required": [
+        "expectedStoreId",
+        "sha256"
+      ],
+      "additionalProperties": false,
+      "description": "Release a managed resource: no new run, turn, retry, continuation or draft may reference it afterwards; already accepted work keeps its bytes. Naturally idempotent."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

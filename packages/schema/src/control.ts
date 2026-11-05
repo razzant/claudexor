@@ -37,7 +37,10 @@ import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
 import { RunFailure } from "./control-run-failure.js";
 import { RawContextReceipt } from "./raw.js";
-import { ControlRunSummaryProcessScope } from "./control-process-scope.js";
+import {
+  ControlRunSummaryProcessScope,
+  ControlRunSummaryProcessScopeLater,
+} from "./control-process-scope.js";
 import { RunExecution } from "./control-run-execution.js";
 import { WorkspaceScopePath } from "./files-manifest.js";
 import { makeControlRunRetrySchemas } from "./control-run-retry.js";
@@ -753,6 +756,8 @@ export const ControlRunSummary = z
       ),
     /** Compact process-scope outcome (INV-144); null while live or unknown — never clean. */
     processScope: ControlRunSummaryProcessScope,
+    /** A later bounded settlement of the finished run's scope (#613); null when none. */
+    processScopeLater: ControlRunSummaryProcessScopeLater,
     /** Route evidence from telemetry; null when no telemetry exists (legacy). */
     route: ControlRouteInfo.nullable()
       .default(null)

@@ -8,7 +8,7 @@ import {
 } from "./run-card-facts.js";
 import { budgetSnapshot } from "./run-budget-snapshot.js";
 import { runRepoRoot, applyEligibilityFor } from "./run-apply-projection.js";
-import { projectProcessScope } from "./run-detail-scope.js";
+import { projectProcessScope, projectProcessScopeLater } from "./run-detail-scope.js";
 
 import { readTextArtifact, safeReadStructuredArtifact } from "./run-artifact-read.js";
 import { controlRunResult } from "./run-delivery-state.js";
@@ -321,6 +321,7 @@ export function detailFor(
       outcomeFacts,
       waitingOnUser: pendingInteractions.length > 0,
       processScope: projectProcessScope(rec, summary.state),
+      processScopeLater: projectProcessScopeLater(rec, summary.state),
     },
     children,
     runFacts,

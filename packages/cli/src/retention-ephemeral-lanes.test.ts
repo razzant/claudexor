@@ -132,6 +132,46 @@ it("keeps lanes through real quarantine and archive while sweeping an unregister
   expect(existsSync(quarantinedLane)).toBe(true);
 });
 
+it("keeps global and project thread lanes after their registry is quarantined", async () => {
+  const repo = join(root, "registered");
+  const ephemeral = join(root, "ephemeral");
+  mkdirSync(repo);
+  mkdirSync(ephemeral);
+  sql.graph.projects.register({ root: repo, idempotencyKey: "registry", clientId: "test" });
+  const projectThread = sql.graph.threads.createThread({
+    title: "project",
+    repoRoot: repo,
+    workspace: "in_place",
+  });
+  const globalThread = sql.graph.threads.createThread({
+    title: "ephemeral",
+    repoRoot: ephemeral,
+    ephemeral: true,
+    workspace: "in_place",
+  });
+  const held = [lane(repo, projectThread.id), lane(ephemeral, globalThread.id)];
+  const orphan = lane(join(root, "unregistered-orphan"), "th-orphan");
+  const registry = sql.store.prepare("SELECT value FROM meta WHERE key='global_pid'").get() as {
+    value: string;
+  };
+  quarantineGeneration(sql.store, sql.graph.blobs, {
+    oldPid: Number(registry.value),
+    keyDigest: "global-lanes",
+    requestDigest: "global-lanes",
+    operationId: "op-global-lanes",
+    payload: { operationId: "op-global-lanes" },
+  });
+  sql.store.transaction(() => {
+    for (const thread of [projectThread, globalThread])
+      sql.store.prepare("UPDATE thread SET body=x'00' WHERE id=?").run(thread.id);
+  });
+  const receipt = await runner()({ dry_run: false });
+  expect(receipt.errors).toEqual([]);
+  expect(receipt.deleted_lanes).toBe(1);
+  for (const path of held) expect(existsSync(path)).toBe(true);
+  expect(existsSync(orphan)).toBe(false);
+});
+
 it("keeps a symlink-spelled live thread lane after its root vanishes", async () => {
   const target = join(root, "symlink-target");
   const spelling = join(root, "symlink-spelling");

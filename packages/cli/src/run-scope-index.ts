@@ -1,14 +1,23 @@
-import { measureSync } from "@claudexor/util";
 /**
  * The daemon's durable run-scope index (`daemon/run-scopes.json`): the
  * discovery record a crashed daemon's next life needs to end what its runs
  * left running, and the live-capture store the directive's second membership
  * source writes to.
  *
- * Written before launch: marker, run id, measured daemon identity, descendants
- * `(pid, pgid, birth)` and scope birth floor. Unsettled entries stay unresolved
- * across shutdown; startup settles/discloses dead-owner entries before sweeping
- * workspaces and never touches unindexed markers (including the embedding host's).
+ * One entry per run: the marker, the run id, the daemon identity that opened
+ * it (measured birth — a stale "running" row of a dead generation is never a
+ * live owner), the run's recorded descendants `(pid, pgid, birth)` and the
+ * birth floor of its scope. Written BEFORE the first launch; an entry is
+ * retired only after a verified settlement (every census source succeeded,
+ * nothing survived or stayed unreadable) and is otherwise kept as
+ * `unresolved` with its outcome. Daemon start settles or discloses every
+ * entry whose owner is not provably live BEFORE the workspace sweep, and never
+ * touches a grammar-shaped marker that is not in this index (the embedding
+ * host carries its own installation marker). Cooperative shutdown never
+ * erases the file: unresolved entries are the next start's duty. While this
+ * daemon stays live, a FINISHED run's unresolved entry it opened gets a few
+ * separately bounded later attempts (`run-scope-late-settlement.ts`). Writes
+ * are compact and coalesced; each change still waits for its own publication.
  *
  * Capture rides the daemon's existing 2 s pids tick (no new timer): one
  * asynchronous process-table snapshot per tick, each live harness root's
@@ -16,9 +25,7 @@ import { measureSync } from "@claudexor/util";
  * shells, so a shell and its `find` are captured within one tick of being
  * spawned), new rows appended to that run's entry and persisted.
  */
-import { readFileSync, renameSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   compareProcessIdentity,
   createProcessTableReader,
@@ -40,20 +47,20 @@ import type { RunScopeCustodian } from "@claudexor/orchestrator";
 import {
   describe,
   earlierBirth,
-  parseEntry,
   reapSources,
   summarize,
   type RunScopeEntry,
 } from "./run-scope-index-rows.js";
+import {
+  loadRunScopeIndex,
+  runScopeIndexBody,
+  RunScopeIndexPublisher,
+} from "./run-scope-index-file.js";
+import { LateScopeSettlement, type LaterSettlementListener } from "./run-scope-late-settlement.js";
 import { daemonDir, logPath } from "@claudexor/daemon";
 import { logLine } from "./log-line.js";
 
 export const RUN_SCOPE_INDEX_FILE = "run-scopes.json";
-
-interface RunScopeIndexFile {
-  schema_version: 1;
-  entries: RunScopeEntry[];
-}
 
 export interface DaemonRunScopeIndexOptions {
   path: string;
@@ -62,6 +69,7 @@ export interface DaemonRunScopeIndexOptions {
   identity?: AsyncProcessIdentityReader;
   table?: ProcessTableReader;
   reap?: (opts: ScopeReapOptions) => Promise<ScopeReapOutcome>;
+  /** Live harness roots with their markers (default: the process registry). */
   /** Live harness roots with their markers (default: the process registry,
    * whose registrations also seed each root's group at spawn). */
   roots?: () => ReadonlyArray<LiveChildProcess>;
@@ -70,16 +78,18 @@ export interface DaemonRunScopeIndexOptions {
   deadlineMs?: number;
   log?: (message: string) => void;
   now?: () => string;
+  /** Later bounded attempts for finished runs this daemon owns (#613); the daemon index sets it. */
+  laterAttempts?: boolean;
 }
 
 export class DaemonRunScopeIndex implements RunScopeCustodian {
   private entries: RunScopeEntry[] | null = null;
-  private writes: Promise<void> = Promise.resolve();
+  /** Rows this engine cannot parse, kept verbatim in the file (unknown obligations). */
+  private unrecognized: Array<{ index: number; value: unknown }> = [];
+  private readonly publisher: RunScopeIndexPublisher;
+  private readonly late: LateScopeSettlement;
   private ownerIdentity: Promise<KnownProcessIdentity | null> | null = null;
   private capturing: Promise<void> | null = null;
-  private retrying: Promise<void> | null = null;
-  private retryQueue: RunScopeEntry[] = [];
-  private readonly retryFailures = new WeakMap<RunScopeEntry, string>();
   private readonly identity: AsyncProcessIdentityReader;
   private readonly table: ProcessTableReader | null;
   private readonly reap: (opts: ScopeReapOptions) => Promise<ScopeReapOutcome>;
@@ -94,8 +104,6 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   private unreadableNotice: string | null = null;
   private readonly log: (message: string) => void;
   private readonly now: () => string;
-  /** Bytes last written/read; unchanged retries do not churn the hot index file. */
-  private lastPersistedText: string | null = null;
 
   constructor(private readonly options: DaemonRunScopeIndexOptions) {
     this.identity = options.identity ?? defaultAsyncProcessIdentityReader;
@@ -106,6 +114,33 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     this.deadlineMs = options.deadlineMs ?? scopeReapDeadlineMs();
     this.log = options.log ?? (() => {});
     this.now = options.now ?? (() => new Date().toISOString());
+    this.publisher = new RunScopeIndexPublisher(
+      options.path,
+      () => runScopeIndexBody({ entries: this.load(), unrecognized: this.unrecognized }),
+      this.log,
+    );
+    this.late = new LateScopeSettlement({
+      entries: () => this.load(),
+      owner: () => this.owner(),
+      reap: (opts) => this.reap(opts),
+      table: this.table,
+      deadlineMs: this.deadlineMs,
+      record: async (entry, outcome) => {
+        const before = entry.outcome;
+        const message = this.retireOrKeep(entry, outcome);
+        // Timing/attempt counters remain publication facts, not repeated diagnostics.
+        const diagnostic = (value: typeof before) => value && { ...value, duration_ms: 0 };
+        if (
+          outcome.settled ||
+          JSON.stringify(diagnostic(before)) !== JSON.stringify(diagnostic(entry.outcome))
+        )
+          this.log(`${message}; later attempt ${entry.late_attempts}`);
+        await this.persistQuietly(`later settlement of ${entry.run_id}`);
+      },
+      log: this.log,
+      now: Date.now,
+      iso: this.now,
+    });
     // Production: every harness root the engine spawns seeds its own group the
     // moment it is registered; tests inject `roots` and call `seedRoot` directly.
     if (!options.roots) {
@@ -113,6 +148,11 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         if (child.scopeMarker) void this.seedRoot(child);
       });
     }
+  }
+
+  /** Observe later settlement attempts of finished runs (#613); returns the unsubscribe. */
+  onLaterSettlement(listener: LaterSettlementListener): () => void {
+    return this.late.subscribe(listener);
   }
 
   /** Stop observing registrations (tests; the daemon's index lives as long as the daemon). */
@@ -136,8 +176,11 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         if (!child.scopeMarker) return;
         const entry = this.load().find((item) => item.marker === child.scopeMarker);
         if (!entry || entry.state !== "open") return;
-        // Seed synchronously from the spawn handle, even if the root exits
-        // before refinement; `opened_at` supplies the floor until birth is known.
+        // SYNCHRONOUS seed from the registry handle (fix round 2 item 10): the
+        // group id and the leader's measured identity are known the moment
+        // the root is registered, so a root that exits within milliseconds
+        // still leaves its group on record; the floor is `opened_at` until a
+        // birth is known.
         let group = entry.root_groups.find((g) => g.leader_pid === child.pid);
         if (!group) {
           group = {
@@ -150,8 +193,10 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
           await this.persistQuietly(`root group of ${child.pid}`);
         }
         if (!this.table) return;
-        // Refine only while settlement waits and the spawn identity matches
-        // before AND after the table read; the synchronous group seed stands.
+        // Refinement: the leader's lstart, read only while it is still the
+        // spawn-time leader BEFORE and AFTER the table read (item 8), and only
+        // while this run's settlement still waits for it: past that point no
+        // read starts and nothing more is recorded (the group above stands).
         const marker = child.scopeMarker;
         const waited = (): boolean => !this.expiredSeeds.has(marker);
         if (!waited() || !(await this.rootStillSame(child)) || !waited()) return;
@@ -199,8 +244,15 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
     }
   }
 
-  /** Wait only for this run's refinements within its remaining settlement budget;
-   * late refinements start no further reads and record nothing more. */
+  /**
+   * Awaited by settle so THIS run's seed refinement in flight (the optional
+   * birth/identity read that follows the synchronous group record) is never
+   * raced by the reap — for at most the budget remainder: a refinement hung
+   * on a `ps -p` or identity read (bounded by their own longer timeouts) must
+   * not extend the cancel path, and the reap then runs on what is recorded;
+   * a refinement still pending then starts no read and records nothing more.
+   * Another run's seeds are never awaited (Astra R3).
+   */
   private async seedsSettled(marker: string, deadlineMs: number): Promise<void> {
     const jobs = this.seeding.get(marker);
     if (!jobs || jobs.size === 0) return;
@@ -259,7 +311,11 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   }
 
   async settle(runId: string, marker: string): Promise<ScopeReapOutcome> {
-    // One budget covers this run's seeds and reap; other runs' seeds never delay it.
+    // ONE absolute settlement budget starts HERE, when the custodian enters
+    // settlement for this run: this run's own seed refinement wait consumes
+    // part of it and the reap gets the remainder (every census, identity and
+    // table read and every signal race it; expiry is disclosed by the reap as
+    // `incomplete`). Other runs' seeds are never awaited.
     const started = Date.now();
     await this.seedsSettled(marker, this.deadlineMs);
     const entry = this.load().find((item) => item.marker === marker);
@@ -290,70 +346,14 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
    * arrives while one runs is skipped, never queued.
    */
   captureTick(): Promise<void> {
+    // A later settlement attempt rides the same tick but is never waited for here.
+    if (this.options.laterAttempts) void this.late.tick();
+    this.publisher.repeat();
     if (this.capturing) return this.capturing;
-    this.capturing = (async () => {
-      await this.captureOnce();
-      if (!this.retrying) {
-        this.retrying = this.retryLiveUnresolved().finally(() => {
-          this.retrying = null;
-        });
-      }
-    })().finally(() => {
+    this.capturing = this.captureOnce().finally(() => {
       this.capturing = null;
     });
     return this.capturing;
-  }
-  /** Retry unresolved scopes owned by this daemon on the existing pids tick;
-   * only a fresh settled census removes the entry. */
-  private async retryLiveUnresolved(): Promise<void> {
-    if (!this.table) return; // Windows keeps its existing unsupported retirement.
-    const entries = this.load();
-    // Oldest-first rounds keep identical outcomes eligible without moving settled_at.
-    if (this.retryQueue.length === 0)
-      this.retryQueue = entries
-        .filter((entry) => entry.state === "unresolved")
-        .sort((a, b) => (a.settled_at ?? "").localeCompare(b.settled_at ?? ""));
-    let changed = false;
-    while (this.retryQueue.length > 0) {
-      const entry = this.retryQueue.shift()!;
-      if (!entries.includes(entry) || entry.state !== "unresolved") continue;
-      const beforeOutcome = JSON.stringify(entry.outcome ?? null);
-      let outcome: ScopeReapOutcome;
-      try {
-        if (!(await this.ownerLive(entry))) break;
-        outcome = await this.reap({
-          marker: entry.marker,
-          deadlineMs: this.deadlineMs,
-          ...reapSources(entry),
-          table: this.table,
-        });
-      } catch (error) {
-        const message = `run-scope index: unresolved retry of ${entry.run_id} failed (${
-          error instanceof Error ? error.message : String(error)
-        }); kept`;
-        if (this.retryFailures.get(entry) !== message) this.log(message);
-        this.retryFailures.set(entry, message);
-        break;
-      }
-      const recovered = this.retryFailures.delete(entry);
-      const message = this.retireOrKeep(entry, outcome);
-      const stillPresent = this.load().includes(entry);
-      const outcomeChanged = JSON.stringify(entry.outcome ?? null) !== beforeOutcome;
-      if (!stillPresent || outcomeChanged || recovered) this.log(message);
-      if (stillPresent && outcomeChanged) changed = true;
-      changed ||= !stillPresent;
-      break; // At most one reap per tick, including a failed attempt.
-    }
-    if (!changed) return;
-    try {
-      await this.persist();
-    } catch (error) {
-      this.log(
-        `run-scope index: unresolved retry could not be persisted (${
-          error instanceof Error ? error.message : String(error)
-        })`,
-      );
-    }
   }
 
   private async captureOnce(): Promise<void> {
@@ -474,15 +474,9 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
         ? describe(entry, outcome)
         : `${describe(entry, outcome)}; retired without proof (no environment census on this platform)`;
     }
-    const summary = summarize(outcome);
-    if (
-      entry.state === "unresolved" &&
-      JSON.stringify(entry.outcome ?? null) === JSON.stringify(summary)
-    )
-      return describe(entry, outcome);
     entry.state = "unresolved";
     entry.settled_at ??= this.now();
-    entry.outcome = summary;
+    entry.outcome = summarize(outcome);
     return describe(entry, outcome);
   }
 
@@ -497,85 +491,17 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
 
   private load(): RunScopeEntry[] {
     if (this.entries) return this.entries;
-    this.entries = [];
-    let text: string;
-    try {
-      text = readFileSync(this.options.path, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return this.entries; // never written: empty
-      // Unknown is not empty: an unreadable index is disclosed and left in
-      // place (the next write would replace it, so it is moved aside first).
-      this.preserveUnreadable(
-        `read failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return this.entries;
-    }
-    let raw: Partial<RunScopeIndexFile>;
-    try {
-      raw = JSON.parse(text) as Partial<RunScopeIndexFile>;
-      if (
-        !raw ||
-        typeof raw !== "object" ||
-        raw.schema_version !== 1 ||
-        !Array.isArray(raw.entries)
-      )
-        throw new Error("not a run-scope index (schema_version 1 with an entries array)");
-    } catch (error) {
-      this.preserveUnreadable(
-        `parse failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return this.entries;
-    }
-    const parsed: RunScopeEntry[] = [];
-    for (const [index, value] of raw.entries.entries()) {
-      const entry = parseEntry(value);
-      if (entry === null) {
-        // A malformed row is not "some entries": the file's obligations are
-        // unknown, so the bytes are preserved aside and disclosed, never
-        // partially loaded and rewritten without the row.
-        this.preserveUnreadable(`malformed entry #${index}`);
-        return this.entries;
-      }
-      parsed.push(entry);
-    }
-    this.lastPersistedText = text;
-    this.entries.push(...parsed);
+    const loaded = loadRunScopeIndex(this.options.path, this.log);
+    this.entries = loaded.entries;
+    this.unrecognized = loaded.unrecognized;
+    this.unreadableNotice = loaded.notice;
     return this.entries;
   }
 
-  /** The unreadable file's bytes are evidence of unknown obligations: keep them beside the index. */
-  private preserveUnreadable(reason: string): void {
-    this.unreadableNotice = `run-scope index unreadable (${reason}); preserved aside; its cleanup obligations are UNKNOWN`;
-    const aside = `${this.options.path}.unreadable-${Date.now()}`;
-    let moved = false;
-    try {
-      renameSync(this.options.path, aside);
-      moved = true;
-    } catch {
-      /* nothing to move (or no permission): the disclosure below still names the problem */
-    }
-    this.unreadableNotice = `run-scope index unreadable (${reason}); ${
-      moved ? `preserved as ${aside}` : "could not be moved aside"
-    }; its cleanup obligations are UNKNOWN until an operator inspects it`;
-    this.log(`${this.unreadableNotice}; starting an empty index`);
-  }
-
-  /** Serialized atomic rewrite (tmp + rename), one writer at a time. */
+  /** Compact coalesced publication; resolves once a write carrying THIS change landed. */
   private persist(): Promise<void> {
-    const text = measureSync("scope.persist", () => {
-      const body: RunScopeIndexFile = { schema_version: 1, entries: this.load() };
-      return JSON.stringify(body);
-    });
-    const write = this.writes.then(async () => {
-      if (this.lastPersistedText === text) return;
-      await mkdir(dirname(this.options.path), { recursive: true });
-      const tmp = `${this.options.path}.tmp`;
-      await writeFile(tmp, text, { mode: 0o600 });
-      await rename(tmp, this.options.path);
-      this.lastPersistedText = text;
-    });
-    this.writes = write.catch(() => {});
-    return write;
+    this.load();
+    return this.publisher.publish(this.publisher.changed());
   }
 }
 
@@ -586,6 +512,7 @@ export function daemonRunScopeIndex(): DaemonRunScopeIndex {
   shared ??= new DaemonRunScopeIndex({
     path: join(daemonDir(), RUN_SCOPE_INDEX_FILE),
     log: (message) => logLine(logPath(), message),
+    laterAttempts: true,
   });
   return shared;
 }

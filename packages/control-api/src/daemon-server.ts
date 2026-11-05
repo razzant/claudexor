@@ -35,8 +35,7 @@ import { safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { readFilesWorkProduct } from "./files-work-product.js";
 import { appendRunAuditEvent } from "./run-audit.js";
-import { discardRunResult } from "./run-discard.js";
-import { handleTakenDecision } from "./run-taken-route.js";
+import { handleRunDisposition } from "./run-taken-route.js";
 import { applyFilesResult } from "./files-apply-route.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import {
@@ -216,8 +215,15 @@ export interface DaemonControlApiOptions {
         harnessIds?: string[];
       }) => Promise<unknown>;
       agentCapabilities?: () => Promise<unknown>;
-      preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
-      preflightThreadRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+      /** `heldBy` (both preflights): a recorded turn reading its own refs at its first dispatch. */
+      preflightRunRequirements?: (
+        request: ControlRunStartRequest,
+        heldBy?: { owner: "turn"; id: string },
+      ) => Promise<void>;
+      preflightThreadRunRequirements?: (
+        request: ControlRunStartRequest,
+        heldBy?: { owner: "turn"; id: string },
+      ) => Promise<void>;
       harnessModels?: (input: {
         harnessId: string;
         route?: "local_session" | "api_key";
@@ -1235,24 +1241,8 @@ export class DaemonControlApiServer {
         }
       }
 
-      if (body.action === "discard") {
-        try {
-          const response = await this.chainRunMutation(rec, () =>
-            runIdempotentDelivery(this.opts.services, {
-              params: rec.params,
-              key: decisionKey,
-              operation: "run.decision.discard",
-              request: { runId: rec.runId ?? rec.id, body },
-              work: () => discardRunResult(rec),
-            }),
-          );
-          return this.json(res, 200, response);
-        } catch (error) {
-          return this.requestError(res, error);
-        }
-      }
-      if (body.action === "taken") {
-        return handleTakenDecision({
+      if (body.action === "taken" || body.action === "discard") {
+        return handleRunDisposition({
           services: this.opts.services,
           record: rec,
           body,

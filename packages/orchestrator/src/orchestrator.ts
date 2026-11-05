@@ -335,6 +335,7 @@ import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import type { EventLog, TerminalPersistenceHook, TerminalStagingHook } from "@claudexor/event-log";
 import { buildContextPack, writeEvidencePacket } from "@claudexor/context";
 import { RawPatchLane, correctableRefusal, endsConvergence } from "./rawPatchLane.js";
+import { runRuntimeRoot } from "./run-runtime-root.js";
 import {
   WorkspaceManager,
   snapshotTree,
@@ -459,6 +460,8 @@ export interface RunInput {
    * Defaults to `repoRoot` (in-place threads and ordinary runs).
    */
   executionRoot?: string;
+  /** `scope.ephemeral`: state lives in the one-shot namespace, not a per-root one (#503). */
+  ephemeral?: boolean;
   /** Frozen retry provenance: historical replay may omit workspaceRoot; fresh writes may not. */
   retryOf?: string | null;
   /** Project Git initialization that had to happen before an isolated thread
@@ -1005,7 +1008,7 @@ export class Orchestrator {
     if (input.mode === "ask" && input.contextMode === "off" && input.repoRoot === NO_PROJECT_ROOT) {
       return new ArtifactStore(input.repoRoot, { claudexorDir: userConfigDir() });
     }
-    return new ArtifactStore(input.repoRoot);
+    return new ArtifactStore(input.repoRoot, { claudexorDir: runRuntimeRoot(input) });
   }
 
   /** The producing intent a candidate plays (create flag switches it; not hardcoded to implement). */
@@ -3046,7 +3049,7 @@ export class Orchestrator {
     // this SINGLE root.
     const execRoot = this.execRootOf(input);
     const projectRoot = input.repoRoot;
-    const wsm = new WorkspaceManager(execRoot, { projectRoot });
+    const wsm = new WorkspaceManager(execRoot, { projectRoot, runtimeRoot: runRuntimeRoot(input) });
     const anchors = secretDiff.revertAnchors(execRoot, projectRoot);
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
@@ -4635,7 +4638,10 @@ export class Orchestrator {
     // local `execRoot`; this path previously ensured the boundary on repoRoot,
     // which for an isolated thread is the project, not the mutated worktree.
     const execRoot = this.execRootOf(input);
-    const wsm = new WorkspaceManager(execRoot, { projectRoot: input.repoRoot });
+    const wsm = new WorkspaceManager(execRoot, {
+      projectRoot: input.repoRoot,
+      runtimeRoot: runRuntimeRoot(input),
+    });
     const anchors = secretDiff.revertAnchors(execRoot, input.repoRoot);
     const readiness = new ReadinessLedger();
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);

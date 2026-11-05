@@ -37,7 +37,7 @@ import {
   stripRouteScopedAuth,
   writeEnvelopeCustody,
 } from "./envelope-custody.js";
-import { processStartTime } from "./envelope-recovery.js";
+import { envelopeRuntimeRoot, processStartTime } from "./envelope-recovery.js";
 import { WorkspaceManager } from "./manager.js";
 
 /** Run-dir pointer to the run's retained envelope (address only). */
@@ -213,6 +213,8 @@ export function adoptRetainedEnvelope(
       envelope_id: env.id,
       workspace_mode: "isolated",
       workspace_kind: env.workspace_kind,
+      // The same physical envelope and execution root: adoption never relocates it (#503).
+      execution_root: env.repo_root,
       adopted_at: nowIso(),
     }) + "\n",
   );
@@ -230,7 +232,9 @@ export async function releaseRetainedEnvelope(custody: EnvelopeCustody): Promise
   if (custody.continuation_eligible === false)
     rmSync(pointerPath(custody.holder_run_dir, custody.envelope.attempt_id), { force: true });
   releaseEnvelopeCustody(envelopeBaseOf(custody.envelope));
-  await new WorkspaceManager(custody.envelope.repo_root).dispose(custody.envelope);
+  // Dispose where the envelope physically is: its recorded base names the namespace (#503).
+  const runtimeRoot = envelopeRuntimeRoot(envelopeBaseOf(custody.envelope)) ?? undefined;
+  await new WorkspaceManager(custody.envelope.repo_root, { runtimeRoot }).dispose(custody.envelope);
 }
 
 /**

@@ -10,6 +10,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/uploads/:id/finalize": "Finalize an upload into a durable attachment resource.",
   "POST /v2/uploads/imports":
     "Begin, read or replay one keyed attachment import; verified bytes are published under the same key without the source.",
+  "POST /v2/resources/:id/release":
+    "Release a managed ordinary resource: no new reference is admitted afterwards, while already accepted work keeps its bytes.",
   "POST /v2/handshake": "Negotiate the control protocol major before product calls.",
   "GET /v2/daemon/status":
     "Read daemon activity, capacity, current/admission memory and event-loop window facts.",
