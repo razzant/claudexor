@@ -5442,7 +5442,9 @@ Only a fresh `settled` census removes it from
 `run-scopes.json`; survivors or a deadline miss keep the entry and its outcome.
 Darwin's `completeness: not_provable` remains compatible with `settled` once
 the known members have settled. The index is compact JSON and an unchanged
-capture or retry does not rewrite its bytes. Windows keeps its existing
+capture or retry does not rewrite its bytes. Retry logs report only changed
+outcomes (including failures and recovery) or removal; identical retries are silent.
+Windows keeps its existing
 `unsupported` retirement behavior.
 A host cancel that arrives during the settlement barrier does not rewrite a
 completed run as cancelled: the cancellation decision is frozen when the

@@ -5,17 +5,10 @@ import { measureSync } from "@claudexor/util";
  * left running, and the live-capture store the directive's second membership
  * source writes to.
  *
- * One entry per run: the marker, the run id, the daemon identity that opened
- * it (measured birth — a stale "running" row of a dead generation is never a
- * live owner), the run's recorded descendants `(pid, pgid, birth)` and the
- * birth floor of its scope. Written BEFORE the first launch; an entry is
- * retired only after a verified settlement (every census source succeeded,
- * nothing survived or stayed unreadable) and is otherwise kept as
- * `unresolved` with its outcome. Daemon start settles or discloses every
- * entry whose owner is not provably live BEFORE the workspace sweep, and never
- * touches a grammar-shaped marker that is not in this index (the embedding
- * host carries its own installation marker). Cooperative shutdown never
- * erases the file: unresolved entries are the next start's duty.
+ * Written before launch: marker, run id, measured daemon identity, descendants
+ * `(pid, pgid, birth)` and scope birth floor. Unsettled entries stay unresolved
+ * across shutdown; startup settles/discloses dead-owner entries before sweeping
+ * workspaces and never touches unindexed markers (including the embedding host's).
  *
  * Capture rides the daemon's existing 2 s pids tick (no new timer): one
  * asynchronous process-table snapshot per tick, each live harness root's
@@ -86,6 +79,7 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
   private capturing: Promise<void> | null = null;
   private retrying: Promise<void> | null = null;
   private retryQueue: RunScopeEntry[] = [];
+  private readonly retryFailures = new WeakMap<RunScopeEntry, string>();
   private readonly identity: AsyncProcessIdentityReader;
   private readonly table: ProcessTableReader | null;
   private readonly reap: (opts: ScopeReapOptions) => Promise<ScopeReapOutcome>;
@@ -335,17 +329,19 @@ export class DaemonRunScopeIndex implements RunScopeCustodian {
           table: this.table,
         });
       } catch (error) {
-        this.log(
-          `run-scope index: unresolved retry of ${entry.run_id} failed (${
-            error instanceof Error ? error.message : String(error)
-          }); kept`,
-        );
+        const message = `run-scope index: unresolved retry of ${entry.run_id} failed (${
+          error instanceof Error ? error.message : String(error)
+        }); kept`;
+        if (this.retryFailures.get(entry) !== message) this.log(message);
+        this.retryFailures.set(entry, message);
         break;
       }
-      this.log(this.retireOrKeep(entry, outcome));
+      const recovered = this.retryFailures.delete(entry);
+      const message = this.retireOrKeep(entry, outcome);
       const stillPresent = this.load().includes(entry);
       const outcomeChanged =
         entry.state !== beforeState || JSON.stringify(entry.outcome ?? null) !== beforeOutcome;
+      if (!stillPresent || outcomeChanged || recovered) this.log(message);
       if (stillPresent && outcomeChanged) changed = true;
       changed ||= !stillPresent;
       break; // At most one reap per tick, including a failed attempt.

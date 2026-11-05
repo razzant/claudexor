@@ -392,7 +392,7 @@ describe("DaemonRunScopeIndex", () => {
     }
   });
 
-  it("keeps a survivor outcome on a live retry and does not rewrite identical bytes", async () => {
+  it("keeps a survivor outcome and logs only changed retry outcomes or removal, never identical retries", async () => {
     const root = tempRoot();
     const path = join(root, RUN_SCOPE_INDEX_FILE);
     const owner = known(6161, "6161");
@@ -415,20 +415,57 @@ describe("DaemonRunScopeIndex", () => {
     await first.settle("run-live-survivor", marker);
     const before = readFileSync(path, "utf8");
     const calls: ScopeReapOptions[] = [];
+    const log = vi.fn();
+    let outcome = survivor;
+    let failure: string | undefined;
     const second = new DaemonRunScopeIndex({
       path,
       reap: async (opts) => {
         calls.push(opts);
-        return survivor;
+        if (failure) throw new Error(failure);
+        return outcome;
       },
       table: fakeTable([]),
       identity: fakeIdentity({ 6161: owner }),
       roots: () => [],
+      log,
     });
-    await second.captureTick();
+    const tick = async () => {
+      await second.captureTick();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    await tick();
     expect(calls).toHaveLength(1);
     expect(second.list()).toMatchObject([{ marker, state: "unresolved" }]);
     expect(readFileSync(path, "utf8")).toBe(before);
+    expect(log).not.toHaveBeenCalled();
+
+    outcome = { ...survivor, unreadable: [{ pid: 4713, reason: "birth_unreadable" }] };
+    await tick();
+    await vi.waitFor(() =>
+      expect(readIndex(root).entries[0]?.["outcome"]).toMatchObject({ unreadable: [4713] }),
+    );
+    expect(log).toHaveBeenCalledTimes(1);
+    await tick();
+    expect(log).toHaveBeenCalledTimes(1);
+
+    failure = "table unavailable";
+    await tick();
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining("table unavailable"));
+    await tick();
+    expect(log).toHaveBeenCalledTimes(2);
+    failure = "identity unavailable";
+    await tick();
+    expect(log).toHaveBeenCalledTimes(3);
+    failure = undefined;
+    await tick();
+    expect(log).toHaveBeenCalledTimes(4); // Recovery from an exception is an outcome change.
+    outcome = settledOutcome();
+    await tick();
+    await vi.waitFor(() => expect(readIndex(root).entries).toEqual([]));
+    expect(log).toHaveBeenCalledTimes(5);
+    expect(log).toHaveBeenLastCalledWith(expect.stringContaining(": settled"));
   });
 
   it("settle hands the reaper the entry's opening time as scopeStartAt (the census skips older processes); a row without opened_at hands null, the full census (round 5)", async () => {
