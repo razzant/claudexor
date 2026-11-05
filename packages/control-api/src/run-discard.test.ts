@@ -239,6 +239,32 @@ describe("discard decision", () => {
     }
   });
 
+  it("refuses taken for a retained continuation source but accepts inspection-only custody", async () => {
+    const rec = terminalPatch();
+    const holder = { runId: rec.runId!, runDir: rec.runDir! };
+    const env = await new WorkspaceManager(initRepo()).create({
+      taskId: "task-t",
+      attemptId: "a01",
+      baseRef: "HEAD",
+      custody: holder,
+    });
+    retainForContinuation(env, holder, "cancelled");
+    try {
+      expect(existsSync(join(holder.runDir, "final/resumable.yaml"))).toBe(false);
+      await expect(takeRunResult(rec)).rejects.toMatchObject({
+        status: 409,
+        code: "run_taken_continuable",
+        context: { reason: "continuable" },
+      });
+      expect(readDeliveryState(rec)).toBeNull();
+      retainForInspection(env, holder);
+      await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
+      expect(existsSync(env.worktree_path)).toBe(true);
+    } finally {
+      await discardRunResult(rec);
+    }
+  });
+
   it("refuses taken on a continuable or non-terminal run with typed reasons", async () => {
     const continuableDir = temp("taken-continuable");
     mkdirSync(join(continuableDir, "final"), { recursive: true });
