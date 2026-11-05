@@ -192,8 +192,7 @@ export async function diskRetentionReferences(
       } else if (table === "partition") {
         const partition = generations.refreshPartition(Number(id));
         if (partition.status === "quarantined") reader.addQuarantinedLaneThreadIds(partition.id);
-      }
-      else reader.refresh(table, id);
+      } else reader.refresh(table, id);
     };
     const recheck = () => changesObserved.current(readChange) && !generations.blocked;
     const refresh = () => changesObserved.refresh(readChange, signal);

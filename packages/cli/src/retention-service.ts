@@ -165,25 +165,44 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
         const laneHold = (example: string) =>
           inventoryHolds.push({ class: "cleanup_suppressed", count: 1, example });
         const heldRoots = new Set(references.protectedProjectRoots);
+        const heldRuntimeDirs = new Set<string>();
+        const changedRuntimeDirs = new Map<string, string>();
+        const rememberRuntime = (root: string, target = projectRuntimeDir(root)) => {
+          heldRuntimeDirs.add(target);
+          return target;
+        };
+        for (const root of references.protectedProjectRoots) rememberRuntime(root);
+        for (const root of references.protectedLaneRoots ?? []) rememberRuntime(root);
+        const rememberChangedRoots = () => {
+          for (const root of references.heldProjectRoots ?? []) {
+            if (!changedRuntimeDirs.has(root)) changedRuntimeDirs.set(root, rememberRuntime(root));
+          }
+        };
         const changedRoots = new Set<string>();
         let deletedLanes = 0;
         const projectHeld = (project: { root: string; runsDir: string }) => {
-          for (const root of references.heldProjectRoots ?? []) {
-            if (project.root !== root && dirname(project.runsDir) !== projectRuntimeDir(root))
-              continue;
+          rememberChangedRoots();
+          const runtime = dirname(project.runsDir);
+          const changedRoot =
+            [...changedRuntimeDirs].find(
+              ([root, changedRuntime]) => project.root === root || runtime === changedRuntime,
+            )?.[0] ?? null;
+          if (changedRoot) {
             heldRoots.add(project.root);
+            heldRuntimeDirs.add(runtime);
             if (!changedRoots.has(project.root)) {
               changedRoots.add(project.root);
               inventoryHolds.push({
                 class: "references_changed",
                 count: 1,
-                example: `project registration changed: ${root}; namespace kept until next pass`,
+                example: `project registration changed: ${changedRoot}; namespace kept until next pass`,
               });
             }
             return true;
           }
           if (!references.protectedProjectRoots.has(project.root)) return false;
           heldRoots.add(project.root);
+          heldRuntimeDirs.add(runtime);
           return true;
         };
         const gcProjects = await retentionProjects(
@@ -194,6 +213,8 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           signal,
           heldRoots,
         );
+        for (const project of gcProjects)
+          if (heldRoots.has(project.root)) heldRuntimeDirs.add(dirname(project.runsDir));
         // The namespace inventory finds the last orphan even after its root's
         // last thread is purged. Archived/quarantined registrations keep lanes;
         // healthy and unregistered namespaces use the shared live ownership proof.
@@ -216,13 +237,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
                   references.laneThreadIds?.(root, runtime) ??
                   new Set(deps.threads.listThreads().map((thread) => thread.id));
                 // No yield between the live read and the synchronous sweep.
-                if (
-                  projectHeld(project) ||
-                  [...(references.protectedLaneRoots ?? [])].some(
-                    (held) => projectRuntimeDir(held) === runtime,
-                  )
-                )
-                  continue;
+                if (projectHeld(project) || heldRuntimeDirs.has(runtime)) continue;
                 deletedLanes += sweepOrphanLanes(runtime, ids).length;
               } catch (error) {
                 if (!laneProofCurrent()) {
@@ -245,7 +260,7 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
           request,
           {
             signal,
-            anchorsHeld: !!references.blocked || heldRoots.size > 0,
+            anchorsHeld: !!references.blocked || heldRuntimeDirs.size > 0,
             projects: () => gcProjects,
             records: () => references.records,
             referencedRunIds: () => references.referencedRunIds,
