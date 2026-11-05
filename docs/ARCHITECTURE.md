@@ -5258,6 +5258,8 @@ through the apply or accept workflow. `taken` refuses them with
 refused with `run_taken_continuable` and names `continueFrom` as its remedy.
 Discarding a retained envelope does not remove the terminal resumable record,
 so it does not make that run eligible for `taken`.
+For a non-ephemeral run whose registration is retired, `taken` returns 404
+`project_not_registered`, so send `taken` before retiring that registration.
 
 A `quarantined` generation and project generations owned by its replaced global registry are retired journal evidence: its rows do not own references or keep unsettled commands active, and completed quarantine does not stop retention. Terminal metadata may still date its old payloads. Archived projects in the current registry remain reference owners. Pending or unknown recovery states hold all run namespaces, with one named partition/status hold per pending generation in `errors[]`: scope roots do not bound cross-project dependencies. Partial file delivery retains that protection; explicit discard
 ends pending delivery but does not delete artifacts immediately or bypass other

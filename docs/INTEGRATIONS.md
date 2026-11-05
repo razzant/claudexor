@@ -739,6 +739,8 @@ with `{action: "taken", reason: "captured_result"}` and an `Idempotency-Key`.
 The acknowledgement leaves the engine's copy under ordinary retention; needs-decision,
 continuable and non-patch results return typed refusals. The eligibility and
 retention rules are defined in [ARCHITECTURE](ARCHITECTURE.md#7-control-api).
+For a non-ephemeral run whose registration is retired, `taken` returns 404
+`project_not_registered`, so send `taken` before retiring that registration.
 
 Unfinished work is continued, never restarted: a terminal run whose work is
 unfinished carries `resumable` on `GET /v2/runs/:id` (cause, the vendor's
