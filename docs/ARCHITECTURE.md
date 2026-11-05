@@ -5196,8 +5196,10 @@ directory captures remain unknown, and a false or absent fact (including legacy
 rows) keeps a patch actionable; copied-file results remain actionable as well.
 Failed-check and blocked-review holds take precedence over the no-change fact.
 The caller-owned `action=taken` decision with `reason=captured_result` clears only
-the actionable hold for a terminal patch that the caller already captured. It
-uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
+the actionable hold for a terminal patch that the caller already captured. Legacy
+`kind: patch` rows with `result_kind: none` or `answer` remain eligible for this
+explicit decision; `result_kind: files` and non-patch work-product kinds are refused.
+It uses the existing `runs_max_age_days` and `keep_last_runs_per_project` window,
 with no second retention window, while the engine's copy remains until ordinary
 retention removes it.
 

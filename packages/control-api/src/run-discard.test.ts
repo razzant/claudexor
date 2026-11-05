@@ -204,6 +204,41 @@ describe("discard decision", () => {
     await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
   });
 
+  it("refuses real non-patch results but takes legacy no-change patch rows", async () => {
+    const rec = terminalPatch();
+    const workProduct = join(rec.runDir!, "final/work_product.yaml");
+    const write = (kind: string, resultKind: string | undefined) =>
+      writeFileSync(
+        workProduct,
+        stringify({
+          id: "wp-1",
+          kind,
+          source_task_id: "task-1",
+          meta: { result_kind: resultKind, apply_state: "not_applied" },
+        }),
+      );
+    for (const [kind, resultKind] of [
+      ["patch", "files"],
+      ["files", "files"],
+      ["report", "answer"],
+      ["new_repo", "patch"],
+    ] as const) {
+      write(kind, resultKind);
+      await expect(takeRunResult(rec)).rejects.toMatchObject({
+        status: 409,
+        code: "run_taken_not_patch",
+        context: { reason: "not_patch" },
+      });
+      expect(readDeliveryState(rec)).toBeNull();
+    }
+    for (const resultKind of ["none", "answer", undefined]) {
+      write("patch", resultKind);
+      await expect(takeRunResult(rec)).resolves.toMatchObject({ accepted: true, status: "taken" });
+      expect(readDeliveryState(rec)?.takenReason).toBe("captured_result");
+      rmSync(join(rec.runDir!, "final/delivery_state.yaml")); // Each variant reaches admission afresh.
+    }
+  });
+
   it("refuses taken on a continuable or non-terminal run with typed reasons", async () => {
     const continuableDir = temp("taken-continuable");
     mkdirSync(join(continuableDir, "final"), { recursive: true });

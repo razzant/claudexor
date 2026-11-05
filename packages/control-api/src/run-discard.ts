@@ -144,11 +144,7 @@ export async function takeRunResult(
 
   const workProduct = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
   const resultKind = workProduct?.meta["result_kind"];
-  if (
-    !workProduct ||
-    workProduct.kind !== "patch" ||
-    (resultKind !== undefined && resultKind !== "patch")
-  )
+  if (!workProduct || workProduct.kind !== "patch" || resultKind === "files")
     refuseTaken(
       "run_taken_not_patch",
       "not_patch",
