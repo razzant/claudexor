@@ -1,5 +1,54 @@
 # claudexor
 
+## 5.1.0
+
+### Patch Changes
+
+- 5e1cc16: When the engine selected for an idle replacement does not come up, the macOS app
+  restarts the exact previous build if a saved copy was verified before the stop and
+  nothing can still be running beside it. Otherwise it goes Offline with the specific
+  reason and an explicit Retry, also in the sidebar when remote work keeps the thread
+  screen. If the restarted engine answers only in recovery mode, the notice names the
+  `daemon stop` command for the app's own engine root. The app reports a restart, not
+  a restore: data a newer engine already migrated stays with that engine.
+- 5f4ea12: The macOS app no longer makes ordinary requests wait behind long-lived event
+  streams. Each engine connection, local or remote, now keeps its run, global
+  journal (including the Accounts quota observer) and setup-job streams in a
+  connection pool of its own, configured like its request session, so while many
+  runs stream, opening a thread, refreshing runs and run controls are no longer
+  queued until a stream ends or the 60-second request timeout passes. Switching
+  threads also reads the selected thread's history at once instead of after the
+  global run list: the run-list reconciliation for the previous selection runs
+  beside that read, and when it answers it keeps the off-page rows of the local
+  thread selected at that moment; a selected remote thread no longer keeps local
+  rows that share its run ids. Streams still share the platform's per-host
+  connection limit among themselves (6 observed for loopback HTTP/1.1 on macOS
+  26.4): a stream beyond it waits for another stream to end. No engine API,
+  stream semantics or background-run status changed.
+- 8fb1023: Upload bytes, model-request reads and the full trust-file list no longer run on the daemon's request thread. A scoped trust entry says whether it came from a file or from defaults, so a caller can tell a missing grant from an explicit refusal without listing every repo. The daemon sizes its libuv pool from the host when that variable is unset, and upload writes leave two of those threads free so DNS still runs while parts are being written.
+- Updated dependencies [b63ceac]
+- Updated dependencies [43b0491]
+- Updated dependencies [0d2d858]
+- Updated dependencies [7a6c782]
+- Updated dependencies [d9e8247]
+- Updated dependencies [860bc64]
+- Updated dependencies [8de1106]
+- Updated dependencies [43b0491]
+- Updated dependencies [2be1a9c]
+- Updated dependencies
+- Updated dependencies [cd6e9fa]
+- Updated dependencies [4a4d998]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [0db02d9]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [1c2bd56]
+- Updated dependencies [4d96ddb]
+- Updated dependencies [8905c72]
+- Updated dependencies [0d2d858]
+  - @claudexor/cli@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

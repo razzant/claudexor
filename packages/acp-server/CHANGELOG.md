@@ -1,5 +1,29 @@
 # @claudexor/acp-server
 
+## 5.1.0
+
+### Patch Changes
+
+- 8de1106: A Cursor command handed to a background shell no longer reads as running forever. The handoff now says "Handed off to background; completion not observed" (after its timeout when the 30-second shell timeout moved it) instead of "still running". When Cursor later reports, in a `system/task_notification` frame, that this shell ended with `success`, `error` or `aborted`, Claudexor updates the same command instead of dropping the frame as unrecognized: a `status` event with `payload.code: command_outcome_refined` names the original tool call and carries the refined `command_outcome` (`completion_reported` with that word, the handoff facts kept), and the complete native frame is kept as evidence. The exit code stays unknown, because the frame has no typed one and free-text detail is not parsed, so the command reads "Completion reported; exit code unknown" or "Completion reported (error); exit code unknown". It is never shown as a success, a passing test or a recovery from an earlier failure. The run's telemetry keeps each report as a command fact (`reported_command_outcomes`) that `claudexor inspect` lists apart from tool errors: the tool call itself stays `ok`, and a reported `error` or `aborted` is no tool warning, failed attempt or ranking penalty, since a deliberately stopped dev server may simply have finished correctly. The macOS transcript updates that command's row in place (found by its exact tool-use id, never by name, and never to green), the run timeline shows the update as a warning row, and the continuation packet carries the refined outcome. ACP sends one more `tool_call_update` for the already closed call with its new text and `_meta`, leaving `status` out so the terminal `failed` stands. `claudexor acp serve` now actually streams tool activity: its run event feed, which carried only timer notices, also delivers each tool call, its result and these refinements (never narration or thinking), and each ACP call id names the run and try that issued it, so tries or turns that reuse a native id stay separate calls. The macOS transcript pairs a result only with its own try's call of the same tool-use id; a result whose call never arrived gets its own row instead of closing another open command, and an id-less result closes only the one open id-less call of its exact name in its try when the name fits the existing tool-field limit; longer names remain separate rows. `claudexor inspect` says how many reported outcomes it shows of the total. A notification that names no pending handoff of the same session (an unknown or progress id, a duplicate, a shell id shared by two pending handoffs) or carries any other status changes nothing and stays counted as an unrecognized frame. The frame shape follows one native cursor-agent 2026.08.11 run and that build's stream writer; no sanitized recording exists yet (razzant/claudexor#546).
+- 2be1a9c: Questions Claude Code asks through `AskUserQuestion` now reach every answering surface without the former length cuts (2,000 characters for a question, 100 for a header, 500 for an option label and 1,000 for a description), and a selected long label goes back unchanged (#560). Non-blank free text is sent as written; `claudexor follow` and the macOS card take one line per question. The daemon refuses an answer row that names a question the interaction does not list, repeats a question, or carries neither a label nor non-blank text (`rejected`), and the question stays pending; partial answers, the empty-set decline and selected labels are handled as before. A pending question that no live session holds is answered `not_found` instead of `delivered`, and `delivered` does not prove that the Claude process read the answer. In ACP, each permission prompt now also shows the question's header and option descriptions, a multi-select question with every option skipped is left out instead of sent as an empty row, and a turn-text message names every question left without an answer: with nothing chosen the run stays paused on the set until it is answered elsewhere or expires, and otherwise the message says the chosen answers will be submitted as a partial answer that closes the set once it is accepted. The macOS question card wraps long option labels and scrolls long questions inside a bounded area. No live Claude CLI was run for this change, and the cause of the incident reported in #560 is not established.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes

@@ -1,5 +1,41 @@
 # @claudexor/delivery
 
+## 5.1.0
+
+### Minor Changes
+
+- 1c2bd56: `claudexor scanner prepare [--from-archive <file>]` prepares the pinned publication scanner that `pr` delivery requires (#578). An npm install bundles no scanner and its only way to get one was a script in the source tree, so `pr` from npm refused with no supported path forward. The command downloads the pinned official archive, or takes one you already have, proves both digests and the license and places the complete copy under this machine's config root. Installed package files are not written, and a running daemon uses the copy at its next `pr` with no restart. A complete copy already there is reused, anything else there is reported and left untouched, concurrent runs reuse the winner, and an interrupt ends the extraction and activates nothing. `pr` still never downloads, and the scanner lookup order is unchanged.
+
+### Patch Changes
+
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b9f57d9]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [35a2462]
+- Updated dependencies [780ec76]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [780ec76]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/review@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/workspace@5.1.0
+  - @claudexor/core@5.1.0
+  - @claudexor/policy@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes
