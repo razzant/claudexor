@@ -35,10 +35,19 @@ import { bindIdempotencyInTx, lookupIdempotency } from "./idempotency.js";
 import { runMutation, type MutationContext } from "./mutation.js";
 import type { PartitionGeneration } from "./partitions.js";
 import { storedTerminal } from "./run-events.js";
+import {
+  claimResourceUsesInTx,
+  collectAfterCommit,
+  dropResourceUsesInTx,
+  referencedResourceIds,
+  type ResourceUseHolder,
+} from "./resource-uses.js";
 import type { EngineStore } from "./store.js";
 import {
   deferredMessageDetail,
   deferredMessageProjection,
+  heldForProcessCustody,
+  writeDraftRowInTx,
   type DeferredMessageRow as DraftRow,
 } from "./deferred-message-rows.js";
 
@@ -67,11 +76,14 @@ export function deferredConflict(code: string, message: string, context: object 
 export class SqlDeferredMessages implements DeferredMessageOwner {
   private readonly events: SqlEventLedger;
   constructor(
-    private readonly store: EngineStore,
-    private readonly blobs: BlobFiles,
+    readonly store: EngineStore,
+    readonly blobs: BlobFiles,
     readonly generation: Pick<PartitionGeneration, "pid" | "name" | "epoch">,
     private readonly commands: SqlCommandStore,
-    private readonly validateRefs: (refs: ResourceAttachmentRef[]) => void = (refs) => {
+    private readonly validateRefs: (
+      refs: ResourceAttachmentRef[],
+      heldBy?: ResourceUseHolder,
+    ) => void = (refs) => {
       if (refs.length) throw new Error("ordinary resource admission is unavailable");
     },
     private readonly assertCurrentRoute: (request: CapturedRunStart) => void = (request) => {
@@ -170,7 +182,9 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     if (input.action !== "clear") assertDeferredOperator(false, predecessor.params);
     if (input.action === "create") this.assertTarget(predecessor);
     else this.assertEditable(previous!, input.expectedRevision);
-    if (input.action !== "clear") this.validateRefs(input.attachments);
+    const holder = { owner: "deferred_message" as const, id: previous?.id ?? "" };
+    if (input.action !== "clear")
+      this.validateRefs(input.attachments, previous ? holder : undefined);
     const captured =
       input.action === "clear"
         ? null
@@ -226,6 +240,9 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
       else this.assertEditable(this.requireRow(id), input.expectedRevision);
       if (body) this.blobs.insertRow(body);
       this.write(tx, next);
+      const refs = input.action === "clear" ? [] : referencedResourceIds(input.attachments);
+      claimResourceUsesInTx(tx, { ...holder, id }, refs);
+      collectAfterCommit(tx, this, dropResourceUsesInTx(tx, { ...holder, id }, refs));
       bindIdempotencyInTx(tx, {
         owner: "deferred_message",
         pid: this.generation.pid,
@@ -338,7 +355,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
         try {
           assertDeferredOperator(false, predecessor.params);
           this.assertReservation(current);
-          this.validateRefs(request.attachments ?? []);
+          this.validateRefs(request.attachments ?? [], { owner: "deferred_message", id });
           // This synchronous canonical read runs on the same SQL connection
           // and transaction as acceptance/freeze; it starts no nested mutation.
           this.assertCurrentRoute(request);
@@ -352,12 +369,15 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
           ...current,
           state: "held" as const,
           hold: Buffer.from(JSON.stringify(hold)),
+          held_revision: current.revision,
         };
         this.write(tx, held);
         this.events.appendInTx(tx, event);
         return { draft: this.project(held), record: null, reused: false };
       }
-      const accepted = this.commands.acceptInTx(tx, acceptance);
+      const draftHolder = { owner: "deferred_message" as const, id };
+      const accepted = this.commands.acceptInTx(tx, acceptance, draftHolder);
+      collectAfterCommit(tx, this, dropResourceUsesInTx(tx, draftHolder));
       const dispatched = {
         ...current,
         state: "dispatched" as const,
@@ -384,8 +404,42 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
         ...current,
         state: "held",
         hold: Buffer.from(JSON.stringify(DeferredMessageHold.parse(reason))),
+        held_revision: current.revision,
       });
       this.events.appendInTx(tx, event);
+    });
+  }
+
+  /** #613: an unchanged draft held only for process custody returns to `waiting`,
+   * visibly; its dispatch then takes the ordinary revision and admission path. */
+  resume(id: string, revision: number): boolean {
+    const at = this.store.now().toISOString();
+    return this.fromCustodyHold(id, revision, (row) => ({
+      ...row,
+      state: "waiting",
+      hold: null,
+      resumed: Buffer.from(
+        JSON.stringify({
+          from: JSON.parse(Buffer.from(row.hold!).toString("utf8")),
+          reason: "process_scope_settled",
+          at,
+        }),
+      ),
+    }));
+  }
+  /** A Stop of a custody-held draft keeps it held for the Stop, never for return. */
+  rehold(id: string, revision: number, reason: DeferredMessageHold): boolean {
+    const hold = Buffer.from(JSON.stringify(DeferredMessageHold.parse(reason)));
+    return this.fromCustodyHold(id, revision, (row) => ({ ...row, hold }));
+  }
+  private fromCustodyHold(id: string, revision: number, next: (row: DraftRow) => DraftRow) {
+    const event = this.events.prepare("deferred_message.changed", { draftId: id, revision });
+    return runMutation(this.store, (tx) => {
+      const current = this.row(id);
+      if (!current || !heldForProcessCustody(current, revision)) return false;
+      this.write(tx, next(current));
+      this.events.appendInTx(tx, event);
+      return true;
     });
   }
 
@@ -519,24 +573,7 @@ export class SqlDeferredMessages implements DeferredMessageOwner {
     };
   }
   private write(tx: MutationContext, row: DraftRow): void {
-    tx.prepare(
-      `INSERT INTO deferred_message(id,pid,predecessor_job_id,revision,state,body_sha,hold,
-      successor_job_id,dispatched_revision,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,state=excluded.state,
-      body_sha=excluded.body_sha,hold=excluded.hold,successor_job_id=excluded.successor_job_id,
-      dispatched_revision=excluded.dispatched_revision`,
-    ).run(
-      row.id,
-      row.pid,
-      row.predecessor_job_id,
-      row.revision,
-      row.state,
-      row.body_sha,
-      row.hold,
-      row.successor_job_id,
-      row.dispatched_revision,
-      row.created_at,
-    );
+    writeDraftRowInTx(tx, row);
   }
 }
 

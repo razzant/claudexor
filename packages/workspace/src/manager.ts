@@ -26,7 +26,12 @@ import {
   createDirectoryEnvelope,
   type CapturedWorkspaceFiles,
 } from "./directory-workspace.js";
-import { processStartTime, readEnvelopeRecoveryRecord } from "./envelope-recovery.js";
+import {
+  envelopeBaseIn,
+  physicalEnvelopeBase,
+  processStartTime,
+  readEnvelopeRecoveryRecord,
+} from "./envelope-recovery.js";
 import {
   isRetainedEnvelope,
   liveEnvelopeCustody,
@@ -95,11 +100,8 @@ export interface CreateEnvelopeOptions {
   custody?: { runId: string; runDir: string };
 }
 
-/**
- * Manages WorkspaceEnvelopes: an isolated Git checkout plus scoped HOME and
- * per-harness config dirs, and dirty-tree handling. Claudexor owns these
- * envelopes (it does not rely on a harness's native --worktree).
- */
+/** Manages WorkspaceEnvelopes: an isolated Git checkout plus scoped HOME and per-harness
+ * config dirs, and dirty-tree handling; Claudexor owns them (no native --worktree). */
 export { processStartTime } from "./envelope-recovery.js";
 
 export class WorkspaceManager {
@@ -122,7 +124,7 @@ export class WorkspaceManager {
     this.runtimeRoot = options.runtimeRoot ?? projectRuntimeDir(repoRoot);
     this.projectRoot = options.projectRoot;
     this.artifactOwnership = new ArtifactOwnership((env) =>
-      join(this.envelopeBase(env.task_id, env.attempt_id), "artifact-created.json"),
+      join(this.baseOf(env), "artifact-created.json"),
     );
   }
 
@@ -130,27 +132,14 @@ export class WorkspaceManager {
     return join(this.runtimeRoot, "workspaces");
   }
 
-  /**
-   * The scoped envelope base for a task/attempt. The sole on-disk root we
-   * delete on dispose — so the ids MUST be path-safe segments and the resolved
-   * base MUST stay inside the workspaces dir (a crafted `../` id could
-   * otherwise turn dispose() into an arbitrary recursive delete).
-   */
+  /** The envelope base under this manager's namespace (ids fenced, `envelopeBaseIn`). */
   private envelopeBase(taskId: string, attemptId: string): string {
-    const idPattern = /^[A-Za-z0-9._-]+$/;
-    for (const [label, id] of [
-      ["taskId", taskId],
-      ["attemptId", attemptId],
-    ] as const) {
-      if (!idPattern.test(id) || id === "." || id === "..") {
-        throw new WorkspaceError(`${label} '${id}' is not a safe path segment`);
-      }
-    }
-    const base = join(this.workspacesDir(), taskId, attemptId);
-    if (!base.startsWith(this.workspacesDir() + sep)) {
-      throw new WorkspaceError(`envelope base escapes the workspaces dir: ${base}`);
-    }
-    return base;
+    return envelopeBaseIn(this.workspacesDir(), taskId, attemptId);
+  }
+
+  /** Where `env` physically is: its recorded engine-owned base, else this namespace's. */
+  private baseOf(env: WorkspaceEnvelope): string {
+    return physicalEnvelopeBase(env, this.workspacesDir());
   }
 
   ensureArtifactDirectory(env: WorkspaceEnvelope): string {
@@ -190,6 +179,7 @@ export class WorkspaceManager {
         envelope_id: envelopeId,
         workspace_mode: workspaceMode,
         workspace_kind: opts.workspaceKind,
+        execution_root: this.repoRoot,
       }) + "\n",
     );
 
@@ -406,7 +396,7 @@ export class WorkspaceManager {
       // Non-git fallback: diff the best-effort cpSync baseline against the live
       // tree. Missing or failed capture is an INCOMPLETE capture, never a safe
       // no-change result.
-      const baseline = join(this.envelopeBase(env.task_id, env.attempt_id), "baseline");
+      const baseline = join(this.baseOf(env), "baseline");
       return capturePlainDiff(baseline, env.repo_root, artifactRelative);
     }
     // Exclude the envelope-local generated CLAUDE.md bridge (INV-113) from the
@@ -460,7 +450,7 @@ export class WorkspaceManager {
     const owned = this.ownedArtifactRelativeDirectory(env);
     return captureDirectoryWorkspace({
       executionRoot: env.worktree_path,
-      envelopeRoot: this.envelopeBase(env.task_id, env.attempt_id),
+      envelopeRoot: this.baseOf(env),
       runRoot,
       ...options,
       excludedPaths: owned ? [owned] : [],
@@ -471,7 +461,7 @@ export class WorkspaceManager {
    *  the persisted envelope-id-bound marker (survives manager recreation). */
   private bridgeCreatedFact(env: WorkspaceEnvelope): boolean {
     if (this.bridgeCreatedEnvelopes.has(env.id)) return true;
-    return bridgeCreatedMarkerMatches(this.envelopeBase(env.task_id, env.attempt_id), env.id);
+    return bridgeCreatedMarkerMatches(this.baseOf(env), env.id);
   }
 
   /** Keep this envelope on disk past `dispose()`: it holds the only exact copy
@@ -498,9 +488,7 @@ export class WorkspaceManager {
     const inPlace = env.worktree_path === env.repo_root;
     if (inPlace && !keepArtifacts) this.artifactOwnership.removeDirectory(env);
     if (!inPlace && env.workspace_kind !== "directory") {
-      const privateClone = existsSync(
-        join(this.envelopeBase(env.task_id, env.attempt_id), "private-clone-v1"),
-      );
+      const privateClone = existsSync(join(this.baseOf(env), "private-clone-v1"));
       if (!privateClone) {
         try {
           await worktreeRemove(this.repoRoot, env.worktree_path);
@@ -522,7 +510,7 @@ export class WorkspaceManager {
     // under the external runtime workspaces root, so deriving from ids prevents
     // dispose() from ever deleting the live tree.
     try {
-      rmSync(this.envelopeBase(env.task_id, env.attempt_id), { recursive: true, force: true });
+      rmSync(this.baseOf(env), { recursive: true, force: true });
     } catch {
       /* best-effort */
     }

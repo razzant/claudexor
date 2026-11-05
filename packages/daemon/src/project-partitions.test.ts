@@ -633,6 +633,29 @@ describe("SqlCommandRouter", () => {
     await f.close();
   });
 
+  it("keeps a thread of an ephemeral root on its route through turns and a later registration", async () => {
+    const f = await fixture();
+    const root = join(f.root, "disposable-thread-tree");
+    mkdirSync(root, { recursive: true });
+    const thread = f.partitions.createThread({ repoRoot: root, ephemeral: true });
+    const global = f.partitions.forRequest({}).generation.pid;
+
+    // What every turn sends: the thread id, with the project scope rebuilt from thread.repo.
+    const turn = { threadId: thread.id, scope: { kind: "project", root } };
+    expect(f.partitions.forRequest(turn).generation.pid).toBe(global);
+    expect(f.projects.list()).toEqual([]);
+    // That scope alone has no route: a turn reaches the root only through its thread.
+    expect(() => f.partitions.forRequest({ scope: turn.scope })).toThrow(
+      /project is not registered/,
+    );
+
+    f.partitions.registerProject({ root, idempotencyKey: "later", clientId: "fixture" });
+    expect(f.projects.list().map((project) => project.root)).toEqual([root]);
+    expect(f.partitions.forRequest(turn).generation.pid).toBe(global);
+    expect(f.partitions.getThread(thread.id)?.repo?.root).toBe(root);
+    await f.close();
+  });
+
   it("still auto-registers a durable (non-ephemeral) thread root", async () => {
     const f = await fixture();
     const root = join(f.root, "durable-project");

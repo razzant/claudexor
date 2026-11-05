@@ -66,14 +66,16 @@ function observe(store: EngineStore, listener: Listener): () => void {
 }
 
 /** Subscribe BEFORE the cooperative read. Drain changed row identities only;
- * quota/event traffic and unrelated metadata never restart the full inventory. */
+ * quota/event traffic and unrelated metadata never restart the full inventory.
+ * Project and partition changes reach the reader like every other owner row: it
+ * defers the affected namespaces or, only when rows were never inventoried,
+ * holds the whole pass (`hold`). A change that cannot be read holds it too. */
 export function retentionChanges(store: EngineStore) {
   const pending = new Map<string, Change>();
   let closed = false;
-  let topologyChanged = false;
+  let held: string | null = null;
   const stop = observe(store, (change) => {
     pending.set(`${change.table}:${change.id}`, change);
-    if (change.table === "project" || change.table === "partition") topologyChanged = true;
   });
   const readOne = (key: string, read: (change: Change) => void) => {
     const change = pending.get(key);
@@ -82,11 +84,16 @@ export function retentionChanges(store: EngineStore) {
     try {
       read(change);
     } catch (error) {
-      topologyChanged = true;
+      held ??= String(error);
       throw error;
     }
   };
   return {
+    /** Why the whole pass holds, once a change named a reason. */
+    hold(reason: string) {
+      held ??= reason;
+    },
+    held: () => held,
     async refresh(read: (change: Change) => void, signal?: AbortSignal) {
       // Capture a finite batch; newly arriving work is handled by the final
       // synchronous check or the next cooperative refresh.
@@ -97,12 +104,12 @@ export function retentionChanges(store: EngineStore) {
       }
     },
     current(read: (change: Change) => void) {
-      if (closed || topologyChanged) return false;
+      if (closed || held) return false;
       // Same physical read budget as a SQL inventory page. An exceptional
       // burst stays for the next cooperative pass, never a long admission lock.
       if (pending.size > 100) return false;
       for (const key of pending.keys()) readOne(key, read);
-      return !topologyChanged;
+      return !held;
     },
     close() {
       closed = true;

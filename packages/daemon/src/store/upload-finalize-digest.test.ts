@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,6 +80,33 @@ describe("finalize uses the write-time digest", () => {
     const result = f.resources.publishModel(Buffer.from('{"answer":1}'));
     expect(f.resources.readModel(result).toString()).toBe('{"answer":1}');
     expect(heldDigests(f).size).toBe(0);
+  });
+
+  it("publishes a managed import from that digest, and its release reads nothing back", async () => {
+    const f = await open();
+    const body = Buffer.from("managed bytes\n");
+    const sha256 = `sha256:${createHash("sha256").update(body).digest("hex")}`;
+    const request = {
+      expectedStoreId: f.store.storeId,
+      kind: "file",
+      mime: "text/plain",
+      name: "brief.txt",
+      source: "/host/brief.txt",
+      lifetime: "managed",
+    };
+    const content = { sizeBytes: body.length, sha256 };
+    const begun = f.resources.importUpload({ ...request, content }, "import");
+    await f.resources.write(begun.uploadId, chunks(body));
+    expect([...heldDigests(f).keys()]).toEqual([begun.uploadId]);
+    reads.paths.length = 0;
+    const ready = f.resources.importUpload(request, "import");
+    expect(ready).toMatchObject({ state: "ready", resource: { lifetime: "managed", sha256 } });
+    expect(partReads(f.store.paths.uploads)).toEqual([]);
+    expect(heldDigests(f).size).toBe(0);
+    const release = { expectedStoreId: f.store.storeId, sha256 };
+    expect(f.resources.releaseResource(ready.resource!.resourceId, release).state).toBe("released");
+    expect(f.resources.importUpload(request, "import").state).toBe("released");
+    expect(partReads(f.store.paths.uploads)).toEqual([]);
   });
 
   it("still reads when replaying a publication, deduplicating, or recovering after restart", async () => {

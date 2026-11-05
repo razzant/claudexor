@@ -50,6 +50,9 @@ export interface RetentionProject {
   /** False when inventory proves this namespace has no remaining project owner.
    * Omitted by older embedders preserves their existing keep-last protection. */
   keepLastRuns?: boolean;
+  /** False for a store that is not a namespace of its own (the folderless Ask store
+   * lives in the config root): its runs retire, its runtime is never pruned. */
+  namespaceMaintenance?: boolean;
 }
 
 export interface RetentionRunRecord {
@@ -71,6 +74,8 @@ export interface RetentionDeps {
   referencesCurrent?: () => boolean;
   /** Reread changed owners cooperatively before the synchronous final proof. */
   refreshReferences?: () => Promise<void>;
+  /** Runtime namespaces whose registration changed during the pass: held, not deleted. */
+  deferredRuntimes?: () => ReadonlySet<string>;
   now?: () => number;
   /** Bounded batches: one pass deletes at most this many trees (disclosed). */
   maxDeletionsPerPass?: number;
@@ -131,6 +136,17 @@ export async function runRetentionPass(
   let deletions = 0;
   let truncated = false;
   let invalidated = false;
+  // A committed finish that throws may already have removed part of its tree: the
+  // receipt then reports freed_bytes as a lower bound, never a measured total.
+  let effectsUnknown = false;
+  const finish = async (retirement: Retirement) => {
+    try {
+      return await retirement.finish();
+    } catch (error) {
+      effectsUnknown = true;
+      throw error;
+    }
+  };
   const proofCurrent = () => {
     if (invalidated || deps.signal?.aborted) return false;
     try {
@@ -150,6 +166,22 @@ export async function runRetentionPass(
       errors.push(`retention reference refresh failed: ${String(error)}`);
     }
   };
+  // A namespace whose registration changed during this pass keeps everything (#503).
+  const heldNamespaces = new Set<string>();
+  const deferred = (project: RetentionProject) => {
+    const runtime = dirname(project.runsDir);
+    if (!deps.deferredRuntimes?.().has(runtime)) return false;
+    if (!heldNamespaces.has(runtime)) {
+      heldNamespaces.add(runtime);
+      holds.push({
+        class: "references_changed",
+        count: 1,
+        example: `namespace ${project.root} kept: its registration changed during this pass`,
+      });
+      deps.onTruncated?.();
+    }
+    return true;
+  };
   const recoverPending = async (parent: string, kind: "runs" | "reviews", projectRoot: string) => {
     for await (const retirement of pendingRetirements(parent, kind, dryRun, errors, deps.signal)) {
       if (deps.signal?.aborted) break;
@@ -162,7 +194,7 @@ export async function runRetentionPass(
         const planned = new Map(dryRun ? plannedUnlinks : undefined);
         const bytes = await retirement.reclaimableBytes(planned);
         if (!dryRun) {
-          errors.push(...(await retirement.finish()));
+          errors.push(...(await finish(retirement)));
         } else for (const [key, value] of planned) plannedUnlinks.set(key, value);
         if (kind === "runs")
           deletedRuns.push({
@@ -184,6 +216,7 @@ export async function runRetentionPass(
     if (deps.signal?.aborted) break;
     await refreshProof();
     if (!proofCurrent()) break;
+    if (deferred(project)) continue;
     await recoverPending(project.runsDir, "runs", project.root);
     if (truncated || deps.signal?.aborted) break;
     const candidates: {
@@ -194,11 +227,12 @@ export async function runRetentionPass(
       ino: number;
     }[] = [];
     for (const runId of await listSubdirs(project.runsDir)) {
+      const root = join(project.runsDir, runId);
+      // Already reclaimed: a compact receipt costs no proof refresh (most entries).
+      if (existsSync(join(root, TOMBSTONE))) continue;
       await yieldToAdmission();
       await refreshProof();
       if (!proofCurrent()) break runProjects;
-      const root = join(project.runsDir, runId);
-      if (existsSync(join(root, TOMBSTONE))) continue; // already reclaimed
       examined += 1;
       const record = recordsById.get(runId);
       const reason = runKeepReason(root, runId, record, referenced, runCutoff, (error) =>
@@ -244,6 +278,8 @@ export async function runRetentionPass(
           );
         await refreshProof();
         if (!proofCurrent()) break runProjects;
+        if (deferred(project)) continue runProjects;
+        // No await from here to commit: the proof just checked is the one that holds.
         // Re-read every mutable filesystem guard after the asynchronous walk.
         // SQL-backed callers reread changed owners; older embedders
         // without that proof supply fresh references/records here instead.
@@ -276,7 +312,7 @@ export async function runRetentionPass(
         }
         if (retirement) {
           retirement.commit();
-          errors.push(...(await retirement.finish()));
+          errors.push(...(await finish(retirement)));
         }
         if (dryRun) for (const [key, value] of planned) plannedUnlinks.set(key, value);
         deletedRuns.push({
@@ -310,6 +346,7 @@ export async function runRetentionPass(
     await yieldToAdmission();
     await refreshProof();
     if (!proofCurrent()) break;
+    if (deferred(project)) continue;
     // No reviews dir (the no-project root has none) — skip THIS project only.
     // Checked BEFORE the cap so a project with nothing to sweep never makes
     // the pass claim it was truncated.
@@ -351,7 +388,7 @@ export async function runRetentionPass(
         const bytes = await treeReclaimableBytes(path, planned, deps.signal);
         if (!dryRun) retirement = await prepareRetirement(reviewsDir, name, null);
         await refreshProof();
-        if (!proofCurrent()) break;
+        if (!proofCurrent() || deferred(project)) break;
         const currentFence = canonicalInRepoReviewsDir(project);
         if (
           currentFence.verdict !== "ok" ||
@@ -362,7 +399,7 @@ export async function runRetentionPass(
           continue;
         if (retirement) {
           retirement.commit();
-          errors.push(...(await retirement.finish()));
+          errors.push(...(await finish(retirement)));
         }
         if (dryRun) for (const [key, value] of planned) plannedUnlinks.set(key, value);
         deletedReviews.push({ path, freed_bytes: bytes });
@@ -407,6 +444,7 @@ export async function runRetentionPass(
       if (invalidated || deps.signal?.aborted) break;
       await refreshProof();
       if (!proofCurrent()) break;
+      if (project.namespaceMaintenance === false || deferred(project)) continue;
       if (namedAnchors)
         freedBytes += await pruneRunAnchors({
           runtime: dirname(project.runsDir),
@@ -431,7 +469,11 @@ export async function runRetentionPass(
           .map((run) => join(project.runsDir, run.run_id)),
       );
       freedBytes += (
-        await pruneProjectObjectStore(dirname(project.runsDir), { dryRun, retiredOwners })
+        await pruneProjectObjectStore(dirname(project.runsDir), {
+          dryRun,
+          retiredOwners,
+          retireEmpty: true,
+        })
       ).freedBytes;
       if (!dryRun && proofCurrent())
         pruneEmptyRuntimeDirectories(
@@ -443,6 +485,8 @@ export async function runRetentionPass(
             ),
         );
     } catch (error) {
+      // Its anchor, patch-object and object-store steps may already have deleted bytes.
+      if (!dryRun) effectsUnknown = true;
       errors.push(`runtime cleanup: ${error instanceof Error ? error.message : String(error)}`);
     }
     await yieldToAdmission();
@@ -508,6 +552,7 @@ export async function runRetentionPass(
     truncated: truncated || invalidated || deps.signal?.aborted === true,
     deleted_reviews: deletedReviews,
     freed_bytes: freedBytes,
+    ...(effectsUnknown ? { effects: "unknown" } : {}),
     errors,
     ...(dataRootUnrecognized === undefined ? {} : { data_root_unrecognized: dataRootUnrecognized }),
   });

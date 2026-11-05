@@ -33,6 +33,8 @@ export interface UploadRow {
 export interface UploadImportBinding {
   keyDigest: string;
   sha256: string;
+  /** The import's opt-in lifetime, stamped on the resource it publishes. */
+  lifetime?: "managed";
 }
 
 type SqlReader = Pick<SqlWriteContext, "prepare">;

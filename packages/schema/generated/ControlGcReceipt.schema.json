@@ -202,6 +202,11 @@
           "minimum": 0,
           "description": "Total bytes freed (or reclaimable under dry_run)."
         },
+        "effects": {
+          "type": "string",
+          "const": "unknown",
+          "description": "Present only when a deletion committed and then stopped partway: freed_bytes is a lower bound and a later pass finishes that tree. Absent: freed_bytes counts this pass's deletions."
+        },
         "errors": {
           "type": "array",
           "items": {

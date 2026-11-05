@@ -974,6 +974,18 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "POST",
+      "path": "/v2/resources/:id/release",
+      "mutating": true,
+      "applicability": "global",
+      "summary": "Release a managed ordinary resource: no new reference is admitted afterwards, while already accepted work keeps its bytes.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlResourceReleaseRequest",
+      "parameters": [],
+      "response_schema": "ControlResourceRelease",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "GET",
       "path": "/v2/run-applicability",
       "mutating": false,

@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import {
   DeferredMessageCall,
   DeferredMessageMutation,
+  RunProcessScopeLater,
   RunProcessScopeOutcome,
   isTerminalLifecycle,
   DeferredMessageProjection,
@@ -21,13 +22,15 @@ import { commandStoreForId, type CommandBackend } from "./command-authority.js";
 import { admitCommandRequest } from "./command-rpc.js";
 import { assertDeferredOperator, type DeferredMessageOwner } from "./deferred-message-owner.js";
 import type { JobRecord } from "./job-record.js";
+import type { ResourceUseHolder } from "./store/resource-uses.js";
 
 export interface DeferredStartPreparation {
   capture(
     predecessor: JobRecord,
     input: Extract<DeferredMessageMutation, { action: "create" }>,
   ): Promise<CapturedRunStart>;
-  validate(request: CapturedRunStart): Promise<void>;
+  /** `heldBy`: the accepted draft whose own refs are validated (released IDs it holds resolve). */
+  validate(request: CapturedRunStart, heldBy?: ResourceUseHolder): Promise<void>;
 }
 
 /** Event-driven composition with the daemon's existing queue. The in-flight
@@ -118,6 +121,20 @@ export class DeferredMessages {
       await this.evaluate(reservation.draftId);
     }
   }
+  /** #613: a later settlement of the predecessor's run, by this live daemon, proved its
+   * scope empty. Only an unchanged draft whose hold is that unknown custody, with no Stop
+   * or shutdown since and nothing else fencing it now, returns; dispatch then rechecks
+   * everything through the existing path, and any other reason holds it again. */
+  async processScopeSettled(predecessor: string): Promise<void> {
+    const owner = this.deps.commands.deferredFor?.(predecessor);
+    const draft = owner?.reservation(predecessor);
+    if (this.closing || !owner?.resume || draft?.state !== "held") return;
+    if (draft.hold?.code !== "settlement_unknown" || this.stopped.has(draft.draftId)) return;
+    if (this.fence(this.record(draft.predecessorJobId), draft.draftId)) return;
+    if (!owner.resume(draft.draftId, draft.revision)) return;
+    this.waiting.add(draft.draftId);
+    await this.evaluate(draft.draftId);
+  }
   /** Stop holds a waiting draft whatever the predecessor's lifecycle. Fence,
    * hold and report are one synchronous step, and promotion rechecks the fence
    * and the row inside its acceptance mutation: the draft is held here, was
@@ -127,19 +144,27 @@ export class DeferredMessages {
     assertOperatorCaller(caller);
     const owner = this.deps.commands.deferredFor?.(predecessor);
     const draft = owner?.reservation(predecessor);
-    if (draft?.state === "waiting") {
-      this.stopped.add(draft.draftId);
+    // A custody-held draft takes the Stop's own hold, so no later settlement returns it.
+    const custodyHeld = draft?.state === "held" && draft.hold?.code === "settlement_unknown";
+    let reheld = false;
+    if (draft?.state === "waiting" || custodyHeld) {
+      this.stopped.add(draft!.draftId);
       try {
-        owner!.hold(draft.draftId, { code: "stop_requested" });
+        const stop = { code: "stop_requested" } as const;
+        if (custodyHeld) reheld = owner!.rehold?.(draft!.draftId, draft!.revision, stop) === true;
+        else owner!.hold(draft!.draftId, stop);
       } catch (error) {
         // A post-commit notification failure leaves the hold saved.
-        if (!(error as { committed?: boolean })?.committed) throw holdNotSaved(draft, error);
+        if (!(error as { committed?: boolean })?.committed) throw holdNotSaved(draft!, error);
+        reheld = custodyHeld;
       }
     }
     const latest = owner?.latest(predecessor) ?? null;
     if (draft && latest?.draftId === draft.draftId && latest.state !== "waiting")
       this.stopped.delete(draft.draftId);
-    return { held: draft?.state === "waiting" && latest?.state === "held", draft: latest };
+    // The Stop's effect is its own hold: a waiting draft it held, or a custody hold it took over.
+    const held = (draft?.state === "waiting" && latest?.state === "held") || reheld;
+    return { held, draft: latest };
   }
   /** The closing fence is set first. Holds that cannot be saved are returned
    * for the shutdown report and never stop the remaining holds or the abort. */
@@ -194,7 +219,7 @@ export class DeferredMessages {
     }
     const request = owner.request(id);
     try {
-      await this.preparation().validate(request);
+      await this.preparation().validate(request, { owner: "deferred_message", id });
     } catch (error) {
       const current = owner.get(id);
       if (current?.revision === draft.revision && current.state === "waiting")
@@ -261,21 +286,26 @@ export class DeferredMessages {
   }
 }
 
+/** The later bounded settlement (#613) is read before the historical terminal record. */
 function processCustodyHold(record: JobRecord): DeferredMessageHold | null {
   if (!record.runDir) return { code: "settlement_unknown" };
-  try {
-    const scope = RunProcessScopeOutcome.parse(
-      parseYaml(readFileSync(join(record.runDir, "final/process_scope.yaml"), "utf8")),
-    );
-    if (
-      scope.settled &&
-      !scope.incomplete &&
-      scope.survivors.length === 0 &&
-      scope.unreadable.length === 0
-    )
-      return null;
-  } catch {
-    /* absent/unreadable custody is unknown, never clean */
+  const read = (name: string) => parseYaml(readFileSync(join(record.runDir!, name), "utf8"));
+  for (const scope of [
+    () => RunProcessScopeLater.parse(read("final/process_scope_later.yaml")).outcome,
+    () => RunProcessScopeOutcome.parse(read("final/process_scope.yaml")),
+  ]) {
+    try {
+      const outcome = scope();
+      if (
+        outcome.settled &&
+        !outcome.incomplete &&
+        outcome.survivors.length === 0 &&
+        outcome.unreadable.length === 0
+      )
+        return null;
+    } catch {
+      /* absent/unreadable custody is unknown, never clean */
+    }
   }
   return { code: "settlement_unknown" };
 }

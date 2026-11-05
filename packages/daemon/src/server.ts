@@ -104,7 +104,7 @@ export class DaemonServer {
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
   private readonly commands: CommandBackend;
-  private readonly deferred: DeferredMessages;
+  readonly deferred: DeferredMessages;
   private get active(): number {
     return this.activeJobs.size;
   }

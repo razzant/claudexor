@@ -37,6 +37,7 @@ import {
   mergeThreadPatch,
 } from "../thread-store-support.js";
 import { threadWorktreeMutation } from "../thread-worktree-state.js";
+import { syncThreadResourceUsesInTx } from "./resource-uses.js";
 
 import type { CreateThreadInput, CreateTurnInput, UpdateThreadInput } from "../threads.js";
 import { BlobFiles } from "./blob-files.js";
@@ -106,6 +107,7 @@ export class SqlThreadStore {
       ...(prepared.mutation.checkpoints ?? []).map((item) => item.thread_id),
     ]);
     for (const id of touched) this.pingHeadInTx(tx, id);
+    syncThreadResourceUsesInTx(tx, prepared.mutation, this);
   }
 
   private commit(mutation: ThreadMutation, purge?: Thread): void {

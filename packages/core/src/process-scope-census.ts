@@ -11,7 +11,7 @@
  * binaries, so membership on POSIX is the UNION of (a) marker members,
  * (b) members of recorded process groups under the pgid-reuse rule and
  * (c) individually recorded descendants, every one signalled by pid after its
- * birth is re-measured (`capturedCandidates` below).
+ * birth is re-measured (`capturedCandidates` in `process-table.ts`).
  *
  * Contract (shared with the embedding host):
  * - one asynchronous process-table read per census: macOS streams
@@ -41,7 +41,6 @@
  */
 import {
   compareProcessBirth,
-  compareProcessIdentity,
   defaultAsyncProcessIdentityReader,
   type AsyncProcessIdentityReader,
   type KnownProcessIdentity,
@@ -55,11 +54,12 @@ import {
   type ScopeCensusReader,
 } from "./process-scope-readers.js";
 import {
-  birthEpochSeconds,
+  capturedCandidates,
   createProcessTableReader,
   type CapturedProcess,
+  type GroupLeaderVerdict,
   type ProcessTableReader,
-  type ProcessTableRow,
+  type ScopeRootGroup,
 } from "./process-table.js";
 
 /** The settlement deadline won a race against a read. */
@@ -95,7 +95,9 @@ export interface ScopeReapOutcome {
   /**
    * Recorded groups skipped entirely because the pgid-reuse rule failed (a
    * live process owns the group id with a different birth, or a member was
-   * born before the scope): disclosed residual, never signalled.
+   * born before the scope): disclosed, never signalled. Another birth at the
+   * group id proves the recorded group gone. Any other skip leaves live members
+   * that could still be ours: they are `unreadable`, so the reap does not settle.
    */
   reusedGroups: number[];
   /** True only when every census source succeeded and nothing survived or stayed unreadable. */
@@ -166,89 +168,6 @@ export interface ScopeReapOptions {
   platform?: string;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
-}
-
-export interface ScopeRootGroup {
-  pgid: number;
-  leaderPid: number;
-  /** `lstart` text of the leader when a table read confirmed it; null if the root never got one. */
-  leaderBirth: string | null;
-  /** The leader's spawn-time measured identity (proc identity token). */
-  leaderIdentity?: KnownProcessIdentity;
-}
-
-/** The epoch-seconds floor of a scope: the earlier of its `lstart` and wall-clock floors. */
-export function scopeFloorSeconds(
-  scopeStart: string | null | undefined,
-  scopeStartAt: string | null | undefined,
-): number | null {
-  const fromBirth = scopeStart ? birthEpochSeconds(scopeStart) : null;
-  const fromClock = scopeStartAt ? Math.floor(Date.parse(scopeStartAt) / 1000) : null;
-  const floors = [fromBirth, fromClock].filter(
-    (v): v is number => v !== null && Number.isFinite(v),
-  );
-  return floors.length ? Math.min(...floors) : null;
-}
-
-/**
- * The candidates of the recorded sources against one fresh table snapshot:
- * every individually captured pid still alive with its recorded birth, plus
- * every live member of a recorded group G under the pgid-reuse rule — POSIX
- * does not reuse a pid as a group id while that group has members, so G is
- * still ours when (i) every live member of G was born at or after the scope
- * and (ii) a live process with pid == G has the birth we recorded for G's
- * leader; otherwise G was reused and is skipped entirely. Pure.
- */
-export function capturedCandidates(
-  captured: readonly CapturedProcess[],
-  rows: readonly ProcessTableRow[],
-  scopeStart: string | null | undefined,
-  options: {
-    scopeStartAt?: string | null;
-    rootGroups?: ReadonlyArray<ScopeRootGroup>;
-    /** For a root group known only by its leader identity: whether a live
-     * process with pid == G is still that leader (computed by the caller). */
-    leaderVerdict?: ReadonlyMap<number, "same" | "different">;
-  } = {},
-): { candidates: Map<number, string>; reusedGroups: number[] } {
-  const byPid = new Map(rows.map((row) => [row.pid, row] as const));
-  const candidates = new Map<number, string>();
-  const reusedGroups: number[] = [];
-  for (const item of captured) {
-    const row = byPid.get(item.pid);
-    if (row && row.birth === item.birth) candidates.set(row.pid, row.birth);
-  }
-  const floor = scopeFloorSeconds(scopeStart, options.scopeStartAt);
-  const rootByPgid = new Map((options.rootGroups ?? []).map((g) => [g.pgid, g] as const));
-  const groups = new Set([...captured.map((item) => item.pgid), ...rootByPgid.keys()]);
-  for (const group of groups) {
-    const members = rows.filter((row) => row.pgid === group);
-    if (members.length === 0) continue; // emptied: simply gone
-    const root = rootByPgid.get(group);
-    const recordedLeaderBirth =
-      captured.find((item) => item.pid === group)?.birth ?? root?.leaderBirth ?? undefined;
-    const liveLeader = byPid.get(group);
-    // Rule (ii): a live process with pid == G must be the recorded leader —
-    // by its `lstart` when one was recorded, else by the caller's identity
-    // verdict against the spawn-time handle; otherwise G was reused.
-    const leaderReused =
-      liveLeader !== undefined &&
-      (recordedLeaderBirth !== undefined
-        ? liveLeader.birth !== recordedLeaderBirth
-        : options.leaderVerdict?.get(group) !== "same");
-    const bornBefore =
-      floor === null ||
-      members.some((row) => {
-        const at = birthEpochSeconds(row.birth);
-        return at === null || at < floor;
-      });
-    if (leaderReused || bornBefore) {
-      reusedGroups.push(group);
-      continue;
-    }
-    for (const row of members) candidates.set(row.pid, row.birth);
-  }
-  return { candidates, reusedGroups };
 }
 
 type MemberBirth =
@@ -363,6 +282,8 @@ async function reapOnce(opts: ScopeReapOptions): Promise<ScopeReapOutcome> {
   const ended: ScopeMemberRecord[] = [];
   const unreadable = new Map<number, string>();
   const reusedGroups = new Set<number>();
+  // From the latest table read: a member that left no longer holds the reap open.
+  let unproven: readonly number[] = [];
   const seen = new Set<number>();
 
   const signalMember = (member: LiveMember, signal: NodeJS.Signals): void => {
@@ -456,17 +377,17 @@ async function reapOnce(opts: ScopeReapOptions): Promise<ScopeReapOutcome> {
     if (rows === DEADLINE) return null;
     if (rows === null) return "process table unreadable";
     // A root group known only by its leader's identity (no lstart yet): if a
-    // live process owns pid == G, measure it against the spawn-time identity.
-    const leaderVerdict = new Map<number, "same" | "different">();
+    // live process owns pid == G, measure its birth against the spawn-time
+    // identity. The leader's birth decides, as with `lstart`: a leader that
+    // moved to another group still holds pid G, so G was never reused.
+    const leaderVerdict = new Map<number, GroupLeaderVerdict>();
     for (const root of opts.rootGroups ?? []) {
       if (root.leaderBirth !== null || !root.leaderIdentity) continue;
       if (!rows.some((row) => row.pid === root.pgid)) continue;
       const observed = await bounded(() => identity.read(root.pgid));
       if (observed === DEADLINE) return null;
-      leaderVerdict.set(
-        root.pgid,
-        compareProcessIdentity(root.leaderIdentity, observed) === "same" ? "same" : "different",
-      );
+      const birth = compareProcessBirth(root.leaderIdentity, observed);
+      leaderVerdict.set(root.pgid, birth === "same" || birth === "different" ? birth : "unknown");
     }
     const found = capturedCandidates(captured ?? [], rows, opts.scopeStart, {
       scopeStartAt: opts.scopeStartAt,
@@ -474,6 +395,7 @@ async function reapOnce(opts: ScopeReapOptions): Promise<ScopeReapOutcome> {
       leaderVerdict,
     });
     for (const group of found.reusedGroups) reusedGroups.add(group);
+    unproven = found.unproven.filter((pid) => !excluded.has(pid));
     await mapBounded([...found.candidates], LINUX_CONCURRENCY, ([pid, birth]) =>
       admitCaptured(pid, birth, signal),
     );
@@ -514,20 +436,25 @@ async function reapOnce(opts: ScopeReapOptions): Promise<ScopeReapOutcome> {
     });
   };
 
-  const outcome = (censusFailure: string | null): ScopeReapOutcome => ({
-    coverage: captured || opts.rootGroups ? "marker+capture" : "marker",
-    census: censusFailure === null ? "ok" : "failed",
-    censusFailure,
-    ended,
-    survivors: [...live.values()].map((m) => ({ pid: m.pid, startToken: m.startToken })),
-    unreadable: [...unreadable].map(([pid, reason]) => ({ pid, reason })),
-    reusedGroups: [...reusedGroups],
-    settled: censusFailure === null && !pastDeadline() && live.size === 0 && unreadable.size === 0,
-    incomplete: pastDeadline(),
-    ...reapCompleteness(platform, censusFailure, pastDeadline(), censusUnreadable),
-    restricted,
-    durationMs: now() - start,
-  });
+  const outcome = (censusFailure: string | null): ScopeReapOutcome => {
+    const unknown = new Map(unreadable);
+    for (const pid of unproven)
+      if (!live.has(pid) && !unknown.has(pid)) unknown.set(pid, "group_membership_unproven");
+    return {
+      coverage: captured || opts.rootGroups ? "marker+capture" : "marker",
+      census: censusFailure === null ? "ok" : "failed",
+      censusFailure,
+      ended,
+      survivors: [...live.values()].map((m) => ({ pid: m.pid, startToken: m.startToken })),
+      unreadable: [...unknown].map(([pid, reason]) => ({ pid, reason })),
+      reusedGroups: [...reusedGroups],
+      settled: censusFailure === null && !pastDeadline() && live.size === 0 && unknown.size === 0,
+      incomplete: pastDeadline(),
+      ...reapCompleteness(platform, censusFailure, pastDeadline(), censusUnreadable),
+      restricted,
+      durationMs: now() - start,
+    };
+  };
 
   let censusFailure = await scan("SIGTERM");
   if (live.size === 0) {

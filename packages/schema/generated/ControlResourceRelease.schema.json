@@ -1,0 +1,44 @@
+{
+  "$ref": "#/definitions/ControlResourceRelease",
+  "definitions": {
+    "ControlResourceRelease": {
+      "type": "object",
+      "properties": {
+        "storeId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Durable store that released the resource."
+        },
+        "resourceId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+        },
+        "state": {
+          "type": "string",
+          "const": "released"
+        },
+        "releasedAt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The first release; a repeat answers the same instant."
+        }
+      },
+      "required": [
+        "storeId",
+        "resourceId",
+        "sha256",
+        "state",
+        "releasedAt"
+      ],
+      "additionalProperties": false,
+      "description": "Receipt of a released managed resource. Not a deletion: bytes stay while accepted commands, turns or drafts hold them or another live resource shares the digest."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -11,8 +11,11 @@
  * 1 s resolution — a disclosed limit) and is only ever compared with another
  * `lstart` reading from this reader, never with the proc-identity helper's
  * token: the two birth sources are kept apart on purpose.
+ *
+ * The pgid-reuse rule over one such snapshot (`capturedCandidates`) lives here too.
  */
 import { execFile } from "node:child_process";
+import type { KnownProcessIdentity } from "./process-identity.js";
 
 export interface ProcessTableRow {
   pid: number;
@@ -58,6 +61,104 @@ export function parseProcessTableRow(line: string): ProcessTableRow | null {
 export function birthEpochSeconds(birth: string): number | null {
   const ms = Date.parse(birth);
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+}
+
+export interface ScopeRootGroup {
+  pgid: number;
+  leaderPid: number;
+  /** `lstart` text of the leader when a table read confirmed it; null if the root never got one. */
+  leaderBirth: string | null;
+  /** The leader's spawn-time measured identity (proc identity token). */
+  leaderIdentity?: KnownProcessIdentity;
+}
+
+/** Whether a live process with pid == G is still a group's leader, by its birth. */
+export type GroupLeaderVerdict = "same" | "different" | "unknown";
+
+/** The epoch-seconds floor of a scope: the earlier of its `lstart` and wall-clock floors. */
+export function scopeFloorSeconds(
+  scopeStart: string | null | undefined,
+  scopeStartAt: string | null | undefined,
+): number | null {
+  const fromBirth = scopeStart ? birthEpochSeconds(scopeStart) : null;
+  const fromClock = scopeStartAt ? Math.floor(Date.parse(scopeStartAt) / 1000) : null;
+  const floors = [fromBirth, fromClock].filter(
+    (v): v is number => v !== null && Number.isFinite(v),
+  );
+  return floors.length ? Math.min(...floors) : null;
+}
+
+/**
+ * The candidates of the recorded sources against one fresh table snapshot:
+ * every individually captured pid still alive with its recorded birth, plus
+ * every live member of a recorded group G under the pgid-reuse rule — POSIX
+ * does not reuse a pid as a group id while that group has members, so G is
+ * still ours when (i) every live member of G was born at or after the scope
+ * and (ii) a live process with pid == G has the birth we recorded for G's
+ * leader; otherwise G is skipped entirely. A live process with pid == G of
+ * ANOTHER birth proves the recorded group gone. Any other skip (no floor, a
+ * birth that cannot be read, a member older than the scope, a leader that cannot
+ * be told) proves nothing: `unproven` lists the live members that could still be
+ * ours, never signalled, keeping the reap from settling. Pure.
+ */
+export function capturedCandidates(
+  captured: readonly CapturedProcess[],
+  rows: readonly ProcessTableRow[],
+  scopeStart: string | null | undefined,
+  options: {
+    scopeStartAt?: string | null;
+    rootGroups?: ReadonlyArray<ScopeRootGroup>;
+    /** For a root group known only by its leader identity (computed by the caller). */
+    leaderVerdict?: ReadonlyMap<number, GroupLeaderVerdict>;
+  } = {},
+): { candidates: Map<number, string>; reusedGroups: number[]; unproven: number[] } {
+  const byPid = new Map(rows.map((row) => [row.pid, row] as const));
+  const candidates = new Map<number, string>();
+  const reusedGroups: number[] = [];
+  const unproven: number[] = [];
+  for (const item of captured) {
+    const row = byPid.get(item.pid);
+    if (row && row.birth === item.birth) candidates.set(row.pid, row.birth);
+  }
+  const floor = scopeFloorSeconds(scopeStart, options.scopeStartAt);
+  const age = (row: ProcessTableRow): "older" | "in_scope" | "unknown" => {
+    const at = birthEpochSeconds(row.birth);
+    if (floor === null || at === null) return "unknown";
+    return at < floor ? "older" : "in_scope";
+  };
+  const rootByPgid = new Map((options.rootGroups ?? []).map((g) => [g.pgid, g] as const));
+  const groups = new Set([...captured.map((item) => item.pgid), ...rootByPgid.keys()]);
+  for (const group of groups) {
+    const members = rows.filter((row) => row.pgid === group);
+    if (members.length === 0) continue; // emptied: simply gone
+    const root = rootByPgid.get(group);
+    const recordedLeaderBirth =
+      captured.find((item) => item.pid === group)?.birth ?? root?.leaderBirth ?? undefined;
+    const liveLeader = byPid.get(group);
+    const verdict = options.leaderVerdict?.get(group);
+    // Rule (ii): a live process with pid == G must be the recorded leader —
+    // by its `lstart` when one was recorded, else by the caller's identity
+    // verdict against the spawn-time handle.
+    const recycled =
+      liveLeader !== undefined &&
+      (recordedLeaderBirth !== undefined
+        ? liveLeader.birth !== recordedLeaderBirth
+        : verdict === "different");
+    if (recycled) {
+      reusedGroups.push(group);
+      continue;
+    }
+    const leaderUntold =
+      liveLeader !== undefined && recordedLeaderBirth === undefined && verdict !== "same";
+    if (leaderUntold || !members.every((row) => age(row) === "in_scope")) {
+      reusedGroups.push(group);
+      for (const row of members)
+        if (age(row) !== "older" && !candidates.has(row.pid)) unproven.push(row.pid);
+      continue;
+    }
+    for (const row of members) candidates.set(row.pid, row.birth);
+  }
+  return { candidates, reusedGroups, unproven };
 }
 
 function runPsRows(args: string[]): Promise<{ rows: ProcessTableRow[]; failure: string | null }> {

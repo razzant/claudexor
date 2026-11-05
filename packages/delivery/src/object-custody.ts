@@ -306,7 +306,7 @@ export async function revertAnchorUnlocked(repo: string, anchorId: string, proje
   let anchor: { pair: GitDeliveryPair } | { patch: string };
   try {
     const pair = readRevertPair(projectRoot, anchorId);
-    anchor = pair ? { pair } : { patch: readRevertAnchor(repo, anchorId) };
+    anchor = pair ? { pair } : { patch: readPatchAnchor(projectRoot, repo, anchorId) };
   } catch (error) {
     const cause = redactSecrets(error instanceof Error ? error.message : String(error));
     const why =
@@ -348,4 +348,15 @@ export function afterWriteRefusal(
         ? `${refusal.message}; ${gone}`
         : `${refusal.message}; the write could not be taken back (${stays}); ${RECOVERY_REQUIRED}`,
   };
+}
+
+/** A legacy patch anchor: the project's namespace keeps current ones (#503); an older one
+ * may sit under the target's own namespace. A missing first location reads the second. */
+function readPatchAnchor(projectRoot: string, repo: string, anchorId: string): string {
+  try {
+    return readRevertAnchor(projectRoot, anchorId);
+  } catch (error) {
+    if (projectRoot === repo || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return readRevertAnchor(repo, anchorId);
+  }
 }

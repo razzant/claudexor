@@ -593,11 +593,24 @@ describe("DaemonRunScopeIndex", () => {
     expect(readIndex(root).entries).toEqual([]);
   });
 
-  it("a syntactically valid index with a malformed row is preserved aside and disclosed, never partially loaded (item 5)", async () => {
+  it("a malformed row stays in the index verbatim, disclosed UNKNOWN, while recognized rows keep their custody (#613)", async () => {
     const root = tempRoot();
     const path = join(root, RUN_SCOPE_INDEX_FILE);
-    const original = JSON.stringify({ schema_version: 1, entries: [null] });
-    writeFileSync(path, original);
+    const row = (runId: string, over: Record<string, unknown> = {}) => ({
+      marker: mintRunScopeMarker(),
+      run_id: runId,
+      owner: null,
+      state: "open",
+      opened_at: "x",
+      scope_start: null,
+      root_groups: [],
+      captured: [],
+      ...over,
+    });
+    const valid = row("recognized");
+    // A malformed captured row makes only ITS row unknown, never the whole file.
+    const malformed = row("unknown", { captured: [{ pid: "not-a-number" }] });
+    writeFileSync(path, JSON.stringify({ schema_version: 1, entries: [null, valid, malformed] }));
     const disclosures: string[] = [];
     const reaper = fakeReaper();
     const index = new DaemonRunScopeIndex({
@@ -608,49 +621,20 @@ describe("DaemonRunScopeIndex", () => {
       roots: () => [],
       log: (message) => disclosures.push(message),
     });
+    expect(index.list().map((entry) => entry.run_id)).toEqual(["recognized"]);
     const actions = await index.settleDeadOwners();
-    expect(reaper.calls).toEqual([]);
-    expect(actions.join("\n")).toMatch(/unreadable .*malformed entry #0.*preserved as/);
-    expect(disclosures.join("\n")).toMatch(/malformed entry #0/);
-    const aside = readdirSync(root).find((name) =>
-      name.startsWith(`${RUN_SCOPE_INDEX_FILE}.unreadable-`),
-    );
-    expect(aside).toBeDefined();
-    expect(readFileSync(join(root, aside!), "utf8")).toBe(original);
-    // A well-formed row with captured rows is never dropped silently either:
-    // a malformed captured row makes the whole file unknown.
-    const path2 = join(root, "rows.json");
-    writeFileSync(
-      path2,
-      JSON.stringify({
-        schema_version: 1,
-        entries: [
-          {
-            marker: mintRunScopeMarker(),
-            run_id: "r",
-            owner: null,
-            state: "open",
-            opened_at: "x",
-            scope_start: null,
-            root_groups: [],
-            captured: [{ pid: "not-a-number" }],
-          },
-        ],
-      }),
-    );
-    const second = new DaemonRunScopeIndex({
-      path: path2,
-      identity: fakeIdentity({}),
-      reap: reaper.reap,
-      table: fakeTable([]),
-      roots: () => [],
-      log: () => {},
-    });
-    expect((await second.settleDeadOwners()).join("\n")).toMatch(/malformed entry #0/);
-    expect(readdirSync(root).some((name) => name.startsWith("rows.json.unreadable-"))).toBe(true);
+    // Only the recognized row is settled; an unknown row is never reaped or erased.
+    expect(reaper.calls.map((call) => call.marker)).toEqual([valid.marker]);
+    expect(actions.join("\n")).toMatch(/2 unrecognized row\(s\) \(first #0\).*UNKNOWN/);
+    expect(disclosures.join("\n")).toMatch(/unrecognized row/);
+    expect(readdirSync(root).some((name) => name.includes(".unreadable-"))).toBe(false);
+    // The rewrite keeps the unknown rows for the host's Panic view; it is compact.
+    const text = readFileSync(path, "utf8");
+    expect(text).not.toContain("\n");
+    expect(JSON.parse(text)).toEqual({ schema_version: 1, entries: [null, malformed] });
   });
 
-  it("a PRESENT but malformed membership container (captured or root_groups not an array) is preserved aside and disclosed; a missing one keeps the compatibility default (round 4)", async () => {
+  it("a PRESENT but malformed membership container (captured or root_groups not an array) stays an unknown row and is disclosed; a missing one keeps the compatibility default (round 4)", async () => {
     const root = tempRoot();
     const row = (over: Record<string, unknown>) => ({
       marker: mintRunScopeMarker(),
@@ -680,29 +664,29 @@ describe("DaemonRunScopeIndex", () => {
     };
     // Object-valued `captured` carrying a real pid/pgid/birth: unknown, never [].
     const captured = make("captured.json", row({ captured: { pid: 100, pgid: 100, birth: T0 } }));
-    expect((await captured.index.settleDeadOwners()).join("\n")).toMatch(/malformed entry #0/);
+    expect((await captured.index.settleDeadOwners()).join("\n")).toMatch(
+      /1 unrecognized row\(s\) \(first #0\)/,
+    );
     expect(captured.index.list()).toEqual([]);
-    const capturedAside = readdirSync(root).find((n) => n.startsWith("captured.json.unreadable-"));
-    expect(capturedAside).toBeDefined();
-    expect(readFileSync(join(root, capturedAside!), "utf8")).toBe(captured.original);
-    // Opening another run afterwards never overwrites the original silently:
-    // the preserved copy keeps its bytes.
+    // Opening another run afterwards never drops the unknown row silently.
     await captured.index.open("run-after");
-    expect(readFileSync(join(root, capturedAside!), "utf8")).toBe(captured.original);
+    const after = JSON.parse(readFileSync(captured.path, "utf8")) as { entries: unknown[] };
+    expect(after.entries[0]).toEqual(JSON.parse(captured.original).entries[0]);
+    expect(after.entries[1]).toMatchObject({ run_id: "run-after", state: "open" });
     // Object-valued `root_groups`: the same path.
     const groups = make(
       "groups.json",
       row({ root_groups: { pgid: 100, leader_pid: 100, leader_birth: null } }),
     );
-    expect((await groups.index.settleDeadOwners()).join("\n")).toMatch(/malformed entry #0/);
-    expect(readdirSync(root).some((n) => n.startsWith("groups.json.unreadable-"))).toBe(true);
+    expect((await groups.index.settleDeadOwners()).join("\n")).toMatch(/unrecognized row/);
+    expect(groups.index.list()).toEqual([]);
     // A MISSING container is the compatibility default: the row loads as-is.
     const legacy = row({});
     delete (legacy as Record<string, unknown>)["captured"];
     delete (legacy as Record<string, unknown>)["root_groups"];
     const missing = make("missing.json", legacy);
     expect(missing.index.list()).toMatchObject([{ run_id: "r", root_groups: [], captured: [] }]);
-    expect((await missing.index.settleDeadOwners()).join("\n")).not.toMatch(/malformed/);
+    expect((await missing.index.settleDeadOwners()).join("\n")).not.toMatch(/unrecognized/);
     expect(readdirSync(root).some((n) => n.startsWith("missing.json.unreadable-"))).toBe(false);
   });
 

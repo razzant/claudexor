@@ -411,6 +411,8 @@ PRAGMA user_version=3;`);
       ...before,
       meta: [],
       deferred_message: [],
+      // Version 7 adds the empty holder table of managed resources (#249).
+      resource_use: [],
     });
     expect(membership(db)).toEqual([
       { id: "archived", taskGroupId: null },
@@ -531,6 +533,7 @@ PRAGMA user_version=3;`);
       ...before,
       meta: [],
       deferred_message: [],
+      resource_use: [],
     });
     expect(membership(db)).toEqual([
       { id: "archived", taskGroupId: null },
@@ -580,8 +583,8 @@ PRAGMA user_version=3;`);
   it("fresh DDL indexes membership by the canonical column at the current version", async () => {
     const db = await connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(6);
-    expect(readSchemaIdentity(db).userVersion).toBe(6);
+    expect(ENGINE_SCHEMA_VERSION).toBe(7);
+    expect(readSchemaIdentity(db).userVersion).toBe(7);
     assertGroupIndexes(db);
   });
 
@@ -618,6 +621,7 @@ PRAGMA user_version=3;`);
       expect({ ...tableSnapshot(db), meta: [] }).toEqual({
         ...before,
         deferred_message: [],
+        resource_use: [],
         meta: [],
       });
       assertGroupIndexes(db);
@@ -667,6 +671,7 @@ PRAGMA user_version=3;`);
       expect({ ...after, meta: [], account_last_service: [] }).toEqual({
         ...before,
         deferred_message: [],
+        resource_use: [],
         meta: [],
         account_last_service: [],
       });
@@ -772,6 +777,7 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "event",
         "idempotency",
         "lane_checkpoint",
+        "resource_use",
         "session",
         "unclassified",
       ].sort(),

@@ -161,10 +161,12 @@ export async function main(): Promise<void> {
     const attach = (value: Graph) => {
       if (!listening) server = makeServer();
       setup = setupFor(value);
+      executors?.close(); // A failed open never reached beforeClose, which ends them.
       executors = createSqlDaemonExecutors(value, {
         client: selfClient,
         authority: delegation.authority,
         admission: (id) => server.admission(id),
+        deferred: () => server.deferred,
         authReadiness: () => readiness,
         bus,
         runtimeConcurrencyCaps: caps,
@@ -224,7 +226,7 @@ export async function main(): Promise<void> {
         quotaPoller.stop();
         await stopRetention();
         setup?.beginDrain();
-        executors?.models.close();
+        executors?.close();
         await Promise.all([server.stopForStoreRecovery(), setup?.shutdown()]);
         listening = false;
         setup = null;
@@ -275,7 +277,7 @@ export async function main(): Promise<void> {
       daemon: productionDaemonStop({
         abort: () => abort.abort(),
         server: () => server,
-        closeModels: () => executors?.models.close(),
+        closeExecutors: () => executors?.close(),
         stopRetention: () => stopRetention(),
         opening: () => opening,
       }),

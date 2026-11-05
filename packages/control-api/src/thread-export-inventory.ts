@@ -80,7 +80,11 @@ export interface ThreadExportDeps {
   /** The thread's owned lane directory; throws when a link stands in its path. */
   laneDirectory(thread: ThreadExportClosure["thread"]): string;
   isolatedWorktreeExists(thread: ThreadExportClosure["thread"]): boolean;
-  resolveAttachments(refs: { resourceId: string }[]): {
+  /** `heldBy`: the retained command whose own refs these are (a released ID it holds resolves). */
+  resolveAttachments(
+    refs: { resourceId: string }[],
+    heldBy?: { owner: "command" | "turn"; id: string },
+  ): {
     resource_id: string;
     name: string;
     path: string;
@@ -260,9 +264,15 @@ class InventoryBuilder {
     }
   }
 
-  /** Attachment bytes a turn or command names, by the digest its record carries. */
+  /**
+   * Attachment bytes a turn or command names, by the digest its record carries. Each
+   * document reads its refs as its own holder; a resource is unavailable only when no
+   * document could read it. A delivery repeats its run's params and holds nothing
+   * (#249), so its copy of a released ID is answered by the run's command or turn.
+   */
   async attachments(documents: readonly unknown[]): Promise<void> {
     const named = new Map<string, { name: string; path: string; sha256: string; size: number }>();
+    const unread = new Map<string, string>();
     for (const document of documents as { key: string; value: Record<string, unknown> }[]) {
       const params = document.key.startsWith("command:")
         ? (document.value["params"] as Record<string, unknown> | undefined)
@@ -271,12 +281,17 @@ class InventoryBuilder {
           : null;
       const list = params?.["attachments"];
       if (!Array.isArray(list)) continue;
+      const [kind, ...rest] = document.key.split(":");
+      const holder = {
+        owner: kind === "command" ? "command" : "turn",
+        id: rest.join(":"),
+      } as const;
       for (const raw of list as Record<string, unknown>[]) {
         try {
           const resolved =
             typeof raw["path"] === "string"
               ? [raw as unknown as ReturnType<ThreadExportDeps["resolveAttachments"]>[number]]
-              : this.deps.resolveAttachments([{ resourceId: String(raw["resourceId"]) }]);
+              : this.deps.resolveAttachments([{ resourceId: String(raw["resourceId"]) }], holder);
           for (const item of resolved)
             named.set(item.resource_id, {
               name: item.name,
@@ -285,14 +300,14 @@ class InventoryBuilder {
               size: item.size_bytes,
             });
         } catch (error) {
-          this.gap(
-            "attachment_unavailable",
-            String(raw["resourceId"] ?? raw["resource_id"] ?? document.key),
-            error instanceof Error ? error.message : String(error),
-          );
+          const id = String(raw["resourceId"] ?? raw["resource_id"] ?? document.key);
+          if (!unread.has(id))
+            unread.set(id, error instanceof Error ? error.message : String(error));
         }
       }
     }
+    for (const [id, message] of unread)
+      if (!named.has(id)) this.gap("attachment_unavailable", id, message);
     for (const [id, item] of named) {
       const stat = await lstat(item.path).catch(() => null);
       if (!stat?.isFile() || stat.size !== item.size) {
