@@ -1,11 +1,7 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  RunTelemetry,
-  validateRunFactsInvariants,
-  type RunEvent,
-} from "@claudexor/schema";
+import { RunTelemetry, validateRunFactsInvariants, type RunEvent } from "@claudexor/schema";
 import { appendLine, hashJson } from "@claudexor/util";
 import { parse as parseYaml } from "yaml";
 import type { JobRecord } from "../job-record.js";

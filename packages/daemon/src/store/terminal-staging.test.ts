@@ -193,9 +193,7 @@ describe("terminal receipts and bodies are written off the request thread before
       state: "materialized",
     });
     const receipts = f.writes().filter((write) => write.purpose === "terminal_receipt");
-    expect(receipts).toEqual([
-      expect.objectContaining({ staged: true, written: true }),
-    ]);
+    expect(receipts).toEqual([expect.objectContaining({ staged: true, written: true })]);
     const bodies = f.writes().filter((write) => write.purpose === "blob_body");
     expect(bodies.length).toBeGreaterThan(0);
     expect(bodies.filter((write) => write.written)).toEqual([]);

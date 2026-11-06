@@ -126,7 +126,8 @@ function persistPreparedRunFacts(
   let telemetry: RunTelemetry | null = null;
   try {
     const parsedTelemetry = RunTelemetry.safeParse(ctx.store.readYaml(telemetryPath));
-    if (parsedTelemetry.success) telemetry = RunTelemetry.parse({ ...parsedTelemetry.data, run_facts: null });
+    if (parsedTelemetry.success)
+      telemetry = RunTelemetry.parse({ ...parsedTelemetry.data, run_facts: null });
   } catch {
     // Legacy telemetry is optional evidence; a missing or malformed copy must
     // not prevent the canonical receipt from being prepared.
