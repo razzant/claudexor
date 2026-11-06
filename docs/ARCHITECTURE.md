@@ -8315,7 +8315,11 @@ Cursor ships no npm artifact and cannot be pinned:
 its vendor script is downloaded in full (`curl --fail`, never piped to a
 shell), its size and SHA-256 are printed, and it executes in the visible
 embedded PTY where the operator watches it — the human is the verifier, the
-same principle as interactive SSH auth. Nothing installs without disclosure:
+same principle as interactive SSH auth. The POSIX Cursor and Antigravity scripts
+are Bash programs, so they run as `/bin/bash <file>` (never `/bin/sh`, which is
+dash on Debian and Ubuntu); a host without `/bin/bash` is refused with
+`installer_interpreter_missing` before anything is downloaded, and Antigravity's
+Windows script keeps its PowerShell runner. Nothing installs without disclosure:
 the CLI prints the exact selected package/version/destination install recipe
 (`~/.claudexor/remote/vendor/bin`, which the remote wrapper puts first on
 PATH) and requires a TTY confirmation or an explicit `--yes`, and the macOS

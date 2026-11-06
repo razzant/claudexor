@@ -1,5 +1,14 @@
-import { existsSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  type PathLike,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLAUDE_VENDOR_CLI_VERSION } from "@claudexor/harness-claude";
 import { CODEX_VENDOR_CLI_VERSION } from "@claudexor/harness-codex";
@@ -158,7 +167,7 @@ describe("runHarnessInstaller", () => {
     expect(curlArgv).toContain(AGY_INSTALL_URL);
     const installerPath = curlArgv.at(-1)!;
     expect(installerPath).toContain("claudexor-agy-install-");
-    expect(spawn.mock.calls[1]![0]).toBe("/bin/sh");
+    expect(spawn.mock.calls[1]![0]).toBe("/bin/bash");
     expect(stdout.lines()).toMatch(/agy installer downloaded: \d+ bytes, sha256 [0-9a-f]{64}/);
     // The private temp dir is removed on the success path too.
     expect(existsSync(dirname(installerPath))).toBe(false);
@@ -272,7 +281,7 @@ describe("runHarnessInstaller", () => {
     );
     expect(spawn).toHaveBeenNthCalledWith(
       2,
-      "/bin/sh",
+      "/bin/bash",
       [installerPath],
       expect.objectContaining({ stdio: "inherit" }),
     );
@@ -301,7 +310,113 @@ describe("runHarnessInstaller", () => {
     expect(result.refusal).toContain("could not be read back");
     expect(spawn).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["agy", "cursor"] as const)(
+    "refuses %s before any download when /bin/bash is absent: no sh fallback, no checksum (#639)",
+    (harness) => {
+      const home = mkdtempSync(join(tmpdir(), "claudexor-no-bash-"));
+      // A failing `--version` keeps any host-installed vendor CLI from
+      // satisfying the local target's already-installed check.
+      const spawn = vi.fn(() => ({ status: 1, stdout: "", stderr: "" }) as never);
+      const exists = vi.fn((path: PathLike) => path !== "/bin/bash");
+      try {
+        for (const target of ["remote", "local"] as const) {
+          const result = runHarnessInstaller(harness, {
+            home,
+            target,
+            spawn: spawn as never,
+            exists,
+          });
+          expect(result).toEqual({
+            exitCode: 1,
+            code: "installer_interpreter_missing",
+            refusal: `the ${harness} installer is a Bash script and /bin/bash is not present on this host; install Bash and retry — nothing was downloaded or executed`,
+          });
+        }
+        expect(exists).toHaveBeenCalledWith("/bin/bash");
+        // Only the local target's already-installed `--version` probe may run;
+        // never curl, never a shell.
+        for (const [binary] of spawn.mock.calls as unknown as [string][]) {
+          expect(["curl", "/bin/bash", "/bin/sh"]).not.toContain(binary);
+        }
+        expect(existsSync(join(home, ".claudexor", "harness-install.lock"))).toBe(false);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });
+
+describe.skipIf(process.platform === "win32")(
+  "POSIX vendor scripts run under Bash, the interpreter both vendors require (#639)",
+  () => {
+    // Innocuous stand-in carrying the vendors' Bash-only constructs: agy's
+    // `set -euo pipefail` + `local`, Cursor's `${VAR//…}` and `[[ … ]]`.
+    const BASH_ONLY_FIXTURE = [
+      "#!/bin/bash",
+      "set -euo pipefail",
+      'probe() { local value="$1"; printf "%s" "${value//[[:space:]]/}"; }',
+      '[[ ":a:b:" == *":b:"* ]]',
+      'probe " bash-ok " > "$HOME/interpreter-marker"',
+      "",
+    ].join("\n");
+    /** curl writes the fixture; every other child is REALLY spawned, so the
+     * interpreter the installer selects is the one that runs it. `runAs`
+     * substitutes the runner binary to model a host whose shell differs. */
+    const fixtureSpawn = (runAs?: string) =>
+      vi.fn((binary: string, argv: string[], options?: Parameters<typeof spawnSync>[2]) => {
+        if (binary === "curl") {
+          writeFileSync(argv.at(-1) ?? "", BASH_ONLY_FIXTURE);
+          return { status: 0 } as never;
+        }
+        return spawnSync(runAs ?? binary, argv, options ?? {});
+      });
+
+    it.each(["agy", "cursor"] as const)(
+      "the real installer runs the downloaded %s script with /bin/bash",
+      (harness) => {
+        const home = mkdtempSync(join(tmpdir(), "claudexor-bash-runner-"));
+        const stdout = captureStdout();
+        try {
+          const spawn = fixtureSpawn();
+          const result = runHarnessInstaller(harness, { home, spawn: spawn as never });
+          stdout.restore();
+          expect(result).toEqual({ exitCode: 0 });
+          expect(spawn.mock.calls[1]![0]).toBe("/bin/bash");
+          expect(readFileSync(join(home, "interpreter-marker"), "utf8")).toBe("bash-ok");
+          expect(stdout.lines()).toContain("running: /bin/bash ");
+          expect(harnessInstallerDisclosure(harness).command).toMatch(
+            / && \/bin\/bash <private-tmpdir>\/install\.sh$/,
+          );
+        } finally {
+          stdout.restore();
+          rmSync(home, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.skipIf(!existsSync("/bin/dash"))(
+      "negative control: under dash (Debian's /bin/sh) the same fixture fails and is never success",
+      () => {
+        const home = mkdtempSync(join(tmpdir(), "claudexor-dash-runner-"));
+        const stdout = captureStdout();
+        try {
+          const result = runHarnessInstaller("agy", {
+            home,
+            spawn: fixtureSpawn("/bin/dash") as never,
+          });
+          stdout.restore();
+          expect(result.exitCode).toBe(2);
+          expect(result.installerSha256).toMatch(/^[0-9a-f]{64}$/);
+          expect(existsSync(join(home, "interpreter-marker"))).toBe(false);
+        } finally {
+          stdout.restore();
+          rmSync(home, { recursive: true, force: true });
+        }
+      },
+    );
+  },
+);
 
 describe("harnessInstallCommand disclosure/confirmation gate", () => {
   it("--dry-run prints the typed disclosure and executes nothing", () => {
@@ -408,7 +523,7 @@ describe("--json stdout purity on the execute path (--yes)", () => {
     expect(payload).toMatchObject({ ok: true, dryRun: false, exitCode: 0, harness: "cursor" });
     expect(result.stdout).not.toContain("cursor installer downloaded");
     expect(result.stderr).toMatch(/cursor installer downloaded: \d+ bytes, sha256 [0-9a-f]{64}/);
-    expect(result.stderr).toContain("running: /bin/sh ");
+    expect(result.stderr).toContain("running: /bin/bash ");
   });
 
   it("human (non-json) mode keeps the cursor progress lines on stdout", () => {
@@ -451,6 +566,33 @@ describe("Windows installer path (Л-24: best effort, honestly bounded)", () => 
     expect(curlArgv).not.toContain(AGY_INSTALL_URL);
     expect(curlArgv.at(-1)).toMatch(/install\.ps1$/);
     expect(spawn.mock.calls[1]![0]).toBe("powershell");
+  });
+
+  it("keeps the PowerShell runner exactly and never asks for the POSIX Bash (#639)", () => {
+    asWindows();
+    expect(harnessInstallerDisclosure("agy").command).toBe(
+      `curl --fail --silent --show-error --location ${AGY_INSTALL_URL_WINDOWS} ` +
+        "--output <private-tmpdir>/install.ps1 && " +
+        "powershell -ExecutionPolicy Bypass -File <private-tmpdir>/install.ps1",
+    );
+    const spawn = noisySpawn(0);
+    const exists = vi.fn(() => false);
+    const stdout = captureStdout();
+    const result = runHarnessInstaller("agy", {
+      home: "/tmp/operator",
+      spawn: spawn as never,
+      exists,
+    });
+    stdout.restore();
+    expect(result).toEqual({ exitCode: 0 });
+    expect(exists).not.toHaveBeenCalled();
+    const [binary, argv] = spawn.mock.calls[1]! as [string, string[]];
+    expect([binary, ...argv.slice(0, -1)]).toEqual([
+      "powershell",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+    ]);
   });
 
   it("refuses rather than running a POSIX script for a vendor with no Windows installer", () => {
