@@ -435,6 +435,7 @@ describe("bounded SQL thread history", () => {
       generated_at: time,
       run_facts: facts,
     });
+    writeFileSync(join(run.runDir, "final/telemetry.yaml"), JSON.stringify(telemetry));
     f.graph.threads.persistTerminal(
       "job-0",
       RunEvent.parse({
