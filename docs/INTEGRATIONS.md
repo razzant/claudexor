@@ -536,6 +536,16 @@ new snapshot. The engine-default API-key fallback can appear as the native
 count. `next_up` in either listing is the configured default model's verdict,
 never a forecast for another model.
 
+The MCP `claudexor_accounts` tool projects the structured Accounts response
+against its advertised union before returning it to the SDK. This is a
+server-owned compatibility boundary: additive fields from a newer engine are
+discarded only where the published schema does not declare them, while known
+fields and required types remain validated. The projection selects the
+matching legacy or resources branch from its required fields; it never invents
+`quota.resources`, so a resources response that omits that required field
+remains a typed validation error. Raw textual output is retained separately
+for diagnostics.
+
 `GET /v2/accounts/routing-evidence` is the additive, read-only Accounts
 evidence: live pre-progress refusals and each registered account's last service
 per requested model (most recent first), strict, with no probe and no quota
