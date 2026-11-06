@@ -511,7 +511,9 @@ export const RunTelemetry = z
       .describe("Deep-scan reducer outcome (#27); null on non-deep-scan/legacy runs."),
     run_facts: RunFacts.nullable()
       .default(null)
-      .describe("Exact validated terminal receipt; null before terminalization or on legacy runs."),
+      .describe(
+        "Legacy-compatible nullable terminal-fact mirror; null for new terminalized runs and legacy runs because the canonical receipt is final/run_facts.yaml.",
+      ),
     generated_at: IsoTimestamp.describe("When the telemetry artifact was generated."),
   })
   .describe(

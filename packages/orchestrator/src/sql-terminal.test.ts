@@ -105,7 +105,7 @@ describe("orchestrator terminal persistence port", () => {
       });
       expect(result.lifecycle).toBe("failed");
       expect(seen).toHaveLength(1);
-      expect(seen[0]!.telemetry?.run_facts).toEqual(seen[0]!.event.payload.run_facts);
+      expect(seen[0]!.telemetry?.run_facts).toBeNull();
       const events = readFileSync(paths.eventsPath, "utf8")
         .trim()
         .split("\n")
