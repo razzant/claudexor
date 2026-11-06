@@ -1055,8 +1055,9 @@ describe("DaemonServer", () => {
     );
     expect(() => commandAuthority(conflict.dir)).not.toThrow();
     expect(
-      RunTelemetry.parse(parseYaml(readFileSync(join(conflict.runDir, "final", "telemetry.yaml"), "utf8")))
-        .run_facts,
+      RunTelemetry.parse(
+        parseYaml(readFileSync(join(conflict.runDir, "final", "telemetry.yaml"), "utf8")),
+      ).run_facts,
     ).toMatchObject({ generated_at: "2026-07-27T09:09:09.000Z" });
   });
 
