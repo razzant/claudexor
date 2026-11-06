@@ -327,9 +327,7 @@ export class SqlCommandStore implements CommandStorePort {
       runMutation(this.store, (tx) => {
         applyCommandInTx(tx, prepared, "update");
         applyTerminalInTx(tx, this.generation.pid, event);
-        this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {
-          telemetry,
-        });
+        this.options.obligations.create("terminal_files", event.run_id, this.generation.pid, {});
         this.events.appendInTx(tx, updated);
         this.events.appendInTx(tx, run);
         tx.changes.blobChanged(
@@ -399,8 +397,9 @@ export class SqlCommandStore implements CommandStorePort {
           errorContext: undefined,
           finishedAt: terminal.ts,
         },
-        // Re-create the terminal-files obligation; no telemetry mirror is rebuilt.
-        null,
+        // Re-create the terminal-files obligation without a telemetry payload;
+        // no mirror is rebuilt.
+        true,
       );
     } else if (
       current.state !== facts.outcome.lifecycle ||
@@ -445,24 +444,18 @@ export class SqlCommandStore implements CommandStorePort {
     );
   }
 
-  private writeUpdate(
-    row: CommandRow,
-    next: JobRecord,
-    recoveryTelemetry?: RunTelemetry | null,
-  ): JobRecord {
+  private writeUpdate(row: CommandRow, next: JobRecord, recreateTerminalFiles = false): JobRecord {
     const prepared = this.prepare(next, row);
     const { params: _params, ...record } = next;
     const event = this.events.prepare("command.updated", { record });
     runMutation(this.store, (tx) => {
       applyCommandInTx(tx, prepared, "update");
       if (
-        recoveryTelemetry !== undefined &&
+        recreateTerminalFiles &&
         next.runId &&
         !this.options.obligations.get("terminal_files", next.runId)
       )
-        this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {
-          telemetry: recoveryTelemetry,
-        });
+        this.options.obligations.create("terminal_files", next.runId, this.generation.pid, {});
       this.events.appendInTx(tx, event);
       tx.changes.blobChanged(
         row.params_sha,

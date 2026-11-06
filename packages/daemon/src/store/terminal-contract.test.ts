@@ -232,6 +232,7 @@ describe("SQL terminal transaction and real EventLog", () => {
     });
     expect(storedTerminal(f.store, "run")).toEqual(event);
     expect(f.obligations.get("terminal_files", "run")?.state).toBe("materialized");
+    expect(f.obligations.get("terminal_files", "run")?.payload).toEqual({});
     expect(JSON.parse(readFileSync(join(f.runDir, "final/run_facts.yaml"), "utf8"))).toEqual(
       facts(),
     );
