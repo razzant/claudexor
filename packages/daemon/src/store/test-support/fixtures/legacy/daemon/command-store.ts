@@ -14,13 +14,12 @@ import { TextDecoder } from "node:util";
 import type { DurableJournal } from "../journal/index.js";
 import {
   RunEvent as RunEventSchema,
-  RunTelemetry,
   validateRunFactsInvariants,
   type RunEvent,
   type RunFacts,
 } from "../schema/index.js";
 import { fsyncDirectory, hashJson } from "../util/index.js";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml } from "yaml";
 import { commandScopeRoots } from "./command-scope-roots.js";
 import { idempotencyWireProjection } from "./idempotency-wire-projection.js";
 import { POST_TERMINAL_AUDIT_EVENT_TYPES } from "./journaled-run-events.js";
@@ -347,36 +346,9 @@ export class CommandStore {
         }
       }
     }
-    const telemetryPath = join(finalDir, "telemetry.yaml");
-    const telemetryStat = lstatOrNull(telemetryPath);
-    if (telemetryStat) {
-      if (telemetryStat.isSymbolicLink() || !telemetryStat.isFile()) {
-        throw new Error("durable terminal telemetry is not a regular file");
-      }
-      // Telemetry is best-effort descriptive evidence written non-atomically
-      // (no fsync), and the terminal commit path itself tolerates a corrupt
-      // copy (safeParse -> the embedded receipt is simply skipped). The JOURNAL
-      // is the authority, so an unreadable or schema-invalid telemetry file
-      // must never take the whole partition into recovery: it stays in place as
-      // corruption evidence, and only a READABLE copy participates in the
-      // receipt-consistency fence below.
-      let telemetry: RunTelemetry | null = null;
-      try {
-        telemetry = RunTelemetry.parse(parseYaml(readFileSync(telemetryPath, "utf8")));
-      } catch {
-        telemetry = null;
-      }
-      if (telemetry?.run_facts) {
-        if (hashJson(telemetry.run_facts) !== hashJson(facts)) {
-          throw new Error("durable terminal telemetry does not match journal authority");
-        }
-      } else if (telemetry) {
-        replaceFileDurably(
-          telemetryPath,
-          stringifyYaml(RunTelemetry.parse({ ...telemetry, run_facts: facts })),
-        );
-      }
-    }
+    // `final/telemetry.yaml` is legacy evidence only. The canonical receipt
+    // and journal own RunFacts; recovery must leave an existing mirror intact
+    // and must never rebuild or fence it.
     const eventsPath = join(record.runDir!, "events.jsonl");
     const eventsStat = lstatOrNull(eventsPath);
     let eventsBytes = Buffer.alloc(0);

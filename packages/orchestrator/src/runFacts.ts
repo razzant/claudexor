@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  RunTelemetry,
   SCHEMA_VERSION,
   requiredActionsFor,
   validateRunFactsInvariants,
@@ -26,11 +27,10 @@ export { buildRunFacts };
 
 export interface PreparedRunFactsReceipt {
   facts: RunFacts;
-  /** The retired `telemetry.run_facts` mirror: final/run_facts.yaml, the
-   * terminal event and SQL are the authority, so the terminal hands no
-   * telemetry rewrite to the terminal-files owner. Old artifacts that still
-   * carry a non-null mirror stay parseable through the nullable schema field. */
-  telemetry: null;
+  /** A legacy-compatible telemetry projection with the retired mirror nulled.
+   * The terminal-files owner ignores it and never rewrites telemetry.yaml;
+   * final/run_facts.yaml, the terminal event and SQL are the authority. */
+  telemetry: RunTelemetry | null;
   /** Publish the canonical receipt commit marker. */
   commit: () => void;
   /** Restore the exact pre-commit marker bytes after event failure. */
@@ -122,6 +122,15 @@ function persistPreparedRunFacts(
   ctx: AnnouncedRunContext,
   facts: RunFacts,
 ): PreparedRunFactsReceipt {
+  const telemetryPath = join(ctx.paths.finalDir, "telemetry.yaml");
+  let telemetry: RunTelemetry | null = null;
+  try {
+    const parsedTelemetry = RunTelemetry.safeParse(ctx.store.readYaml(telemetryPath));
+    if (parsedTelemetry.success) telemetry = RunTelemetry.parse({ ...parsedTelemetry.data, run_facts: null });
+  } catch {
+    // Legacy telemetry is optional evidence; a missing or malformed copy must
+    // not prevent the canonical receipt from being prepared.
+  }
   const receiptPath = join(ctx.paths.finalDir, "run_facts.yaml");
   let priorReceipt: TextSnapshot | null = null;
   let committed = false;
@@ -138,7 +147,7 @@ function persistPreparedRunFacts(
     writeYamlAtomically(ctx, receiptPath, facts);
     committed = true;
   };
-  return { facts, telemetry: null, commit, rollback };
+  return { facts, telemetry, commit, rollback };
 }
 
 /**

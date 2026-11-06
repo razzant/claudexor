@@ -7,6 +7,7 @@ import {
   type RunEvent,
 } from "@claudexor/schema";
 import { appendLine, hashJson } from "@claudexor/util";
+import { parse as parseYaml } from "yaml";
 import type { JobRecord } from "../job-record.js";
 import {
   lstatOrNull,
