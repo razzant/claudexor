@@ -680,7 +680,7 @@ frequency and volume are. The contracts:
     The sidebar's BOTTOM-LEFT
     carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
     single-line trigger — worst-readiness dot + the account name (or "N
-    accounts") + worst quota % + chevron — that opens a popover to manage
+    accounts") + worst account-wide quota % + chevron — that opens a popover to manage
     accounts in-app — no commands to copy. The engine's setupLogin capability
     selects the supported transport: an in-app setup job or an attached external
     terminal. Codex device auth remains in-app; a harness that declares external
@@ -690,7 +690,8 @@ frequency and volume are. The contracts:
     a legacy default-store login appears as the ordinary `<harness>-default`
     row): a readiness dot (ready means that exact source is
     `available + passed`, never aggregate harness health), its name, ONE compact
-    quota line (worst window % + reset), one "Log in" / "Manage" action, an
+    quota line (worst account-wide text window % + reset, or the scoped fallback
+    below), one "Log in" / "Manage" action, an
     **Enabled** toggle that includes/excludes the account from the harness's
     routing pool (a disabled account is never routable; there is NO user-settable
     "active" account — an unpinned run routes through the quota-aware pool of
@@ -727,6 +728,15 @@ frequency and volume are. The contracts:
     discloses "API key" when that route is next (`next_up.kind =
     api_key_route`); an unpinned composer chip stays
     "Automatic" because next-up may rotate. Auth remains the key management surface.
+
+    The compact quota line's percent comes from the worst account-wide text
+    window, the only kind the trigger's percent reads. An account that reports
+    no account-wide text window shows its worst measured model-scoped text
+    window instead, with that scope after the percent. If that window's own
+    snapshot is not fresh, the line starts with "Last known: ". Existing
+    resource-status overrides, scoped-limit warnings, exhausted/cooling-down
+    lines, readiness and routing are unchanged. A narrow row can truncate the
+    line; hover help and the Resources window list keep the full scope.
 
     A current credential-wide refusal uses that same compact readiness status and
     its detail, retaining the account name, email and last-known quota. A refusal
