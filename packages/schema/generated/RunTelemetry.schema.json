@@ -2620,7 +2620,7 @@
               "type": "null"
             }
           ],
-          "description": "Exact validated terminal receipt; null before terminalization or on legacy runs.",
+          "description": "Legacy-compatible nullable terminal-fact mirror; null for new terminalized runs and legacy runs because the canonical receipt is final/run_facts.yaml.",
           "default": null
         },
         "generated_at": {
