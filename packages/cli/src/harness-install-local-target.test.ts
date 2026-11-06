@@ -244,7 +244,7 @@ const installerSpawn = (options: InstallerSpawnOptions) => {
     if (binary === "curl") {
       writeFileSync(argv.at(-1) ?? "", "#!/bin/sh\necho fake-installer\n");
     } else if (installerStatus === 0 && materialize) {
-      if (binary === "/bin/sh") installCursorFixture(options.home);
+      if (binary === "/bin/bash") installCursorFixture(options.home);
       else if (options.harness !== "cursor") {
         installNpmFixture(options.home, target, options.harness, {
           layout: options.layout,
@@ -889,7 +889,7 @@ describe("harness install --target local", () => {
       });
       expect(remote).toEqual({ exitCode: 0 });
       expect(remoteSpawn).toHaveBeenCalledTimes(2);
-      expect(remoteSpawn.mock.calls[1]![0]).toBe("/bin/sh");
+      expect(remoteSpawn.mock.calls[1]![0]).toBe("/bin/bash");
     } finally {
       rmSync(localHome, { recursive: true, force: true });
       rmSync(remoteHome, { recursive: true, force: true });
@@ -1012,7 +1012,7 @@ describe("harness install --target local", () => {
       );
       expect(spawn).toHaveBeenNthCalledWith(
         2,
-        "/bin/sh",
+        "/bin/bash",
         expect.any(Array),
         expect.objectContaining({ stdio: "inherit" }),
       );
@@ -1240,7 +1240,7 @@ describe("harness install --target local", () => {
         writeFileSync(installerPath, "#!/bin/sh\n");
         return { status: 0 } as never;
       }
-      if (binary === "/bin/sh") {
+      if (binary === "/bin/bash") {
         throw Object.assign(new Error("shell execution failed"), { code: "EIO" });
       }
       throw new Error(`unexpected child ${binary}`);
@@ -1263,7 +1263,7 @@ describe("harness install --target local", () => {
         target: "local",
         command:
           `curl --fail --silent --show-error --location ${CURSOR_INSTALL_URL} ` +
-          "--output <private-tmpdir>/install.sh && /bin/sh <private-tmpdir>/install.sh",
+          "--output <private-tmpdir>/install.sh && /bin/bash <private-tmpdir>/install.sh",
         installLocation: "~/.local/bin (or ~/.cursor/bin, as selected by Cursor's installer)",
         pinnedVersion: null,
         verification: "unattended_unpinned",
@@ -1281,7 +1281,7 @@ describe("harness install --target local", () => {
       expect(existsSync(dirname(installerPath))).toBe(false);
       expect(existsSync(join(home, ".claudexor", "harness-install.lock"))).toBe(false);
       expect(stderr.lines()).toMatch(/cursor installer downloaded: \d+ bytes, sha256 [0-9a-f]{64}/);
-      expect(stderr.lines()).toContain("running: /bin/sh ");
+      expect(stderr.lines()).toContain("running: /bin/bash ");
     } finally {
       stdout.restore();
       stderr.restore();
