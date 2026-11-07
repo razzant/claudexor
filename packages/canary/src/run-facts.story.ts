@@ -52,7 +52,7 @@ describe("RunFacts canary", () => {
 
     const canonical = JSON.stringify(stored);
     expect(JSON.stringify(terminal.runFacts)).toBe(canonical);
-    expect(JSON.stringify(telemetry.run_facts)).toBe(canonical);
+    expect(telemetry.run_facts).toBeNull();
     expect(JSON.stringify(detail.runFacts)).toBe(canonical);
     expect(JSON.stringify(inspectJson.runFacts)).toBe(canonical);
     expect(stored).toMatchObject({

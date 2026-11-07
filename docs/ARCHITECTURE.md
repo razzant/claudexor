@@ -4824,8 +4824,10 @@ once-only terminal-preparation hook also builds and validates the immutable
 `RunFacts` receipt in memory and embeds that exact object in the terminal
 event. One SQL transaction commits the command result, immutable `run_terminal`
 event, scoped event copies and a `pending` terminal-files obligation. The file
-owner then materializes telemetry, `final/run_facts.yaml` and the per-run terminal
-line before best-effort live publication. Before that synchronous commit, a held
+owner then materializes the canonical `final/run_facts.yaml` receipt and the
+per-run terminal line before best-effort live publication; it does not write or
+rebuild `final/telemetry.yaml`, whose per-attempt evidence remains owned by the
+orchestrator. Before that synchronous commit, a held
 or fallback terminal is prepared once (canonical type, receipt and outcome frozen)
 and its durable bytes are staged off the request thread: large command and
 journal bodies as content-addressed files, the receipts and any needed per-run
@@ -7997,8 +7999,11 @@ plan without a deliverable, merge/reviewer roles inflating the planner count,
 configured tests presented as both `not_configured` and passed, or required
 actions that disagree with the terminal outcome. The orchestrator sanitizes
 and validates this object once. The terminal event carries that exact value;
-the terminal-files owner projects it into `RunTelemetry.run_facts` and the
-standalone receipt through its obligation after the SQL terminal commit.
+the terminal-files owner materializes it into the standalone receipt through
+its obligation after the SQL terminal commit. `RunTelemetry.run_facts` remains
+a nullable legacy-compatible field: the orchestrator may read existing
+telemetry with that mirror nulled for the terminal contract, but terminal-files
+neither projects `RunFacts` into it nor rewrites `telemetry.yaml`.
 `GET /v2/runs/:id` (`runFacts`),
 terminal CLI JSON/JSON-stream output, artifact-only `inspect --json`, MCP
 structured results, and ACP `_meta.claudexor` expose the same parsed object
@@ -8315,7 +8320,11 @@ Cursor ships no npm artifact and cannot be pinned:
 its vendor script is downloaded in full (`curl --fail`, never piped to a
 shell), its size and SHA-256 are printed, and it executes in the visible
 embedded PTY where the operator watches it — the human is the verifier, the
-same principle as interactive SSH auth. Nothing installs without disclosure:
+same principle as interactive SSH auth. The POSIX Cursor and Antigravity scripts
+are Bash programs, so they run as `/bin/bash <file>` (never `/bin/sh`, which is
+dash on Debian and Ubuntu); a host without `/bin/bash` is refused with
+`installer_interpreter_missing` before anything is downloaded, and Antigravity's
+Windows script keeps its PowerShell runner. Nothing installs without disclosure:
 the CLI prints the exact selected package/version/destination install recipe
 (`~/.claudexor/remote/vendor/bin`, which the remote wrapper puts first on
 PATH) and requires a TTY confirmation or an explicit `--yes`, and the macOS

@@ -6,6 +6,7 @@
  * (lease, spawn, proof, CLI surface). A new vendor is a row in one of the two
  * tables here, never a new branch there.
  */
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CLAUDE_VENDOR_CLI_VERSION } from "@claudexor/harness-claude";
 import { CODEX_VENDOR_CLI_VERSION } from "@claudexor/harness-codex";
@@ -155,6 +156,38 @@ const SCRIPT_INSTALLERS: Record<
 
 type ScriptInstaller = (typeof SCRIPT_INSTALLERS)[keyof typeof SCRIPT_INSTALLERS];
 
+/** Both POSIX vendor scripts are Bash programs (agy: `#!/bin/bash` +
+ * `set -euo pipefail`; Cursor: `#!/usr/bin/env bash`, `${VAR//…}`, `[[ ]]`) and
+ * both vendors document `curl … | bash`. `/bin/sh` is dash on Debian/Ubuntu,
+ * which rejects them (#639). There is no `sh` fallback: a host without this
+ * interpreter is refused before anything is downloaded. */
+const SCRIPT_INSTALLER_POSIX_SHELL = "/bin/bash";
+
+/** The ONE argv that runs a downloaded vendor script: the disclosure renders it
+ * with a placeholder path and the installer spawns it with the real one. */
+export function scriptInstallerRunner(
+  windowsScript: boolean,
+  installerPath: string,
+): [string, string[]] {
+  return windowsScript
+    ? ["powershell", ["-ExecutionPolicy", "Bypass", "-File", installerPath]]
+    : [SCRIPT_INSTALLER_POSIX_SHELL, [installerPath]];
+}
+
+/** Checked before the download, so a missing shell leaves no bytes or sha256
+ * to report. The Windows PowerShell route keeps its unchanged behavior. */
+export function scriptInterpreterRefusal(
+  harness: InstallableHarness,
+  windowsScript: boolean,
+  exists: (path: string) => boolean = existsSync,
+): { code: "installer_interpreter_missing"; refusal: string } | null {
+  if (windowsScript || exists(SCRIPT_INSTALLER_POSIX_SHELL)) return null;
+  return {
+    code: "installer_interpreter_missing",
+    refusal: `the ${harness} installer is a Bash script and ${SCRIPT_INSTALLER_POSIX_SHELL} is not present on this host; install Bash and retry — nothing was downloaded or executed`,
+  };
+}
+
 /** Membership is asked of the TABLE, never re-typed: a third script vendor is
  * one row, and cannot be added to the table yet fall through here. */
 export function scriptInstaller(harness: InstallableHarness): ScriptInstaller | null {
@@ -290,15 +323,15 @@ export function harnessInstallerDisclosure(
      unreachable guard that keeps the two tables honest. */
   if (!script) throw new Error(`harness ${harness} has neither an npm pin nor a script installer`);
   const url = windows ? (script.windowsUrl ?? script.url) : script.url;
-  const file = windows && script.windowsUrl ? "install.ps1" : "install.sh";
-  const runner =
-    windows && script.windowsUrl ? "powershell -ExecutionPolicy Bypass -File" : "/bin/sh";
+  const windowsScript = windows && script.windowsUrl !== undefined;
+  const file = windowsScript ? "install.ps1" : "install.sh";
+  const [runner, runnerArgs] = scriptInstallerRunner(windowsScript, `<private-tmpdir>/${file}`);
   return {
     harness,
     target,
     command:
       `curl --fail --silent --show-error --location ${url} ` +
-      `--output <private-tmpdir>/${file} && ${runner} <private-tmpdir>/${file}`,
+      `--output <private-tmpdir>/${file} && ${[runner, ...runnerArgs].join(" ")}`,
     // The vendor script picks its own destination, so the local target cannot
     // move it; only the WITNESS differs between the two targets.
     installLocation:

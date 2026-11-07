@@ -86,6 +86,8 @@ import {
   isInstallableHarness,
   NPM_PINS,
   scriptInstaller,
+  scriptInstallerRunner,
+  scriptInterpreterRefusal,
   TARGET_LAYOUTS,
   type HarnessInstallerDisclosure,
   type InstallableHarness,
@@ -355,6 +357,8 @@ export function runHarnessInstaller(
         refusal: `${harness} publishes no Windows installer; install it yourself and re-run \`claudexor doctor\``,
       };
     }
+    const noShell = scriptInterpreterRefusal(harness, useWindowsScript, options.exists);
+    if (noShell) return { exitCode: 1, ...noShell };
     const temporaryDirectory = mkdtempSync(join(tmpdir(), `claudexor-${harness}-install-`));
     const installerPath = join(temporaryDirectory, useWindowsScript ? "install.ps1" : "install.sh");
     try {
@@ -398,9 +402,7 @@ export function runHarnessInstaller(
       note(
         `${harness} installer downloaded: ${installerByteLength} bytes, sha256 ${installerSha256}`,
       );
-      const runner: [string, string[]] = useWindowsScript
-        ? ["powershell", ["-ExecutionPolicy", "Bypass", "-File", installerPath]]
-        : ["/bin/sh", [installerPath]];
+      const runner = scriptInstallerRunner(useWindowsScript, installerPath);
       note(`running: ${runner[0]} ${runner[1].join(" ")}`);
       const executed = spawn(runner[0], runner[1], { stdio: childStdio, env: environment });
       if (executed.status !== 0) {
