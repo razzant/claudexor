@@ -633,21 +633,19 @@ describe.skipIf(process.platform === "win32")("claudexord's later settlement", (
       .request("/v2/runs", "POST", { mode: "ask", prompt: "corrupt", scope: { kind: "none" } })
       .catch(() => null);
     await f.mode("recovery_only");
-    let previousFingerprint = "";
-    let stableReads = 0;
-    const inspected = await f.wait(async () => {
+    // The failed store can still change between a read and the quarantine, and the engine then refuses the stale
+    // fingerprint (409 recovery_fingerprint_mismatch): read it again and quarantine what was just read.
+    await f.wait(async () => {
       const current = await f.request<ControlJournalInspection>(
         "/v2/recovery/partitions/engine-state",
       );
       if (current.status !== "recovery_required") return null;
-      stableReads = current.fingerprint === previousFingerprint ? stableReads + 1 : 1;
-      previousFingerprint = current.fingerprint;
-      return stableReads >= 3 ? current : null;
-    }, "the corrupt engine state fingerprint to stabilize");
-    await f.request("/v2/recovery/partitions/engine-state/quarantine", "POST", {
-      expectedFingerprint: inspected.fingerprint,
-      confirmation: "quarantine_and_start_fresh",
-    });
+      await f.request("/v2/recovery/partitions/engine-state/quarantine", "POST", {
+        expectedFingerprint: current.fingerprint,
+        confirmation: "quarantine_and_start_fresh",
+      });
+      return true;
+    }, "the corrupt engine state to be quarantined");
     await f.mode("normal");
 
     // The same process, a new graph: one subscriber, not one per generation.
