@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- The macOS Accounts row now shows its most-used measured model-scoped text quota window when no account-wide text window is reported, with the scope named beside the percentage. A non-fresh selected scoped window is labelled "Last known". Account-wide percentages, sidebar trigger aggregation, readiness, routing, resource-status overrides and exhausted/cooling-down lines are unchanged. Unmeasured usage remains unknown.
 - 5e1cc16: When the engine selected for an idle replacement does not come up, the macOS app
   restarts the exact previous build if a saved copy was verified before the stop and
   nothing can still be running beside it. Otherwise it goes Offline with the specific

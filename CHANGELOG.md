@@ -4,7 +4,7 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
-- **v5.1.0** (2026-11-05): Adds managed lifetimes for new uploaded run data,
+- **v5.1.0** (2026-11-07): Adds managed lifetimes for new uploaded run data,
   explicit scanner preparation for npm installs, exact thread export and
   conditional retirement, and a typed `turn_limit_reached` outcome for runs
   stopped by their turn cap. This release also carries the merged fixes for
@@ -14,7 +14,13 @@ on GitHub Releases.
   It also carries main's retention fixes: durable completion history and
   latched hold causes, anchor deferral, ephemeral-lane cleanup, no-change
   capture retention, stronger retention integration guards, and the typed,
-  idempotent `taken` decision for captured terminal patch results.
+  idempotent `taken` decision for captured terminal patch results. Vendor
+  script installers run with Bash (#639), the MCP Accounts tool projects
+  newer engines' responses through its published schema, and the macOS
+  Accounts row shows a model-scoped quota window when no account-wide one is
+  reported. New runs no longer write the duplicate `run_facts` mirror into
+  `final/telemetry.yaml`; `final/run_facts.yaml` stays the canonical record,
+  and older telemetry files stay readable.
   **Upgrade:** opening an existing engine store migrates it from schema 6 to
   7; the migration is forward-only, and returning to an older binary does not
   undo it. Protocol major 3 and the minimum app version 4.0.0 remain unchanged.

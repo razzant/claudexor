@@ -18,6 +18,7 @@
 
 ### Patch Changes
 
+- `claudexor harness install agy|cursor` on Linux and macOS now runs the downloaded vendor script with `/bin/bash` instead of `/bin/sh` (#639). Both vendor installers are Bash programs (Antigravity's starts with `#!/bin/bash` and `set -euo pipefail`; Cursor's uses `${VAR//…}` and `[[ … ]]`), and on Debian and Ubuntu `/bin/sh` is dash, which rejected Antigravity's script with exit 2 before it did anything. The disclosed command names the same `/bin/bash` runner. A host without `/bin/bash` now gets the typed `installer_interpreter_missing` refusal before anything is downloaded, with no `sh` fallback. Download, size and SHA-256 disclosure, the human-observed and unattended evidence classes, failure codes, cleanup and Antigravity's Windows PowerShell runner are unchanged.
 - Preserve retention completion history and failed/held streaks, carry latched hold causes, and keep no-change Git captures on the ordinary retention window.
 - Sweep orphan lane homes in unregistered runtime namespaces while protecting live, archived and quarantined owners; preserve intermediate registration roots and late recovery holds during retention.
 - Keep GC replies compatible with strict older clients by exposing new history and removed-lane facts only through the existing opt-in retention report.
