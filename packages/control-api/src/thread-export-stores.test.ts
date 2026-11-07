@@ -4,7 +4,15 @@
  * holds nothing. Failures are injected at the filesystem boundary, so this does
  * not depend on permissions the test user may bypass.
  */
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -76,7 +84,10 @@ function fixture(
     platforms?: readonly string[];
   } = {},
 ) {
-  const root = mkdtempSync(join(tmpdir(), "cx-export-stores-"));
+  // The export reads each store under its resolved path (`existingStores`), and the read
+  // injections below match paths exactly; on macOS the temp directory resolves elsewhere
+  // (/var is a link to /private/var), so the fixture lives under its resolved path too.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-export-stores-")));
   roots.push(root);
   const runDir = join(root, "run");
   const journal = join(runDir, "events.jsonl");
