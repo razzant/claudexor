@@ -88,8 +88,9 @@ struct AccountRowModel: Identifiable {
     }
 
     /// The single worst account-wide text window across the account's quota
-    /// groups; drives the ONE compact quota line the popover shows per account.
-    /// Image and model-scoped windows stay in the detail rows.
+    /// groups. It alone feeds the trigger's quota percent (`worstPercent`) and,
+    /// when present, the row's compact quota line. Image and model-scoped
+    /// windows never become this account-wide value.
     var worstWindow: QuotaPresentation.Window? {
         quotaGroups
             .flatMap(\.windows)
@@ -98,6 +99,23 @@ struct AccountRowModel: Identifiable {
     }
     var worstPercent: Int? {
         worstWindow?.usedRatio.map { Int(($0 * 100).rounded()) }
+    }
+
+    /// The window behind the row's one compact quota line. An account-wide text
+    /// window always wins, even when its ratio is unknown. Only when the account
+    /// has no account-wide text window does the row expose its worst measured
+    /// model-scoped text window. This is row presentation only: the trigger,
+    /// readiness and routing continue to use the account-wide projection above.
+    var compactWindow: QuotaPresentation.Window? {
+        if let worstWindow { return worstWindow }
+        return quotaGroups
+            .flatMap(\.windows)
+            .filter {
+                $0.appliesToText
+                    && !($0.appliesToModels ?? []).isEmpty
+                    && $0.usedRatio != nil
+            }
+            .max { ($0.usedRatio ?? -1) < ($1.usedRatio ?? -1) }
     }
 
     /// Server-authored account-wide availability folded by QuotaPresentation.
@@ -117,7 +135,7 @@ struct AccountRowModel: Identifiable {
     var scopedQuotaLabel: String? {
         let labels = Set(quotaGroups.flatMap(\.scopedExhaustions).map(\.scopeLabel))
         if labels.count == 1 { return labels.first }
-        if !labels.isEmpty || quotaGroups.contains(where: \.hasOnlyScopedWindows) {
+        if !labels.isEmpty {
             return "Scoped limits"
         }
         return nil
