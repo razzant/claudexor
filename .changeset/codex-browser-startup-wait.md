@@ -1,9 +1,0 @@
----
-"@claudexor/schema": patch
-"@claudexor/harness-codex": patch
-"@claudexor/orchestrator": patch
-"@claudexor/control-api": patch
-"@claudexor/cli": patch
----
-
-Codex now holds the first turn for an explicitly selected Browser (#215). Codex starts Browser in the background, and a server not ready about a second after `turn/start` was absent from the first model request, so the model could report Browser as unavailable while it was still starting. The adapter waits for Browser's own startup status after `thread/start` and `thread/resume` while Codex's existing 90-second startup limit runs, holding the turn at most 5 seconds longer so that a failure Codex reports at its limit (observed at about 90.06 seconds) keeps Codex's own reason; it waits only when Browser is injected: other optional servers, runs without Browser and runs with web off start as before. Stop during the wait ends as `user_cancelled` without starting a turn, which also fixes a Stop that could hang while waiting for a required server. A Browser that fails to start never fails the run: the turn continues with the remaining tools, and a `codex_browser_startup` status event records the outcome, the wait and Codex's own masked reason, so a task that needs a page stays visibly unmet. The engine also records that outcome as the attempt's `browser.startup`, the run summary projects it as each route's `browserStartup` (null for a Browser that was only handed to the route, never read as connected), `claudexor inspect` prints it as `browser_startup=` on the `web route` line, and the macOS Browser badge states it (`prepared` when nothing was reported, `ready`, `startup failed`, `startup cancelled` or `startup unconfirmed`, never a run failure), with Codex's reason in its help and in Diagnostics. This does not establish why any earlier live Browser run failed.

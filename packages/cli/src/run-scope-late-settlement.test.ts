@@ -291,9 +291,18 @@ describe("later bounded settlement of finished owned runs (INV-144, #613)", () =
     await subject.settle("run-stuck", marker);
     const first = subject.list()[0]!.settled_at;
     logs.length = 0;
+    // The tick starts a later attempt without waiting for it, and starts none while the previous
+    // attempt is still writing or before its spacing has passed. So tick until the index records
+    // attempt n, and never once it does: one extra tick would start attempt n + 1.
+    const recorded = () => Number(readIndex(path).entries[0]?.late_attempts ?? 0);
     const attempt = async (n: number) => {
-      await subject.captureTick();
-      await vi.waitFor(() => expect(readIndex(path).entries[0]?.late_attempts).toBe(n));
+      await vi.waitFor(
+        async () => {
+          if (recorded() < n) await subject.captureTick();
+          expect(recorded()).toBe(n);
+        },
+        { timeout: 5_000 },
+      );
     };
     await attempt(1);
     expect(logs).toEqual([]);
@@ -321,8 +330,13 @@ describe("later bounded settlement of finished owned runs (INV-144, #613)", () =
     expect(startupCalls.map((call) => call.settledAt)).toEqual([first, first]);
     expect(readIndex(path).entries[0]?.settled_at).toBe(first);
     result = outcome();
-    await subject.captureTick();
-    await vi.waitFor(() => expect(readIndex(path).entries).toEqual([]));
+    await vi.waitFor(
+      async () => {
+        if (readIndex(path).entries.length > 0) await subject.captureTick();
+        expect(readIndex(path).entries).toEqual([]);
+      },
+      { timeout: 5_000 },
+    );
     expect(logs).toHaveLength(2);
   });
 
