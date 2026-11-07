@@ -10,17 +10,14 @@ import {
 import { join } from "node:path";
 
 /**
- * D-14 layer 3 (AGENTS.md unification) — the thin `CLAUDE.md` bridge.
+ * D-14 layer 3 (AGENTS.md compatibility) — an envelope-local `CLAUDE.md` bridge.
  *
  * Codex, Cursor, and OpenCode read a project's `AGENTS.md` natively; Claude Code
  * reads `CLAUDE.md`. When a project standardizes on ONE `AGENTS.md`, Claudexor
- * bridges the gap so a Claude Code route sees the same instructions — by writing
- * a thin `CLAUDE.md` whose body is the official Anthropic import form
- * (`@AGENTS.md`) plus a Claudexor ownership marker. This is the ONE enumerated
- * live-tree mutation path this feature adds (ARCHITECTURE §Live-tree mutation
- * paths #7, Bible INV-113); the orchestrator announces every create via a typed
- * `project.claude_bridge.created` run event, exactly as `git init` announces
- * `project.git.initialized`.
+ * may need a compatibility bridge in a disposable Git envelope. The bridge is
+ * never written into the user's live project root. Its body is the official
+ * Anthropic import form (`@AGENTS.md`) plus a Claudexor ownership marker.
+ * File creation is not evidence that a model read the instructions.
  *
  * Fences (mirroring the automatic git-init boundary):
  *   - it acts ONLY when the project root has `AGENTS.md` and no `CLAUDE.md`;
@@ -36,8 +33,12 @@ import { join } from "node:path";
 
 /** The exact bytes written into a generated `CLAUDE.md`. */
 export const CLAUDE_BRIDGE_MARKER =
-  "claudexor:generated claude-bridge v1 — safe to edit; delete to stop bridging";
+  "claudexor:generated envelope claude-bridge v1 — disposable compatibility file; reading not confirmed";
 export const CLAUDE_BRIDGE_CONTENT = `@AGENTS.md\n\n<!-- ${CLAUDE_BRIDGE_MARKER} -->\n`;
+
+/** Exact bytes emitted before the CX590 marker was scoped to envelopes. */
+export const LEGACY_CLAUDE_BRIDGE_CONTENT =
+  "@AGENTS.md\n\n<!-- claudexor:generated claude-bridge v1 — safe to edit; delete to stop bridging -->\n";
 
 export type ClaudeBridgeReason =
   /** No `AGENTS.md` at the project root — nothing to bridge to. */
@@ -61,8 +62,9 @@ export interface ClaudeBridgeResult {
  * Create the thin `CLAUDE.md` bridge at `projectRoot` when — and only when — the
  * root has `AGENTS.md` and no `CLAUDE.md`. Returns what happened; `created` is
  * true for exactly one caller across any number of concurrent invocations. The
- * caller (orchestrator run prep) restricts this to write-mode, non-in-place,
- * real-project runs and targets the PROJECT root (never a worktree envelope).
+ * The caller restricts this to a disposable envelope or another explicitly
+ * owned compatibility directory; it must never target a user's live project
+ * root.
  */
 export function ensureClaudeBridge(projectRoot: string): ClaudeBridgeResult {
   const agentsPath = join(projectRoot, "AGENTS.md");
@@ -106,10 +108,12 @@ export const CLAUDE_BRIDGE_BASENAME = "CLAUDE.md";
 
 /** The generated bridge as raw bytes, for exact-content comparison. */
 const CLAUDE_BRIDGE_CONTENT_BYTES = Buffer.from(CLAUDE_BRIDGE_CONTENT, "utf8");
+const LEGACY_CLAUDE_BRIDGE_CONTENT_BYTES = Buffer.from(LEGACY_CLAUDE_BRIDGE_CONTENT, "utf8");
 
 /**
  * True when `<worktreeRoot>/CLAUDE.md` is an UNMODIFIED Claudexor-generated
- * bridge — i.e. its bytes are EXACTLY `CLAUDE_BRIDGE_CONTENT`. Diff capture uses
+ * bridge — i.e. its bytes are exactly the current or legacy generated content.
+ * Diff capture uses
  * this to exclude exactly the pristine generated bridge (and only it) from an
  * envelope candidate's patch, so the bridge written into a disposable envelope
  * tree never pollutes `patch.diff`.
@@ -123,6 +127,10 @@ const CLAUDE_BRIDGE_CONTENT_BYTES = Buffer.from(CLAUDE_BRIDGE_CONTENT, "utf8");
  * `CLAUDE.md` cannot match these exact bytes either. A symlink at the path is
  * refused (no-follow), matching the writer's fence.
  *
+ * Legacy bytes remain accepted so an unfinished envelope from before the CX590
+ * marker change is not misclassified after continuation. The created-this-run
+ * marker still gates exclusion, and candidate edits are captured.
+ *
  * A-3 residual: byte-equality is NECESSARY but NOT SUFFICIENT for exclusion. It
  * cannot distinguish our freshly written bridge from a candidate that rewrote a
  * PRE-EXISTING committed `CLAUDE.md` to exactly these bytes, so the caller
@@ -134,7 +142,8 @@ export function isGeneratedClaudeBridge(worktreeRoot: string): boolean {
   const claudePath = join(worktreeRoot, CLAUDE_BRIDGE_BASENAME);
   try {
     if (lstatSync(claudePath).isSymbolicLink()) return false;
-    return readFileSync(claudePath).equals(CLAUDE_BRIDGE_CONTENT_BYTES);
+    const bytes = readFileSync(claudePath);
+    return bytes.equals(CLAUDE_BRIDGE_CONTENT_BYTES) || bytes.equals(LEGACY_CLAUDE_BRIDGE_CONTENT_BYTES);
   } catch {
     return false;
   }

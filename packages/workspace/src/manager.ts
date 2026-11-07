@@ -279,9 +279,9 @@ export class WorkspaceManager {
     });
     writeFileSync(join(base, "private-clone-v1"), "private Git authority\n");
 
-    // AGENTS.md bridge (INV-113): the checkout omits the untracked project-root bridge,
-    // envelope — a Claude Code candidate here would otherwise lack CLAUDE.md.
-    // Write an envelope-local bridge so the candidate reads the same AGENTS.md.
+    // AGENTS.md compatibility bridge (INV-113): the checkout omits any
+    // untracked project-root file, so a Claude Code candidate may need an
+    // envelope-local bridge. Never mutate the user's live project root here.
     // Self-fenced (acts only with a committed AGENTS.md and no CLAUDE.md),
     // best-effort, and no run event. `diff()` excludes the generated bridge so it never enters
     // the candidate patch.

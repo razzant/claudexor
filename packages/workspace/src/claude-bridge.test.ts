@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CLAUDE_BRIDGE_CONTENT,
   CLAUDE_BRIDGE_MARKER,
+  LEGACY_CLAUDE_BRIDGE_CONTENT,
   ensureClaudeBridge,
   isGeneratedClaudeBridge,
 } from "./claude-bridge.js";
@@ -97,6 +98,11 @@ describe("isGeneratedClaudeBridge (A-3: byte-equality, not marker substring)", (
 
   it("is true only for a byte-identical generated bridge", () => {
     writeFileSync(join(dir, "CLAUDE.md"), CLAUDE_BRIDGE_CONTENT);
+    expect(isGeneratedClaudeBridge(dir)).toBe(true);
+  });
+
+  it("keeps pristine bridges from older runs excluded after an upgrade", () => {
+    writeFileSync(join(dir, "CLAUDE.md"), LEGACY_CLAUDE_BRIDGE_CONTENT);
     expect(isGeneratedClaudeBridge(dir)).toBe(true);
   });
 

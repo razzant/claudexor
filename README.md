@@ -788,10 +788,11 @@ reusable `--attach-resource` refs and the MCP upload tools are specified in
 [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md#document-ingress-and-resource-references).
 
 Keep ONE `AGENTS.md` at your project root as the source of truth for
-project-specific instructions. Claudexor bridges it to Claude Code automatically
-(a thin generated `CLAUDE.md`, hand-written files never overwritten), so every
-harness reads the same guidance. Full behavior in docs/INTEGRATIONS.md "Project
-Instruction Files".
+project-specific instructions. Claudexor keeps vendor-native instruction
+semantics explicit and may create a thin generated `CLAUDE.md` only inside a
+disposable Git envelope; it never mutates the durable project root just to
+bridge a route. File creation is not proof that a model read the instructions.
+Full behavior is in docs/INTEGRATIONS.md "Project Instruction Files".
 
 Host integrations are managed by `claudexor plugin
 install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.

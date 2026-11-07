@@ -13191,7 +13191,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     });
   });
 
-  it("bridges an AGENTS.md-only project to CLAUDE.md and announces it (D-14/INV-113)", async () => {
+  it("does not mutate an AGENTS.md-only live project during write preparation (CX590)", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-agents-bridge-"));
     writeFileSync(join(dir, "AGENTS.md"), "# project instructions\n");
     const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
@@ -13199,17 +13199,13 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       repoRoot: dir,
       prompt: "x",
       mode: "agent",
+      untilClean: true,
       harnesses: ["impl"],
       n: 1,
     });
-    const claude = readFileSync(join(dir, "CLAUDE.md"), "utf8");
-    expect(claude).toContain("@AGENTS.md");
-    expect(claude).toContain("claudexor:generated claude-bridge");
+    expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
     const events = readRunEvents(res.runDir);
-    const bridge = events.find((e) => e.type === "project.claude_bridge.created");
-    expect(bridge).toBeDefined();
-    expect(bridge?.payload["path"]).toBe("CLAUDE.md");
-    expect(bridge?.payload["source"]).toBe("AGENTS.md");
+    expect(events.some((e) => e.type === "project.claude_bridge.created")).toBe(false);
   });
 
   it("never overwrites an existing CLAUDE.md and emits no bridge event", async () => {

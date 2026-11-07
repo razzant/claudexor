@@ -431,20 +431,16 @@ unobserved whole-tree state or promise a complete rollback. Filesystem portabili
 and native harness support remain separate claims, each requiring its own proof.
 The operational boundaries live in [ARCHITECTURE](ARCHITECTURE.md#directory-execution).
 
-Instruction files stay unified. The recommendation is one `AGENTS.md` at the
-project root — the file Codex, Cursor, and OpenCode already read natively. So a
-Claude Code executor reads the same guidance, Claudexor bridges it with a thin
-`CLAUDE.md` (`@AGENTS.md` plus an ownership marker) whenever the root has an
-`AGENTS.md` and no `CLAUDE.md` on its Git-backed preparation path. The bridge is
-exclusive-create and no-follow, so
-a hand-written `CLAUDE.md` is never touched, and it is written both to the
-project root (durable, announced as a run event) and into each disposable
-envelope checkout — which materializes only committed files — so a candidate
-racing in isolation reads it too. The envelope copy stays out of a candidate's
-patch only while it provably remains Claudexor's own writing: the diff excludes
-it when Claudexor created it during this run AND its bytes still equal the
-bridge content exactly — any candidate edit, even one preserving the marker, is
-captured as real work rather than discarded.
+Instruction files stay explicit. A project may keep one `AGENTS.md` as its
+source of truth for Codex, Cursor and OpenCode native semantics. For an isolated
+Git envelope, Claudexor may create a disposable thin `CLAUDE.md` (`@AGENTS.md`
+plus an ownership marker) for Claude compatibility. It never writes that bridge
+into the durable project root, never removes an existing user file, and never
+claims that file creation proves model reading. The envelope copy stays out of
+a candidate's patch only while it provably remains Claudexor's own writing: the
+diff excludes it when Claudexor created it during this run AND its bytes still
+equal the bridge content exactly — any candidate edit, even one preserving the
+marker, is captured as real work rather than discarded.
 
 A completed run settles the processes it owns before publishing its terminal
 event, then exposes a best-effort process-scope receipt separately from the

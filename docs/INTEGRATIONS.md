@@ -2015,33 +2015,32 @@ Questions the surface can answer:
 ## Project Instruction Files (AGENTS.md)
 
 Keep ONE `AGENTS.md` at your project root as the source of truth for
-project-specific agent instructions. Codex, Cursor, and OpenCode read `AGENTS.md`
-natively; Claude Code reads `CLAUDE.md`. Claudexor bridges that gap for you so
-the same instructions reach every route, without asking you to maintain two
-files:
+project-specific agent instructions. Codex, Cursor, and OpenCode have their own
+native project-file semantics. Claude Code has its own native discovery rules;
+Claudexor does not claim that every route reads the same text, and a file-write
+receipt is never a model-read receipt.
 
 - Codex routes get `CLAUDE.md` added to codex's `project_doc_fallback_filenames`
   (a stateless per-run config override — your `~/.codex/config.toml` is never
   touched), so a project that has only a `CLAUDE.md` and no `AGENTS.md` still
   works on codex. Per codex's own semantics the fallback is consulted ONLY when
   no `AGENTS.md` is present; it is never merged on top of an existing one.
-- For a project that has `AGENTS.md` and no `CLAUDE.md`, Git-backed write preparation creates
-  a thin `CLAUDE.md` whose entire body is the official Anthropic import
-  `@AGENTS.md` plus a Claudexor ownership marker, so Claude Code reads the same
-  file. It is written both at the project root (announced via the
-  `project.claude_bridge.created` run event; deleting the generated file stops the
-  bridging) and inside each isolated envelope worktree a candidate races in —
-  because a Git envelope materializes committed files, so an untracked
-  project-root bridge would not reach a candidate. The envelope copy carries no
-  run event and is excluded from the candidate's diff only when Claudexor created
-  it for that run and its bytes still exactly match the generated bridge. Any
+- For an isolated Git envelope that contains `AGENTS.md` but no `CLAUDE.md`,
+  workspace preparation may create a disposable, envelope-local thin
+  `CLAUDE.md` whose body is the official Anthropic import `@AGENTS.md` plus a
+  Claudexor ownership marker. It is never written into the durable project root,
+  never removes an existing user file, and emits no new run event. The envelope
+  copy is excluded from the candidate diff only when Claudexor created it for
+  that run and its bytes still exactly match the generated bridge. Any
   candidate-authored or candidate-edited `CLAUDE.md` is captured normally, even
-  if it retains the ownership marker. Both creates are exclusive and never follow
-  a symlink, so a hand-written `CLAUDE.md` is never overwritten. The project-root
-  write is skipped for read-only runs and `--in-place` stateful targets.
+  if it retains the ownership marker. Creation, `open(wx)`, and CLI display are
+  file-operation evidence only; they do not prove that a model read the file.
 
-Both behaviors are automatic. If you would rather manage the files yourself,
-keep your own `CLAUDE.md` (it is never touched) or add an `AGENTS.md`.
+The envelope compatibility behavior is automatic. If you would rather manage
+project files yourself, keep your own `CLAUDE.md` (it is never touched) or use
+the vendor's native instruction mechanism. A later change to native/envelope
+semantics requires its own evidence and scope decision; Claudexor does not
+silently build a second instruction resolver.
 
 ## External Harness Adapters
 
