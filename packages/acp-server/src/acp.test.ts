@@ -671,6 +671,51 @@ describe("AcpServer official SDK projection", () => {
     });
   });
 
+  it("shows every option of a multi-select question in each include/skip round (#651)", async () => {
+    const prompts: acp.RequestPermissionRequest[] = [];
+    const options = [
+      { label: "macOS", description: "Apple silicon only" },
+      { label: "Linux", description: "glibc 2.39 or newer" },
+      { label: "Windows", description: "x64 only" },
+    ];
+    const { captured } = await answerThroughAcp(
+      {
+        interaction_id: "int-multi",
+        questions: [
+          {
+            id: "q1",
+            header: "Targets",
+            question: "Which platforms?",
+            multi_select: true,
+            options,
+          },
+        ],
+      },
+      (choices, request) => {
+        prompts.push(request);
+        return choices[0]!.optionId;
+      },
+    );
+    const whole =
+      "Targets\n\nWhich platforms?\n\n- macOS: Apple silicon only\n- Linux: glibc 2.39 or newer\n- Windows: x64 only";
+    expect(
+      prompts.map((request) =>
+        (request.toolCall.content ?? []).map((item) =>
+          item.type === "content" && item.content.type === "text" ? item.content.text : "",
+        ),
+      ),
+    ).toEqual([[whole], [whole], [whole]]);
+    expect(prompts.map((request) => request.toolCall.title)).toEqual(
+      options.map(({ label }) => `Which platforms? — include "${label}"?`),
+    );
+    expect(captured).toEqual({
+      interaction_id: "int-multi",
+      answers: [
+        { question_id: "q1", selected_labels: ["macOS", "Linux", "Windows"], free_text: null },
+      ],
+    });
+  });
+
   it("maps a FAILED daemon lifecycle to refusal instead of a false normal end_turn", async () => {
     // D8: a needs-review run has a SUCCEEDED lifecycle and ends end_turn (the
     // process completed); only failed/interrupted lifecycles are a refusal.

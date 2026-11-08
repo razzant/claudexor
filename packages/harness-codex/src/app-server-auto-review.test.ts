@@ -106,6 +106,21 @@ describe("native automatic review handback", () => {
     expect(await result).toEqual([]);
   });
 
+  it("quotes the worker's complete final output in the access question, however long (#651)", async () => {
+    const t = setup();
+    t.review.observe(denial());
+    // Past the 32,000-character bound the question once cut silently at.
+    const output = `${"Worker report line\n".repeat(2_000)}decisive: the retry is still required`;
+    expect(output.length).toBeGreaterThan(32_000);
+    t.review.interactions("turn", output);
+    expect(
+      t.asks[0]!.questions[0]!.question.endsWith(`Worker's final output (turn turn):\n${output}`),
+    ).toBe(true);
+    const result = t.review.takeRetries();
+    t.answer(["Decline"]);
+    expect(await result).toEqual([]);
+  });
+
   it("does not accept free text as authority", async () => {
     const t = setup();
     t.review.observe(denial());

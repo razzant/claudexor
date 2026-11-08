@@ -320,6 +320,64 @@ describe("claude interactive control protocol", () => {
     );
   });
 
+  it("yields the native questions exactly beside a marked preview, past 2000 and 32000 characters (#651)", async () => {
+    const native = {
+      questions: [
+        {
+          question: `Which rollout? ${"Подробности ".repeat(200)}decisive: only after the freeze`,
+          header: "Rollout",
+          options: [
+            { label: "Canary", description: "First" },
+            { label: "Blue-green", description: "Second" },
+          ],
+          multiSelect: false,
+        },
+        {
+          question: `Context ${"x".repeat(33_000)} decisive tail`,
+          options: [],
+          multiSelect: false,
+        },
+      ],
+    };
+    const { io, written } = fakeIo();
+    const events: HarnessEvent[] = [];
+    const asked: InteractionRequest[] = [];
+    const channel = {
+      request: async (request: InteractionRequest) => {
+        asked.push(request);
+        return {
+          interaction_id: request.interaction_id,
+          answers: [
+            { question_id: "q1", selected_labels: ["Blue-green"], free_text: null },
+            { question_id: "q2", selected_labels: [], free_text: MULTILINE_FREE_TEXT },
+          ],
+        };
+      },
+    };
+    const frame = { ...NATIVE_ASK, request: { ...NATIVE_ASK.request, input: native } };
+    for await (const ev of handleControlRequestFrame(frame, io, "ses-1", channel)) events.push(ev);
+    const exact = native.questions.map((q, index) => ({
+      id: `q${index + 1}`,
+      question: q.question,
+      header: q.header ?? null,
+      options: q.options,
+      multi_select: false,
+    }));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.interaction!.questions).toEqual(exact);
+    expect(asked.map((request) => request.questions)).toEqual([exact]);
+    // The event text is only a marked label of the joined questions.
+    const preview = events[0]!.text!;
+    expect(preview).toHaveLength(500);
+    expect(preview.endsWith("…")).toBe(true);
+    expect(native.questions[0]!.question.startsWith(preview.slice(0, -1))).toBe(true);
+    // Answers are keyed by the complete native question text, never the label.
+    expect(JSON.parse(written[0]!)["response"]["response"]["updatedInput"]["answers"]).toEqual({
+      [native.questions[0]!.question]: "Blue-green",
+      [native.questions[1]!.question]: MULTILINE_FREE_TEXT,
+    });
+  });
+
   it("never sends an allow frame that answers nothing: such a set is the benign decline", async () => {
     const req = interactionRequestFromNative("req-1", NATIVE_ASK.request.input);
     for (const answers of [

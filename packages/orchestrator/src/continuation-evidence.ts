@@ -18,6 +18,7 @@
  * and `continueFrom`.
  */
 import { commandOutcomeLabel, type ResumableCause } from "@claudexor/schema";
+import { wholeCharPrefix } from "@claudexor/util";
 
 /** Admitted steering message of the predecessor (POST /v2/runs/:id/messages). */
 export interface EvidenceSteering {
@@ -109,15 +110,6 @@ export const EVIDENCE_TOOL_ROWS = 60;
 
 function bytes(text: string): number {
   return Buffer.byteLength(text, "utf8");
-}
-
-/**
- * The first `units` UTF-16 code units of `text`, one fewer when that cut would
- * split a surrogate pair (its lone half reads as U+FFFD). Shorter text and a
- * lone surrogate already in the source are kept exactly.
- */
-export function wholeCharPrefix(text: string, units: number): string {
-  return text.slice(0, (text.codePointAt(units - 1) ?? 0) > 0xffff ? units - 1 : units);
 }
 
 /** Truncate to at most `maxBytes` UTF-8 bytes on a safe char boundary. */

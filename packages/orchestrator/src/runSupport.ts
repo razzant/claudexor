@@ -24,7 +24,7 @@ import type { BudgetObservation, RouteDropStage } from "@claudexor/schema";
 import type { EventLog } from "@claudexor/event-log";
 import { isBlocking, quotaConstraintAppliesToRequestKind } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import { redactSecrets } from "@claudexor/util";
+import { displayPreview, redactSecrets } from "@claudexor/util";
 import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
 import { attemptRoutingCostSample, type AttemptUsageCost } from "./attemptUsageCost.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -280,7 +280,8 @@ export function harnessEventPayload(
     session_id: ev.session_id,
     ts: ev.ts,
     type: ev.type,
-    title: String(title).slice(0, 500),
+    // A display label only: the exact text, error and interaction ride beside it.
+    title: displayPreview(String(title), 500),
     text: safe.text,
     error,
     usage: ev.usage,

@@ -209,6 +209,35 @@ describe("harnessEventPayload (run-event projection)", () => {
       "speech" in JSON.parse(JSON.stringify(harnessEventPayload("claude", "a01", unkeyed))),
     ).toBe(false);
   });
+
+  it("bounds only the display title, with a visible cut on a whole character (#651)", () => {
+    // The rocket starts at unit 499: a plain 500-unit slice would end on its lone half.
+    const question = `${"q".repeat(499)}🚀 and the decisive condition after the cut`;
+    const interaction = {
+      interaction_id: "ask-1",
+      source_tool: "AskUserQuestion",
+      questions: [
+        {
+          id: "q1",
+          question,
+          header: null,
+          options: [{ label: "Proceed", description: null }],
+          multi_select: false,
+        },
+      ],
+    };
+    const projected = harnessEventPayload("claude", "a01", {
+      type: "interaction_requested",
+      session_id: "ses-1",
+      ts: "2026-11-08T00:00:00Z",
+      text: question,
+      interaction,
+    });
+    expect(projected["title"]).toBe(`${"q".repeat(499)}…`);
+    expect(projected["title"]).not.toMatch(/\p{Surrogate}/u);
+    expect(projected["text"]).toBe(question);
+    expect(projected["interaction"]).toEqual(interaction);
+  });
 });
 
 describe("harnessEventPayload keeps the typed terminal facts (run-event journal)", () => {

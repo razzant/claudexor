@@ -2043,10 +2043,10 @@ its file is named `.env`, `credentials.json`, `*.pem` or `secrets/…`.
   the partial output of any other non-success result stay exact; the Codex
   adapter masks the text and native fields of an in-turn retry notice and of a
   native warning where it creates them. Claude
-  `AskUserQuestion` questions, headers, option labels and descriptions reach
-  every answering surface exactly, whatever their length (ACP shows headers and
-  descriptions as permission prompt content); answers are keyed by the native
-  question text, and free text reaches the CLI byte-identical. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
+  `AskUserQuestion` questions, headers, option labels and descriptions, and the
+  worker output a Codex access question quotes, reach every answering surface
+  exactly, whatever their length; answers are keyed by the native question
+  text, and free text reaches the CLI byte-identical. Tool calls keep unmasked targets (command, path, query, URL) within the adapter's existing bounds, and
   tool results keep unmasked summaries of their output (`content_summary`, and
   a failed tool's own `error_summary`) within each adapter's existing bound and
   whitespace normalization: for a completed tool that summary is the only copy

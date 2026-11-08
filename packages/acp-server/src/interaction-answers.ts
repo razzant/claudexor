@@ -8,13 +8,14 @@ type LeftOut = { question: string; reason: string };
  * Choice and multi-select questions are asked inline (multi-select as one
  * include/skip round per option); a title and option names cannot carry a
  * question's header or its options' descriptions, so each prompt also carries
- * them as tool-call text content. ACP cannot collect free text. Every question
- * left without an answer (free text, every option skipped, dismissed) is named
- * in one turn-text message instead of being skipped silently: with nothing
- * chosen no answer is sent and the run stays paused on the question set; once
- * some questions are answered, the message says those answers will be submitted
- * as a partial answer, which closes the whole set if the daemon accepts it. The
- * message goes out before the caller submits, so it cannot report the outcome.
+ * them as tool-call text content, every option of the question in every round.
+ * ACP cannot collect free text. Every question left without an answer (free
+ * text, every option skipped, dismissed) is named in one turn-text message
+ * instead of being skipped silently: with nothing chosen no answer is sent and
+ * the run stays paused on the question set; once some questions are answered,
+ * the message says those answers will be submitted as a partial answer, which
+ * closes the whole set if the daemon accepts it. The message goes out before
+ * the caller submits, so it cannot report the outcome.
  */
 export async function requestInteractionAnswers(
   client: acp.AgentContext,
@@ -48,27 +49,26 @@ export async function requestInteractionAnswers(
     const prompt = (
       toolCallId: string,
       toolTitle: string,
-      shown: Option[],
       choices: acp.PermissionOption[],
       answered: (picked: string | null) => boolean,
     ) =>
       ask(
         client,
         sessionId,
-        { toolCallId, title: toolTitle, content: questionContent(question, shown) },
+        { toolCallId, title: toolTitle, content: questionContent(question, options) },
         choices,
         answered,
       );
     const toolCallId = `${String(request?.interaction_id ?? "interaction")}:${String(question?.id ?? index)}`;
     if (question?.multi_select === true) {
       // One include/skip round per option, so the client can pick MORE THAN ONE
-      // label (a single requestPermission returns exactly one optionId).
+      // label (a single requestPermission returns exactly one optionId). Each
+      // round shows every option, so no choice is made without its siblings.
       const selectedLabels: string[] = [];
       for (const option of options) {
         const include = await prompt(
           `${toolCallId}:${option.optionId}`,
           `${title} — include "${option.name}"?`,
-          [option],
           [
             { optionId: "include", name: `Include ${option.name}`, kind: "allow_once" as const },
             { optionId: "skip", name: `Skip ${option.name}`, kind: "reject_once" as const },
@@ -90,7 +90,6 @@ export async function requestInteractionAnswers(
     const picked = await prompt(
       toolCallId,
       title,
-      options,
       options.map(({ optionId, name }) => ({ optionId, name, kind: "allow_once" as const })),
       (picked) => options.some((option) => option.optionId === picked),
     );
@@ -140,8 +139,8 @@ async function ask(
   return picked;
 }
 
-/** The question in full as text: its header, its text and the shown options
- * with their descriptions. */
+/** The question in full as text: its header, its text and every option with
+ * its description. */
 function questionContent(question: any, options: Option[]): acp.ToolCallContent[] {
   const lines: string[] = [];
   if (typeof question?.header === "string" && question.header) lines.push(question.header, "");

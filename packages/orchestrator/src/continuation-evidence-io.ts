@@ -15,8 +15,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { retainedOutput } from "@claudexor/event-log";
 import { commandOutcomeRefinement, type ResumableCause, type RunEvent } from "@claudexor/schema";
+import { wholeCharPrefix } from "@claudexor/util";
 import {
-  wholeCharPrefix,
   type EvidenceIndexInput,
   type EvidenceIndexSources,
   type EvidenceSteering,

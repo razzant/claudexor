@@ -9,7 +9,7 @@ import type {
   InteractionRequest,
 } from "@claudexor/schema";
 import { interactionAnswerContent, interactionAnswerSetViolation } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { displayPreview, nowIso } from "@claudexor/util";
 
 type Json = any;
 
@@ -266,10 +266,8 @@ export async function* handleControlRequestFrame(
     type: "interaction_requested",
     session_id: sessionId,
     ts: nowIso(),
-    text: interaction.questions
-      .map((q) => q.question)
-      .join(" | ")
-      .slice(0, 500),
+    // A marked display label; answers are keyed from the native input below.
+    text: displayPreview(interaction.questions.map((q) => q.question).join(" | "), 500),
     interaction,
   };
 
