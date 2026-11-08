@@ -23,8 +23,18 @@ Readiness always comes from the bounded vendor `/model` probe, never from the
 presence or absence of `antigravity-oauth-token`. See `src/profile.ts` for the
 route and verification contract.
 
-Fixtures under `fixtures/` pin the recorded 1.1.13 stream shapes; see
-`fixtures/manifest.yaml` for provenance and stream-semantics expectations.
+A readonly run adds session-only settings that deny every command and file
+write while keeping the profile's own rules, so a denied call returns to the
+model as a tool error instead of ending the turn (`src/session-policy.ts`);
+this needs agy 1.4.10 or newer, and an older CLI stops a readonly run before
+the model with an update remedy. Settings it cannot read refuse the run before
+it starts. Input over a conservative 128 KiB limit (agy cut larger piped input at
+192,000 bytes) is saved unchanged in the run's `context/` directory and named
+by a bootstrap that does not grow with it (`src/input-file.ts`).
+
+Fixtures under `fixtures/` pin the recorded 1.1.13 stream shapes, plus one
+1.5.0 readonly denial recording; see `fixtures/manifest.yaml` for provenance
+and stream-semantics expectations.
 
 Model enumeration uses the named profile's `agy models` table through the same
 bounded, pipe-EOF runner as doctor and quota, with self-update disabled. Failed

@@ -2622,7 +2622,21 @@ generic `error` events — honest degradation, never invented status.
 prompt on piped stdin, without a print flag (agy 1.1.13 selects print mode
 from non-empty non-TTY stdin)
 (`--dangerously-skip-permissions` for full access; `--conversation <id>`
-resumes). Before a run the adapter ensures the profile's own
+resumes). agy keeps only the first 192,000 bytes of a larger piped prompt,
+counting a 15-byte wrapper (measured on 1.1.13 through 1.5.3; also all 24
+retained inputs of an 8 November 2026 triage). Input over Claudexor's conservative
+128 KiB limit is therefore never sent inline: the caller's instructions and
+task are saved unchanged, in parts of at most 32 KiB, under the run's own
+`context/` directory (`input_file_dir`, outside every worktree and retired
+with the run; a thread's summary pass uses its enclosing run's), and stdin
+carries a short engine bootstrap that names the directory once and each
+section's numbered range of parts, instructions first, so its size does not
+grow with the input; the engine notes stay inline. An
+`agy_input_file_delivery` status records sizes and digests, never that the
+model read them. Model-free probes on sampled versions from 1.1.13 through 1.5.3 returned
+32 KiB unbroken lines whole; a live run also read a 32,042-byte line and returned its end marker. Without a run-owned directory, or when agy might not be
+allowed to read outside its workspace, the input is refused before anything
+is sent. Before a run the adapter ensures the profile's own
 `.gemini/antigravity-cli/settings.json` allows `read_file(*)`, which the vendor
 documents as matching all files on the system, keeping every other key and
 rule. The agent then reads any path in every access profile, as claude and
@@ -2631,15 +2645,34 @@ outside its workspace folder. The vendor evaluates Deny > Ask > Allow, so a
 `read_file` deny rule in that file still wins, and `toolPermission: "strict"`
 prompts before every read even when an allow rule matches. Settings the
 adapter cannot read, parse or write are never rewritten, and a non-full run
-reports `agy_read_grant_unavailable`. Plan mode has no approved shell path, so
-the instructions of a readonly run end with an engine note that shell commands
-are unavailable, recorded as an `agy_readonly_access_note` status. Events:
+reports `agy_read_grant_unavailable`. In a headless run plan mode's ask for
+a command cannot be answered and ends the whole turn, so a readonly run also
+passes session-only settings in a private file (`--settings`) that deny `command(*)` and `write_file(*)`, including commands the
+profile allows. agy merges that object into the profile settings but replaces
+each permission list it names and refuses unknown keys, so it carries only
+`permissions` with all three lists copied from the profile as read, the read
+grant included, and the denials appended (`agy_readonly_session_policy`). A
+denied call then fails as its own tool step and the model continues. When only
+saving the read grant fails, the session settings still carry it. When the
+settings cannot be read or a list has another shape, the readonly run is
+refused before it starts (`agy_readonly_session_policy_unavailable`). The
+flag needs agy 1.4.10 or newer: official 1.1.13 and the tested releases from
+1.3.4 through 1.4.9 reject it while parsing arguments, before any model or account
+access, and 1.4.10 through 1.5.3 accept it. On an older CLI a readonly run
+therefore stops with `agy_session_settings_unsupported` and an update remedy,
+and doctor reports `readonly_min_version`; full and workspace_write runs are
+unaffected, and nothing updates agy. This minimum is separate from the 1.1.13
+fixture and transport pin. Other asking categories (`read_url`,
+`execute_url`, `mcp`) may still end a turn. The instructions end with an
+engine note naming the denial (`agy_readonly_access_note`). Events:
 `init` → `started` (the vendor `conversation_id` is the
 resumable native session id); tool steps emit `tool_call` on `ACTIVE`.
 `DONE` emits an error `tool_result` for native tool errors, a successful
 `tool_result` (+ a completed `file_change` for writers) only with reported
-output, otherwise a diagnostic `status`. Each carries the recorded `step_index`
-as its use id (`step-N`), which pairs a result with its own call. Other states are recognized no-ops. Each `text_delta`
+output, otherwise a diagnostic `status`; `ERROR` (a denied or failed step)
+emits that call's error `tool_result` and never a `file_change`. Each carries
+the recorded `step_index` as its use id (`step-N`), which pairs a result with
+its own call. Other states are recognized no-ops. Each `text_delta`
 is a non-final stream fragment (`payload.delta`), kept byte-exact, whitespace-only
 and repeated frames included: in retained tries every typed final equals the
 exact concatenation of its narration frames, across steps and tools. In Agent

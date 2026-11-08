@@ -1033,7 +1033,10 @@ failure or a cancellation, releases them then), because the copy's Git reads the
 candidate's objects there.
 
 Cursor and AGY prompts use the shared CLI loop's one-shot stdin. AGY omits
-print flags so its native stdin reader selects print mode. Claude one-shot uses
+print flags so its native stdin reader selects print mode; AGY input over a
+conservative 128 KiB limit, below the 192,000-byte cut observed on its stdin,
+rides exact files in the run's `context/` named by a bootstrap that does not
+grow with the input ([INTEGRATIONS](INTEGRATIONS.md)). Claude one-shot uses
 text stdin; interactive/image runs retain their sole stream-json stdin owner.
 Claude instructions append through an adapter-owned UTF-8 file, removed when
 the child ends, never through argv or user-role text (`instructions-file.ts`).
@@ -1275,7 +1278,8 @@ and adopts the canonical name, avoiding Apple's user search-list side effect
 for a direct `create-keychain .../login.keychain-db` call. It never bridges the
 host Keychain or copies credential bytes. Before every agy child the adapter
 also ensures the profile's vendor `settings.json` allows `read_file(*)`, so
-reads outside the workspace are not auto-denied in headless runs
+reads outside the workspace are not auto-denied in headless runs, and a
+readonly child gets session-only settings that deny commands and writes
 ([INTEGRATIONS](INTEGRATIONS.md)).
 Linux keeps the config-file/HOME route.
 On Windows the credential is an OS-user-scoped vendor Keychain item: the named
@@ -7899,6 +7903,7 @@ events.jsonl
 context/task.yaml
 context/context_pack.yaml?
 context/processing_intent.yaml?   (routed lanes' frozen speed intent; Codex applies it, §7)
+context/agy-input-<sha256>/*.txt? (AGY input too large for its stdin, exact parts)
 attempts/aNN/attempt.yaml       (Agent candidate evidence)
 attempts/aNN/answer.md?         (selected answer, even if capture failed)
 attempts/<envelope-attempt>/retained-envelope.json? (inspection-source address)

@@ -2188,6 +2188,7 @@ export class Orchestrator {
         threadId: runInput.threadId,
         projectRoot: runInput.repoRoot,
         cwd: repoRoot,
+        inputFileDir: paths.contextDir,
         adapter: this.deps.registry.get(harnessId),
         model: this.deps.registry.get(harnessId)?.modelRequirement && runInput.models?.[harnessId],
         credentialProfile: sessionFields.credential_profile,
@@ -2416,6 +2417,7 @@ export class Orchestrator {
       ),
       extra_mcp_servers: delegationBeltFor(runInput, intent, routed, contract.budget.paid_budget),
       cwd: envelope.worktree_path,
+      input_file_dir: paths.contextDir,
       access: routed.adapterAccess,
       // Writable lanes only: routing admitted this list for this exact lane.
       auxiliary_writable_roots: routed.auxiliaryWritableRoots,
@@ -5722,6 +5724,7 @@ export class Orchestrator {
             ? `${args.promptBody}\n\n${laneContinuity.pointerLine}`
             : args.promptBody,
           cwd: this.execRootOf(input),
+          input_file_dir: paths.contextDir,
           access: "readonly",
           attachments: input.attachments ?? [],
           ...sessionFields,
@@ -6205,6 +6208,7 @@ export class Orchestrator {
     input: RunInput,
     contract: ActiveTaskContract,
     log: EventLog,
+    paths: RunPaths,
   ): DeepScanReducerDeps {
     return {
       newReadOnlyHome: () =>
@@ -6239,6 +6243,7 @@ export class Orchestrator {
           intent: "synthesize",
           prompt,
           cwd: this.execRootOf(input),
+          input_file_dir: paths.contextDir,
           access: "readonly",
           attachments: [],
           auth_preference: sessionFields.auth_preference,
@@ -6569,6 +6574,7 @@ export class Orchestrator {
           intent: opts.intent,
           prompt: promptWithPointers,
           cwd: this.execRootOf(input),
+          input_file_dir: paths.contextDir,
           access: "readonly",
           // ASK/EXPLORE/AUDIT read-only runs must forward the user's attachments —
           // a live "describe this image" turn sent an image that was being dropped here, so
@@ -7235,7 +7241,7 @@ export class Orchestrator {
     let reducedReport: string | null = null;
     if (opts.deepScan) {
       ({ deepScanSynthesis, reducedReport } = await resolveDeepScanSynthesis(
-        this.deepScanReducerDeps(input, contract, log),
+        this.deepScanReducerDeps(input, contract, log, paths),
         {
           succeeded,
           adapters,
