@@ -4,17 +4,24 @@
  * InteractionRegistry over the SQL engine store -> the orchestrator's
  * interaction channel -> the real Claude adapter run and core run loop -> a
  * synthetic Claude CLI child process that speaks the recorded stream-json
- * control protocol. Only the vendor binary is synthetic, and the assertions
- * read what that child process actually received on its stdin. No live Claude
- * CLI runs here; the installed vendor protocol may differ from the recording.
+ * control protocol. The vendor binary and the run around the adapter are
+ * synthetic: the fixture runner stands in for the orchestrator's attempt loop,
+ * journaling each adapter event as that loop does (the production
+ * `harnessEventPayload` projection into the run's one EventLog, which the
+ * interaction channel writes too), and the fixture reduces the lifecycle itself;
+ * no attempt telemetry or outcome facts are produced. The assertions read what
+ * the child process actually received on its stdin. No live Claude CLI runs
+ * here; the installed vendor protocol may differ from the recording.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCliHarness, type CliRunLoopOptions } from "@claudexor/core";
+import { EngineStore } from "@claudexor/daemon";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { createClaudeAdapter } from "../../harness-claude/src/index.js";
 import { DECLINE_MESSAGE } from "../../harness-claude/src/interactive.js";
+import { harnessEventPayload } from "../../orchestrator/src/runSupport.js";
 import { followRun } from "./live.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 import { mcpWire, startInteractionDaemon } from "./test-support/interaction-daemon.js";
@@ -126,7 +133,7 @@ async function fixture() {
     harnessId: "claude",
     prompt: "Ask me first",
     waitMs: 10_000,
-    execute: async ({ params, runId, runDir, signal, channel }, workspace) => {
+    execute: async ({ params, runId, runDir, signal, channel, log }, workspace) => {
       const questionsPath = join(runDir, "native-questions.json");
       writeFileSync(questionsPath, JSON.stringify(params["questions"]));
       const spec = HarnessRunSpec.parse({
@@ -162,7 +169,11 @@ async function fixture() {
       });
       const events: HarnessEvent[] = [];
       harnessEvents.set(runId, events);
-      for await (const event of adapter.run(spec)) events.push(event);
+      for await (const event of adapter.run(spec)) {
+        events.push(event);
+        // The attempt loop's own journal write (orchestrator.ts).
+        log.emit("harness.event", harnessEventPayload("claude", "a01", event));
+      }
       return events;
     },
   });
@@ -514,4 +525,144 @@ describe("Claude AskUserQuestion answers reach the native process exactly (#560)
     expect(late.body).toMatchObject({ context: { accepted: false, status: "already_resolved" } });
     expect(nativeAnswers(run.runDir)).toHaveLength(1);
   }, 30_000);
+});
+
+/** #651's shape: a 2,935-character question whose decisive condition follows
+ * character 2,400 (past the former 2,000-character cut), with four options. */
+const DECISIVE =
+  "Decisive condition: choose the fourth option unless the schema migration has already finished.";
+
+function decisiveQuestions(): Json[] {
+  const head = "Which rollout keeps the release safe? ";
+  const filler = (length: number) =>
+    "Контекст выката и ограничения. ".repeat(Math.ceil(length / 31)).slice(0, length);
+  const before = head + filler(2_450 - head.length);
+  return [
+    {
+      question: `${before}${DECISIVE} ${filler(2_935 - before.length - DECISIVE.length - 1)}`,
+      header: "Rollout",
+      options: [
+        { label: "Canary", description: "Shift traffic gradually." },
+        { label: "Blue-green", description: "Switch all traffic at once." },
+        { label: "Feature flag", description: "Ship dark behind a flag." },
+        { label: "Defer to the migration window", description: "Wait until the migration ends." },
+      ],
+      multiSelect: false,
+    },
+  ];
+}
+
+describe("a long Claude question reaches every reader exactly (#651)", () => {
+  it.each(["fourth label", "multi-line free text"] as const)(
+    "carries the same bytes on each surface and in the reopened store, answered by its %s",
+    async (kind) => {
+      const f = await fixture();
+      const mcp = mcpWire(cleanups);
+      await mcp.start();
+      const native = decisiveQuestions();
+      const question = native[0]!.question as string;
+      expect(question).toHaveLength(2_935);
+      expect(question.indexOf(DECISIVE)).toBeGreaterThan(2_400);
+      const exact = [
+        { id: "q1", question, header: "Rollout", options: native[0]!.options, multi_select: false },
+      ];
+      const run = await f.started(native);
+      const [pending] = await f.pending(run.runId, 1);
+      expect(pending!.questions).toEqual(exact);
+      // The run journal read back: one log's sequence, the harness.event rows of
+      // the native tool call and the interaction, then the channel's own row.
+      const journal = await vi.waitFor(() => {
+        const rows = jsonl(join(run.runDir, "events.jsonl"));
+        expect(rows.map((row) => row["type"])).toContain("interaction.requested");
+        return rows;
+      });
+      expect(journal.map((row) => row["seq"])).toEqual(journal.map((_, index) => index + 1));
+      const harnessRow = (type: string) =>
+        journal.find(
+          (row) =>
+            row["type"] === "harness.event" &&
+            row["payload"]["type"] === type &&
+            (type !== "tool_call" || row["payload"]["tool"]?.["name"] === "AskUserQuestion"),
+        )!;
+      expect(harnessRow("tool_call")["payload"]["payload"]).toEqual({
+        input: { questions: native },
+      });
+      const requested = harnessRow("interaction_requested");
+      expect(requested["payload"]["interaction"]["questions"]).toEqual(exact);
+      // Its title and text are only marked display labels.
+      expect(requested["payload"]["title"]).toBe(`${question.slice(0, 499)}…`);
+      expect(requested["payload"]["text"]).toBe(`${question.slice(0, 499)}…`);
+      const channelRow = journal.find((row) => row["type"] === "interaction.requested")!;
+      expect(channelRow["payload"]["questions"]).toEqual(exact);
+      expect(requested["seq"]).toBeLessThan(channelRow["seq"]);
+      const listed = await mcp.tool("claudexor_run_interactions", { runId: run.runId });
+      expect(listed.result.structuredContent.interactions[0].questions).toEqual(exact);
+      // The bounded wait holds this question whole, in its event and its pending body.
+      const waited = (await mcp.tool("claudexor_run_wait", { runId: run.runId, waitMs: 0 })).result
+        .structuredContent;
+      expect(waited).toMatchObject({ wakeReason: "interactions", omittedInteractions: 0 });
+      const waitedEvent = waited.events.find(
+        (item: Json) => item.event.type === "interaction.requested",
+      );
+      expect(waitedEvent.event.payload.questions).toEqual(exact);
+      const waitedRequested = waited.events.find(
+        (item: Json) => item.seq === requested["seq"] && item.event.type === "harness.event",
+      );
+      expect(waitedRequested.event.payload.interaction.questions).toEqual(exact);
+      expect(waited.pendingInteractions[0].questions).toEqual(exact);
+
+      const fourth = native[0]!.options[3].label as string;
+      if (kind === "fourth label") {
+        const answered = await mcp.tool("claudexor_answer_interaction", {
+          runId: run.runId,
+          interactionId: pending!.interactionId,
+          answers: [{ questionId: "q1", selectedLabels: [fourth] }],
+        });
+        expect(answered.result.structuredContent).toMatchObject({ status: "delivered" });
+      } else {
+        const path = `/runs/${run.runId}/interactions/${pending!.interactionId}/answer`;
+        expect(
+          await f.http("POST", path, {
+            answers: [{ questionId: "q1", selectedLabels: [], freeText: MULTILINE_FREE_TEXT }],
+          }),
+        ).toMatchObject({ status: 200, body: { status: "delivered" } });
+      }
+      expect((await f.terminal(run.id)).state).toBe("succeeded");
+      // The answer key is the complete native question; the run continues to its answer.
+      expect(nativeAnswers(run.runDir).map((frame) => frame["response"]["response"])).toEqual([
+        {
+          behavior: "allow",
+          updatedInput: {
+            questions: native,
+            answers: { [question]: kind === "fourth label" ? fourth : MULTILINE_FREE_TEXT },
+          },
+        },
+      ]);
+      const events = f.harnessEvents.get(run.runId)!;
+      const result = events.find(
+        (event) => event.type === "tool_result" && event.tool?.name === "AskUserQuestion",
+      );
+      expect(result?.tool?.content_summary).toContain("Your questions have been answered");
+      expect(events.find((event) => event.final)?.text).toBe("DONE");
+
+      // A reopened engine store keeps the same exact question.
+      const root = dirname(f.workspace);
+      for (const close of cleanups.splice(0).reverse()) await close();
+      const store = await EngineStore.open({
+        daemonDir: root,
+        workerEntry: resolve(import.meta.dirname, "../../daemon/dist/store/flusher-worker.js"),
+      });
+      cleanups.push(() => store.close());
+      const rows = store
+        .prepare("SELECT state, request FROM interaction WHERE run_id = ?")
+        .all(run.runId) as Array<{ state: string; request: Uint8Array }>;
+      expect(
+        rows.map((row) => ({
+          state: row.state,
+          questions: JSON.parse(Buffer.from(row.request).toString("utf8")).questions,
+        })),
+      ).toEqual([{ state: "resolved", questions: exact }]);
+    },
+    30_000,
+  );
 });

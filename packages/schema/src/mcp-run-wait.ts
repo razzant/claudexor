@@ -98,7 +98,7 @@ export const McpRunWaitResult = z
     wakeReason: z
       .enum(["events", "interactions", "terminal", "timeout", "aborted", "disconnected"])
       .describe(
-        "Why this observation returned, by precedence: aborted (this read was cancelled; the worker continues), terminal (the run is terminal; events may still follow nextSeq unless eventOmission is stream_ended), interactions (this page includes a question event), events (event mode, a completed zero-wait page, or a page, even an empty one, stopped by event_limit, byte_limit, oversized_frame or invalid_event), timeout (waitMs elapsed, possibly with a partial batch), disconnected (the stream ended early; never completion).",
+        "Why this observation returned, by precedence: aborted (this read was cancelled; the worker continues), terminal (the run is terminal; events may still follow nextSeq unless eventOmission is stream_ended), interactions (this page includes a question event, or oversizedEvent is a question too large for any page; claudexor_run_interactions returns it complete), events (event mode, a completed zero-wait page, or a page, even an empty one, stopped by event_limit, byte_limit, oversized_frame or invalid_event), timeout (waitMs elapsed, possibly with a partial batch), disconnected (the stream ended early; never completion).",
       ),
   })
   .strict()

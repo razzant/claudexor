@@ -36,6 +36,8 @@ interface ApprovalDependencies {
 export class CodexApprovals {
   private readonly channel;
   private readonly items = new Map<string, JsonObject>();
+  /** Review length of an item too large to cache, so its refusal names the size. */
+  private readonly oversized = new Map<string, number>();
   private readonly seen = new Set<number | string>();
   private readonly pending = new Map<number | string, AbortController>();
   private readonly eventRequests = new WeakMap<JsonObject, InteractionRequest>();
@@ -72,7 +74,14 @@ export class CodexApprovals {
         );
       this.seen.add(id);
       const details = this.reviewDetails(method, params);
-      if (!this.live() || !details) refuseCodexServerRequest(frame, this.deps.io());
+      if (!this.live() || typeof details !== "string")
+        refuseCodexServerRequest(
+          frame,
+          this.deps.io(),
+          this.live() && typeof details === "number"
+            ? `the action's review details (${details} characters) exceed the ${MAX_REVIEW_CHARS}-character review limit`
+            : undefined,
+        );
       const request: InteractionRequest = {
         interaction_id: randomUUID(),
         source_tool: method,
@@ -122,13 +131,18 @@ export class CodexApprovals {
       const item = asObject(params?.["item"]);
       if (typeof item?.["id"] === "string") {
         this.items.delete(item["id"]);
+        this.oversized.delete(item["id"]);
         // Cache only reviewable changes, never an unbounded transcript/tool output.
-        if (item["type"] === "fileChange") {
-          const changes = fileChanges(item["changes"], this.deps.spec);
-          if (changes) this.items.set(item["id"], { changes });
-        } else if (item["type"] === "commandExecution") {
-          const command = commandDetails(item, this.deps.spec);
-          if (command && safeReview(command)) this.items.set(item["id"], command);
+        const action =
+          item["type"] === "fileChange"
+            ? fileChanges(item["changes"], this.deps.spec)
+            : item["type"] === "commandExecution"
+              ? commandDetails(item, this.deps.spec)
+              : null;
+        if (action) {
+          const review = reviewText(action);
+          if (typeof review === "string") this.items.set(item["id"], action);
+          else this.oversized.set(item["id"], review);
         }
       }
     }
@@ -165,9 +179,11 @@ export class CodexApprovals {
   private releaseAll(): void {
     for (const id of this.pending.keys()) this.release(id);
     this.items.clear();
+    this.oversized.clear();
   }
 
-  private reviewDetails(method: string, params: JsonObject | null): string | null {
+  /** The review text, the length of one too large to review, or null when unreviewable. */
+  private reviewDetails(method: string, params: JsonObject | null): string | number | null {
     if (
       !params ||
       params["threadId"] !== this.deps.threadId() ||
@@ -193,10 +209,11 @@ export class CodexApprovals {
     )
       return null;
     const item = this.items.get(params["itemId"]);
+    const oversized = this.oversized.get(params["itemId"]) ?? null;
     let action: JsonObject;
     if (method === FILE_APPROVAL) {
       if (params["grantRoot"] != null) return null;
-      if (!item?.["changes"]) return null;
+      if (!item?.["changes"]) return oversized;
       action = item;
     } else {
       if (params["kind"] != null && params["kind"] !== "command") return null;
@@ -204,10 +221,10 @@ export class CodexApprovals {
         { command: params["command"] ?? item?.["command"], cwd: params["cwd"] ?? item?.["cwd"] },
         this.deps.spec,
       );
-      if (!command) return null;
+      if (!command) return oversized;
       action = command;
     }
-    return safeReview({
+    return reviewText({
       method,
       workspace: this.deps.spec.cwd,
       environmentId: params["environmentId"] ?? null,
@@ -253,15 +270,16 @@ export class CodexApprovals {
   }
 }
 
-function safeReview(value: JsonObject): string | null {
+/** The pretty-printed review text, or its length when it exceeds the review limit. */
+function reviewText(value: JsonObject): string | number {
   const text = JSON.stringify(value, null, 2);
-  return text.length <= MAX_REVIEW_CHARS ? text : null;
+  return text.length <= MAX_REVIEW_CHARS ? text : text.length;
 }
 
 /** The run's reviewable surface: its cwd plus the auxiliary roots it was granted. */
 type ReviewScope = Pick<HarnessRunSpec, "cwd" | "auxiliary_writable_roots">;
 
-function fileChanges(value: unknown, scope: ReviewScope): JsonObject[] | null {
+function fileChanges(value: unknown, scope: ReviewScope): JsonObject | null {
   if (!Array.isArray(value) || !value.length) return null;
   const changes: JsonObject[] = [];
   for (const raw of value) {
@@ -294,7 +312,7 @@ function fileChanges(value: unknown, scope: ReviewScope): JsonObject[] | null {
       diff: change["diff"],
     });
   }
-  return safeReview({ changes }) ? changes : null;
+  return { changes };
 }
 
 function commandDetails(value: JsonObject, scope: ReviewScope): JsonObject | null {

@@ -694,6 +694,83 @@ describe("Codex app-server approval relay", () => {
     },
   );
 
+  /** Run one native approval request to its refusal; the declined reply and the run's error text. */
+  async function refusal(
+    method: string,
+    itemDetails: Frame,
+    requestDetails: Frame,
+    access: "readonly" | "workspace_write" | "full",
+  ) {
+    const peer = approvalPeer(method, "approval-refused", itemDetails, requestDetails);
+    const run = startApprovalRun(peer, undefined, access);
+    const first = await bounded(
+      Promise.race([peer.wroteApproval.then(() => "native"), run.asked.then(() => "question")]),
+    );
+    if (first === "question") run.reply(null);
+    const reply = await bounded(peer.wroteApproval);
+    await bounded(run.done);
+    expect(first).toBe("native");
+    expect(run.events.some((event) => event.type === "interaction_requested")).toBe(false);
+    return { reply, error: run.events.find((event) => event.type === "error")?.error ?? "" };
+  }
+
+  const bigChange = { path: "smoke.txt", kind: { type: "add" }, diff: "+" + "x".repeat(40_000) };
+  const bigCommand = `printf ${"x".repeat(40_000)}`;
+
+  it("names the measured size when an approval exceeds the review limit (#651)", async () => {
+    const file = await refusal(
+      "item/fileChange/requestApproval",
+      { changes: [bigChange] },
+      {},
+      "full",
+    );
+    expect(file.reply).toEqual({ id: "approval-refused", result: { decision: "decline" } });
+    const fileChars = JSON.stringify({ changes: [bigChange] }, null, 2).length;
+    expect(file.error).toContain(
+      `the action's review details (${fileChars} characters) exceed the 32000-character review limit`,
+    );
+    expect(file.error).not.toContain("cannot grant native approval");
+    const command = await refusal(
+      "item/commandExecution/requestApproval",
+      { command: "pwd", cwd: process.cwd() },
+      { command: bigCommand, cwd: process.cwd() },
+      "full",
+    );
+    expect(command.reply).toEqual({ id: "approval-refused", result: { decision: "decline" } });
+    const commandChars = JSON.stringify(
+      {
+        method: "item/commandExecution/requestApproval",
+        workspace: process.cwd(),
+        environmentId: null,
+        reason: null,
+        command: bigCommand,
+        cwd: process.cwd(),
+      },
+      null,
+      2,
+    ).length;
+    expect(command.error).toContain(`review details (${commandChars} characters)`);
+  });
+
+  it("keeps the access refusals ahead of an oversized approval (#651)", async () => {
+    const readonly = await refusal(
+      "item/fileChange/requestApproval",
+      { changes: [bigChange] },
+      {},
+      "readonly",
+    );
+    expect(readonly.error).toContain("readonly access forbids sandbox escalation");
+    expect(readonly.error).not.toContain("review limit");
+    const sandboxed = await refusal(
+      "item/commandExecution/requestApproval",
+      { command: "pwd", cwd: process.cwd() },
+      { command: bigCommand, cwd: process.cwd() },
+      "workspace_write",
+    );
+    expect(sandboxed.error).toContain("workspace_write access cannot grant an unsandboxed command");
+    expect(sandboxed.error).not.toContain("review limit");
+  });
+
   it.each([
     ["a credential-named path", { path: ".env", kind: { type: "add" }, diff: "+safe\n" }],
     [

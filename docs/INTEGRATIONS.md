@@ -1475,9 +1475,9 @@ have separate 5-second budgets, so a call can take `waitMs` plus about 15
 seconds; keep `waitMs` below the host's tool-call timeout. A timeout,
 disconnect or cancelled call closes only that read; the worker continues.
 
-**Oversized events.** An event no page can hold, such as a `run.created` whose
-prompt exceeds the page or a long message, is named in `oversizedEvent`, and the
-cursor stays before it. `claudexor_run_event_read {runId, seq, offset?,
+**Oversized events.** An event no page can hold, such as a long `run.created`
+prompt, message or question (which still wakes `interactions`), is named in
+`oversizedEvent`, and the cursor stays before it. `claudexor_run_event_read {runId, seq, offset?,
 maxBytes?}` reads bounded parts (32 KiB by default, at most 64 KiB) of the exact
 line the event stream delivers, with `totalBytes`, `nextOffset` and the
 whole event's `sha256`; parts never split a character, and the text content
@@ -2108,10 +2108,9 @@ Questions the surface can answer:
   sending the next prompt on the same session.
 - **Single-choice mid-run questions** are answered inline through the ACP
   permission request (one `session/requestPermission` per question).
-- **Multi-select mid-run questions** are answered inline by iterating one
-  include/skip permission round per option, so more than one label can be
-  selected (a single permission request returns exactly one option and would
-  collapse the choice).
+- **Multi-select mid-run questions** are answered inline by one include/skip
+  permission round per option, each showing every option, so several labels
+  can be selected (one permission request returns exactly one option).
 - **Free-text (option-less) mid-run questions** cannot be answered through ACP
   (its permission mechanism is choice-only). They are NEVER silently skipped:
   the surface discloses them as turn text naming the remedy, and the run stays
