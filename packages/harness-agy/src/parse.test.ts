@@ -341,7 +341,7 @@ describe("parseAgyEvent", () => {
         use_id: "step-2",
         target: "date -u",
         status: "error",
-        error_summary: expect.stringContaining(refusal.replace(/"/g, '\\"')),
+        error_summary: expect.stringContaining(JSON.stringify(refusal).slice(1, -1)),
       },
     });
     expect(result[0]!.tool!.use_id).toBe(call[0]!.tool!.use_id);
