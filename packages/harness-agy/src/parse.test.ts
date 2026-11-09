@@ -81,6 +81,24 @@ describe("parseAgyEvent", () => {
     expect(out![0]).toMatchObject({ type: "error", error: "authentication failed or timed out" });
   });
 
+  it("turns AGY's structured inference-quota refusal into unknown reopening evidence", () => {
+    const error = "Individual quota reached. Resets in 68h48m15s.";
+    const out = parseAgyEvent(
+      { event: "result", result: { status: "ERROR", response: "", error } },
+      SID,
+    )!;
+    expect(out).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        error,
+        rate_limit: { resets_at: null, retry_delay_ms: null, reopening: "unknown" },
+        payload: {
+          vendor_failure: { code: "ERROR", message: error, source: "agy_result" },
+        },
+      }),
+    );
+  });
+
   it("types text_delta as an exact non-final fragment: whitespace-only and repeated frames kept", () => {
     const frames = ["Hel", "lo", " ", "\n", "ha", "ha", "\t\n"];
     const out = frames.flatMap((text_delta, index) =>

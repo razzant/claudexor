@@ -7411,13 +7411,17 @@ text repeating it) quotes its last try's evidence after the error as
 omitted when the error already carries them; per-try rows keep it as fields. An
 untyped `harness_error` record leads its next actions with one step to read it;
 a typed refusal keeps its own remedy. The one translation is the adapter's own,
-from the native record it read: Codex's typed usage refusal
+from the native record it read. Codex's typed usage refusal
 (`usage_limit_exceeded` in the rollout, `usageLimitExceeded` on the app-server
-wire, whichever arrives first, once per try) also rides that event as a typed
-`rate_limit` with `reopening: unknown` and no reset. The one code covers a spent plan window and
-a workspace out of credits alike, so it never implies a window that a timer
-reopens. Decisions read that typed signal (see "In-run continuation" and the
-quota admission rules), never the forwarded code. The app-server run loop keeps
+wire, whichever arrives first, once per try) rides that event as a typed
+`rate_limit` with `reopening: unknown` and no reset. AGY's structured
+`result.error` refusal `Individual quota reached` is translated the same way:
+its original `vendor_failure` (`code`, exact words, `agy_result`) remains beside
+it, while no relative reset phrase is converted into an absolute reopening time.
+The Codex code covers a spent plan window and a workspace out of credits alike;
+the AGY phrase likewise does not imply a window that a timer reopens. Decisions
+read that typed signal (see "In-run continuation" and the quota admission
+rules), never the forwarded code. The app-server run loop keeps
 that code, and the turn's own record (a typed record outranks words alone), on
 arrival for the root turn they belong to, from a non-retrying `error` frame or a
 failed turn, and a new root turn clears both; the settled terminal takes them
