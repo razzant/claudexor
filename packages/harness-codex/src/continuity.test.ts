@@ -119,6 +119,18 @@ describe("codex continuity", () => {
         payload: { vendor_failure: { code: "invalid_encrypted_content" } },
       }),
     ).toBe(true);
+    // Only the code decides, whichever channel carried it (`source` is display-only);
+    // the app-server wire spells its codes in camelCase, never one of these tokens.
+    const record = (code: string, source: string) => ({
+      ...base,
+      type: "completed" as const,
+      payload: { vendor_failure: { code, message: "x", source } },
+    });
+    for (const source of ["codex_rollout", "codex_app_server", "renamed"]) {
+      expect(reject(record("invalid_encrypted_content", source))).toBe(true);
+      for (const code of ["serverOverloaded", "usageLimitExceeded", "server_overloaded"])
+        expect(reject(record(code, source))).toBe(false);
+    }
     expect(reject({ ...base, type: "error", error: "turn failed: Request blocked." })).toBe(true);
     expect(reject({ ...base, type: "error", error: "stream disconnected" })).toBe(false);
     expect(reject({ ...base, type: "message", text: "invalid_encrypted_content" })).toBe(false);

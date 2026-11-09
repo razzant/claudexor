@@ -1,10 +1,10 @@
 import type { HarnessEvent } from "@claudexor/schema";
 import { WINDOWS_TREE_DEATH_PROOF_UNAVAILABLE, type ProcEvent } from "@claudexor/core";
-import { nowIso } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import { asObject, codexAppServerEvents, type JsonObject } from "./app-server-protocol.js";
 import { codexNativeWarningEvents, isCodexNativeWarningMethod } from "./app-server-warnings.js";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
-import { codexUsageRefusal } from "./retry-signals.js";
+import { codexErrorCode, codexUsageRefusal } from "./retry-signals.js";
 
 /** The shared completed-event shape for normal, cancelled and failed teardown. */
 export function codexCompletedEvent(
@@ -239,13 +239,16 @@ export function codexTerminalEvents(input: {
  * (recorded order: systemError, `error`, failed turn). A new root turn clears
  * it. The loop calls this for root frames only, so a sub-agent's refusal never
  * limits the root, and only the typed code is read, never the words.
+ * The same frames' own record (`codexErrorInfo` and its words) is kept
+ * as `rootFailure`, opaque evidence for the terminal: a typed record outranks
+ * words alone, otherwise the later record speaks.
  */
 export function observeCodexRootError(
   state: CodexParseState,
   method: unknown,
   params: JsonObject | null,
 ): void {
-  if (method === "turn/started") state.usageRefusal = undefined;
+  if (method === "turn/started") state.usageRefusal = state.rootFailure = undefined;
   const error =
     method === "error" && params?.["willRetry"] !== true
       ? asObject(params?.["error"])
@@ -253,6 +256,13 @@ export function observeCodexRootError(
         ? asObject(asObject(params?.["turn"])?.["error"])
         : null;
   state.usageRefusal = codexUsageRefusal(error?.["codexErrorInfo"]) ?? state.usageRefusal;
+  const code = codexErrorCode(error?.["codexErrorInfo"])?.slice(0, 128) ?? null;
+  const words = error?.["message"];
+  // A vendor diagnostic, masked where it is created (INV-146).
+  const message =
+    typeof words === "string" && words.trim() ? redactSecrets(words).slice(0, 4000) : null;
+  if ((code || message) && (code || !state.rootFailure?.code))
+    state.rootFailure = { code, message, source: "codex_app_server" };
 }
 
 /**

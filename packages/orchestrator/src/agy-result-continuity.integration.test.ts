@@ -32,13 +32,15 @@ vi.mock("@claudexor/core", async (original) => {
       return actual.runCliHarness({
         ...options,
         bin: process.execPath,
-        // A frame `{__stderr}` is a vendor stderr line and `{__exit}` the exit code.
+        // A frame `{__stderr}` is a vendor stderr line, `{__exit}` the exit code
+        // and `{__write}` a workspace file the vendor writes ([path, content]).
         args: [
           "-e",
           `const fs = require('node:fs'); fs.readFileSync(0);
            for (const frame of JSON.parse(fs.readFileSync(process.argv[1], 'utf8')))
              if (typeof frame.__stderr === 'string') process.stderr.write(frame.__stderr + '\\n');
              else if (typeof frame.__exit === 'number') process.exitCode = frame.__exit;
+             else if (Array.isArray(frame.__write)) fs.writeFileSync(frame.__write[0], frame.__write[1]);
              else process.stdout.write(JSON.stringify(frame) + '\\n');`,
           file,
         ],
@@ -388,6 +390,45 @@ describe("AGY failed terminal after streamed text (actual consumer boundary)", (
     expect(out.read("answer.md")).toContain("The answer.");
     expect(out.exists("retained-output.md")).toBe(false);
     expect(out.exists("failure.yaml")).toBe(false);
+  });
+
+  it("agent: a failed candidate that changed files leads its record with its own cause, keeping its patch (#621)", async () => {
+    const write = { __write: ["notes.md", "partial notes\n"] };
+    const out = await run("agent", [
+      [init("conv-1"), ...viewTool(1), write, ...fragments(FIRST), failedResult("ERROR", AUTH)],
+      [init("conv-1"), ...fragments(FIRST), failedResult("ERROR", DROPPED)],
+      [init("conv-1"), ...fragments(THIRD), failedResult("ERROR", PIPE)],
+    ]);
+    expect(out.conversations).toEqual([null, "conv-1", "conv-1"]);
+    expect(out.result.lifecycle).toBe("failed");
+    const failure = out.failure();
+    // The typed axes stay arbitration's; the statement is the winner's own.
+    expect(failure).toMatchObject({
+      phase: "arbitration",
+      category: "harness_error",
+      code: null,
+      harnessId: "agy",
+      attemptId: "a01",
+      rawDetailRef: "attempts/a01/attempt.yaml",
+      vendorFailure: { code: "ERROR", message: PIPE, source: "agy_result" },
+    });
+    const lead = `a01/agy: ${PIPE} (vendor agy_result: ERROR)`;
+    const why = new ArtifactStore(out.result.runDir).readYaml<{ why_winner: string }>(
+      join(out.result.runDir, "arbitration", "decision.yaml"),
+    )!.why_winner;
+    expect(why).toMatch(/^Candidate A: gates=/);
+    expect(
+      failure.safeMessage.startsWith(`${lead}\n\n${NOTICE}\n${why}\n\nAccount attempts:\n`),
+    ).toBe(true);
+    expect(failure.safeMessage.indexOf(NOTICE) + NOTICE.length).toBeLessThanOrEqual(512);
+    expect(out.result.summary.split("\n").slice(0, 2)).toEqual([lead, why]);
+    expect(failure.nextActions[0]).toBe(
+      "Read the vendor's own failure record (agy_result: ERROR) before retrying",
+    );
+    expect(out.terminal).toMatchObject({ type: "run.failed", payload: { phase: "arbitration" } });
+    // The unaccepted work stays inspectable and is never reported as adopted clean.
+    expect(out.read("patch.diff")).toContain("partial notes");
+    expect(out.read("work_product.yaml")).toContain("apply_state: applied_review_blocked");
   });
 
   it("plan: an errored plan without a typed final is no plan and invents no footer verdict", async () => {

@@ -692,7 +692,8 @@ attempt the record speaks for, whether or not that try ended with an OS exit
 code, and each `poolAttempts` row carries its own try's evidence the same way.
 Display the code beside the message as a fact; never branch on its value or map
 it to a remedy, so codes a vendor adds later flow through with no release on
-either side. A pinned account the vendor refused with no reopening time
+either side. The record's `safeMessage` already quotes it beside the error it
+explains, and an untyped `harness_error` record names it in its first next action. A pinned account the vendor refused with no reopening time
 (`usage_limit_exceeded` also means a workspace out of credits, which no timer
 reopens) is therefore never `subscription_window_exhausted`, the code that means
 waiting cures it: its record has `code: null`, `category: harness_unavailable`,
@@ -2514,6 +2515,9 @@ frame): it adds a typed `rate_limit` with `reopening: "unknown"` and no reset to
 the same event, once per try, never from the message words. Only root-thread
 frames of the current root turn count, whether they arrive before or after a
 `systemError` settles the run; a sub-agent's refusal never limits the root.
+When the rollout yields no record, the root turn's own wire record
+(`codexErrorInfo` and its words) stays as `vendor_failure` with
+`source: "codex_app_server"`; a readable rollout record replaces it.
 
 Every rollout reader (observed model, rollout quota, vendor failure, continuity
 locate and move) goes through one boundary in `rollout-file.ts`. `X.jsonl` and

@@ -87,7 +87,8 @@ export const codexContinuity: HarnessContinuityCapability = {
 
   /** The vendor's own rejection of carried reasoning: the typed rollout code
    * when the adapter attached one, else the same code token the CLI itself
-   * reports in its error text. */
+   * reports in its error text. Only the code is read, never its `source`; the
+   * app-server wire spells codes in camelCase, so its record matches no token. */
   rejectsCarriedState(ev) {
     if (ev.type !== "error" && ev.type !== "completed") return false;
     const vendor = ev.payload?.["vendor_failure"] as { code?: unknown } | undefined;

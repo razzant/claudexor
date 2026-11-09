@@ -100,6 +100,8 @@ interface Observed {
   quotaSinkEvents: HarnessEvent[];
   lifecycle: string;
   failure: RunFailure | null;
+  /** The returned summary (the daemon job's error). */
+  summary: string;
 }
 
 async function runLane(lane: Lane, script: Script): Promise<Observed> {
@@ -124,8 +126,26 @@ async function runLane(lane: Lane, script: Script): Promise<Observed> {
   const failure = existsSync(failurePath)
     ? RunFailure.parse(new ArtifactStore(repo).readYaml(failurePath))
     : null;
-  return { spawns, events, quotaSinkEvents, lifecycle: res.lifecycle, failure };
+  return {
+    spawns,
+    events,
+    quotaSinkEvents,
+    lifecycle: res.lifecycle,
+    failure,
+    summary: res.summary,
+  };
 }
+
+/** A PROXY of the installed Ouroboros reader of a failed run's cause
+ * (`run_failure_cause`: `failure.safeMessage`, whitespace-collapsed and cut at
+ * 512 characters), mirrored here; it is not that reader itself. */
+const reportedCause = (failure: RunFailure | null) =>
+  (failure?.safeMessage ?? "").split(/\s+/).filter(Boolean).join(" ").slice(0, 512);
+const firstLine = (text: string) => text.split("\n")[0]!;
+const SYSTEM_ERROR = "Codex app-server thread settled in systemError";
+/** The record's inspection step: quoted and attributed, the same for every code. */
+const VENDOR_STEP =
+  "Read the vendor's own failure record (codex_rollout: server_overloaded) before retrying";
 
 /** A two-account rotate-policy pool for the stub harness, scoped to one test. */
 async function withRotatePool<T>(fn: () => Promise<T>): Promise<T> {
@@ -215,8 +235,13 @@ for (const lane of ["ask", "agent"] as const) {
         harnessId: "stub",
         safeMessage: expect.stringContaining("at capacity"),
         vendorFailure: VENDOR_FAILURE,
-        nextActions: ["Open diagnostics", "Retry the run"],
+        nextActions: [VENDOR_STEP, "Open diagnostics", "Retry the run"],
       });
+      // Words the error already carries are not repeated: the code is added once.
+      const lead = firstLine(o.failure!.safeMessage);
+      expect(lead).toContain(`${VENDOR_FAILURE.message} (vendor codex_rollout: server_overloaded)`);
+      expect(lead.split(VENDOR_FAILURE.message)).toHaveLength(2);
+      expect(firstLine(o.summary)).toBe(lead);
       const exhausted = o.events.filter((e) => e.type === "route.transient.exhausted");
       expect(exhausted).toHaveLength(1);
       expect(exhausted[0]?.payload).toMatchObject({
@@ -227,6 +252,77 @@ for (const lane of ["ask", "agent"] as const) {
       expect(types(o)).not.toContain("route.transient.retry_scheduled");
       expect(types(o)).not.toContain("route.profile.rotated");
       expect(types(o)).not.toContain("route.profile.credential_unusable");
+    });
+
+    it("names the vendor's own failure beside a synthetic error: record lead, returned summary and inspection step (#633, #635)", async () => {
+      const o = await runLane(lane, function* (spec) {
+        const ts = new Date().toISOString();
+        yield started(spec, ts);
+        yield toolCall(spec, ts);
+        yield { type: "error", session_id: spec.session_id, ts, error: SYSTEM_ERROR };
+        yield completed(spec, ts, { harness_reported_error: true, vendor_failure: VENDOR_FAILURE });
+      });
+      // Decisions are unchanged: the same continuations on the same account.
+      expect(o.spawns).toEqual([null, null, null]);
+      expect(continuedCarriers(o)).toEqual(["packet", "packet"]);
+      expect(o.failure).toMatchObject({
+        category: "harness_error",
+        code: null,
+        vendorFailure: VENDOR_FAILURE,
+        nextActions: [VENDOR_STEP, "Open diagnostics", "Retry the run"],
+      });
+      const cause = `${SYSTEM_ERROR} (vendor codex_rollout: server_overloaded, "${VENDOR_FAILURE.message}")`;
+      const lead = firstLine(o.failure!.safeMessage);
+      expect(lead).toBe(lane === "agent" ? `a01/stub: ${cause}` : cause);
+      expect(firstLine(o.summary)).toBe(lead);
+      // What the installed Ouroboros reader keeps of the record names the cause.
+      expect(reportedCause(o.failure)).toContain("server_overloaded");
+      expect(reportedCause(o.failure)).toContain(VENDOR_FAILURE.message);
+    });
+
+    it("a later try without the vendor's record never speaks with an earlier try's", async () => {
+      const o = await runLane(lane, function* (spec, spawn) {
+        const ts = new Date().toISOString();
+        yield started(spec, ts);
+        yield toolCall(spec, ts);
+        yield { type: "error", session_id: spec.session_id, ts, error: SYSTEM_ERROR };
+        yield completed(spec, ts, {
+          harness_reported_error: true,
+          ...(spawn === 1 ? { vendor_failure: VENDOR_FAILURE } : {}),
+        });
+      });
+      expect(o.spawns).toEqual([null, null, null]);
+      expect(o.failure?.vendorFailure).toBeNull();
+      expect(o.failure?.poolAttempts.map((row) => row.vendorFailure)).toEqual([
+        VENDOR_FAILURE,
+        null,
+        null,
+      ]);
+      expect(firstLine(o.failure!.safeMessage)).not.toContain("(vendor");
+      expect(o.failure?.nextActions).toEqual(["Open diagnostics", "Retry the run"]);
+    });
+
+    it("each try's cause line pairs that try's own error with that try's own record", async () => {
+      const record = (n: number) => ({ code: `c${n}`, message: `w${n}`, source: "codex_rollout" });
+      const o = await runLane(lane, function* (spec, spawn) {
+        const ts = new Date().toISOString();
+        yield started(spec, ts);
+        yield toolCall(spec, ts);
+        const errors = spawn === 3 ? ["try-3 first", "try-3 second"] : [`try-${spawn} broke`];
+        for (const error of errors) yield { type: "error", session_id: spec.session_id, ts, error };
+        yield completed(spec, ts, { harness_reported_error: true, vendor_failure: record(spawn) });
+      });
+      expect(o.spawns).toEqual([null, null, null]);
+      expect(o.failure?.vendorFailure).toEqual(record(3));
+      expect(o.failure?.poolAttempts.map((row) => row.vendorFailure)).toEqual(
+        [1, 2, 3].map(record),
+      );
+      // The last try's errors only: the candidate lane names its first, the
+      // read-only lane its last (unchanged); never an earlier try's error or record.
+      const own = lane === "agent" ? "a01/stub: try-3 first" : "try-3 second";
+      const lead = `${own} (vendor codex_rollout: c3, "w3")`;
+      expect(firstLine(o.failure!.safeMessage)).toBe(lead);
+      expect(firstLine(o.summary)).toBe(lead);
     });
 
     it("keeps a REAL crash a crash: no vendor failure, crash guidance intact", async () => {

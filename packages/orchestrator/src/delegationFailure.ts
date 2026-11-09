@@ -13,6 +13,7 @@ import { publishUnverifiedGitCandidate } from "./candidateWorkProduct.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import {
   candidateCaptureRefusals,
+  candidateCause,
   hasCandidateChanges,
   type CandidateRun,
 } from "./candidateEvidence.js";
@@ -70,15 +71,17 @@ export function dominantRaceCandidateFailure(
   );
 }
 
-/** The run summary's disclosure for a race that has a winner: the winner's own
- * result lines, then every sibling excluded by a refused capture, or holding a
- * continuation's refused one, with its exact receipt (cause, kept copy and any
- * retention stage that failed). */
+/** The run summary's disclosure for a race that has a winner: an ERRORED
+ * winner's own cause (the failure record's lead, #621; never a loser's), the
+ * winner's own result lines, then every sibling excluded by a refused capture,
+ * or holding a continuation's refused one, with its exact receipt (cause, kept
+ * copy and any retention stage that failed). */
 export function raceSummaryDisclosure(
   winner: CandidateRun | undefined,
   runs: CandidateRun[],
 ): string | null {
   const lines = [
+    winner?.errored ? `- Failure: ${candidateCause(winner)}` : null,
     resultSummaryLines(winner),
     ...runs
       .filter((run) => run !== winner && run.captureRefusal)

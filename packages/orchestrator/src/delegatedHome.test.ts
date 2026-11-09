@@ -309,6 +309,40 @@ describe("applied attempt evidence", () => {
     ).toBe(false);
   });
 
+  it("leaves an attempt this run marked as failed before its HOME to its own failure (#648)", () => {
+    const beforeHome = appliedAttemptFacts(undefined, "workspace_write", null);
+    const marked = { errored: true, homeUndecided: true, applied: beforeHome } as const;
+    // No child ran: the gate does not replace that attempt's own failure.
+    expect(() =>
+      assertDelegatedEvidence(true, "full", [{ attemptId: "a01", ...marked }]),
+    ).not.toThrow();
+    expect(() =>
+      assertDelegatedEvidence(true, "workspace_write", [
+        { attemptId: "a01", ...marked },
+        { attemptId: "a02", applied: deliberate },
+      ]),
+    ).not.toThrow();
+    // The gap stays a gap: the record never claims what did not run.
+    expect(appliedEvidenceComplete(beforeHome)).toBe(false);
+    // Only that marker exempts: the same homeless block read without it (a
+    // historical record, or one whose catch did not know), a success, a missing
+    // block, or a decided HOME without its disclosure stays unauditable.
+    const started = { ...deliberate, confinement_unavailable_reason: null };
+    for (const attempt of [
+      { attemptId: "a03", errored: true, applied: beforeHome },
+      { attemptId: "a03", homeUndecided: true, applied: beforeHome },
+      { attemptId: "a03", errored: false, homeUndecided: true, applied: beforeHome },
+      { attemptId: "a03", errored: true },
+      { attemptId: "a03", errored: true, applied: started },
+    ])
+      expect(() =>
+        assertDelegatedEvidence(true, "workspace_write", [
+          { attemptId: "a01", ...marked },
+          attempt,
+        ]),
+      ).toThrowError(/1 attempt\(s\) state neither .* \(a03\)$/);
+  });
+
   it("does not gate non-delegated or readonly runs", () => {
     expect(() =>
       assertDelegatedEvidence(false, "workspace_write", [{ attemptId: "a01" }]),

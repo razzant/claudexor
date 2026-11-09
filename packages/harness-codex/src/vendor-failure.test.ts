@@ -136,6 +136,25 @@ describe("withCodexVendorFailure", () => {
     },
   );
 
+  it("a readable rollout record replaces the app-server wire's; otherwise the wire's stays", async () => {
+    const wireRecord = {
+      code: "serverOverloaded",
+      message: "at capacity",
+      source: "codex_app_server",
+    };
+    const input = [
+      started,
+      error,
+      completed({ harness_reported_error: true, vendor_failure: wireRecord }),
+    ];
+    expect((await wrap(input)).at(-1)?.payload?.["vendor_failure"]).toEqual(VENDOR_FAILURE);
+    for (const quiet of [
+      await wrap(input, { codexHome: null }),
+      await wrap(input, { spec: spec({ evidence_policy: "stream_only" }) }),
+    ])
+      expect(quiet).toEqual(input);
+  });
+
   it("passes every other event through identical and in order", async () => {
     const usage: HarnessEvent = {
       type: "usage",

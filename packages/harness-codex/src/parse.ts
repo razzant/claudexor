@@ -1,4 +1,10 @@
-import { InputTokenUsage, WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
+import {
+  InputTokenUsage,
+  WorkReport,
+  type HarnessEvent,
+  type ToolRef,
+  type VendorFailureEvidence,
+} from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 import { BROWSER_MCP_SERVER, browserPageRetrieval } from "@claudexor/core";
 import { codexFileChangeEvents } from "./file-change.js";
@@ -44,6 +50,9 @@ export interface CodexParseState {
   /** The current root turn's typed usage refusal (#558), kept on arrival by the
    * run loop's root-only `observeCodexRootError`. */
   usageRefusal?: NonNullable<HarnessEvent["rate_limit"]>;
+  /** The current root turn's own failure record as the app-server wire carried
+   * it, kept the same way; opaque evidence for the terminal. */
+  rootFailure?: VendorFailureEvidence;
 }
 
 /**

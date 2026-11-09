@@ -191,4 +191,19 @@ describe("race precedence of a capture refusal", () => {
     );
     expect(raceSummaryDisclosure(healthy, [healthy])).toBeNull();
   });
+
+  it("names an errored winner's own cause first, and never a loser's (#621)", () => {
+    const telemetry = createAttemptTelemetry("auto", false);
+    telemetry.vendorFailure = { code: "server_overloaded", message: "at capacity", source: "x" };
+    const failed = {
+      ...candidate("a01", undefined, telemetry),
+      errored: true,
+      errors: ["stopped"],
+    };
+    const loser = { ...candidate("a03"), errored: true, errors: ["the loser's own error"] };
+    expect(raceSummaryDisclosure(failed, [failed, loser])).toBe(
+      '- Failure: a01/h-a01: stopped (vendor x: server_overloaded, "at capacity")',
+    );
+    expect(raceSummaryDisclosure(healthy, [loser, healthy])).toBeNull();
+  });
 });

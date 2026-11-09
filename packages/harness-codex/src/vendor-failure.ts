@@ -8,7 +8,9 @@
  * forwards it to the failure record, and no consumer branches on the code.
  * The adapter itself translates the one native code it knows, the typed usage
  * refusal (#558), into the typed limit on the same event, once per try: the
- * app-server wire may already have carried it.
+ * app-server wire may already have carried it. A record the app-server wire
+ * already attached (`codex_app_server`) stays when the rollout yields
+ * none; a readable rollout record replaces it.
  *
  * A separate module because `index.ts` sits at its complexity-ratchet baseline.
  */
