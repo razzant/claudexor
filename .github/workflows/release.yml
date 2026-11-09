@@ -51,8 +51,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A job that neither signs nor publishes is bounded at about twice its slowest
+  # successful run, never below ten minutes, so a hang fails visibly instead of
+  # holding the release, and main, for GitHub's six-hour default. package-macos
+  # also signs, notarizes and attests, so only its gates step is bounded. npm and
+  # GitHub Release publication stay unbounded: a cut-off publication is worse.
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       mode: ${{ steps.release.outputs.mode }}
       sha: ${{ steps.release.outputs.sha }}
@@ -104,6 +110,7 @@ jobs:
     name: Build or promote authoritative Windows ConPTY bytes
     needs: prepare
     runs-on: windows-2022
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -358,7 +365,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Deterministic release gates
+        id: gates
         shell: bash
+        timeout-minutes: 100
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
@@ -390,6 +399,10 @@ jobs:
           pnpm canary
           pnpm release:verify:swift
           node scripts/verify-version-parity.mjs "$VERSION"
+
+      - name: List processes left after the release gates failed or timed out
+        if: failure() && steps.gates.outcome == 'failure'
+        run: ps axww -o user,pid,ppid,pgid,stat,etime,command | awk -v user="$(id -un)" 'NR == 1 || $1 == user'
 
       - name: Build shared engine resources before app packaging
         if: needs.prepare.outputs.mode == 'candidate'
@@ -857,6 +870,7 @@ jobs:
     name: Execute assembled Windows ConPTY bytes (Node 24.16)
     needs: [prepare, windows-conpty-authority, package-macos]
     runs-on: windows-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -997,6 +1011,7 @@ jobs:
     name: Exercise the promoted Linux runtime over OpenSSH
     needs: [prepare, package-macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -1103,6 +1118,7 @@ jobs:
     needs: [prepare, publish-npm]
     if: needs.prepare.outputs.mode == 'publish'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
