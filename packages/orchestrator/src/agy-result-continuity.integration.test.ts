@@ -250,6 +250,7 @@ const DROPPED =
   "The connection to the model service was interrupted before the turn completed; please try again.";
 const PIPE =
   'agent executor error: generating and executing: request failed: Post "https://model.example.test/v1internal:streamGenerateContent?alt=sse": write tcp 192.0.2.10:64004->198.51.100.4:443: write: broken pipe';
+const INFERENCE_QUOTA = "Individual quota reached. Resets in 68h48m15s.";
 const NOTICE =
   "The assistant text this run retained (not an accepted final answer) is in final/retained-output.md.";
 
@@ -261,6 +262,39 @@ const incidentShaped = (third: unknown = failedResult("ERROR", PIPE)) => [
 ];
 
 describe("AGY failed terminal after streamed text (actual consumer boundary)", () => {
+  it.each(["agent", "ask"] as const)(
+    "%s: inference-quota refusal is not mistaken for same-session transport recovery",
+    async (mode) => {
+      const out = await run(mode, [
+        [
+          init("conv-1"),
+          ...viewTool(1),
+          ...fragments(FIRST),
+          failedResult("ERROR", INFERENCE_QUOTA),
+        ],
+        [init("conv-1"), succeededResult("must not be retried automatically")],
+      ]);
+      expect(fixture.spawns).toHaveLength(1);
+      expect(out.conversations).toEqual([null]);
+      expect(out.result.lifecycle).toBe("failed");
+      expect(out.failure()).toMatchObject({
+        vendorFailure: { code: "ERROR", message: INFERENCE_QUOTA, source: "agy_result" },
+        poolAttempts: [
+          expect.objectContaining({
+            vendorFailure: expect.objectContaining({ message: INFERENCE_QUOTA }),
+          }),
+        ],
+      });
+      // With the fixture's sole profile and the existing rotate policy, the
+      // typed refusal ends at the rotation boundary. The important contract is
+      // that no native continuation is started and the reset remains unknown.
+      expect(out.terminal?.payload["resumable"]).toMatchObject({
+        cause: "pool_exhausted",
+        resetsAt: null,
+      });
+    },
+  );
+
   it.each(["agent", "ask"] as const)(
     "%s: native continuations keep each try's exact text as evidence, never as a final",
     async (mode) => {

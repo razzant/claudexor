@@ -1,4 +1,10 @@
-import type { HarnessEvent, ToolKind, ToolRef, VendorFailureEvidence } from "@claudexor/schema";
+import type {
+  HarnessEvent,
+  RateLimitSignal,
+  ToolKind,
+  ToolRef,
+  VendorFailureEvidence,
+} from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 type Json = any;
@@ -190,12 +196,14 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
       // A non-SUCCESS result is failure evidence, never answer material: the
       // model's own text rides exact, non-final retained evidence; the
       // vendor's status and error ride the error as its typed diagnostic.
+      const rateLimit = agyInferenceQuotaSignal(r.error);
       events.push(...nonSuccessEvidence(r, sessionId, ts), {
         type: "error",
         session_id: sessionId,
         ts,
         error: summarize(r.error) || `agy terminal status ${status || "unknown"}`,
         payload: { vendor_failure: agyVendorFailure(status, r.error) },
+        ...(rateLimit ? { rate_limit: rateLimit } : {}),
       });
     }
     if (usage) events.push({ type: "usage", session_id: sessionId, ts, usage });
@@ -247,6 +255,20 @@ function agyVendorFailure(status: string, error: unknown): VendorFailureEvidence
     message: words.trim() ? redactSecrets(words).slice(0, 4000) : null,
     source: "agy_result",
   };
+}
+
+/**
+ * AGY puts this refusal in the structured `result.error` field, but the
+ * current vendor does not expose a stable machine code or absolute reset
+ * timestamp for it. Keep the exact vendor record as evidence and use the
+ * existing unknown-reopening contract so the continuation owner will not
+ * replay the same native session as if this were a transport interruption.
+ */
+function agyInferenceQuotaSignal(error: unknown): RateLimitSignal | undefined {
+  const words =
+    typeof error === "string" ? error : error && typeof error === "object" ? summarize(error) : "";
+  if (!/\bindividual quota reached\b/i.test(words)) return undefined;
+  return { resets_at: null, retry_delay_ms: null, reopening: "unknown" };
 }
 
 /** Tools that MUTATE the workspace. The regex catches the vendor's naming

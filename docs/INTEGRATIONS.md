@@ -2709,7 +2709,11 @@ Only the native `jetski` headless auto-denial stderr diagnostic establishes
 final it is a typed warning, not failed output (INV-044). No retry or access
 elevation is inferred. A zero-exit login timeout instead carries `ERROR` and
 failure text (`fixtures/error-auth.jsonl`). `usage` carries input/output/cache-read
-tokens; `thinking_tokens` is dropped, never folded into output. No typed rate-limit path exists. The CLI has no config-dir env var
+tokens; `thinking_tokens` is dropped, never folded into output. When AGY's structured
+`result.error` says `Individual quota reached`, the adapter emits the existing typed
+`rate_limit` signal with `reopening: "unknown"` and no reset or retry delay, while
+retaining the exact `vendor_failure` record. This is evidence for the continuation
+consumer; it does not infer a reopening time. The CLI has no config-dir env var
 (upstream #155), so a named identity is a Claudexor-owned `HOME` — which also
 relocates the vendor's conversation and cache state, so one profile HOME holds
 every thread's vendor state. Credential custody is platform-shaped: on Linux
