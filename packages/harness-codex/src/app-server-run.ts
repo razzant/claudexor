@@ -322,6 +322,10 @@ export async function* runCodexAppServer(
         ? { launch_advisory: redactSecrets(launchAdvisory) }
         : {}),
       ...(harnessReportedError ? { harness_reported_error: true } : {}),
+      // The root turn's own wire record; a readable rollout record replaces it.
+      ...(harnessReportedError && parseState.rootFailure
+        ? { vendor_failure: parseState.rootFailure }
+        : {}),
       ...(stderrTail ? { stderr_tail: stderrTail } : {}),
       ...(droppedUnrecognizedEvents
         ? { dropped_unrecognized_events: droppedUnrecognizedEvents }

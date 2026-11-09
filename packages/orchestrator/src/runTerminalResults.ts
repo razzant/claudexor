@@ -19,6 +19,7 @@ import {
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { poolFailure, redactVendorFailure } from "./pool-attempt-evidence.js";
+import { vendorFailureAction } from "./harnessFailure.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { resumableTerminal, type ContinuityTerminalFacts } from "./continuity-terminal.js";
 import { terminalOutcomeFacts } from "./terminalOutcome.js";
@@ -97,6 +98,15 @@ export function writeFailure(
           ? [
               "The account reached your saved quota reserve (headroom_threshold), not a provider limit; wait for the reset, choose another account, or change the reserve in Settings",
             ]
+          : []),
+        // An untyped harness failure names the vendor's own record first; a
+        // typed refusal keeps its own remedy (#633).
+        ...(vendor &&
+        failure.category === "harness_error" &&
+        !failure.code &&
+        !failure.requestRefusal &&
+        !failure.quotaRefusal
+          ? [vendorFailureAction(vendor)]
           : []),
         ...(failure.code === "input_too_large"
           ? [

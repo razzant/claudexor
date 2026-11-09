@@ -375,7 +375,12 @@ records the native setting prepared for it
 `HOME` or named vendor profile selects credentials and keeps vendor-written
 state separate, but it is not containment and does not prevent same-user host
 access. New delegated attempt and candidate evidence records this deliberate
-absence with null mechanism/proof fields. Historical proven Seatbelt evidence
+absence with null mechanism/proof fields; a delegated mutating run refuses
+(`delegated_evidence_incomplete`) to end while an attempt that reached its
+adapter lacks it. An attempt whose preparation failed before its HOME was decided
+started no child: the catch that saw it marks it, its record keeps the gap and
+its own failure stands (race siblings continue, convergence ends with it); a
+record's missing fields never exempt it. Historical proven Seatbelt evidence
 and the retired `external_sandbox_full` literal remain decoder-only so old
 runs stay inspectable.
 
@@ -2872,7 +2877,11 @@ terminal: in the failure message, summary and decision evidence, with the record
 and inspection action; with a winner, in the summary and any blocked record's next actions. An
 all-uncaptured race, an uncaptured in-place candidate, an isolated Git source
 whose retention setup failed, or an injected Delegate-belt failure remains
-terminal for the race.
+terminal for the race. A winner whose harness failed after it changed files
+leads its failure record and the returned summary with its own cause line, then
+arbitration's ranking line, unless a review or check block decides the terminal
+(summary.md names it as `- Failure:` either way); the phase stays `arbitration`,
+and no loser's cause leads.
 
 ### Agent --attempts / --until-clean
 
@@ -2882,7 +2891,9 @@ convergence, cancellation, budget/quota exhaustion, or no-progress stall after
 eligible harness rotation.
 Explicit review-off capped repair keeps deterministic gates, policy findings,
 and work-report completion as its convergence conditions; it does not wait for
-a model review that was never requested.
+a model review that was never requested. A loop that ends `not_converged` on an
+errored last attempt leads with that attempt's own cause line and vendor
+evidence, as an errored race winner does; phase and category are unchanged.
 
 ### Plan
 
@@ -7379,7 +7390,9 @@ fail-soft from the run's own `CODEX_HOME` and bound to the turn this process ran
 (the record must be the last completion, match the last started turn when the
 rollout carries turn markers, and not predate the spawn second; any doubt yields
 nothing — disclosed residual: an earlier turn that failed within the same second
-as a resumed spawn that wrote no turn marker of its own). The orchestrator
+as a resumed spawn that wrote no turn marker of its own); when that yields
+nothing, the app-server wire's own record of the root turn (`codexErrorInfo` and
+its words, `codex_app_server`) stands. The orchestrator
 reads it from any completion the harness voiced its error on, with OS exit
 evidence or none (a Codex app-server turn ends with neither an exit code nor a
 signal); a signal kill and a cancelled completion carry none. It belongs to
@@ -7392,20 +7405,28 @@ ended without evidence, crashed or was cancelled never speaks with an earlier
 try's cause. The forwarded code is OPAQUE evidence with no mapping table: no
 consumer branches on its value, it is never an input to retry, rotation,
 cooldown or credential verdicts, and it never changes the record's
-`category`/`code`. The one translation is the adapter's own, from the native
-record it read: Codex's typed usage refusal (`usage_limit_exceeded` in the
-rollout, `usageLimitExceeded` on the app-server wire, whichever arrives first,
-once per try) also rides that event as a typed `rate_limit` with
-`reopening: unknown` and no reset. The one code covers a spent plan window and
+`category`/`code`. An attempt's cause line in a failure message (and every
+text repeating it) quotes its last try's evidence after the error as
+`(vendor <source>: <code>, "<words>")`: words masked, cut to 240 characters and
+omitted when the error already carries them; per-try rows keep it as fields. An
+untyped `harness_error` record leads its next actions with one step to read it;
+a typed refusal keeps its own remedy. The one translation is the adapter's own,
+from the native record it read: Codex's typed usage refusal
+(`usage_limit_exceeded` in the rollout, `usageLimitExceeded` on the app-server
+wire, whichever arrives first, once per try) also rides that event as a typed
+`rate_limit` with `reopening: unknown` and no reset. The one code covers a spent plan window and
 a workspace out of credits alike, so it never implies a window that a timer
 reopens. Decisions read that typed signal (see "In-run continuation" and the
 quota admission rules), never the forwarded code. The app-server run loop keeps
-that code on arrival for the root turn it belongs to, from a non-retrying `error`
-frame or a failed turn, and a new root turn clears it; the settled terminal error
-takes it once the process stopped, so a durable `systemError` loses it neither
-when the frame came first nor when the stopped process wrote it last, and nothing
-waits for a frame that may never come. A sub-agent thread's frames never limit
-the root. Every other harness, and any missing or unreadable record, yields `null`.
+that code, and the turn's own record (a typed record outranks words alone), on
+arrival for the root turn they belong to, from a non-retrying `error` frame or a
+failed turn, and a new root turn clears both; the settled terminal takes them
+once the process stopped, so a durable `systemError` loses them neither when the
+frame came first nor when the stopped process wrote it last, and nothing waits
+for a frame that may never come. A sub-agent thread's frames never limit or
+speak for the root. Codex's carried-state rejection reads a record's code, never
+its source; the wire's camelCase codes match none of its tokens. Every other
+harness, and any missing or unreadable record, yields `null`.
 
 On every terminal path (zero exit, nonzero exit, abort), the shared CLI run
 loop attaches a bounded, adapter-redacted `stderr_tail` to the terminal

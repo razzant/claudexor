@@ -376,6 +376,172 @@ describe("Codex usage refusal on the app-server wire (#558)", () => {
   });
 });
 
+/**
+ * The root turn's own failure record (`codexErrorInfo` and its words) that only
+ * the app-server wire carried, a gap read in source: with no readable rollout
+ * record it was dropped. It rides the terminal `completed` as `vendor_failure`
+ * evidence (source `codex_app_server`), whatever the arrival order, and decides
+ * nothing: the overloaded code adds no limit. Synthetic frames, not a recording.
+ */
+describe("the root turn's own failure record on the app-server wire", () => {
+  const OVERLOADED = "Selected model is at capacity. Please try a different model.";
+  const overloaded = turnError(OVERLOADED, "serverOverloaded");
+  const wireRecord = (code: string | null, message: string | null) => ({
+    code,
+    message,
+    source: "codex_app_server",
+  });
+  const recorded = (events: HarnessEvent[]) => events.at(-1)?.payload?.["vendor_failure"];
+  const nextTurn: Frame = {
+    method: "turn/started",
+    params: { threadId: THREAD, turn: { id: "turn-next" } },
+  };
+
+  it.each([
+    [
+      "systemError, error, failed turn (recorded order)",
+      [systemError, errorFrame(overloaded), failedTurn(overloaded)],
+      "systemError",
+    ],
+    ["the error before the systemError", [errorFrame(overloaded), systemError], "systemError"],
+    ["a failed turn alone", [failedTurn(overloaded)], "idle"],
+  ] as const)(
+    "keeps it on the terminal whatever the arrival order: %s",
+    async (_order, afterTurn, status) => {
+      const events = await wire(vendor({ afterTurn: [...afterTurn], status }));
+      expect(recorded(events)).toEqual(wireRecord("serverOverloaded", OVERLOADED));
+      expect(events.at(-1)).toMatchObject({
+        type: "completed",
+        payload: { harness_reported_error: true },
+      });
+      expect(errors(events)).toHaveLength(1);
+      expect(limits(events)).toEqual([]);
+    },
+  );
+
+  it("takes a record written only at shutdown or during background custody, without waiting for one", async () => {
+    const atShutdown = await wire(
+      vendor({
+        afterTurn: [systemError],
+        status: "systemError",
+        closing: [errorFrame(overloaded)],
+      }),
+    );
+    expect(recorded(atShutdown)).toEqual(wireRecord("serverOverloaded", OVERLOADED));
+    const server = vendor({
+      afterTurn: [commandStarted, systemError],
+      status: "systemError",
+      backgroundReads: 3,
+      duringWait: [errorFrame(overloaded), failedTurn(overloaded)],
+    });
+    const delayed = await wire(server);
+    expect(server.reads()).toBe(4);
+    expect(recorded(delayed)).toEqual(wireRecord("serverOverloaded", OVERLOADED));
+    const silent = await wire(vendor({ afterTurn: [systemError], status: "systemError" }));
+    expect(silent.at(-1)?.payload).not.toHaveProperty("vendor_failure");
+  });
+
+  it("a typed record outranks a later words-only one; between typed records the later speaks", async () => {
+    const kept = await wire(
+      vendor({
+        afterTurn: [errorFrame(overloaded), failedTurn(turnError("turn failed"))],
+        status: "idle",
+      }),
+    );
+    expect(recorded(kept)).toEqual(wireRecord("serverOverloaded", OVERLOADED));
+    const later = await wire(
+      vendor({
+        afterTurn: [
+          errorFrame(turnError("first words", "serverOverloaded")),
+          failedTurn(turnError("second words", { httpConnectionFailed: { httpStatusCode: 502 } })),
+        ],
+        status: "idle",
+      }),
+    );
+    expect(recorded(later)).toEqual(wireRecord("httpConnectionFailed", "second words"));
+  });
+
+  it("a new root turn clears the earlier turn's record, and a failure without one carries none", async () => {
+    const bare = await wire(
+      vendor({ afterTurn: [errorFrame(overloaded), nextTurn, systemError], status: "systemError" }),
+    );
+    expect(bare.at(-1)).toMatchObject({ payload: { harness_reported_error: true } });
+    expect(bare.at(-1)?.payload).not.toHaveProperty("vendor_failure");
+    const words = await wire(
+      vendor({
+        afterTurn: [errorFrame(overloaded), nextTurn, failedTurn(turnError("later words"))],
+        status: "idle",
+      }),
+    );
+    expect(recorded(words)).toEqual(wireRecord(null, "later words"));
+  });
+
+  it("a retrying frame followed by an answer leaves no failure behind", async () => {
+    const events = await wire(
+      vendor({
+        afterTurn: [
+          {
+            method: "error",
+            params: { error: overloaded, willRetry: true, threadId: THREAD, turnId: TURN },
+          },
+          {
+            method: "item/completed",
+            params: {
+              threadId: THREAD,
+              turnId: TURN,
+              item: { type: "agentMessage", id: "answer", text: "done" },
+            },
+          },
+          {
+            method: "turn/completed",
+            params: { threadId: THREAD, turn: { id: TURN, status: "completed", items: [] } },
+          },
+        ],
+        status: "idle",
+      }),
+    );
+    expect(events.some((event) => event.final && event.text === "done")).toBe(true);
+    expect(errors(events)).toEqual([]);
+    expect(events.at(-1)?.payload).not.toHaveProperty("vendor_failure");
+    expect(events.at(-1)?.payload).not.toHaveProperty("harness_reported_error");
+  });
+
+  it("a sub-agent's record never becomes the root's, and a cancelled turn carries none", async () => {
+    const CHILD = "thread-child";
+    const child: Frame[] = [
+      {
+        method: "error",
+        params: { error: overloaded, willRetry: false, threadId: CHILD, turnId: "c" },
+      },
+      {
+        method: "turn/completed",
+        params: {
+          threadId: CHILD,
+          turn: { id: "c", status: "failed", error: overloaded, items: [] },
+        },
+      },
+    ];
+    const settled = await wire(
+      vendor({ afterTurn: [...child, systemError], status: "systemError" }),
+    );
+    expect(settled.at(-1)?.payload).not.toHaveProperty("vendor_failure");
+    const cancelled = await wire(
+      vendor({
+        afterTurn: [
+          errorFrame(overloaded),
+          {
+            method: "turn/completed",
+            params: { threadId: THREAD, turn: { id: TURN, status: "interrupted", items: [] } },
+          },
+        ],
+        status: "idle",
+      }),
+    );
+    expect(cancelled.at(-1)).toMatchObject({ type: "completed", aborted: true });
+    expect(cancelled.at(-1)?.payload).not.toHaveProperty("vendor_failure");
+  });
+});
+
 /** The recorded rollout of #558's mechanism: a workspace out of credits, typed `usage_limit_exceeded`. */
 const ROLLOUT_THREAD = "00000000-0000-7000-0000-000000000000";
 const fixture = (name: string) =>

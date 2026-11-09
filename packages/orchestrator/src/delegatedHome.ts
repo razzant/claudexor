@@ -255,19 +255,39 @@ export function appliedEvidenceComplete(
 }
 
 /**
+ * An attempt of THIS run that FAILED before its HOME was decided never reached
+ * its adapter: the catch that saw it marked it (`homeUndecided`) and wrote its
+ * block without a home, so no child ran whose reach the record must state. The
+ * gap stays in its record; its own failure, not missing evidence, is what that
+ * attempt reports (#648). Never inferred from a record's missing fields, so an
+ * older record without its disclosure stays unauditable.
+ */
+function failedBeforeHome(attempt: { errored?: boolean; homeUndecided?: boolean }): boolean {
+  return attempt.errored === true && attempt.homeUndecided === true;
+}
+
+/**
  * The terminal evidence gate, shared by every lane that assembles attempts.
  *
- * A delegated MUTATING run may only reach a terminal when EVERY attempt it ran
- * can state what it ran under, including the deliberate absence of an outer
- * boundary, so the rule lives here and both callers spend it.
+ * A delegated MUTATING run may only reach a terminal when EVERY attempt that
+ * reached its adapter can state what it ran under, including the deliberate
+ * absence of an outer boundary, so the rule lives here and both callers spend
+ * it. An attempt that failed before its HOME started no child (`failedBeforeHome`).
  */
 export function assertDelegatedEvidence(
   delegated: boolean,
   access: AccessProfile,
-  attempts: readonly { attemptId: string; applied?: AppliedAttemptFacts }[],
+  attempts: readonly {
+    attemptId: string;
+    applied?: AppliedAttemptFacts;
+    errored?: boolean;
+    homeUndecided?: boolean;
+  }[],
 ): void {
   if (!delegated || !isMutatingAccess(access)) return;
-  const unauditable = attempts.filter((attempt) => !appliedEvidenceComplete(attempt.applied));
+  const unauditable = attempts.filter(
+    (attempt) => !failedBeforeHome(attempt) && !appliedEvidenceComplete(attempt.applied),
+  );
   if (unauditable.length === 0) return;
   throw new DelegatedEvidenceIncompleteError(
     `delegated mutating run cannot terminalize: ${unauditable.length} attempt(s) state neither a historical proven boundary nor the deliberate no-outer-boundary reason (${unauditable.map((attempt) => attempt.attemptId).join(", ")})`,

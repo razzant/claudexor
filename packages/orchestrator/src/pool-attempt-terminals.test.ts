@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
@@ -377,6 +377,162 @@ describe("an attempt rebuilt or superseded after its tries keeps their accounts"
     expect(t.errors).toEqual([OUT_OF_USAGE, "stream broke"]);
     expect(t.event).toEqual(t.failure.poolAttempts);
     expect(o.result.summary).toContain("Account attempts:");
+    // The winner's own failure leads its record and the returned summary (#621):
+    // the ranking line follows unchanged, then the account attempts.
+    const decision = new ArtifactStore(o.root).readYaml<{ why_winner: string }>(
+      join(o.result.runDir, "arbitration", "decision.yaml"),
+    )!;
+    expect(decision.why_winner).toMatch(/^Candidate A: gates=/);
+    expect(t.failure.safeMessage.split("\n").slice(0, 2)).toEqual([
+      "a01/fake: stream broke",
+      decision.why_winner,
+    ]);
+    expect(o.result.summary.split("\n").slice(0, 2)).toEqual([
+      "a01/fake: stream broke",
+      decision.why_winner,
+    ]);
+    expect(t.failure).toMatchObject({ harnessId: "fake", attemptId: "a01" });
+    // summary.md (the MCP status summary) names the same cause, the winner's only.
+    expect(t.summaryMd).toContain("\n- Failure: a01/fake: stream broke\n");
+    expect(t.summaryMd).not.toContain(`- Failure: a01/fake: ${OUT_OF_USAGE}`);
+  });
+
+  it("a winner that failed after its work but whose checks failed keeps the check block's statement", async () => {
+    const o = await run({
+      mode: "agent",
+      profiles: ["a"],
+      maxRetries: 0,
+      input: { tests: [{ program: "sh", args: ["-c", "exit 3"], envAllowlist: [] }] },
+      script: function* ({ emit, spec }) {
+        yield emit({ type: "started" });
+        writeFileSync(join(spec.cwd, "edited.txt"), "half done\n");
+        yield emit({ type: "file_change", payload: { path: "edited.txt" } });
+        yield emit({ type: "error", error: "stream broke" });
+        yield emit({ type: "completed", payload: { exit_code: 1, harness_reported_error: true } });
+      },
+    });
+    expect(o.result.lifecycle).toBe("failed");
+    const t = terminal(o);
+    expect(t.failure).toMatchObject({ phase: "review", category: "policy" });
+    expect(t.failure.safeMessage).toMatch(/^review blocked before apply: Candidate A: /);
+    expect(o.result.summary).toMatch(/^Candidate A: /);
+    // The block keeps its statement; the summary still names the winner's own failure.
+    expect(t.summaryMd).toContain("\n- Failure: a01/fake: stream broke\n");
+  });
+
+  it("a healthy sibling still wins over a candidate that failed after its work", async () => {
+    const o = await run({
+      mode: "agent",
+      profiles: ["a"],
+      maxRetries: 0,
+      // Best-of requests review: a verified clean review lets the healthy winner stand.
+      reviewers: [approvingReviewer("rev-o", "openai"), approvingReviewer("rev-g", "google")],
+      input: { n: 2, inPlace: false, review: true, synthesis: "never" },
+      script: function* ({ emit, spec }) {
+        if (basename(dirname(spec.cwd)) !== "a01") return yield* edit(emit, spec, "healthy");
+        yield emit({ type: "started" });
+        writeFileSync(join(spec.cwd, "edited.txt"), "half done\n");
+        yield emit({ type: "file_change", payload: { path: "edited.txt" } });
+        yield emit({ type: "error", error: "stream broke" });
+        yield emit({ type: "completed", payload: { exit_code: 1, harness_reported_error: true } });
+      },
+    });
+    expect(o.spawns).toHaveLength(2);
+    expect(o.result.lifecycle).toBe("succeeded");
+    expect(o.result.winner).toBe("a02");
+    expect(existsSync(join(o.result.runDir, "final", "failure.yaml"))).toBe(false);
+    expect(o.result.summary).not.toContain("stream broke");
+    const summaryMd = readFileSync(join(o.result.runDir, "final", "summary.md"), "utf8");
+    expect(summaryMd).not.toContain("stream broke");
+    expect(summaryMd).not.toContain("- Failure:");
+  });
+
+  /** Convergence attempt `n` changes the file, then its harness fails with `record`. */
+  function* failsAfterWork(
+    emit: Emit,
+    spec: HarnessRunSpec,
+    n: number,
+    record: Record<string, unknown> | null,
+  ): Generator<HarnessEvent> {
+    yield emit({ type: "started" });
+    writeFileSync(join(spec.cwd, "edited.txt"), `attempt ${n}\n`);
+    yield emit({ type: "file_change", payload: { path: "edited.txt" } });
+    yield emit({ type: "error", error: `attempt ${n} broke` });
+    yield emit({
+      type: "completed",
+      payload: { harness_reported_error: true, ...(record ? { vendor_failure: record } : {}) },
+    });
+  }
+  const own = (n: number) => ({ code: `c${n}`, message: `words ${n}`, source: "x" });
+
+  it("convergence: a last attempt that failed after its work leads with its own cause, never an earlier attempt's", async () => {
+    const o = await run({
+      mode: "agent",
+      profiles: ["a"],
+      maxRetries: 0,
+      input: { attempts: 2 },
+      script: function* ({ emit, spec, tryOfProfile }) {
+        yield* failsAfterWork(emit, spec, tryOfProfile, own(tryOfProfile));
+      },
+    });
+    expect(o.spawns).toHaveLength(2);
+    expect(o.result.facts).toMatchObject({ lifecycle: "failed", reason: "not_converged" });
+    const t = terminal(o);
+    // The loop's own axes and remedy are unchanged; only the statement gains its cause.
+    expect(t.failure).toMatchObject({
+      phase: "convergence",
+      category: "internal",
+      attemptId: "a02",
+      vendorFailure: own(2),
+    });
+    const cause = 'a02/fake: attempt 2 broke (vendor x: c2, "words 2")';
+    expect(t.failure.safeMessage.split("\n").slice(0, 2)).toEqual([
+      cause,
+      "failed (not_converged) after 2 attempt(s)",
+    ]);
+    expect(o.result.summary.split("\n").slice(0, 2)).toEqual([cause, "failed after 2 attempt(s)"]);
+    expect(t.summaryMd).toContain(`\n- Failure: ${cause}\n`);
+    for (const text of [t.failure.safeMessage, o.result.summary, t.summaryMd])
+      expect(text).not.toContain('"words 1"');
+  });
+
+  it("convergence: an earlier attempt's record never speaks for a last attempt that has none", async () => {
+    const o = await run({
+      mode: "agent",
+      profiles: ["a"],
+      maxRetries: 0,
+      input: { attempts: 2 },
+      script: function* ({ emit, spec, tryOfProfile }) {
+        yield* failsAfterWork(emit, spec, tryOfProfile, tryOfProfile === 1 ? own(1) : null);
+      },
+    });
+    const t = terminal(o);
+    expect(t.failure.vendorFailure).toBeNull();
+    expect(t.failure.safeMessage.split("\n")[0]).toBe("a02/fake: attempt 2 broke");
+    expect(o.result.summary.split("\n")[0]).toBe("a02/fake: attempt 2 broke");
+    expect(t.summaryMd).toContain("\n- Failure: a02/fake: attempt 2 broke\n");
+  });
+
+  it("convergence: a run that converged after a failed attempt names no failure", async () => {
+    const o = await run({
+      mode: "agent",
+      profiles: ["a"],
+      maxRetries: 0,
+      input: { attempts: 2 },
+      script: function* ({ emit, spec, tryOfProfile }) {
+        if (tryOfProfile === 1) return yield* failsAfterWork(emit, spec, 1, own(1));
+        yield* edit(emit, spec, "healthy");
+      },
+    });
+    expect(o.spawns).toHaveLength(2);
+    expect(o.result.lifecycle).toBe("succeeded");
+    expect(existsSync(join(o.result.runDir, "final", "failure.yaml"))).toBe(false);
+    const summaryMd = readFileSync(join(o.result.runDir, "final", "summary.md"), "utf8");
+    for (const text of [summaryMd, o.result.summary]) {
+      expect(text).not.toContain("- Failure:");
+      expect(text).not.toContain("attempt 1 broke (vendor");
+    }
+    expect(o.result.summary.split("\n")[0]).toBe("converged in 2 attempt(s)");
   });
 
   it("a failed one-shot continuation keeps both its own and the original attempt's accounts", async () => {

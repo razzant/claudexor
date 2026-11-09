@@ -11,11 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
+import { DaemonControlApiServer } from "@claudexor/control-api";
 import type { HarnessAdapter, spawnProcess } from "@claudexor/core";
 import { QuotaRegistry, createAccountEvidence } from "@claudexor/daemon";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { reviewCandidate } from "@claudexor/review";
 import {
+  CONTROL_PROTOCOL_MAJOR,
   ConformanceReport,
   CredentialProfile,
   GlobalConfig,
@@ -26,11 +28,13 @@ import {
   type HarnessEvent,
   type RunEvent,
 } from "@claudexor/schema";
+import { parseCodexAccountResources } from "../../harness-codex/src/account-resources.js";
 import { runCodexAppServer } from "../../harness-codex/src/app-server-run.js";
 import { decorateCodexEvent } from "../../harness-codex/src/event-decoration.js";
 import { withCodexVendorFailure } from "../../harness-codex/src/vendor-failure.js";
 import { credentialPoolExhausted } from "../../orchestrator/src/credential-cooldown.js";
 import { enumerateAccountCatalogs } from "./account-catalog.js";
+import { projectRecoveryRunDetail } from "./mcp-run-projections.js";
 import { poolExhausted } from "./model-service-refusals.js";
 import { buildRunOrchestrator } from "./run-orchestrator.js";
 import { memoryEventLedger } from "./test-support/memory-event-ledger.js";
@@ -55,9 +59,13 @@ type Behavior =
   | "refuse_read_first"
   | "refuse_after_progress"
   | "refuse_transport"
+  | "refuse_credits"
   | "transport"
   | "review_clean"
-  | "succeed";
+  | "succeed"
+  | "overloaded_wire"
+  | "overloaded_rollout"
+  | "overloaded_after_edit";
 const CREDITS =
   "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.";
 /** Limit words with no typed code, which alone produce today's plain dated cooldown. */
@@ -65,6 +73,24 @@ const LIMIT_WORDS = "You've hit your usage limit.";
 /** Words the transport classifier reads as a broken stream (a typed `transient`). */
 const TRANSPORT_WORDS = "stream disconnected before completion: error sending request";
 const VENDOR = { code: "usage_limit_exceeded", message: CREDITS, source: "codex_rollout" };
+/**
+ * #644's neutral shape: the account read names the reached type and no numbers
+ * at all (no window, no balance), and only the rollout keeps the typed refusal.
+ */
+const CREDITS_DEPLETED = {
+  rateLimits: {
+    limitId: "codex",
+    primary: null,
+    secondary: null,
+    credits: { hasCredits: false, unlimited: false, balance: null },
+    rateLimitReachedType: "workspace_member_credits_depleted",
+  },
+};
+/** Assistant text a failing candidate voiced before its harness failed. */
+const PARTIAL_ANSWER = "PARTIAL-ANSWER-621: the first half of the change";
+/** A synthetic provider overload, typed on the wire and in the rollout record alike. */
+const OVERLOADED = "Selected model is at capacity. Please try a different model.";
+const SYSTEM_ERROR = "Codex app-server thread settled in systemError";
 
 const roots: string[] = [];
 afterEach(
@@ -73,7 +99,12 @@ afterEach(
 ); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** The scripted vendor app-server of one spawn; it also writes that turn's rollout record. */
-function vendor(behavior: Behavior, home: string, threadSeq: () => string): typeof spawnProcess {
+function vendor(
+  behavior: Behavior,
+  home: string,
+  threadSeq: () => string,
+  cwd: string,
+): typeof spawnProcess {
   return async function* (_bin, _args, options = {}) {
     const replies: string[] = [];
     let wake: (() => void) | undefined;
@@ -86,7 +117,9 @@ function vendor(behavior: Behavior, home: string, threadSeq: () => string): type
       wake = undefined;
     };
     const failed = behavior !== "succeed" && behavior !== "review_clean";
-    const rollout = (): void => {
+    const rollout = (
+      error: Frame = { message: CREDITS, codex_error_info: "usage_limit_exceeded" },
+    ): void => {
       const day = join(home, "sessions", "2026", "11", "01");
       mkdirSync(day, { recursive: true });
       const at = Math.floor(Date.now() / 1000);
@@ -99,7 +132,7 @@ function vendor(behavior: Behavior, home: string, threadSeq: () => string): type
             type: "task_complete",
             turn_id: turn,
             last_agent_message: null,
-            error: { message: CREDITS, codex_error_info: "usage_limit_exceeded" },
+            error,
             started_at: at,
             completed_at: at,
           }),
@@ -157,6 +190,44 @@ function vendor(behavior: Behavior, home: string, threadSeq: () => string): type
             });
             return;
           }
+          if (behavior.startsWith("overloaded")) {
+            if (behavior === "overloaded_after_edit") {
+              writeFileSync(join(cwd, "edited.txt"), "half done\n");
+              const command = { type: "commandExecution", id: "cmd-edit", command: "edit" };
+              push(
+                item("item/started", { ...command, status: "inProgress" }),
+                item("item/completed", { ...command, status: "completed", exitCode: 0 }),
+                item("item/completed", {
+                  type: "agentMessage",
+                  id: "partial",
+                  text: PARTIAL_ANSWER,
+                }),
+              );
+            }
+            if (behavior === "overloaded_rollout")
+              rollout({ message: OVERLOADED, codex_error_info: "server_overloaded" });
+            push({
+              method: "thread/status/changed",
+              params: { threadId: thread, status: { type: "systemError" } },
+            });
+            if (behavior === "overloaded_rollout") return;
+            // The recorded order: systemError, the non-retrying error, the failed turn.
+            const error = { message: OVERLOADED, codexErrorInfo: "serverOverloaded" };
+            push(
+              {
+                method: "error",
+                params: { error, willRetry: false, threadId: thread, turnId: turn },
+              },
+              {
+                method: "turn/completed",
+                params: {
+                  threadId: thread,
+                  turn: { id: turn, status: "failed", error, items: [] },
+                },
+              },
+            );
+            return;
+          }
           if (behavior === "refuse_read_first") {
             const error = { message: CREDITS, codexErrorInfo: "usageLimitExceeded" };
             push(
@@ -171,6 +242,8 @@ function vendor(behavior: Behavior, home: string, threadSeq: () => string): type
             );
             return;
           }
+          if (behavior === "refuse_credits")
+            push({ method: "account/rateLimits/updated", params: CREDITS_DEPLETED });
           rollout();
           if (behavior === "refuse_words") {
             const error = { message: LIMIT_WORDS };
@@ -278,7 +351,12 @@ function fixture(
         args: [],
         spec,
         env,
-        spawn: vendor(behaviors[profile]!(spawn), homes[profile]!, () => `thread-${++threads}`),
+        spawn: vendor(
+          behaviors[profile]!(spawn),
+          homes[profile]!,
+          () => `thread-${++threads}`,
+          spec.cwd,
+        ),
         pollIntervalMs: 0,
       });
       const decorated = (async function* (): AsyncGenerator<HarnessEvent> {
@@ -379,6 +457,7 @@ function fixture(
       .flatMap((s) => s.constraints)
       .filter((c) => c.id === REOPENING_UNKNOWN_COOLDOWN_ID);
   return {
+    root,
     runOnce,
     cooldown,
     quota,
@@ -548,7 +627,8 @@ describe("Codex typed usage refusal, adapter → orchestrator → daemon (#558, 
       code: null,
       category: "harness_unavailable",
       resetsAt: null,
-      vendorFailure: null,
+      // No rollout record: the wire's own record is the evidence, and decides nothing.
+      vendorFailure: { code: "usageLimitExceeded", message: CREDITS, source: "codex_app_server" },
     });
     expect(oldOuroborosHealsOnTimer(run.failure!)).toBe(false);
     expect(pinned.cooldown("a")).toHaveLength(1);
@@ -794,5 +874,207 @@ describe("an ordinary Codex reviewer and the typed usage refusal (#558)", () => 
     expect(metadata).toMatchObject({ status: "completed", transient_retry: 1 });
     expect(result.findings).toEqual([]);
     expect(f.cooldown("a")).toEqual([]);
+  });
+});
+
+/**
+ * #633/#635/#621 at the readers, on synthetic vendor frames (the historical runs
+ * are not replayed here). The failure record the run wrote, served by the
+ * real control API and projected the way the MCP status and result tools
+ * project it, then through a PROXY of the installed Ouroboros reader of a cause
+ * (`run_failure_cause`: `failure.safeMessage`, whitespace-collapsed, cut at 512
+ * characters; mirrored here, not that reader itself). The returned summary is
+ * the daemon job's error.
+ */
+describe("a Codex failure's own cause reaches the run's readers (#633, #635, #621)", () => {
+  type Run = Awaited<ReturnType<ReturnType<typeof fixture>["runOnce"]>>;
+  const reportedCause = (safeMessage: string) =>
+    safeMessage.split(/\s+/).filter(Boolean).join(" ").slice(0, 512);
+  const wireRecord = { code: "serverOverloaded", message: OVERLOADED, source: "codex_app_server" };
+  const wireStep =
+    "Read the vendor's own failure record (codex_app_server: serverOverloaded) before retrying";
+
+  /** GET /v2/runs/:id from the real control API over the run's own record. */
+  async function readers(run: Run, root: string) {
+    const record = {
+      id: "job-reader",
+      runId: run.result.runId,
+      taskId: run.result.taskId,
+      runDir: run.result.runDir,
+      state: run.result.lifecycle,
+      error: run.result.summary,
+      params: { mode: run.result.mode, scope: { kind: "project", root } },
+    };
+    const server = new DaemonControlApiServer({
+      token: "fixture-token",
+      daemon: {
+        enqueue: async () => {
+          throw new Error("No generation permitted");
+        },
+        status: async () => record,
+        list: async () => [record],
+        cancel: async () => ({}),
+      },
+    } as unknown as ConstructorParameters<typeof DaemonControlApiServer>[0]);
+    const { host, port } = await server.start();
+    try {
+      const response = await fetch(`http://${host}:${port}/v2/runs/${run.result.runId}`, {
+        headers: {
+          Authorization: "Bearer fixture-token",
+          "X-Claudexor-Protocol-Major": String(CONTROL_PROTOCOL_MAJOR),
+        },
+      });
+      expect(response.status).toBe(200);
+      const detail = (await response.json()) as Record<string, unknown>;
+      return {
+        detail,
+        status: projectRecoveryRunDetail("__run_status", run.result.runId, detail),
+        result: projectRecoveryRunDetail("__run_result", run.result.runId, detail),
+      };
+    } finally {
+      await server.stop();
+    }
+  }
+
+  it("agent: an overload only the wire carried names itself in the record, the job error and every reader", async () => {
+    const f = fixture({ a: () => "overloaded_wire" });
+    const run = await f.runOnce("a");
+    expect(run.spawns).toEqual([{ profile: "a", resume: null }]);
+    expect(run.result.lifecycle).toBe("failed");
+    expect(run.failure).toMatchObject({ code: null, vendorFailure: wireRecord });
+    // Evidence only: the opaque overload code sets no limit and marks no account.
+    expect(run.limits).toEqual([]);
+    expect(f.cooldown("a")).toEqual([]);
+    const lead = `a01/codex: ${SYSTEM_ERROR} (vendor codex_app_server: serverOverloaded, "${OVERLOADED}")`;
+    expect(run.failure!.safeMessage.split("\n")[0]).toBe(lead);
+    expect(run.result.summary.split("\n")[0]).toBe(lead);
+    expect(run.failure!.nextActions[0]).toBe(wireStep);
+    const read = await readers(run, f.root);
+    for (const failure of [read.detail["failure"], read.status["failure"], read.result["failure"]])
+      expect(failure).toEqual(run.failure);
+    const summary = read.detail["summary"] as Record<string, unknown>;
+    expect(String(summary["error"]).split("\n")[0]).toBe(lead);
+    expect(read.status["status"]).toBe("failed");
+    expect(reportedCause(run.failure!.safeMessage)).toContain(`serverOverloaded, "${OVERLOADED}"`);
+  });
+
+  it("ask: a systemError whose cause only the rollout kept names it for the reader (#633)", async () => {
+    const f = fixture({ a: () => "overloaded_rollout" });
+    const run = await f.runOnce("a", "ask");
+    expect(run.spawns).toEqual([{ profile: "a", resume: null }]);
+    expect(run.result.lifecycle).toBe("failed");
+    expect(run.failure).toMatchObject({
+      phase: "harness",
+      code: null,
+      vendorFailure: { code: "server_overloaded", message: OVERLOADED, source: "codex_rollout" },
+    });
+    const lead = `${SYSTEM_ERROR} (vendor codex_rollout: server_overloaded, "${OVERLOADED}")`;
+    expect(run.failure!.safeMessage.split("\n")[0]).toBe(lead);
+    expect(run.result.summary.split("\n")[0]).toBe(lead);
+    expect(run.failure!.nextActions[0]).toBe(
+      "Read the vendor's own failure record (codex_rollout: server_overloaded) before retrying",
+    );
+    const read = await readers(run, f.root);
+    expect(read.status["failure"]).toEqual(run.failure);
+    expect(reportedCause(run.failure!.safeMessage)).toContain("server_overloaded");
+  });
+
+  it("agent: a candidate that changed files and then failed leads with its own cause, keeps its patch and is never a success", async () => {
+    const f = fixture({ a: () => "overloaded_after_edit" });
+    const run = await f.runOnce("a");
+    // After progress the same work continues on the same account, as before.
+    expect(run.spawns.map((spawn) => spawn.profile)).toEqual(["a", "a", "a"]);
+    expect(run.result.lifecycle).toBe("failed");
+    expect(run.failure).toMatchObject({
+      phase: "arbitration",
+      category: "harness_error",
+      code: null,
+      harnessId: "codex",
+      attemptId: "a01",
+      vendorFailure: wireRecord,
+    });
+    const why = new ArtifactStore(run.result.runDir).readYaml<{ why_winner: string }>(
+      join(run.result.runDir, "arbitration", "decision.yaml"),
+    )!.why_winner;
+    expect(why).toMatch(/^Candidate A: gates=/);
+    const lead = `a01/codex: ${SYSTEM_ERROR} (vendor codex_app_server: serverOverloaded, "${OVERLOADED}")`;
+    // Its voiced text is retained beside the cause, never as an accepted answer.
+    const notice =
+      "The assistant text this run retained (not an accepted final answer) is in final/retained-output.md.";
+    expect(run.failure!.safeMessage.split("\n").slice(0, 4)).toEqual([lead, "", notice, why]);
+    expect(run.failure!.logRefs).toContain("final/retained-output.md");
+    expect(readFileSync(join(run.result.runDir, "final", "retained-output.md"), "utf8")).toContain(
+      PARTIAL_ANSWER,
+    );
+    expect(run.result.summary.split("\n").slice(0, 2)).toEqual([lead, why]);
+    expect(run.failure!.nextActions[0]).toBe(wireStep);
+    expect(readFileSync(join(run.result.runDir, "final", "patch.diff"), "utf8")).toContain(
+      "half done",
+    );
+    const read = await readers(run, f.root);
+    expect(read.status["failure"]).toEqual(run.failure);
+    expect(read.result["failure"]).toEqual(run.failure);
+    expect(read.status["status"]).toBe("failed");
+    expect(read.status["outcomeFacts"]).toMatchObject({
+      lifecycle: "failed",
+      reason: "harness_failed",
+    });
+    // The MCP status summary (summary.md) names the same cause.
+    expect(String(read.status["summary"])).toContain(`\n- Failure: ${lead}\n`);
+    // The MCP result presents the retained text as such, never as an answer;
+    // its banner says failed and its failure record leads with the cause.
+    expect(read.result["outcomeBanner"]).toBe("Failed (harness failed)");
+    expect(String(read.result["summary"])).toContain("not a completion verdict");
+    expect(String(read.result["summary"])).toContain(PARTIAL_ANSWER);
+    expect(reportedCause(run.failure!.safeMessage)).toContain(`serverOverloaded, "${OVERLOADED}"`);
+    expect(reportedCause(run.failure!.safeMessage)).toContain("final/retained-output.md");
+  });
+
+  it("#644 shape, unchanged since 5.1.0: credits out with no numbers stays a typed refusal with no reset, window or balance invented", async () => {
+    const f = fixture({ a: () => "refuse_credits" });
+    const run = await f.runOnce("a");
+    // One fake turn, ended (systemError, then the process closes), before any other.
+    expect(run.spawns).toEqual([{ profile: "a", resume: null }]);
+    expect(run.result.lifecycle).toBe("failed");
+    expect(run.failure).toMatchObject({
+      code: null,
+      category: "harness_unavailable",
+      resetsAt: null,
+      quotaRefusal: { basis: "provider_cooldown" },
+      vendorFailure: VENDOR,
+    });
+    expect(oldOuroborosHealsOnTimer(run.failure!)).toBe(false);
+    // The account update named no window: one typed limit (the rollout's), and
+    // the account keeps only the refusal's unknown reopening, no measured usage.
+    expect(run.limits).toHaveLength(1);
+    const kept = f.quota
+      .read()
+      .snapshots.filter((s) => s.subject.harness === "codex" && s.subject.subject_id === "a")
+      .flatMap((s) => s.constraints)
+      .map((c) => [c.id, c.used_ratio, c.resets_at]);
+    expect(kept).toEqual([[REOPENING_UNKNOWN_COOLDOWN_ID, null, null]]);
+    // The same account read keeps an unknown balance unknown (never 0).
+    const resources = parseCodexAccountResources(CREDITS_DEPLETED, "fixture", new Date());
+    expect(resources.balances?.value).toEqual([
+      expect.objectContaining({ amount: null, has_balance: false, unlimited: false }),
+    ]);
+    expect(resources.diagnostics?.value).toContainEqual(
+      expect.objectContaining({ code: "workspace_member_credits_depleted" }),
+    );
+    expect((await f.runOnce("a")).spawns).toEqual([]);
+  });
+
+  it("#644 shape, new: the record, the job error and every reader name the vendor's own code and words", async () => {
+    const f = fixture({ a: () => "refuse_credits" });
+    const run = await f.runOnce("a");
+    const cause = `(vendor codex_rollout: usage_limit_exceeded, "${CREDITS}")`;
+    expect(run.failure!.safeMessage.split("\n")[0]).toContain(cause);
+    expect(run.result.summary.split("\n")[0]).toContain(cause);
+    const read = await readers(run, f.root);
+    for (const failure of [read.detail["failure"], read.status["failure"], read.result["failure"]])
+      expect(failure).toEqual(run.failure);
+    const summary = read.detail["summary"] as Record<string, unknown>;
+    expect(String(summary["error"]).split("\n")[0]).toContain(cause);
+    expect(reportedCause(run.failure!.safeMessage)).toContain(cause);
   });
 });

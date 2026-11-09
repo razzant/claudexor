@@ -27,6 +27,8 @@ import {
   erroredWinnerFailure,
   failedCandidatesResult,
   failAfterCandidates,
+  convergenceCause,
+  raceStatement,
 } from "./candidateTerminals.js";
 import {
   deepScanFailureResult,
@@ -3552,6 +3554,11 @@ export class Orchestrator {
         const declared = declaredFailure(err);
         const infraPhase: "workspace" | "harness" =
           envelope === undefined ? "workspace" : "harness";
+        const applied = appliedAttemptFacts(
+          harnessHome,
+          slot.routed.adapterAccess,
+          this.credentials.effectiveProfileId(input, adapter.id),
+        );
         log.emit("harness.completed", {
           harness_id: adapter.id,
           attempt_id: slot.attemptId,
@@ -3567,11 +3574,7 @@ export class Orchestrator {
             failureCost,
             infraPhase,
             message,
-            appliedAttemptFacts(
-              harnessHome,
-              slot.routed.adapterAccess,
-              this.credentials.effectiveProfileId(input, adapter.id),
-            ),
+            applied,
           ),
         );
         runsBySlot[slotIdx] = {
@@ -3601,11 +3604,9 @@ export class Orchestrator {
           // alive past this catch; `message` alone would force the terminal to
           // read prose back out.
           ...(declared.code || declared.quotaRefusal ? { declaredFailure: declared } : {}),
-          applied: appliedAttemptFacts(
-            harnessHome,
-            slot.routed.adapterAccess,
-            this.credentials.effectiveProfileId(input, adapter.id),
-          ),
+          applied,
+          // No HOME was decided, so no child started (#648); never read from a record.
+          ...(harnessHome === undefined ? { homeUndecided: true as const } : {}),
         };
       } finally {
         if (envelope) await kept.settle(wsm, envelope, runsBySlot); // no leak on create/run error
@@ -4348,6 +4349,8 @@ export class Orchestrator {
     // (applyable, no_changes, or not-verified) is an honest completion.
     const needsDecisionTerminal = facts.review === "blocked" || facts.checks === "failed";
     const isFailureTerminal = facts.lifecycle !== "succeeded" || needsDecisionTerminal;
+    const decisionBlock = needsHuman || needsDecisionTerminal;
+    const statement = raceStatement(winnerRun, decisionBlock, result.decision.why_winner);
     const pool = racePool();
     // Beside whichever failure record leads, a source another attempt kept stays named.
     const keptSources = candidateCaptureRefusals(runs).flatMap(secretDiff.captureInspectionActions);
@@ -4393,7 +4396,6 @@ export class Orchestrator {
       // stays `internal`. A review/checks block is `policy` (the acceptance
       // path), phase `review`, and its remedy names the decision, not "retry
       // with a different harness".
-      const decisionBlock = needsHuman || needsDecisionTerminal;
       writeFailure(store, paths, {
         phase: decisionBlock ? "review" : "arbitration",
         category: decisionBlock
@@ -4410,7 +4412,7 @@ export class Orchestrator {
             ? `review escalated to a human decision: ${result.decision.why_winner}`
             : needsDecisionTerminal
               ? `review blocked before apply: ${result.decision.why_winner}`
-              : result.decision.why_winner,
+              : statement,
           pool,
         ),
         poolAttempts: pool,
@@ -4497,7 +4499,7 @@ export class Orchestrator {
       facts,
       winner: result.decision.winner,
       runDir: paths.root,
-      summary: withPoolAttempts(result.decision.why_winner, pool),
+      summary: withPoolAttempts(statement, pool),
       candidates: candidateStatuses(runs),
       decisionPath,
       reviewVerified: actualReviewVerified,
@@ -4986,6 +4988,11 @@ export class Orchestrator {
           // A5: keep a TYPED refusal alive past this catch (race-lane parity).
           const declared = declaredFailure(err);
           ledger.settle(lease.lease?.lease_id ?? "", failureCost.settlement);
+          const applied = appliedAttemptFacts(
+            harnessHome,
+            routed.adapterAccess,
+            this.credentials.effectiveProfileId(input, adapter.id),
+          );
           log.emit("harness.completed", {
             harness_id: adapter.id,
             attempt_id: attemptId,
@@ -5000,19 +5007,11 @@ export class Orchestrator {
               failureCost,
               "harness",
               message,
-              appliedAttemptFacts(
-                harnessHome,
-                routed.adapterAccess,
-                this.credentials.effectiveProfileId(input, adapter.id),
-              ),
+              applied,
             ),
           );
           run = {
-            applied: appliedAttemptFacts(
-              harnessHome,
-              routed.adapterAccess,
-              this.credentials.effectiveProfileId(input, adapter.id),
-            ),
+            applied,
             attemptId,
             harnessId: adapter.id,
             label: `Attempt ${attempt}`,
@@ -5041,6 +5040,8 @@ export class Orchestrator {
               holder: { runId: paths.runId, runDir: paths.root },
             }));
           }
+          // Refused before its HOME was decided, no child ran: that refusal ends the run (#648).
+          if (input.delegated === true && harnessHome === undefined) throw err;
         }
         lastRun = run;
         convergenceRuns.push(run);
@@ -5412,6 +5413,7 @@ export class Orchestrator {
     const convNeedsDecision = facts.review === "blocked" || facts.checks === "failed";
     // Every attempt's failed tries by the actual outcome; a block is not an account failure.
     const convPool = terminalPoolAttempts(facts, convergenceRuns);
+    const convCause = convergenceCause(lastRun, facts, Boolean(convBudgetMapping));
     if (decision) {
       // Shared honesty owner (same as the race path): a needs-decision terminal
       // overrides the persisted decision; final_verify is recorded either way.
@@ -5501,7 +5503,7 @@ export class Orchestrator {
       }
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `${withPoolAttempts(`# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}${secretDiff.resultSummaryDisclosure(lastRun)}`, convPool)}\n`,
+        `${withPoolAttempts(`# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}${convCause ? `\n- Failure: ${convCause}` : ""}${secretDiff.resultSummaryDisclosure(lastRun)}`, convPool)}\n`,
       );
       // Lifecycle invariant (all modes): output.ready precedes the terminal
       // event so a client that applied the terminal event has the output.
@@ -5545,6 +5547,7 @@ export class Orchestrator {
         rawContextShortfall: convDeclared?.rawContextShortfall,
         harnessId: lastRun?.harnessId,
         attemptId: lastRun?.attemptId,
+        vendorFailure: convCause ? lastRun?.telemetry.vendorFailure : null,
         runDir: paths.root,
         captureFailure: lastRun?.captureRefusal?.failure,
         nextActions: [
@@ -5584,7 +5587,7 @@ export class Orchestrator {
               ? `review escalated to a human decision after ${attempt} attempt(s)`
               : facts.reason === "stuck_no_progress"
                 ? (stuckNoProgressReason ?? `stuck_no_progress after ${attempt} attempt(s)`)
-                : `${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`),
+                : `${convCause ? `${convCause}\n` : ""}${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`),
           convPool,
         ),
         poolAttempts: convPool,
@@ -5665,7 +5668,7 @@ export class Orchestrator {
       summary: withPoolAttempts(
         converged
           ? `converged in ${attempt} attempt(s)`
-          : `${facts.lifecycle} after ${attempt} attempt(s)`,
+          : `${convCause ? `${convCause}\n` : ""}${facts.lifecycle} after ${attempt} attempt(s)`,
         convPool,
       ),
       candidates: lastRun

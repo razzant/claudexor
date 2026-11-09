@@ -17,7 +17,7 @@ import { cancelledResult, writeFailure } from "./runTerminals.js";
 import { requestRefusalFailure } from "./runTerminalResults.js";
 import { unanimousDeclaredFailure } from "./candidateEvidence.js";
 import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
-import { attemptVendorFailure } from "./harnessFailure.js";
+import { attemptCauseLines, attemptVendorFailure } from "./harnessFailure.js";
 import { dominantHarnessFailureCategory, harnessFailureNextActions } from "./harnessFailure.js";
 import {
   buildCouncilProjection,
@@ -361,9 +361,8 @@ export function writePlanHarnessFailure(
       ? classifyBudgetFailure({ denial: ctx.budgetDenial ?? null, terminal: ledger.terminal() })
       : null;
   // QA-047: successful drafts remain preserved evidence, never failure lines.
-  const failedLines = planAttempts
-    .filter((p) => p.status !== "success")
-    .map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`);
+  const failed = planAttempts.filter((p) => p.status !== "success");
+  const failedLines = attemptCauseLines(failed, ctx.attemptTelemetries);
   const preserved =
     ctx.preservedDrafts ??
     planAttempts.filter((p) => p.status === "success").map((p) => `${p.attemptId}/${p.harnessId}`);
