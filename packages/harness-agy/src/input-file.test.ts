@@ -188,7 +188,8 @@ describe("agy input delivery (#653)", () => {
     () => {
       const root = mkdtempSync(join(tmpdir(), "agy-input-long-"));
       roots.push(root);
-      const deep = join(root, "c".repeat(200), "o".repeat(200), "n".repeat(150), "runs", "run-x");
+      // The fixture components alone exceed 600 chars, even with a short /tmp root.
+      const deep = join(root, "c".repeat(200), "o".repeat(200), "n".repeat(200), "runs", "run-x");
       const dir = join(deep, "context");
       mkdirSync(dir, { recursive: true });
       expect(dir.length).toBeGreaterThan(600);
