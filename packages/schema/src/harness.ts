@@ -517,6 +517,13 @@ export const HarnessRunSpec = z
         "Caller-supplied system-level instructions for task-producing lanes; delivered natively (append-system-prompt-file / developer_instructions) or as a delimited prompt prefix.",
       ),
     cwd: z.string().describe("Working directory the harness process runs in."),
+    input_file_dir: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "The run's own context directory, outside every worktree and retired with the run: an adapter whose native input transport cannot carry the whole input keeps exact copies there for the agent to read. Null = none; such an adapter refuses that input instead of cutting it.",
+      ),
     access: AccessProfile.default("workspace_write"),
     auxiliary_writable_roots: AuxiliaryWritableRoots,
     external_context_policy: ExternalContextPolicy.default("auto"),

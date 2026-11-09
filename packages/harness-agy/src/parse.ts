@@ -63,6 +63,19 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
         // ACTIVE/DONE arrive as a pair per call (fixture-pinned): ACTIVE is
         // the call, DONE the result.
         events.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool });
+      } else if (state === "ERROR") {
+        // The step's own failure, returned to the model as its tool result, for
+        // every cause: a refused call (recorded 1.5.0: a matching deny rule
+        // ends the call, not the turn, #653) or any other failed step. A failed
+        // step confirms no completed change, so a writer gets no file_change.
+        const errorDetail = summarize(info.error) || "agy reported the tool step as ERROR";
+        events.push({
+          type: "tool_result",
+          session_id: sessionId,
+          ts,
+          text: `tool_result: error: ${errorDetail}`,
+          tool: { ...tool, status: "error", error_summary: errorDetail },
+        });
       } else if (state === "DONE") {
         const errorDetail = summarize(info.error);
         if (errorDetail) {
@@ -105,10 +118,10 @@ export function parseAgyEvent(obj: Json, sessionId: string): HarnessEvent[] | nu
           }
         }
       }
-      // Any OTHER state (PENDING/CANCELLED/ERROR/absent, or a future value) is
-      // a recognized lifecycle no-op: claiming success for it would fabricate
-      // a completed tool call — and, for a write-named tool, a file change
-      // that never happened (Ф0 review #1).
+      // Any OTHER state (PENDING/CANCELLED/absent, or a future value) is a
+      // recognized lifecycle no-op: claiming success for it would fabricate a
+      // completed tool call — and, for a write-named tool, a file change that
+      // never happened (Ф0 review #1).
     } else if (typeof step.text_delta === "string" && step.text_delta) {
       // agent_response text is a stream FRAGMENT: across recorded tries every
       // typed final equals the exact concatenation of its narration frames,
@@ -266,6 +279,7 @@ function primaryToolTarget(parameters: unknown): string | undefined {
   for (const key of [
     "TargetFile",
     "AbsolutePath",
+    "Path",
     "DirectoryPath",
     "CommandLine",
     "Query",

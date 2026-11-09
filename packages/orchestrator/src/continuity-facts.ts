@@ -167,6 +167,8 @@ export interface ContinuitySummaryInputs {
   projectRoot: string;
   /** Read-only working directory for the bounded pass (the execution root). */
   cwd: string;
+  /** The enclosing run's own `context/`, for a transcript a lane's stdin cannot carry. */
+  inputFileDir?: string | null;
   /** The lane's harness adapter, or undefined when unavailable (→ fallback). */
   adapter: HarnessAdapter | undefined;
   credentialProfile: CredentialProfile | null;
@@ -216,6 +218,7 @@ export async function resolveContinuitySummary(
       ...(inputs.model ? { model: inputs.model } : {}),
       turns: plan.collapsedPrefix,
       cwd: inputs.cwd,
+      inputFileDir: inputs.inputFileDir ?? null,
       env: inputs.laneEnv,
       credentialProfile: inputs.credentialProfile,
       authPreference: inputs.authPreference,
