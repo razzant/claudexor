@@ -78,6 +78,28 @@ export function claudeApiRetryEvents(
  */
 const CLAUDE_ORG_DISABLED_RE = /organization has disabled claude subscription access/i;
 
+/** The one typed denial of this credential's subscription access, from the
+ * org-disabled prose here or the stdout result's exact API error code
+ * (vendor-failure.ts). `text` is the vendor's failure prose, a diagnostic. */
+export function claudeEntitlementDenial(text: string, sessionId: string, ts: string): HarnessEvent {
+  return {
+    type: "status",
+    session_id: sessionId,
+    ts,
+    text: `entitlement: ${redactSecrets(text).slice(0, 500)}`,
+    status: { kind: "api_retry", error_category: "oauth_org_not_allowed" },
+    payload: { entitlement_denied: true },
+  };
+}
+
+export function isClaudeEntitlementDenial(event: HarnessEvent): boolean {
+  return (
+    event.type === "status" &&
+    event.status?.error_category === "oauth_org_not_allowed" &&
+    event.payload?.["entitlement_denied"] === true
+  );
+}
+
 export function claudeEntitlementEvents(
   resultText: unknown,
   successResult: boolean,
@@ -86,16 +108,7 @@ export function claudeEntitlementEvents(
 ): HarnessEvent[] {
   if (successResult || typeof resultText !== "string") return [];
   if (!CLAUDE_ORG_DISABLED_RE.test(resultText)) return [];
-  return [
-    {
-      type: "status",
-      session_id: sessionId,
-      ts,
-      text: `entitlement: ${redactSecrets(resultText).slice(0, 500)}`,
-      status: { kind: "api_retry", error_category: "oauth_org_not_allowed" },
-      payload: { entitlement_denied: true },
-    },
-  ];
+  return [claudeEntitlementDenial(resultText, sessionId, ts)];
 }
 
 function nonnegativeSafeIntegerOrUndef(value: unknown): number | undefined {

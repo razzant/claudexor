@@ -138,8 +138,9 @@ export const REACTIVE_COOLDOWN_SOURCE: Partial<Record<string, QuotaSource>> = {
  * the same identity channel as the generic `cooldown` and the vendor-window
  * `cooldown:<id>`. It records no usage (none was measured) and no reset (none
  * was named): its `cooldown_until` is the engine's own bounded recheck, never a
- * time the account reopens. Like the generic refusal it names no window, so a
- * newer recognized authenticated primary read retires it. */
+ * time the account reopens. Unlike the generic refusal, no quota read retires
+ * or moves it (#318): an empty, unknown or measured read does not show that the
+ * refused usage or credits returned, so only that recheck ends the block. */
 export const REOPENING_UNKNOWN_COOLDOWN_ID = "cooldown:reopening_unknown";
 
 /** What that refusal travels under: the engine's existing name for a typed

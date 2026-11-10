@@ -377,10 +377,12 @@ describe("image custody through the SQL owners", () => {
     const ref = await upload(life, request);
     expect(life.resources.readModel(ref).equals(Buffer.from(JSON.stringify(request)))).toBe(true);
     const created = await ops.create(ref, "edit-bytes", undefined, undefined, "image");
+    // A reference and the model create parsed (#649), never the edit bytes.
     expect(ModelOperationParams.parse(life.commands.get(created.id)!.params)).toEqual({
       kind: "model",
       request: ref,
       requestKind: "image",
+      requestedModel: "gpt-image-2",
     });
     const receipt = await run(life, ops, created.id);
     expect(receipt).toMatchObject({
@@ -506,7 +508,8 @@ describe("image custody through the SQL owners", () => {
       state: "interrupted",
       dispatch: { state: "unknown", startedAt: NOW },
       response: { state: "absent" },
-      problem: { code: "model_operation_interrupted" },
+      // No execution receipt survived the crash: the name is the one create parsed (#649).
+      problem: { code: "model_operation_interrupted", context: { requestedModel: "gpt-image-2" } },
     });
     expect((await reopened.ops.create(ref, "crash", undefined, undefined, "image")).id).toBe(
       created.id,

@@ -83,6 +83,9 @@ describe("SQL startup storage publication", () => {
     });
     cleanup.push(() => again.close());
     expect(again.prepare("SELECT id FROM command").all()).toEqual([{ id: "job" }]);
+    // Every ordinary open raises the serving floor to the running release, so an
+    // older release refuses a root a newer one served (#649 relies on it).
+    expect(f.advanceFloor).toHaveBeenCalledTimes(2);
   });
   it("creates a durable fresh global generation and never serves an orphan temporary import as empty", async () => {
     const f = fixture();

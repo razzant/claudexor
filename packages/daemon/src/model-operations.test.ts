@@ -8,10 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { ModelAdapter } from "@claudexor/core";
 import {
   ControlModelOperationDetail,
+  ControlProblem,
   CredentialProfile,
   ModelCallRequest,
   ModelCallResult,
   ModelOperationParams,
+  ModelUsage,
   type ModelPayloadRef,
 } from "@claudexor/schema";
 import { DaemonClient } from "./client.js";
@@ -875,6 +877,16 @@ describe("model operations over the existing daemon command substrate", () => {
     const cancelled = await f.operations.cancel(second.id, "user_cancelled");
     expect(cancelled.state).toBe("cancelled");
     expect(cancelled.dispatch.state).toBe("not_started");
+    // Never sent: no route, usage or cost is invented, and no failure either. The
+    // honest cancellation names only the model create validated (#649).
+    expect(cancelled).toMatchObject({
+      startedAt: null,
+      dispatch: { startedAt: null, route: null },
+      response: { state: "absent" },
+      cost: null,
+      problem: { code: "model_operation_cancelled", context: { requestedModel: "test-model" } },
+    });
+    expect(cancelled.usage).toEqual(ModelUsage.parse({}));
     expect(() => f.resources.readModel(secondRef)).toThrow();
     release();
     await f.terminal(first.id);
@@ -1156,5 +1168,487 @@ describe("model operations over the existing daemon command substrate", () => {
     await f.terminal(first.id);
     await f.terminal(second.id);
     expect(() => f.resources.readModel(secondRef)).toThrow();
+  });
+});
+
+describe("the requested model on failed operations (#649)", () => {
+  // The real Codex adapter over a synthetic endpoint: only the provider's answer is a fixture.
+  const viaCodex =
+    (post: (init: RequestInit) => Promise<Response>, posts = vi.fn()): ModelAdapter["invoke"] =>
+    (input, context) =>
+      createCodexModelAdapter({
+        now: () => 1900000000000,
+        clientVersion: async () => ({ version: "0.156.1", source: "verified_transport" }),
+        readAuthFile: async () =>
+          JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+              account_id: "fixture",
+              access_token: `fixture.${Buffer.from('{"exp":2100000000}').toString("base64url")}.signature`,
+            },
+          }),
+        fetch: async (_url, init) => {
+          if (init?.method !== "POST") return Response.json({ models: [{ slug: "test-model" }] });
+          posts();
+          await new Response(init.body).text();
+          return post(init);
+        },
+      }).invoke(input, {
+        ...context,
+        profile: {
+          ...context.profile,
+          isolation_locator: join(process.env.CLAUDEXOR_CONFIG_DIR!, "profiles", "fixture"),
+        },
+      });
+
+  it("names it beside an unobserved route through HTTP, release, same-key replay and restart", async () => {
+    const posts = vi.fn();
+    // The 07.11 size refusal: a typed non-model parameter, so no capability decoration runs.
+    const f = await fixture(
+      viaCodex(
+        async () =>
+          Response.json(
+            {
+              error: {
+                message: "Invalid 'input': string too long.",
+                type: "invalid_request_error",
+                param: "input",
+                code: "string_above_max_length",
+              },
+            },
+            { status: 400 },
+          ),
+        posts,
+      ),
+    );
+    const api = new DaemonControlApiServer({
+      token: "fixture-control",
+      daemon: f.client,
+      services: {
+        createModelOperation: f.operations.create.bind(f.operations),
+        getModelOperation: async (id) => f.operations.inspect(id),
+        readModelResult: async (id) => f.operations.readResult(id),
+      },
+    });
+    const address = await api.start();
+    cleanup.push(() => api.stop());
+    const endpoint = `http://${address.host}:${address.port}/v2/model-operations`;
+    const headers = {
+      Authorization: "Bearer fixture-control",
+      "X-Claudexor-Protocol-Major": "3",
+      "Content-Type": "application/json",
+      "Idempotency-Key": "requested-model-refusal",
+    };
+    const create = async (ref: ModelPayloadRef) =>
+      ControlModelOperationDetail.parse(
+        await (
+          await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ request: ref }) })
+        ).json(),
+      );
+    const ref = f.upload();
+    const created = await create(ref);
+    await f.terminal(created.id);
+    const detail = ControlModelOperationDetail.parse(
+      await (await fetch(`${endpoint}/${created.id}`, { headers })).json(),
+    );
+    expect(detail).toMatchObject({
+      state: "failed",
+      dispatch: {
+        state: "response_received",
+        route: { source: "codex", credentialProfileId: "fixture", model: null },
+      },
+      problem: {
+        code: "invalid_request",
+        context: {
+          httpStatus: 400,
+          vendorCode: "string_above_max_length",
+          parameter: "input",
+          requestedModel: "test-model",
+        },
+      },
+    });
+    const response = await fetch(`${endpoint}/${created.id}/result`, { headers });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    expect(response.headers.get("etag")).toBe(`"${digest}"`);
+    expect(detail.response).toMatchObject({ state: "ready", ref: { sha256: digest } });
+    const wire = JSON.parse(bytes.toString());
+    // The legacy strict result shape: the name rides the problem, never a new field or the route.
+    expect(Object.keys(wire).sort()).toEqual(
+      ["appliedOptions", "cost", "message", "outcome", "problem", "route", "usage"].sort(),
+    );
+    const stored = ModelCallResult.parse(wire);
+    expect(stored.route.model).toBeNull();
+    expect(stored.problem).toEqual(detail.problem);
+    // Terminal released the request; a same-key re-upload replays without reading it.
+    expect(() => f.resources.readModel(ref)).toThrow();
+    expect(await create(f.upload())).toEqual(detail);
+    expect(posts).toHaveBeenCalledTimes(1);
+    await api.stop();
+    await f.server.stop();
+    f.operations.close();
+    await f.sql.close();
+    const sql = await sqlFixture(f.root);
+    const unavailable = async () => {
+      throw new Error("a restarted receipt cannot reach a provider");
+    };
+    const reopened = new ModelOperations({
+      commands: sql.graph.commands,
+      resourceQueries: sql.graph.commands.queries,
+      resources: () => sql.graph.resources,
+      enqueue: unavailable,
+      cancel: unavailable,
+      resolve: unavailable,
+    });
+    cleanup.push(async () => {
+      reopened.close();
+      await sql.close();
+    });
+    expect(reopened.inspect(created.id)).toEqual(detail);
+    expect(reopened.readResult(created.id).bytes.equals(bytes)).toBe(true);
+    expect(posts).toHaveBeenCalledTimes(1);
+  });
+
+  it("names it when the send's outcome is unknown, keeping the route unobserved", async () => {
+    const f = await fixture(
+      viaCodex(
+        async () => new Response(`data: ${JSON.stringify({ type: "response.created" })}\n\n`),
+      ),
+    );
+    const created = await f.operations.create(f.upload(), "requested-model-unknown");
+    const done = await f.terminal(created.id);
+    expect(done).toMatchObject({
+      state: "interrupted",
+      dispatch: { state: "unknown", route: { credentialProfileId: "fixture", model: null } },
+      problem: { code: "transport_unknown", context: { requestedModel: "test-model" } },
+    });
+    const stored = ModelCallResult.parse(
+      JSON.parse(f.operations.readResult(created.id).bytes.toString()),
+    );
+    expect(stored).toMatchObject({ outcome: "unknown", route: { model: null } });
+    expect(stored.problem).toEqual(done.problem);
+  });
+
+  it("names only the bytes execution read: a params claim yields to them, unparseable or unread raw inputs name none", async () => {
+    const f = await fixture(async (_input, context) => {
+      await context.onDispatch(route);
+      return ModelCallResult.parse({
+        ...result(),
+        outcome: "failed",
+        message: null,
+        route: { ...route, model: null },
+        problem: { code: "provider_failed", message: "fixture outage", retryable: true },
+      });
+    });
+    const enqueue = (request: unknown, key: string) =>
+      f.client.call<{ id: string }>("claudexor.enqueue", {
+        request,
+        operation: "model.operation.create",
+        idempotencyKey: key,
+        clientId: "raw-caller",
+      });
+    // A raw caller's params claim is not published once execution read the bytes.
+    const forged = await f.terminal(
+      (
+        await enqueue(
+          { kind: "model", request: f.upload(), requestedModel: "forged-model" },
+          "raw-forged",
+        )
+      ).id,
+    );
+    expect(forged.problem).toMatchObject({
+      code: "provider_failed",
+      context: { requestedModel: "test-model" },
+    });
+    expect(ModelOperationParams.parse(f.store.get(forged.id)!.params).requestedModel).toBe(
+      "forged-model",
+    );
+    expect(JSON.stringify(forged)).not.toContain("forged-model");
+    expect(f.operations.readResult(forged.id).bytes.toString()).not.toContain("forged-model");
+    // Bytes the engine parsed name their own model, whoever enqueued them.
+    const parsed = await enqueue(
+      { kind: "model", request: f.upload({ ...request(), model: "bytes-model" }) },
+      "raw-parsed",
+    );
+    expect((await f.terminal(parsed.id)).problem).toMatchObject({
+      code: "provider_failed",
+      context: { requestedModel: "bytes-model" },
+    });
+    // Bytes read but not parseable name nothing, whatever the params claim.
+    for (const [key, claim] of [
+      ["raw-invalid", {}],
+      ["raw-invalid-claimed", { requestedModel: "forged-model" }],
+    ] as const) {
+      const bad = f.resources.publishModel(Buffer.from("{broken"));
+      const invalid = await f.terminal(
+        (await enqueue({ kind: "model", request: bad, ...claim }, key)).id,
+      );
+      expect(invalid).toMatchObject({
+        state: "failed",
+        dispatch: { state: "not_started", route: null },
+        problem: { code: "model_request_invalid" },
+      });
+      expect(invalid.problem!.context).not.toHaveProperty("requestedModel");
+      expect(JSON.stringify(invalid)).not.toContain("forged-model");
+    }
+    // A raw input nobody read names nothing.
+    const released = f.upload();
+    f.resources.releaseModel(released);
+    const unread = await f.terminal(
+      (await enqueue({ kind: "model", request: released }, "raw-unread")).id,
+    );
+    expect(unread).toMatchObject({
+      state: "failed",
+      dispatch: { state: "not_started", route: null },
+    });
+    expect(unread.problem!.context).not.toHaveProperty("requestedModel");
+  });
+
+  it("keeps the name create validated through a queued cancel and a restart while queued, over HTTP and SQL", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const posts = vi.fn();
+    const f = await fixture(async (_input, context) => {
+      await context.onDispatch(route);
+      posts();
+      // Holds the single model slot until released or until the daemon stops.
+      await new Promise<void>((resolve) => {
+        void gate.then(resolve);
+        context.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return result();
+    });
+    cleanup.push(async () => release());
+    const api = new DaemonControlApiServer({
+      token: "fixture-control",
+      daemon: f.client,
+      services: {
+        createModelOperation: f.operations.create.bind(f.operations),
+        getModelOperation: async (id) => f.operations.inspect(id),
+        readModelResult: async (id) => f.operations.readResult(id),
+        cancelModelOperation: (id, reason) => f.operations.cancel(id, reason),
+      },
+    });
+    const address = await api.start();
+    cleanup.push(() => api.stop());
+    const endpoint = `http://${address.host}:${address.port}/v2/model-operations`;
+    const headers = (key?: string) => ({
+      Authorization: "Bearer fixture-control",
+      "X-Claudexor-Protocol-Major": "3",
+      "Content-Type": "application/json",
+      ...(key ? { "Idempotency-Key": key } : {}),
+    });
+    const detail = async (response: Promise<Response>) =>
+      ControlModelOperationDetail.parse(await (await response).json());
+    const create = (ref: ModelPayloadRef, key: string) =>
+      detail(
+        fetch(endpoint, {
+          method: "POST",
+          headers: headers(key),
+          body: JSON.stringify({ request: ref }),
+        }),
+      );
+    const holder = await f.operations.create(f.upload(), "slot-holder");
+    await vi.waitFor(() => expect(posts).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    const cancelBody = { ...request("cancel me"), model: "cancelled-model" };
+    const cancelRef = f.upload(cancelBody);
+    const queued = await create(cancelRef, "queued-cancel");
+    expect(queued).toMatchObject({ state: "queued", problem: null });
+    const cancelled = await detail(
+      fetch(`${endpoint}/${queued.id}/control`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ action: "cancel", reasonCode: "user_cancelled" }),
+      }),
+    );
+    // Cancelled before any send: no route, usage, cost or response, and no failure.
+    expect(cancelled).toMatchObject({
+      state: "cancelled",
+      startedAt: null,
+      dispatch: { state: "not_started", startedAt: null, route: null },
+      response: { state: "absent" },
+      cost: null,
+      problem: {
+        code: "model_operation_cancelled",
+        retryable: false,
+        context: { requestedModel: "cancelled-model" },
+      },
+    });
+    expect(cancelled.usage).toEqual(ModelUsage.parse({}));
+    expect(Object.keys(cancelled.problem!.context)).toEqual(["requestedModel"]);
+    expect(await detail(fetch(`${endpoint}/${queued.id}`, { headers: headers() }))).toEqual(
+      cancelled,
+    );
+    expect((await fetch(`${endpoint}/${queued.id}/result`, { headers: headers() })).status).toBe(
+      409,
+    );
+    // The terminal released the input; the name rides the immutable params, not idempotency.
+    expect(() => f.resources.readModel(cancelRef)).toThrow();
+    expect(f.store.get(queued.id)!.params).toEqual({
+      kind: "model",
+      request: cancelRef,
+      requestedModel: "cancelled-model",
+    });
+    expect(await create(f.upload(cancelBody), "queued-cancel")).toEqual(cancelled);
+    const restartRef = f.upload({ ...request("restart me"), model: "restart-model" });
+    const waiting = await create(restartRef, "queued-restart");
+    expect(waiting.state).toBe("queued");
+    // Stop aborts the holder; the queued operation stays queued until the next start.
+    await api.stop();
+    await f.server.stop();
+    f.operations.close();
+    await f.sql.close();
+    const sql = await sqlFixture(f.root);
+    await sql.graph.recoverAfterStartup();
+    const unavailable = async () => {
+      throw new Error("a restarted receipt cannot reach a provider");
+    };
+    const reopened = new ModelOperations({
+      commands: sql.graph.commands,
+      resourceQueries: sql.graph.commands.queries,
+      resources: () => sql.graph.resources,
+      enqueue: unavailable,
+      cancel: unavailable,
+      resolve: unavailable,
+    });
+    cleanup.push(async () => {
+      reopened.close();
+      await sql.close();
+    });
+    expect(reopened.inspect(waiting.id)).toMatchObject({
+      state: "interrupted",
+      startedAt: null,
+      dispatch: { state: "not_started", startedAt: null, route: null },
+      response: { state: "absent" },
+      cost: null,
+      problem: {
+        code: "model_operation_interrupted",
+        context: { requestedModel: "restart-model" },
+      },
+    });
+    expect(reopened.inspect(queued.id)).toEqual(cancelled);
+    // A cancel after the send keeps its own receipt: the cancellation problem is only
+    // for an operation that never started.
+    expect(reopened.inspect(holder.id)).toMatchObject({
+      state: "cancelled",
+      dispatch: { state: "response_received" },
+      response: { state: "ready" },
+      problem: null,
+    });
+    expect(posts).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the name create validated when execution cannot read the request bytes", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const posts = vi.fn();
+    const f = await fixture(async (_input, context) => {
+      await context.onDispatch(route);
+      posts();
+      await gate;
+      return result();
+    });
+    cleanup.push(async () => release());
+    const holder = await f.operations.create(f.upload(), "read-holder");
+    await vi.waitFor(() => expect(posts).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+    const lostRef = f.upload({ ...request("lost"), model: "lost-model" });
+    const lost = await f.operations.create(lostRef, "lost-input");
+    expect(lost.state).toBe("queued");
+    // The validated input disappears before execution reads it.
+    f.resources.releaseModel(lostRef);
+    release();
+    await f.terminal(holder.id);
+    const done = await f.terminal(lost.id);
+    expect(done).toMatchObject({
+      state: "failed",
+      dispatch: { state: "not_started", startedAt: null, route: null },
+      response: { state: "absent" },
+      cost: null,
+      problem: { context: { requestedModel: "lost-model" } },
+    });
+    expect(done.problem!.code).not.toBe("model_request_invalid");
+    expect(posts).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads records written before the field back unchanged over HTTP, the daemon wire and SQL", async () => {
+    const f = await fixture();
+    const api = new DaemonControlApiServer({
+      token: "fixture-control",
+      daemon: f.client,
+      services: {
+        getModelOperation: async (id) => f.operations.inspect(id),
+        readModelResult: async (id) => f.operations.readResult(id),
+      },
+    });
+    const address = await api.start();
+    cleanup.push(() => api.stop());
+    const endpoint = `http://${address.host}:${address.port}/v2/model-operations`;
+    const headers = { Authorization: "Bearer fixture-control", "X-Claudexor-Protocol-Major": "3" };
+    const ref = f.upload();
+    const legacyProblem = {
+      code: "invalid_request",
+      message: "legacy refusal",
+      retryable: false,
+      fieldErrors: {},
+      requiredActions: [],
+      evidenceRefs: [],
+      context: { httpStatus: 400 },
+    };
+    const restartError = "daemon restarted before command completion was durably observed";
+    const finishedAt = new Date().toISOString();
+    const legacy = {
+      "legacy-failed": {
+        state: "failed",
+        finishedAt,
+        result: {
+          lifecycle: "failed",
+          dispatch: {
+            state: "response_received",
+            startedAt: null,
+            route: { ...route, model: null },
+          },
+          response: { state: "absent" },
+          usage: ModelUsage.parse({}),
+          cost: null,
+          problem: legacyProblem,
+        },
+      },
+      "legacy-cancelled": { state: "cancelled", finishedAt },
+      "legacy-interrupted": { state: "interrupted", finishedAt, error: restartError },
+    } as const;
+    for (const [id, patch] of Object.entries(legacy)) {
+      f.store.accept({
+        id,
+        params: { kind: "model", request: ref },
+        idempotencyKey: id,
+        clientId: "legacy",
+      });
+      f.store.update(id, patch);
+    }
+    const rows = () => Object.keys(legacy).map((id) => f.store.get(id));
+    const before = structuredClone(rows());
+    // Exactly the projection this engine served before the field existed.
+    expect(f.operations.inspect("legacy-failed").problem).toEqual(legacyProblem);
+    expect(f.operations.inspect("legacy-cancelled").problem).toBeNull();
+    expect(f.operations.inspect("legacy-interrupted").problem).toEqual(
+      ControlProblem.parse({
+        code: "model_operation_interrupted",
+        message: restartError,
+        retryable: false,
+      }),
+    );
+    for (const id of Object.keys(legacy)) {
+      const response = await fetch(`${endpoint}/${id}`, { headers });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(JSON.stringify(f.operations.inspect(id)));
+      const wire = await f.client.call<{ params: unknown }>("claudexor.status", { id });
+      expect(wire.params).toEqual({ kind: "model", request: ref });
+    }
+    // Reads write nothing back.
+    expect(rows()).toEqual(before);
   });
 });

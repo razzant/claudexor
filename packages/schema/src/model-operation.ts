@@ -477,6 +477,9 @@ export const ModelOperationParams = z
     captureFailureEvidence: z.literal(true).optional(),
     captureEffortEvidence: z.literal(true).optional(),
     captureRoutingEvidence: z.literal(true).optional(),
+    requestedModel: NonBlankString.optional().describe(
+      "The requested model as declared at enqueue: create stores the model its request bytes parsed, while a raw enqueue caller's value is unverified. Not idempotency identity; execution names the model of the bytes it parses instead.",
+    ),
   })
   .strict();
 export type ModelOperationParams = z.infer<typeof ModelOperationParams>;

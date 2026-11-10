@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
+import { REOPENING_UNKNOWN_COOLDOWN_ID } from "@claudexor/schema";
 import type { QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
 import { BudgetLedger } from "../../budget/src/ledger.js";
 import { profileQuotaBlock } from "../../orchestrator/src/credential-cooldown.js";
@@ -307,5 +308,124 @@ describe("QuotaRegistry recovery through journal replay, fold and real consumers
       f.setTime(2000);
       f.registry().upsert(primary(2000));
       f.assertBlock(false);
+    }));
+});
+
+describe("a Codex usage refusal with no reopening time through ingest, replay and real readers (#558, #318)", () => {
+  const RECHECK = 5 * 60_000;
+  const codex = {
+    harness: "codex",
+    credential_route: "vendor_native" as const,
+    subject_id: "account",
+    plan_label: null,
+  };
+  /** The typed signal the Codex adapter puts on the refusing try's event. */
+  const refused = (time: number, reopening: "unknown" | null = "unknown") => ({
+    type: "status",
+    session_id: "fixture",
+    ts: at(time),
+    credential_route: "vendor_native",
+    credential_profile_id: "account",
+    rate_limit: {
+      applies_to_request_kinds: ["text"],
+      resets_at: null,
+      retry_delay_ms: null,
+      ...(reopening ? { reopening } : {}),
+    },
+  });
+  const read = (time: number, constraints: QuotaConstraint[]): QuotaSnapshot => ({
+    subject: codex,
+    source: "codex_app_server",
+    observed_at: at(time),
+    freshness: "fresh",
+    constraints,
+  });
+  const kept = (registry: QuotaRegistry) =>
+    registry
+      .read()
+      .snapshots.filter((snapshot) => snapshot.subject.harness === "codex")
+      .flatMap((snapshot) => snapshot.constraints)
+      .filter((constraint) => constraint.id.startsWith("cooldown"));
+  /** Both real readers of the admission projection: preflight and the per-run budget. */
+  const blocked = (registry: QuotaRegistry, time: number) => {
+    const snapshots = registry.readAdmission(START + time).snapshots;
+    const block = profileQuotaBlock(
+      snapshots,
+      "codex",
+      "account",
+      "local_session",
+      "fixture-model",
+      new Date(START + time),
+      "text",
+    );
+    const ledger = new BudgetLedger();
+    for (const snapshot of snapshots) ledger.observeQuotaSnapshot(snapshot);
+    expect(
+      ledger.cooldownActive("codex", "vendor_native", "account", START + time, "fixture-model"),
+    ).toBe(block !== null);
+    return block;
+  };
+
+  it.each([false, true])(
+    "empty, unknown and measured reads neither retire nor move it; replay keeps it and its own recheck ends it (compact=%s)",
+    (compact) =>
+      fixture(async (f) => {
+        f.registry().ingest("codex", refused(0));
+        const [refusal, ...others] = kept(f.registry());
+        expect(others).toEqual([]);
+        expect(refusal).toMatchObject({
+          id: REOPENING_UNKNOWN_COOLDOWN_ID,
+          used_ratio: null,
+          resets_at: null,
+          cooldown_until: at(RECHECK),
+        });
+        const reads: Array<[number, QuotaConstraint[]]> = [
+          [1000, []],
+          [2000, [windowOf({ id: "codex:primary", used_ratio: null })]],
+          [3000, [windowOf({ id: "codex:primary", used_ratio: 0.2 })]],
+        ];
+        for (const [time, constraints] of reads) {
+          f.setTime(time);
+          f.registry().upsert(read(time, constraints));
+          expect(kept(f.registry())).toEqual([refusal]);
+          expect(blocked(f.registry(), time)).toMatchObject({
+            constraint_id: REOPENING_UNKNOWN_COOLDOWN_ID,
+            reopening: "unknown",
+            resets_at: null,
+            recheck_at: at(RECHECK),
+          });
+        }
+        await f.restart(compact);
+        expect(kept(f.registry())).toEqual([refusal]);
+        f.setTime(RECHECK - 1);
+        expect(blocked(f.registry(), RECHECK - 1)).not.toBeNull();
+        f.setTime(RECHECK);
+        expect(blocked(f.registry(), RECHECK)).toBeNull();
+        // A refusal met again records its own new recheck; nothing earlier moved it.
+        f.setTime(RECHECK + 1000);
+        f.registry().ingest("codex", refused(RECHECK + 1000));
+        expect(kept(f.registry())).toMatchObject([{ cooldown_until: at(2 * RECHECK + 1000) }]);
+        expect(blocked(f.registry(), RECHECK + 1000)).not.toBeNull();
+      }),
+  );
+
+  it("a generic Codex limit beside it still yields to the same read, and only it", () =>
+    fixture(async (f) => {
+      f.registry().ingest("codex", refused(0, null));
+      f.registry().ingest("codex", refused(0));
+      expect(kept(f.registry()).map((constraint) => constraint.id)).toEqual([
+        "cooldown",
+        REOPENING_UNKNOWN_COOLDOWN_ID,
+      ]);
+      f.setTime(1000);
+      f.registry().upsert(read(1000, []));
+      expect(kept(f.registry()).map((constraint) => constraint.id)).toEqual([
+        REOPENING_UNKNOWN_COOLDOWN_ID,
+      ]);
+      await f.restart(true);
+      expect(kept(f.registry()).map((constraint) => constraint.id)).toEqual([
+        REOPENING_UNKNOWN_COOLDOWN_ID,
+      ]);
+      expect(blocked(f.registry(), 1000)).toMatchObject({ reopening: "unknown" });
     }));
 });
