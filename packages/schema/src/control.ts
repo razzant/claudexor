@@ -23,7 +23,7 @@ import {
 } from "./budget.js";
 export { ControlQuotaResponse } from "./quota.js";
 import { RunOutcomeFacts } from "./decision.js";
-import { EffortHint, InputTokenUsage, InteractionQuestion } from "./harness.js";
+import { EffortHint, InputTokenUsage } from "./harness.js";
 import {
   ContinuityKind,
   ThreadFolderName,
@@ -754,6 +754,12 @@ export const ControlRunSummary = z
       .describe(
         "True while at least one interactive question awaits answer, timeout, run-terminal, or interruption release.",
       ),
+    asyncQuestionsOnly: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True while questions are pending and every one is async: the agent keeps working and the questions are attention only. False when none is pending or any pending question is blocking.",
+      ),
     /** Compact process-scope outcome (INV-144); null while live or unknown — never clean. */
     processScope: ControlRunSummaryProcessScope,
     /** A later bounded settlement of the finished run's scope (#613); null when none. */
@@ -867,33 +873,6 @@ export const ControlArtifactInfo = z
   })
   .describe("One artifact in the run's artifact tree.");
 export type ControlArtifactInfo = z.infer<typeof ControlArtifactInfo>;
-
-/** A live interaction awaiting the user's answer (snapshot projection). */
-export const ControlPendingInteraction = z
-  .object({
-    interactionId: Id.describe("Interaction id used to answer."),
-    runId: Id.describe("Run the interaction belongs to."),
-    attemptId: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Attempt the interaction was raised in, when known."),
-    harnessId: z.string().nullable().default(null).describe("Harness that raised the interaction."),
-    sourceTool: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("Native tool that raised the request."),
-    questions: z.array(InteractionQuestion).default([]).describe("Questions awaiting answers."),
-    requestedAt: z.string().describe("When the interaction was requested."),
-    timeoutAt: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("When the interaction times out into a benign decline; null = no timeout."),
-  })
-  .describe("A live interactive question awaiting the user's answer (snapshot projection).");
-export type ControlPendingInteraction = z.infer<typeof ControlPendingInteraction>;
 
 export const ControlInteractionAnswerRequest = z
   .object({
@@ -1205,6 +1184,12 @@ export const ControlTurnRunCard = z
       .boolean()
       .default(false)
       .describe("True while an interactive question is awaiting the user's answer."),
+    asyncQuestionsOnly: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True while questions are pending and every one is async (the agent keeps working); false when none is pending or any is blocking.",
+      ),
     finishedAt: z
       .string()
       .nullable()

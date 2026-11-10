@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { claudeMcpArgs } from "./mcp-args.js";
 import {
   prepareClaudeSessionProcessing,
@@ -475,6 +476,9 @@ async function* runClaude(
   // the interactive path even with no interaction channel (control frames then
   // auto-decline). claudeArgsForSpec(interactive) selects --input-format stream-json.
   const interactive = channel !== undefined || attachmentBlocks.length > 0;
+  // The prompt frame's uuid: live input tells this prompt's own result from
+  // a resumed session's earlier one by it (#536).
+  const promptUuid = randomUUID();
   const profile = spec.credential_profile;
   const authPreference = spec.auth_preference ?? "auto";
   let nativeEnv = claudeNativeEnv(spec.env);
@@ -592,12 +596,15 @@ async function* runClaude(
   const observeProcessing =
     processing && claudeProcessingObserver(processing, spec.processing_cost_basis!);
   const observePromptCache = claudePromptCacheObserver(spec);
+  // Whether the session's stdin is still open, as the run loop reports it.
+  let inputOpen = false;
   const baseParser = withClaudeApiFailureParser(
     createClaudeParser({
       deniedTools: toolPermissionSets(spec).deny,
       requiredMcpServers: (spec.extra_mcp_servers ?? [])
         .filter((server) => server.required)
         .map((server) => server.name),
+      questionInput: () => (!interactive ? "none" : inputOpen ? "open" : "closed"),
     }),
     resolveHarnessCommandOnPath(BIN, composeSpawnEnv(spec.env_inheritance, env).PATH ?? "").command
       ?.entrypoint ?? null,
@@ -634,12 +641,15 @@ async function* runClaude(
       ...(interactive
         ? {
             session: {
-              initialStdin: initialSessionFrames(spec.prompt, attachmentBlocks),
+              initialStdin: initialSessionFrames(spec.prompt, attachmentBlocks, promptUuid),
               matches: isControlRequestFrame,
               handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
               // Hold stdin while live messages or background work remain.
               closeStdinOn: (obj) => live.closeStdinOn(spec.session_id, obj),
-              onIo: live.onIo,
+              onIo: (io, sessionId) => {
+                inputOpen = io !== null;
+                live.onIo(io, sessionId, promptUuid);
+              },
             },
           }
         : { input: spec.prompt }),

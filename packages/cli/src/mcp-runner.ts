@@ -14,6 +14,7 @@ import {
 import { connectDaemonIfRunning, ensureDaemon, enqueueAndAwait } from "./daemon-run.js";
 import { controlProblemError } from "./cli-error.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
+import { makeInteractionBridge } from "./interaction-bridge.js";
 import { absentDaemonRecovery, daemonUnavailableError } from "./mcp-daemon-unavailable.js";
 import {
   isRecoverableRunDetailIntegrityProblem,
@@ -232,7 +233,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
         : {}),
     };
     const interactionBridge = hooks?.onInteraction
-      ? makeInteractionBridge(addr, hooks.onInteraction)
+      ? makeInteractionBridge(addr, hooks.onInteraction, hooks.signal)
       : undefined;
     // Host cancellation (MCP notifications/cancelled -> ctx signal) becomes
     // the same TYPED daemon cancel the CLI's Ctrl-C path posts; the wait loop
@@ -245,13 +246,19 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
             await interactionBridge?.(info);
           }
         : undefined;
-    const out = await enqueueAndAwait(client, addr, body, {
-      waitForTerminal: p?.deferred !== true,
-      ...(p?.deferred === true ? { acceptUnbound: true } : {}),
-      ...(p?.idempotencyKey !== undefined ? { idempotencyKey: p.idempotencyKey } : {}),
-      ...(options.delegationParentRunId ? { internalDaemonEnqueue: true } : {}),
-      ...(onPollTick ? { onPollTick } : {}),
-    });
+    let out: Awaited<ReturnType<typeof enqueueAndAwait>>;
+    try {
+      out = await enqueueAndAwait(client, addr, body, {
+        waitForTerminal: p?.deferred !== true,
+        ...(p?.deferred === true ? { acceptUnbound: true } : {}),
+        ...(p?.idempotencyKey !== undefined ? { idempotencyKey: p.idempotencyKey } : {}),
+        ...(options.delegationParentRunId ? { internalDaemonEnqueue: true } : {}),
+        ...(onPollTick ? { onPollTick } : {}),
+      });
+    } finally {
+      // The run is no longer observed here: close prompts it left open.
+      interactionBridge?.close();
+    }
     return projectLaunchHandle(addr, out, { deferred: p?.deferred === true, mode });
   };
 }
@@ -459,95 +466,4 @@ export function makeCancelBridge(
   };
 }
 
-/** The answer route's typed refusal of this exact answer (`context.status`). */
-async function definitelyRejected(response: Response): Promise<boolean> {
-  const problem = ControlProblem.safeParse(await response.json().catch(() => null));
-  return problem.success && problem.data.context["status"] === "rejected";
-}
-
-/**
- * Poll-tick bridge: watch the run's pendingInteractions on the control API and
- * forward each NEW interaction to the caller's hook exactly once; answers go
- * back through the typed answer endpoint. A stale answer (engine already
- * timed out and declined) is the endpoint's problem to refuse — the bridge
- * never fakes delivery. A failed post is retried with the same answer, except
- * a definite `rejected` refusal: the daemon committed nothing and would refuse
- * the same body again, so the bridge stops there and the question stays
- * pending for another surface or its expiry.
- */
-export function makeInteractionBridge(
-  addr: ControlApiAddress,
-  onInteraction: (ctx: any) => Promise<any | null>,
-): (info: { runId: string }) => Promise<void> {
-  const delivered = new Set<string>();
-  const answerCache = new Map<string, any | null>();
-  let lastCheck = 0;
-  let handling = false;
-  return async ({ runId }) => {
-    if (handling || Date.now() - lastCheck < 1_000) return;
-    lastCheck = Date.now();
-    let pending: Array<{
-      interactionId?: string;
-      questions?: unknown[];
-      timeoutAt?: string | null;
-    }> = [];
-    try {
-      const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-        signal: AbortSignal.timeout(2_000),
-      });
-      if (!res.ok) return;
-      const detail = (await res.json()) as { pendingInteractions?: typeof pending };
-      pending = detail.pendingInteractions ?? [];
-    } catch {
-      return; // transient control-api hiccup: the next tick retries
-    }
-    for (const pi of pending) {
-      const id = typeof pi.interactionId === "string" ? pi.interactionId : "";
-      if (!id || delivered.has(id)) continue;
-      handling = true;
-      try {
-        const result = answerCache.has(id)
-          ? answerCache.get(id)
-          : await onInteraction({
-              run_id: runId,
-              request: {
-                interaction_id: id,
-                questions: Array.isArray(pi.questions) ? pi.questions : [],
-              },
-              ...(Object.hasOwn(pi, "timeoutAt") ? { timeoutAt: pi.timeoutAt } : {}),
-            });
-        answerCache.set(id, result);
-        const answers = result && Array.isArray(result.answers) ? result.answers : null;
-        if (answers) {
-          const response = await controlApiFetch(
-            addr,
-            `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(id)}/answer`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                answers: answers.map((a: any) => ({
-                  questionId: a.question_id,
-                  selectedLabels: a.selected_labels ?? [],
-                  ...(a.free_text ? { freeText: a.free_text } : {}),
-                })),
-              }),
-            },
-          ).catch(() => null);
-          if (response?.ok || (response && (await definitelyRejected(response)))) {
-            delivered.add(id);
-            answerCache.delete(id);
-          }
-        } else {
-          // A deliberate decline has no answer mutation to acknowledge.
-          delivered.add(id);
-          answerCache.delete(id);
-        }
-      } finally {
-        handling = false;
-      }
-    }
-  };
-}
+export { makeInteractionBridge };

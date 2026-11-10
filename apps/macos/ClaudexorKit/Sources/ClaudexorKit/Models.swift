@@ -258,6 +258,10 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let outcomeFacts: RunOutcomeFacts?
     /// True while at least one harness question awaits the user's answer.
     public let waitingOnUser: Bool?
+    /// True while questions are pending and every one is async: the agent keeps
+    /// working and the questions are attention only. False when none is pending
+    /// or any pending question is blocking. Nil from older engines, read as false.
+    public let asyncQuestionsOnly: Bool?
     public let route: RouteInfo?
     /// Auth route receipt incl. requested-vs-observed model mismatch (W10/W20).
     public let authRoute: RunAuthRoute?
@@ -445,31 +449,6 @@ public struct InteractionQuestion: Codable, Sendable, Identifiable, Equatable, H
     }
 }
 
-/// A live harness question awaiting the user's answer (waiting_on_user).
-public struct PendingInteraction: Codable, Sendable, Identifiable, Equatable, Hashable {
-    public let interactionId: String
-    public let runId: String
-    public let attemptId: String?
-    public let harnessId: String?
-    public let sourceTool: String?
-    public let questions: [InteractionQuestion]
-    public let requestedAt: String
-    public let timeoutAt: String?
-    public var id: String { interactionId }
-
-    public init(interactionId: String, runId: String, attemptId: String?, harnessId: String?,
-                sourceTool: String?, questions: [InteractionQuestion], requestedAt: String, timeoutAt: String?) {
-        self.interactionId = interactionId
-        self.runId = runId
-        self.attemptId = attemptId
-        self.harnessId = harnessId
-        self.sourceTool = sourceTool
-        self.questions = questions
-        self.requestedAt = requestedAt
-        self.timeoutAt = timeoutAt
-    }
-}
-
 /// One answer in POST /runs/:id/interactions/:id/answer.
 public struct InteractionAnswerPayload: Codable, Sendable, Equatable {
     public let questionId: String
@@ -532,5 +511,18 @@ public enum GatewayError: Error, Sendable, Equatable {
     public var controlProblem: ControlProblem? {
         guard case .http(_, let body) = self, let data = body.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(ControlProblem.self, from: data)
+    }
+
+    /// The engine's typed refusal of an interaction answer. The daemon sends every
+    /// HTTP error as a `ControlProblem`, so the refused reply's `accepted` and
+    /// `status` ride in `context` and its reason is the problem's `message`. Nil
+    /// for any other failure of the answer request.
+    public var interactionAnswerRefusal: InteractionAnswerResponse? {
+        guard let problem = controlProblem,
+              problem.context["accepted"]?.boolValue == false,
+              let status = problem.context["status"]?.stringValue,
+              !status.isEmpty
+        else { return nil }
+        return InteractionAnswerResponse(accepted: false, status: status, message: problem.message)
     }
 }

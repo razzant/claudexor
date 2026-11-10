@@ -128,10 +128,10 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
   it("creates a fresh current store with deferred messages and a minimal answer-present index", () => {
     const db = connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(7);
-    expect(readSchemaIdentity(db).userVersion).toBe(7);
+    expect(ENGINE_SCHEMA_VERSION).toBe(8);
+    expect(readSchemaIdentity(db).userVersion).toBe(8);
     expect(db.prepare("SELECT value FROM meta WHERE key='schema_version'").get()).toEqual({
-      value: "7",
+      value: "8",
     });
     seed(db);
     seedDeferredMessages(db);
@@ -174,12 +174,14 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
         ),
       );
       // Version 6 adds the membership column and rebuilds both group indexes on it;
-      // version 7 adds the resource holders and alters the next-message and turn tables.
+      // version 7 adds the resource holders and alters the next-message and turn tables;
+      // version 8 adds the question-delivery column and its covering pending index.
       const replaced = new Set([
         "command",
         "command_task_group",
         "command_task_group_state",
         "deferred_message",
+        "interaction",
         "turn",
       ]);
       const added = new Set([
@@ -187,6 +189,7 @@ describe.skipIf(!sqlite)("thread-history schema v5", () => {
         "resource_use",
         "resource_use_owner",
         "resource_use_sha",
+        "interaction_pending_delivery",
         ...(version < 5 ? ["turn_plan_answer"] : []),
         ...(version === 3
           ? [

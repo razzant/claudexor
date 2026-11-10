@@ -28,6 +28,7 @@
       "outcomeFacts": null,
       "outputReadyState": "ready",
       "waitingOnUser": false,
+      "asyncQuestionsOnly": false,
       "finishedAt": null,
       "delegation": {
         "requested": true,

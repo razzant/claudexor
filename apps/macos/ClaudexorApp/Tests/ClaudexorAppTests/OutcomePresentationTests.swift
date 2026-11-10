@@ -193,7 +193,13 @@ import ClaudexorKit
         task.applyState = "applied"
         task.adopted = true
         task.waitingOnUser = true
-        let facts = RunFacts.headerPrimary(task)
+        // A finished run's questions were released with it (#628): no question fact.
+        var facts = RunFacts.headerPrimary(task)
+        #expect(facts.map(\.id) == ["auth_route", "apply"])
+        #expect(facts.map(\.text) == ["API key", "Winner applied"])
+        // While the run is live, its pending question is the third material fact.
+        task.phase = .running
+        facts = RunFacts.headerPrimary(task)
         #expect(facts.map(\.id) == ["auth_route", "apply", "needs_answer"])
         #expect(facts.map(\.text) == ["API key", "Winner applied", "Needs your answer"])
         #expect(facts.count <= 4)

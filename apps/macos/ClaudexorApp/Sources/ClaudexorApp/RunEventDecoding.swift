@@ -76,8 +76,16 @@ extension AppModel {
             sourceTool: payload["source_tool"]?.stringValue,
             questions: questions,
             requestedAt: payload["requested_at"]?.stringValue ?? "",
-            timeoutAt: payload["timeout_at"]?.stringValue
+            timeoutAt: payload["timeout_at"]?.stringValue,
+            delivery: interactionDelivery(from: payload)
         )
+    }
+
+    /// The `delivery` an interaction.* event payload carries. Absent (older
+    /// engines) keeps the historical meaning, blocking; like the engine, only an
+    /// explicit `async` reads as the agent working on, so no question is softened.
+    static func interactionDelivery(from payload: JSONValue) -> InteractionDelivery {
+        payload["delivery"]?.stringValue == InteractionDelivery.async.rawValue ? .async : .blocking
     }
 
     static func planItems(from payload: JSONValue) -> [PlanItem]? {

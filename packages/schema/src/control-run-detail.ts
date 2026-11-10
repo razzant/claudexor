@@ -12,10 +12,10 @@ import {
   ControlArtifactInfo,
   ControlBudgetSnapshot,
   ControlEvidenceIntegrity,
-  ControlPendingInteraction,
   ControlRunSummary,
   ControlTimelineEvent,
 } from "./control.js";
+import { ControlPendingInteraction } from "./control-pending-interaction.js";
 import { RunFailure } from "./control-run-failure.js";
 import { DeferredMessageProjection } from "./deferred-message.js";
 

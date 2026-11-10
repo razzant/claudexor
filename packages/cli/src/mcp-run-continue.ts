@@ -38,6 +38,8 @@ const continuationRequest = ControlRunStartRequest.pick({
   reviewerModels: true,
   reviewerEfforts: true,
   continueCarrier: true,
+  effort: true,
+  efforts: true,
 })
   .partial({ prompt: true })
   .required({ continueFrom: true });

@@ -5,7 +5,15 @@ import { StoreSchemaUnsupportedError } from "./errors.js";
 /** `PRAGMA application_id` of every engine store ("CXEN"). */
 export const ENGINE_APPLICATION_ID = 0x4358454e;
 /** `PRAGMA user_version`: the one schema this engine creates and serves. */
-export const ENGINE_SCHEMA_VERSION = 7;
+export const ENGINE_SCHEMA_VERSION = 8;
+
+/** Version 8: each question's delivery (#628) as a scalar of its existing row,
+ * `blocking` for every row written before it, and the covering pending index
+ * that observation reads instead of a row whose request body may overflow. */
+const SCHEMA_V8_SQL = `
+ALTER TABLE interaction ADD COLUMN delivery TEXT NOT NULL DEFAULT 'blocking' CHECK(delivery IN ('blocking','async'));
+CREATE INDEX interaction_pending_delivery ON interaction(pid,run_id,id,delivery) WHERE state = 'pending';
+`;
 
 /** Version 7: accepted owners holding managed ordinary resources (#249) and the
  * instant a thread turn's first product command was accepted (its durable dispatch
@@ -184,7 +192,7 @@ CREATE TABLE import_partition(name TEXT PRIMARY KEY, status TEXT NOT NULL, pid I
   previous_frame_hash TEXT, source_size INTEGER, source_mtime TEXT, fingerprint TEXT, records INTEGER, digest TEXT, problem TEXT) STRICT;
 CREATE TABLE unclassified(pid INTEGER NOT NULL, seq INTEGER NOT NULL, type TEXT NOT NULL, reason TEXT NOT NULL, payload BLOB NOT NULL,
   PRIMARY KEY(pid, seq)) WITHOUT ROWID, STRICT;
-${ACCOUNT_LAST_SERVICE_SQL}${DEFERRED_MESSAGE_SQL}${PLAN_ANSWER_INDEX_SQL}${TASK_GROUP_COLUMN_INDEX_SQL}${SCHEMA_V7_SQL}`;
+${ACCOUNT_LAST_SERVICE_SQL}${DEFERRED_MESSAGE_SQL}${PLAN_ANSWER_INDEX_SQL}${TASK_GROUP_COLUMN_INDEX_SQL}${SCHEMA_V7_SQL}${SCHEMA_V8_SQL}`;
 
 /** Every table the DDL creates, in creation order (for tests and the importer seam). */
 export const ENGINE_TABLES: readonly string[] = Object.freeze(
@@ -204,6 +212,7 @@ const SCHEMA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new M
   [4, (db: DatabaseSync) => db.exec(PLAN_ANSWER_INDEX_SQL)],
   [5, (db: DatabaseSync) => db.exec(TASK_GROUP_COLUMN_SQL)],
   [6, (db: DatabaseSync) => db.exec(SCHEMA_V7_SQL)],
+  [7, (db: DatabaseSync) => db.exec(SCHEMA_V8_SQL)],
 ]);
 
 export interface SchemaIdentity {

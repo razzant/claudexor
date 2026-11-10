@@ -43,9 +43,9 @@ import ClaudexorKit
     }
 
     /// The gate TurnCard.assistantSection uses to render the answer surface:
-    /// `ForEach(run.pendingInteractions)` shows one InteractionCard per pending
-    /// question set, so a parked run ALWAYS exposes an answer affordance and an
-    /// idle run shows none.
+    /// `ForEach(run.openQuestions)` shows one InteractionCard per pending
+    /// question set of a live run, so a parked run ALWAYS exposes an answer
+    /// affordance and an idle run shows none.
     @Test func runWithPendingInteractionExposesAnswerAffordance() {
         let parked = run(pending: [pending([question("q1")])])
         #expect(!parked.pendingInteractions.isEmpty)

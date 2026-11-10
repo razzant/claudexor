@@ -108,6 +108,9 @@ export interface ResourceStorePort {
 export interface PendingIdentityDigest {
   pending: boolean;
   digest: string;
+  /** Whether any pending question holds its agent until answered; absent when
+   * the port cannot tell, which readers treat as blocking. */
+  blocking?: boolean;
 }
 
 export interface InteractionStorePort {

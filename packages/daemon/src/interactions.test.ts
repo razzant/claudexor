@@ -1,4 +1,6 @@
 import { InteractionStore } from "./store/test-support/fixtures/legacy/daemon/interactions.js";
+import { legacyInteractionPort } from "./store/test-support/legacy-interaction-port.js";
+import { getEventListeners } from "node:events";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +14,7 @@ function storeAndRegistry() {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "claudexor-disabled-interaction-"));
   roots.push(root);
   const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
-  const store = new InteractionStore(journal);
+  const store = legacyInteractionPort(new InteractionStore(journal));
   const registry = new InteractionRegistry({ forRequest: () => store, forRun: () => store });
   return { journal, store, registry };
 }
@@ -23,7 +25,12 @@ function context(timeoutAt: string | null) {
     taskId: "task-1",
     attemptId: "a01",
     harnessId: "claude",
-    request: { interaction_id: "int-1", source_tool: "AskUserQuestion", questions: [] },
+    request: {
+      interaction_id: "int-1",
+      source_tool: "AskUserQuestion",
+      delivery: "blocking" as const,
+      questions: [],
+    },
     requestedAt: new Date().toISOString(),
     timeoutAt,
   };
@@ -32,6 +39,7 @@ function context(timeoutAt: string | null) {
 const TWO_QUESTIONS = {
   interaction_id: "int-1",
   source_tool: "AskUserQuestion",
+  delivery: "blocking" as const,
   questions: [
     {
       id: "q1",
@@ -64,6 +72,83 @@ describe("InteractionRegistry disabled expiry", () => {
     expect(registry.answer("run-1", "int-1", { interaction_id: "int-1", answers: [] }).status).toBe(
       "already_resolved",
     );
+    journal.close();
+  });
+
+  it("never hands an answer to a withdrawn request when recording the withdrawal fails", async () => {
+    const { journal, store, registry } = storeAndRegistry();
+    const controller = new AbortController();
+    const waiting = registry.register(
+      { ...context(null), request: TWO_QUESTIONS, signal: controller.signal },
+      {},
+    );
+    const storeFailure = new Error("database or disk is full");
+    const resolve = vi.spyOn(store, "resolve").mockImplementationOnce(() => {
+      throw storeFailure;
+    });
+    // The failure stays inside the abort dispatch, where a throw would be the
+    // daemon's uncaught exception; the waiter receives it instead of a release.
+    controller.abort();
+    await expect(waiting).rejects.toBe(storeFailure);
+    resolve.mockRestore();
+    // The row is still pending, but no live session waits for it: an answer is
+    // refused as such and releases it, never reported delivered.
+    const answers = {
+      interaction_id: "int-1",
+      answers: [{ question_id: "q1", selected_labels: ["A"] }],
+    };
+    expect(registry.answer("run-1", "int-1", answers)).toEqual({
+      status: "not_found",
+      message: expect.stringContaining("no live session"),
+    });
+    expect(registry.pendingForRun("run-1")).toEqual([]);
+    journal.close();
+  });
+
+  it("retires an ended run's waiters when recording its terminal release fails, and never delivers a later answer", async () => {
+    const { journal, store, registry } = storeAndRegistry();
+    const controller = new AbortController();
+    const ended = [
+      registry.register(
+        { ...context(null), request: TWO_QUESTIONS, signal: controller.signal },
+        {},
+      ),
+      registry.register(
+        { ...context(null), request: { ...TWO_QUESTIONS, interaction_id: "int-2" } },
+        {},
+      ),
+    ];
+    // Another run's waiter is no part of this run's end.
+    const other = registry.register(
+      { ...context(null), runId: "run-2", request: TWO_QUESTIONS },
+      {},
+    );
+    const storeFailure = new Error("database or disk is full");
+    const resolveRun = vi.spyOn(store, "resolveRun").mockImplementationOnce(() => {
+      throw storeFailure;
+    });
+    // The failed record stays the caller's error, and the run's waiters are
+    // released as its end all the same.
+    expect(() => registry.dropForRun("run-1")).toThrow(storeFailure);
+    resolveRun.mockRestore();
+    await expect(Promise.all(ended)).resolves.toEqual([
+      { kind: "released", reason: "run_terminal" },
+      { kind: "released", reason: "run_terminal" },
+    ]);
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    // The rows were not recorded as resolved, but nothing waits for them: an
+    // answer is refused as no live session and releases its row.
+    const answers = {
+      interaction_id: "int-1",
+      answers: [{ question_id: "q1", selected_labels: ["A"], free_text: null }],
+    };
+    expect(registry.answer("run-1", "int-1", answers)).toEqual({
+      status: "not_found",
+      message: expect.stringContaining("no live session"),
+    });
+    expect(registry.answer("run-1", "int-1", answers).status).toBe("already_resolved");
+    expect(registry.answer("run-2", "int-1", answers)).toEqual({ status: "delivered" });
+    await expect(other).resolves.toEqual(answers);
     journal.close();
   });
 

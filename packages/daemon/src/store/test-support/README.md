@@ -20,15 +20,16 @@ The separate `fixtures/schema-v3.ts.txt` fixture is the exact schema owner from
 `4e870bea067e678373dd195fa7fdb0510a753f18` (SHA-256
 `10fb655eaf1f5e2ac819e53ac6873042ef9016fe70ffa175471d3a75e0f4e8e6`).
 `schema-history-upgrade.test.ts` executes the three frozen owners on temporary
-databases to prove that the v3→v7 chain, the index-only v4→v5 step and the v5→v6
+databases to prove that the v3→v8 chain, the index-only v4→v5 step and the v5→v6
 membership column preserve domain rows and the indexes they do not replace,
 including populated deferred-message rows. It verifies rollback on failure and
 refusal by the actual v3/v4/v5 readers after upgrade.
-The current store creates schema v7; 1→2 adds account service, 2→3 adds task-group
+The current store creates schema v8; 1→2 adds account service, 2→3 adds task-group
 indexes, 3→4 adds deferred messages, 4→5 adds the guarded plan-answer index, 5→6
-moves task-group membership into a column, and 6→7 adds the `resource_use` owners
+moves task-group membership into a column, 6→7 adds the `resource_use` owners
 of managed resources, `turn.dispatched_at` and two nullable `deferred_message`
-columns.
+columns, and 7→8 adds `interaction.delivery` with its covering
+`interaction_pending_delivery` index.
 None of the frozen owners is derived from current DDL; never regenerate them to make
 a test pass. The oracle's seal below does not cover these files and no test
 checks the hashes above, so their immutability rests on this rule and on review.

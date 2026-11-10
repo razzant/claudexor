@@ -1,11 +1,19 @@
 import ClaudexorKit
 
 extension AppModel {
-    static func interactionResolutionActivityTitle(type: String, reason: String?) -> String {
-        if type == "interaction.answered" { return "Answer delivered" }
+    /// An async answer is only handed to the running session; nothing here says
+    /// the model read or followed it. An async expiry sends nothing at all.
+    static func interactionResolutionActivityTitle(
+        type: String, reason: String?, delivery: InteractionDelivery = .blocking
+    ) -> String {
+        if type == "interaction.answered" {
+            return delivery == .async ? "Answer handed to the running session" : "Answer delivered"
+        }
         if type == "interaction.withdrawn" { return "Question withdrawn by the agent — no answer needed" }
         if reason == "cancelled" { return "Question closed — run cancelled" }
-        return "Question timed out — continuing with assumptions"
+        return delivery == .async
+            ? "Question expired — nothing was sent to the agent"
+            : "Question timed out — continuing with assumptions"
     }
 
     func resolveHistoryInteraction(runID: String, interactionID: String, at location: ExecutionLocationID) {

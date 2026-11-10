@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
-import { interactionChannelFromSpec } from "@claudexor/core";
+import { InteractionChannelError, interactionChannelFromSpec } from "@claudexor/core";
 import {
   InteractionAnswerSet,
   type HarnessEvent,
@@ -9,7 +9,7 @@ import {
 } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 import { asObject, type CodexThreadLifecycle, type JsonObject } from "./app-server-protocol.js";
-import { reviewPath } from "./app-server-approvals.js";
+import { answerUnavailable, reviewPath } from "./app-server-approvals.js";
 import { codexTurnParams } from "./app-server-session.js";
 
 const COMPLETED = "item/autoApprovalReview/completed";
@@ -47,6 +47,8 @@ export class CodexAutoReview {
   private readonly authorizedActions = new Set<string>();
   private readonly abort = new AbortController();
   private answers: Promise<JsonObject | null>[] = [];
+  /** Questions whose answer surface failed; their denial stands. */
+  private unavailable: HarnessEvent[] = [];
   private failure: Error | null = null;
   readonly authorizationSubmissions: { review_id: string; state: "submitted" | "acknowledged" }[] =
     [];
@@ -86,6 +88,7 @@ export class CodexAutoReview {
     yield* input.completed;
     yield* this.interactions(input.turnId, input.finalAnswer);
     const retries = await this.takeRetries();
+    yield* this.unavailable.splice(0);
     const failure = input.failure();
     if (failure) throw failure;
     if (input.cancelled()) {
@@ -130,6 +133,8 @@ export class CodexAutoReview {
       const request: InteractionRequest = {
         interaction_id: randomUUID(),
         source_tool: COMPLETED,
+        // The retry waits on this decision before another model turn starts.
+        delivery: "blocking",
         questions: [
           {
             id: "approval",
@@ -279,7 +284,11 @@ export class CodexAutoReview {
       this.authorizedActions.add(JSON.stringify(event["action"]));
       return event;
     } catch (error) {
-      this.failure = error instanceof Error ? error : new Error(String(error));
+      // A failed answer surface asked nobody: the native denial stands and is
+      // recorded as unanswerable, never as the controller's decline.
+      if (error instanceof InteractionChannelError)
+        this.unavailable.push(answerUnavailable(this.deps.spec.session_id, request, error));
+      else this.failure = error instanceof Error ? error : new Error(String(error));
       return null;
     } finally {
       this.abort.signal.removeEventListener("abort", cancelled);

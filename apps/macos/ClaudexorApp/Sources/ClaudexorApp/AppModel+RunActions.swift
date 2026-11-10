@@ -143,9 +143,7 @@ extension AppModel {
         do {
             let response = try await requestClient.answerInteraction(
                 runId: runId, interactionId: interactionId, answers: answers)
-            guard response.accepted else {
-                return response.message ?? "Answer was not accepted (\(response.status))."
-            }
+            guard response.accepted else { return Self.answerRefusalMessage(response) }
             resolveHistoryInteraction(runID: runId, interactionID: interactionId, at: locationID)
             mutateTask(runId, at: locationID) {
                 $0.pendingInteractions.removeAll { $0.interactionId == interactionId }
@@ -158,7 +156,36 @@ extension AppModel {
             }
             return nil
         } catch {
-            return "Could not deliver the answer: \(error)"
+            return answerFailureMessage(error)
+        }
+    }
+
+    /// Why an answer did not land, in plain words. The engine refuses with a
+    /// `ControlProblem` on HTTP 404/409 that carries its typed answer status
+    /// (`GatewayError.interactionAnswerRefusal`): nothing was sent, and the
+    /// question's own events or the next snapshot settle its card. Without a
+    /// readable reply delivery is unconfirmed, never a success; nothing is resent.
+    func answerFailureMessage(_ error: Error) -> String {
+        if let url = error as? URLError, [.cannotConnectToHost, .cannotFindHost].contains(url.code) {
+            return "Cannot reach the engine, so your answer was not sent."
+        }
+        guard let gateway = error as? GatewayError, case .http(let status, let body) = gateway else {
+            return "Delivery is unconfirmed: the engine's reply was missing or unreadable. Check the run before answering again."
+        }
+        if let refusal = gateway.interactionAnswerRefusal {
+            return Self.answerRefusalMessage(refusal)
+        }
+        let detail = serverErrorMessage(from: body).map { ": \($0)" } ?? "."
+        return "The engine did not accept this answer (HTTP \(status))\(detail)"
+    }
+
+    /// The engine's typed refusal. `rejected` keeps the engine's own reason (which
+    /// answers are missing or invalid); the question stays open then.
+    static func answerRefusalMessage(_ refusal: InteractionAnswerResponse) -> String {
+        switch refusal.status {
+        case "already_resolved": "This question is already closed, so your answer was not sent."
+        case "not_found": "This question is no longer open, so your answer was not sent."
+        default: refusal.message ?? "The engine did not accept this answer (\(refusal.status))."
         }
     }
 

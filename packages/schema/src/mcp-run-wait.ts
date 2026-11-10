@@ -1,6 +1,7 @@
 import { z } from "zod/v3";
 import { DeferredMessageProjection } from "./deferred-message.js";
-import { ControlPendingInteraction, ControlRunState } from "./control.js";
+import { ControlRunState } from "./control.js";
+import { ControlPendingInteraction } from "./control-pending-interaction.js";
 import { RunEvent } from "./events.js";
 
 export const MCP_RUN_WAIT_EVENT_BYTES = 65_536;

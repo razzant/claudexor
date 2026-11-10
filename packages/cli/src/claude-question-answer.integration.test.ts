@@ -13,14 +13,22 @@
  * the child process actually received on its stdin. No live Claude CLI runs
  * here; the installed vendor protocol may differ from the recording.
  */
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCliHarness, type CliRunLoopOptions } from "@claudexor/core";
 import { EngineStore } from "@claudexor/daemon";
-import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
+import { HarnessRunSpec, type Attachment, type HarnessEvent } from "@claudexor/schema";
 import { createClaudeAdapter } from "../../harness-claude/src/index.js";
 import { DECLINE_MESSAGE } from "../../harness-claude/src/interactive.js";
+import { unavailableDenyMessage } from "../../harness-claude/src/question-outcome.js";
+import {
+  createAttemptTelemetry,
+  observeAttemptTelemetry,
+  unrecoveredToolErrors,
+} from "../../orchestrator/src/attemptTelemetry.js";
+import { interactionChannelFor } from "../../orchestrator/src/interaction.js";
 import { harnessEventPayload } from "../../orchestrator/src/runSupport.js";
 import { followRun } from "./live.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
@@ -67,12 +75,20 @@ afterEachClosed(async () => {
  */
 const FAKE_CLAUDE = `
 const fs = require('node:fs');
-const [questionsPath, capturePath] = process.argv.slice(-2);
-const questions = JSON.parse(fs.readFileSync(questionsPath, 'utf8'));
+const [scenarioPath, capturePath] = process.argv.slice(-2);
+const { questions, scenario } = JSON.parse(fs.readFileSync(scenarioPath, 'utf8'));
 const session = 'native-session-1';
 const usage = { input_tokens: 10, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');
+const assistant = (id, content) => out({ type: 'assistant', message: { id, type: 'message', role: 'assistant', content, model: 'claude-fable-5-1', stop_reason: null, stop_sequence: null, usage }, parent_tool_use_id: null, session_id: session, uuid: id });
+const toolResult = (id, content, isError) => out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, ...(isError ? { is_error: true } : {}) }] }, parent_tool_use_id: null, session_id: session, uuid: 'result-of-' + id });
+const result = (text, uuids) => out({ type: 'result', subtype: 'success', is_error: false, result: text, session_id: session, num_turns: 2, duration_ms: 5, duration_api_ms: 4, total_cost_usd: 0, usage, stop_reason: 'end_turn', terminal_reason: 'completed', uuid: 'result-' + text, ...(uuids ? { user_message_uuids: uuids } : {}) });
+const ask = () => {
+  assistant('assistant-ask', [{ type: 'tool_use', id: 'toolu-ask', name: 'AskUserQuestion', input: { questions } }]);
+  out({ type: 'control_request', request_id: 'ask-1', request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', display_name: 'AskUserQuestion', input: { questions }, tool_use_id: 'toolu-ask', requires_user_interaction: true } });
+};
 let asked = false;
+let closed = false;
 const rl = require('node:readline').createInterface({ input: process.stdin });
 rl.on('line', (line) => {
   fs.appendFileSync(capturePath, line + '\\n');
@@ -83,9 +99,15 @@ rl.on('line', (line) => {
   }
   if (frame.type === 'user' && !asked) {
     asked = true;
-    out({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: ['AskUserQuestion'], mcp_servers: [], model: 'claude-fable-5-1', permissionMode: 'default', claude_code_version: '2.1.281', uuid: 'init-1' });
-    out({ type: 'assistant', message: { id: 'msg-1', type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu-ask', name: 'AskUserQuestion', input: { questions } }], model: 'claude-fable-5-1', stop_reason: null, stop_sequence: null, usage }, parent_tool_use_id: null, session_id: session, uuid: 'assistant-1' });
-    out({ type: 'control_request', request_id: 'ask-1', request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', display_name: 'AskUserQuestion', input: { questions }, tool_use_id: 'toolu-ask', requires_user_interaction: true } });
+    out({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: session, tools: ['AskUserQuestion', 'Bash'], mcp_servers: [], model: 'claude-fable-5-1', permissionMode: 'default', claude_code_version: '2.1.281', uuid: 'init-1' });
+    if (scenario !== 'late_question') return ask();
+    // The current prompt's own final result (its echo and consumed uuid), then
+    // a real work-tool failure: Claudexor closes stdin on this result.
+    out({ type: 'user', isReplay: true, message: frame.message, parent_tool_use_id: null, session_id: session, uuid: frame.uuid });
+    assistant('assistant-bash', [{ type: 'tool_use', id: 'toolu-bash', name: 'Bash', input: { command: 'make check' } }]);
+    toolResult('toolu-bash', 'make: *** [check] Error 2', true);
+    assistant('assistant-partial', [{ type: 'text', text: 'PARTIAL' }]);
+    result('PARTIAL', [frame.uuid]);
     return;
   }
   if (frame.type === 'control_response' && frame.response && frame.response.request_id === 'ask-1') {
@@ -95,11 +117,23 @@ rl.on('line', (line) => {
     const pairs = questions.filter((q) => Object.prototype.hasOwnProperty.call(answers, q.question)).map((q) => '"' + q.question + '"="' + answers[q.question] + '"');
     const text = !allowed ? String(decision.message) : pairs.length ? 'Your questions have been answered: ' + pairs.join(', ') + '. You can now continue with these answers in mind.' : 'The user did not answer the questions.';
     out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu-ask', content: text, ...(allowed ? {} : { is_error: true }) }] }, parent_tool_use_id: null, session_id: session, uuid: 'user-1', ...(allowed ? { tool_use_result: decision.updatedInput } : {}) });
-    out({ type: 'assistant', message: { id: 'msg-2', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'DONE' }], model: 'claude-fable-5-1', stop_reason: null, stop_sequence: null, usage }, parent_tool_use_id: null, session_id: session, uuid: 'assistant-2' });
-    out({ type: 'result', subtype: 'success', is_error: false, result: 'DONE', session_id: session, num_turns: 2, duration_ms: 5, duration_api_ms: 4, total_cost_usd: 0, usage, stop_reason: 'end_turn', terminal_reason: 'completed', uuid: 'result-1' });
+    assistant('assistant-2', [{ type: 'text', text: 'DONE' }]);
+    result('DONE');
   }
 });
-rl.on('close', () => process.stdout.write('', () => process.exit(0)));
+rl.on('close', () => {
+  if (closed) return;
+  closed = true;
+  if (scenario === 'late_question') {
+    // The CLI keeps working after Claudexor ended its input: the question's
+    // permission request can no longer be answered over the closed stream.
+    ask();
+    toolResult('toolu-ask', 'Tool permission request failed: AbortError: Stream closed', true);
+    assistant('assistant-late', [{ type: 'text', text: 'DONE with assumptions' }]);
+    result('DONE with assumptions');
+  }
+  process.stdout.write('', () => process.exit(0));
+});
 `;
 
 /** Native questions longer than every former display bound (question 2000,
@@ -125,6 +159,33 @@ function longQuestions(): Json[] {
 
 const MULTILINE_FREE_TEXT = "\n  keep the indented first line\nand the trailing spaces  \n\n";
 
+/** A digest-bound text resource: it keeps a Claude run on the interactive
+ * stream-json path even when the run offers no answer channel. */
+function textAttachment(runDir: string): Attachment {
+  const path = join(runDir, "notes.txt");
+  const bytes = Buffer.from("Neutral notes for the fixture run.\n");
+  writeFileSync(path, bytes);
+  return {
+    resource_id: "res-notes",
+    kind: "file",
+    mime: "text/plain",
+    name: "notes.txt",
+    sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+    size_bytes: bytes.length,
+    path,
+  };
+}
+
+/** A run journal whose append fails: the orchestrator's interaction channel
+ * then rejects its request after invoking the answer surface. */
+function failingJournal(): Parameters<typeof interactionChannelFor>[1] {
+  return {
+    emit: () => {
+      throw new Error("journal append failed");
+    },
+  } as unknown as Parameters<typeof interactionChannelFor>[1];
+}
+
 async function fixture() {
   const harnessEvents = new Map<string, HarnessEvent[]>();
   const daemon = await startInteractionDaemon({
@@ -134,8 +195,9 @@ async function fixture() {
     prompt: "Ask me first",
     waitMs: 10_000,
     execute: async ({ params, runId, runDir, signal, channel, log }, workspace) => {
+      const scenario = String(params["scenario"] ?? "ask");
       const questionsPath = join(runDir, "native-questions.json");
-      writeFileSync(questionsPath, JSON.stringify(params["questions"]));
+      writeFileSync(questionsPath, JSON.stringify({ questions: params["questions"], scenario }));
       const spec = HarnessRunSpec.parse({
         session_id: runId,
         intent: "implement",
@@ -143,8 +205,22 @@ async function fixture() {
         cwd: workspace,
         access: "full",
         auth_preference: "subscription",
+        attachments: scenario === "no_channel" ? [textAttachment(runDir)] : [],
       });
-      spec.extra["interactionChannel"] = channel;
+      // #622 scenarios: an attachment keeps the session interactive without an
+      // answer channel; the orchestrator's own channel whose journal append
+      // fails rejects the request.
+      if (scenario === "channel_fails")
+        spec.extra["interactionChannel"] = interactionChannelFor(
+          { onInteraction: () => new Promise(() => undefined) },
+          failingJournal(),
+          runId,
+          `task-${runId}`,
+          "a01",
+          "claude",
+          true,
+        );
+      else if (scenario !== "no_channel") spec.extra["interactionChannel"] = channel;
       spec.extra["abortSignal"] = signal;
       // The REAL adapter run (runClaude -> runCliHarness with the adapter's own
       // session hooks); only the probes and the binary are replaced.
@@ -199,6 +275,25 @@ const interactionEvents = (runDir: string) =>
   jsonl(join(runDir, "events.jsonl")).filter((event) =>
     String(event["type"]).startsWith("interaction."),
   );
+
+/** The journaled harness events: the collection a delegating parent reads. */
+const journaledHarness = (runDir: string) =>
+  jsonl(join(runDir, "events.jsonl"))
+    .filter((row) => row["type"] === "harness.event")
+    .map((row) => row["payload"] as Json);
+
+/** The adapter's own "no answer can reach this question" observations (#622). */
+const unavailableRecords = (events: readonly { payload?: Json }[]) =>
+  events.filter((event) => event.payload?.["code"] === "interaction_answer_unavailable");
+
+/** The benign record of the question tool's native error result. */
+const questionRecord = (events: HarnessEvent[]) =>
+  events.find(
+    (event) => event.type === "thinking" && event.payload?.["tool"] === "AskUserQuestion",
+  );
+
+/** What the old mapping wrote for every question error result. */
+const DECLINE_CLAIM = /declin|no user answer/i;
 
 describe("Claude AskUserQuestion answers reach the native process exactly (#560)", () => {
   it("refuses rows that answer nothing without consuming the question, then delivers the exact long answer", async () => {
@@ -331,6 +426,10 @@ describe("Claude AskUserQuestion answers reach the native process exactly (#560)
     expect(result?.tool?.status).toBe("ok");
     expect(result?.tool?.content_summary).toContain(`"Which rollout should I use?"="${freeText}"`);
     expect(result?.tool?.content_summary).not.toContain("did not answer");
+    // An answered question has neither a no-answer record nor an observation (#622).
+    const events = f.harnessEvents.get(run.runId)!;
+    expect(unavailableRecords(events)).toEqual([]);
+    expect(questionRecord(events)).toBeUndefined();
   }, 30_000);
 
   it("keeps an empty answer set as the caller's explicit decline: the native process gets the benign decline", async () => {
@@ -351,6 +450,13 @@ describe("Claude AskUserQuestion answers reach the native process exactly (#560)
     expect(interactionEvents(run.runDir).map((event) => event["type"])).toEqual([
       "interaction.requested",
     ]);
+    // The known decline keeps its benign text and no adapter observation (#622).
+    const events = f.harnessEvents.get(run.runId)!;
+    expect(unavailableRecords(events)).toEqual([]);
+    expect(questionRecord(events)).toMatchObject({
+      text: `AskUserQuestion returned an error instead of answers: ${DECLINE_MESSAGE}`,
+      payload: { tool: "AskUserQuestion", tool_use_id: "toolu-ask", session_input: "open" },
+    });
   }, 30_000);
 
   it("delivers a partial answer and joined multi-select labels, leaving the unanswered question out", async () => {
@@ -518,12 +624,183 @@ describe("Claude AskUserQuestion answers reach the native process exactly (#560)
       "interaction.requested",
       "interaction.timeout",
     ]);
+    // The expiry is the typed interaction.timeout above; the adapter's record
+    // stays the neutral benign one and adds no observation of its own (#622).
+    const events = f.harnessEvents.get(run.runId)!;
+    expect(unavailableRecords(events)).toEqual([]);
+    expect(questionRecord(events)?.text).toBe(
+      `AskUserQuestion returned an error instead of answers: ${DECLINE_MESSAGE}`,
+    );
     const late = await f.http("POST", `/runs/${run.runId}/interactions/${interactionId}/answer`, {
       answers: [{ questionId: "q1", selectedLabels: [native[0]!.options[0].label] }],
     });
     expect(late.status).toBe(409);
     expect(late.body).toMatchObject({ context: { accepted: false, status: "already_resolved" } });
     expect(nativeAnswers(run.runDir)).toHaveLength(1);
+  }, 30_000);
+});
+
+describe("a Claude question Claudexor could not answer is never a human decline (#622)", () => {
+  const fixtureQuestion = [
+    {
+      question: "Which existing fixture module should the new test use?",
+      header: "Fixture",
+      options: [
+        { label: "Shared", description: "The shared fixture module" },
+        { label: "Local", description: "A new local helper" },
+        { label: "Inline", description: "Inline data in the test" },
+      ],
+      multiSelect: false,
+    },
+  ];
+
+  it("records a question asked after the prompt's final result closed stdin, keeps the real work-tool error, and succeeds", async () => {
+    const f = await fixture();
+    const run = await f.started(fixtureQuestion, { scenario: "late_question" });
+    expect((await f.terminal(run.id)).state).toBe("succeeded");
+    const events = f.harnessEvents.get(run.runId)!;
+
+    // Producer -> parser: the unroutable permission request is an explicit
+    // observation with its exact native input and both native ids, not a drop.
+    const status = {
+      code: "interaction_answer_unavailable",
+      reason: "input_closed",
+      interaction_id: "ask-1",
+      tool_use_id: "toolu-ask",
+      input: { questions: fixtureQuestion },
+    };
+    expect(unavailableRecords(events)).toEqual([
+      expect.objectContaining({
+        type: "status",
+        text: "AskUserQuestion ask-1 could not be answered: this session's input was already closed when Claudexor read the request",
+        payload: status,
+      }),
+    ]);
+    expect(questionRecord(events)).toMatchObject({
+      text: "AskUserQuestion returned an error instead of answers; this session's input was already closed when Claudexor read the question: Tool permission request failed: AbortError: Stream closed",
+      payload: { tool: "AskUserQuestion", tool_use_id: "toolu-ask", session_input: "closed" },
+    });
+    expect(events.at(-1)).toMatchObject({ type: "completed" });
+    expect(events.at(-1)?.payload).not.toHaveProperty("dropped_unrecognized_events");
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    // Nothing was registered or written: no lifecycle row, no pending question,
+    // no response on the closed stdin.
+    expect(interactionEvents(run.runDir)).toEqual([]);
+    expect(nativeAnswers(run.runDir)).toEqual([]);
+    await f.pending(run.runId, 0);
+
+    // The journal a delegating parent collects carries the same facts.
+    const journal = journaledHarness(run.runDir);
+    expect(unavailableRecords(journal).map((row) => row["payload"])).toEqual([status]);
+    expect(journal.find((row) => row["type"] === "thinking")?.["text"]).toBe(
+      questionRecord(events)?.text,
+    );
+
+    // The timeline shows both rows; the real work-tool failure stays an error.
+    const detail = await f.http("GET", `/runs/${run.runId}`);
+    expect(detail.status).toBe(200);
+    const timeline = detail.body["timeline"] as Json[];
+    expect(timeline).toContainEqual(
+      expect.objectContaining({
+        type: "harness.event",
+        title:
+          "AskUserQuestion ask-1 could not be answered: this session's input was already closed when Claudexor read the request",
+        severity: "info",
+      }),
+    );
+    expect(timeline).toContainEqual(
+      expect.objectContaining({
+        textKind: "thinking",
+        detail: questionRecord(events)?.text,
+        severity: "info",
+      }),
+    );
+    expect(timeline).toContainEqual(
+      expect.objectContaining({ toolName: "Bash", severity: "error" }),
+    );
+    for (const text of [
+      ...events.map((event) => event.text ?? ""),
+      ...timeline.map((row) => `${row["title"] ?? ""} ${row["detail"] ?? ""}`),
+    ])
+      expect(text).not.toMatch(DECLINE_CLAIM);
+
+    // Attempt telemetry collects the work-tool error and never the question.
+    const telemetry = createAttemptTelemetry("auto", false);
+    for (const event of events) observeAttemptTelemetry(telemetry, event);
+    expect(unrecoveredToolErrors(telemetry)).toEqual([
+      expect.objectContaining({ tool: "Bash", toolUseId: "toolu-bash" }),
+    ]);
+  }, 30_000);
+
+  it("tells the model and the run that a failed answer channel is not the user's decision, and succeeds", async () => {
+    const f = await fixture();
+    const native = longQuestions();
+    const run = await f.started(native, { scenario: "channel_fails" });
+    expect((await f.terminal(run.id)).state).toBe("succeeded");
+    const message = unavailableDenyMessage("answer_channel_failed");
+    expect(nativeAnswers(run.runDir).map((frame) => frame["response"]["response"])).toEqual([
+      { behavior: "deny", message, interrupt: false },
+    ]);
+    const events = f.harnessEvents.get(run.runId)!;
+    // The question reached the run exactly before its channel failed; the
+    // tool-use id joins it to its record.
+    const requested = events.find((event) => event.type === "interaction_requested");
+    expect(requested?.interaction?.questions.map((q) => q.question)).toEqual(
+      native.map((q) => q["question"]),
+    );
+    expect(requested?.payload).toEqual({ tool_use_id: "toolu-ask" });
+    expect(unavailableRecords(events)).toEqual([
+      expect.objectContaining({
+        payload: {
+          code: "interaction_answer_unavailable",
+          reason: "answer_channel_failed",
+          interaction_id: "ask-1",
+          tool_use_id: "toolu-ask",
+          error: "journal append failed",
+        },
+      }),
+    ]);
+    expect(questionRecord(events)).toMatchObject({
+      text: `AskUserQuestion returned an error instead of answers: ${message}`,
+      payload: { tool_use_id: "toolu-ask", session_input: "open" },
+    });
+    for (const event of events) expect(event.text ?? "").not.toMatch(DECLINE_CLAIM);
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
+    const timeline = (await f.http("GET", `/runs/${run.runId}`)).body["timeline"] as Json[];
+    expect(timeline).toContainEqual(
+      expect.objectContaining({
+        title: "AskUserQuestion ask-1 could not be answered: the answer channel failed",
+      }),
+    );
+  }, 30_000);
+
+  it("tells the model and the run that a run without an answer channel cannot answer, and succeeds", async () => {
+    const f = await fixture();
+    const run = await f.started(fixtureQuestion, { scenario: "no_channel" });
+    expect((await f.terminal(run.id)).state).toBe("succeeded");
+    const message = unavailableDenyMessage("no_answer_channel");
+    expect(nativeAnswers(run.runDir).map((frame) => frame["response"]["response"])).toEqual([
+      { behavior: "deny", message, interrupt: false },
+    ]);
+    const events = f.harnessEvents.get(run.runId)!;
+    expect(events.some((event) => event.type === "interaction_requested")).toBe(false);
+    expect(unavailableRecords(events)).toEqual([
+      expect.objectContaining({
+        text: "AskUserQuestion ask-1 could not be answered: this run has no answer channel",
+        payload: {
+          code: "interaction_answer_unavailable",
+          reason: "no_answer_channel",
+          interaction_id: "ask-1",
+          tool_use_id: "toolu-ask",
+        },
+      }),
+    ]);
+    expect(questionRecord(events)?.text).toBe(
+      `AskUserQuestion returned an error instead of answers: ${message}`,
+    );
+    for (const event of events) expect(event.text ?? "").not.toMatch(DECLINE_CLAIM);
+    expect(interactionEvents(run.runDir)).toEqual([]);
+    await f.pending(run.runId, 0);
   }, 30_000);
 });
 

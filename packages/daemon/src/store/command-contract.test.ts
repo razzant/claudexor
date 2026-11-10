@@ -404,8 +404,10 @@ describe("SQL command authority", () => {
       expect(interactions.status("run-success", id)).toBe(
         oldInteractions.status("run-success", id),
       );
+    // The frozen oracle predates question delivery; an imported row states the
+    // historical blocking meaning and is otherwise identical.
     expect(interactions.pendingForRun("run-success")).toEqual(
-      oldInteractions.pendingForRun("run-success"),
+      oldInteractions.pendingForRun("run-success").map((row) => ({ ...row, delivery: "blocking" })),
     );
     expect(decisions.findByIdempotency("run-success", source.lookups.decision)).toEqual(
       oldDecisions.findByIdempotency("run-success", source.lookups.decision),
@@ -719,9 +721,15 @@ describe("SQL interaction and decision authority", () => {
       harnessId: "codex",
       requestedAt: TIME,
       timeoutAt: null,
-      request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+      request: {
+        interaction_id: "question",
+        source_tool: "AskUserQuestion",
+        delivery: "blocking" as const,
+        questions: [],
+      },
     };
-    expect(interactions.request(ctx)).toEqual(legacy.request(ctx));
+    // The legacy oracle predates delivery; the SQL row states the historical blocking meaning.
+    expect(interactions.request(ctx)).toEqual({ ...legacy.request(ctx), delivery: "blocking" });
     interactions.request({ ...ctx, runId: "run-two" });
     expect(interactions.resolve("run-one", "question", "answered")).toBe("resolved");
     expect(interactions.resolve("run-one", "question", "answered")).toBe("already_resolved");

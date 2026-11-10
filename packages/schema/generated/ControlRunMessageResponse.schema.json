@@ -35,7 +35,7 @@
             "transport_lost",
             "response_timeout"
           ],
-          "description": "Why the outcome is not delivered: no_active_turn (the harness has no active native turn), run_terminal, attempt_mismatch (expectedAttemptId is not the live attempt), no_live_session (no registered live attempt, no adapter channel, or no native session yet), multi_attempt (several live attempts and no expectedAttemptId), thread_bound (thread turns are not steerable in v1), interaction_pending (a question is open; the message was not sent), rpc_refused (the vendor refused the steer on a still-active turn), admission_persist_failed (the daemon could not journal admission; nothing was sent), transport_lost, response_timeout."
+          "description": "Why the outcome is not delivered: no_active_turn (the harness has no active native turn), run_terminal, attempt_mismatch (expectedAttemptId is not the live attempt), no_live_session (no registered live attempt, no adapter channel, or no native session yet), multi_attempt (several live attempts and no expectedAttemptId), thread_bound (thread turns are not steerable in v1), interaction_pending (a blocking question is open; the message was not sent), rpc_refused (the vendor refused the steer on a still-active turn), admission_persist_failed (the daemon could not journal admission; nothing was sent), transport_lost, response_timeout."
         },
         "runId": {
           "type": "string",

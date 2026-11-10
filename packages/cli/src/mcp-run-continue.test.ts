@@ -224,6 +224,8 @@ describe("MCP sparse continuation query", () => {
       reviewerModels: { anthropic: "fixture-model" },
       reviewerEfforts: { openai: "high" },
       continueCarrier: "packet",
+      effort: "max",
+      efforts: { codex: "xhigh" },
     };
     await runContinueQuery({ runId: "run-p", prompt: "", ...controls, idempotencyKey: "k" });
     expect(JSON.parse(String(vi.mocked(controlApiFetch).mock.calls[0]![2]!.body))).toEqual({
@@ -240,6 +242,37 @@ describe("MCP sparse continuation query", () => {
   });
 
   it.each([
+    ["the scalar", { effort: "max" }],
+    ["a harness-keyed map", { efforts: { codex: "high", "no-such-harness": "low" } }],
+    ["both", { effort: "low", efforts: { claude: "max" } }],
+    ["neither", {}],
+  ] as const)(
+    "posts %s effort exactly as stated and never materializes a default",
+    async (_name, stated) => {
+      connected();
+      await mcpSurfaceRunner()({
+        mode: "__run_continue",
+        runId: "run-p",
+        ...stated,
+        idempotencyKey: "effort-successor",
+      });
+      const body = JSON.parse(String(vi.mocked(controlApiFetch).mock.calls[0]![2]!.body));
+      // Harness ids stay open here; the engine checks them against its registry.
+      expect(body).toEqual({ continueFrom: "run-p", ...stated });
+      if (!("effort" in stated)) expect(body).not.toHaveProperty("effort");
+      if (!("efforts" in stated)) expect(body).not.toHaveProperty("efforts");
+      expect(controlApiFetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { effort: "MAX" },
+    { effort: "" },
+    { effort: 3 },
+    { efforts: "max" },
+    { efforts: { codex: "MAX" } },
+    { efforts: { " ": "max" } },
+    { reasoningEffort: "max" },
     { attachments: null },
     { attachments: [{ path: "/host/document.txt" }] },
     { attachments: [{ base64: "Zml4dHVyZQ==" }] },

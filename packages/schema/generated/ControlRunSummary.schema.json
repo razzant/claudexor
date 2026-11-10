@@ -2404,6 +2404,11 @@
           "default": false,
           "description": "True while at least one interactive question awaits answer, timeout, run-terminal, or interruption release."
         },
+        "asyncQuestionsOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "True while questions are pending and every one is async: the agent keeps working and the questions are attention only. False when none is pending or any pending question is blocking."
+        },
         "processScope": {
           "anyOf": [
             {

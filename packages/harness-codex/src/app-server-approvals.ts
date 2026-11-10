@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { interactionChannelFromSpec, type ChildStdin } from "@claudexor/core";
+import {
+  InteractionChannelError,
+  interactionChannelFromSpec,
+  type ChildStdin,
+} from "@claudexor/core";
 import {
   InteractionAnswerSet,
   type HarnessEvent,
@@ -41,6 +45,8 @@ export class CodexApprovals {
   private readonly seen = new Set<number | string>();
   private readonly pending = new Map<number | string, AbortController>();
   private readonly eventRequests = new WeakMap<JsonObject, InteractionRequest>();
+  /** Records of approvals whose answer surface failed, emitted from the run loop. */
+  private readonly eventRecords = new WeakMap<JsonObject, HarnessEvent>();
   private closed = false;
 
   constructor(private readonly deps: ApprovalDependencies) {
@@ -85,6 +91,8 @@ export class CodexApprovals {
       const request: InteractionRequest = {
         interaction_id: randomUUID(),
         source_tool: method,
+        // Codex holds the native action until this server request is answered.
+        delivery: "blocking",
         questions: [
           {
             id: "approval",
@@ -155,6 +163,8 @@ export class CodexApprovals {
   }
 
   events(notification: JsonObject): HarnessEvent[] | null {
+    const record = this.eventRecords.get(notification);
+    if (record) return [record];
     const interaction = this.eventRequests.get(notification);
     if (!interaction) return null;
     return [
@@ -169,6 +179,15 @@ export class CodexApprovals {
 
   private live(): boolean {
     return !this.closed && this.deps.live();
+  }
+
+  private record(event: HarnessEvent): void {
+    const notification = {
+      method: "claudexor/interaction",
+      params: { threadId: this.deps.threadId() },
+    };
+    this.eventRecords.set(notification, event);
+    this.deps.enqueue(notification);
   }
 
   private release(id: number | string): void {
@@ -242,7 +261,16 @@ export class CodexApprovals {
     const threadId = this.deps.threadId();
     const turnId = this.deps.turnId();
     try {
-      const result = await this.channel!.request(request, abort.signal);
+      let result: InteractionAnswerSet | null;
+      try {
+        result = await this.channel!.request(request, abort.signal);
+      } catch (error) {
+        if (!(error instanceof InteractionChannelError)) throw error;
+        // Nobody could be asked: the action stays declined, and the record
+        // says the answer surface failed rather than a person declining.
+        this.record(answerUnavailable(this.deps.spec.session_id, request, error));
+        result = null;
+      }
       if (
         !this.live() ||
         abort.signal.aborted ||
@@ -268,6 +296,27 @@ export class CodexApprovals {
       this.pending.delete(id);
     }
   }
+}
+
+/** The record of a controller question whose answer surface failed (#622's
+ * vocabulary): it went unanswered for that reason, not by a person's choice. */
+export function answerUnavailable(
+  sessionId: string,
+  request: InteractionRequest,
+  error: InteractionChannelError,
+): HarnessEvent {
+  return {
+    type: "status",
+    session_id: sessionId,
+    ts: nowIso(),
+    text: `${request.source_tool ?? "Question"} ${request.interaction_id} could not be answered: the answer channel failed (${error.message})`,
+    payload: {
+      code: "interaction_answer_unavailable",
+      reason: error.code,
+      interaction_id: request.interaction_id,
+      error: error.message,
+    },
+  };
 }
 
 /** The pretty-printed review text, or its length when it exceeds the review limit. */

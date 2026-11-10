@@ -199,10 +199,12 @@ type Bridges = {
     addr: ControlApiAddress,
     signal: AbortSignal,
   ) => (info: { runId: string }) => Promise<void>;
+  /** Prompts run beside the poll loop; the caller's cancel or close() ends any left open. */
   interactions: (
     addr: ControlApiAddress,
     handler: (ctx: any) => Promise<any | null>,
-  ) => (info: { runId: string }) => Promise<void>;
+    callerSignal?: AbortSignal,
+  ) => ((info: { runId: string }) => Promise<void>) & { close(): void };
 };
 
 /** Daemon-thread implementation behind the official ACP protocol projection. */
@@ -357,7 +359,7 @@ export async function acpSessionQuery(
   let runDir = typeof started["runDir"] === "string" ? started["runDir"] : "";
   const cancel = hooks?.signal ? bridges.cancel(addr, hooks.signal) : null;
   const interactions = hooks?.onInteraction
-    ? bridges.interactions(addr, hooks.onInteraction)
+    ? bridges.interactions(addr, hooks.onInteraction, hooks.signal)
     : null;
   const events = hooks?.onEvent ? new AcpTimeLimitFeed(addr, hooks.onEvent) : null;
   let terminal = false;
@@ -369,6 +371,8 @@ export async function acpSessionQuery(
       if (runId) {
         events?.start(runId);
         if (cancel) await cancel({ runId });
+        // Never waits for a prompt, so the cancel above and the terminal below
+        // are still observed; only a blocking prompt's failure rejects here.
         if (interactions) await interactions({ runId });
       }
       if (TERMINALS.has(record.state)) {
@@ -397,6 +401,7 @@ export async function acpSessionQuery(
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   } finally {
+    interactions?.close();
     await events?.close(terminal);
   }
 }

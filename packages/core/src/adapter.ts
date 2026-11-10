@@ -439,10 +439,16 @@ export interface HarnessContinuityCapability {
  *
  * The adapter calls `request()` when its native session raises a user
  * question (e.g. Claude's AskUserQuestion via the stream-json control
- * protocol) and BLOCKS that tool until the promise resolves:
+ * protocol). A blocking request holds that tool until the promise settles; an
+ * async one (`delivery: "async"`) is consumed without holding the event pump:
  * - resolved with answers -> the adapter delivers them into the live session;
- * - resolved with null (timeout / decline / no listener) -> the adapter
- *   declines benignly and the model continues with assumptions.
+ * - resolved with null (an explicit decline, an expiry, a withdrawal or the
+ *   run's end; the run's interaction events say which) -> nothing answers the
+ *   question: a blocking one declines benignly and the model continues with
+ *   assumptions, an async one sends nothing;
+ * - rejected with {@link InteractionChannelError} -> the answer surface itself
+ *   failed, so nobody was asked or no answer can arrive. That is never the
+ *   user's decline; the adapter says so in its own record.
  *
  * The channel is smuggled through `spec.extra` (duck-typed, same pattern as
  * the abort signal) because HarnessRunSpec is a serializable schema shape.
@@ -456,6 +462,24 @@ export interface InteractionChannel {
   /** Monotonic begin/end transition counter. Unlike a boolean poll, this lets
    * watchdogs detect a complete wait-and-answer cycle between timer ticks. */
   suspensionVersion?(): number;
+}
+
+/** The answer surface behind an InteractionChannel failed (it could not
+ * register or keep the question). `cause` is the surface's own failure. */
+export class InteractionChannelError extends Error {
+  readonly code = "answer_channel_failed" as const;
+
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === "string" && cause
+          ? cause
+          : "the interaction answer surface failed",
+      { cause },
+    );
+    this.name = "InteractionChannelError";
+  }
 }
 
 export function interactionChannelFromSpec(spec: HarnessRunSpec): InteractionChannel | undefined {

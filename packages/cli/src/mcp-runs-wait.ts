@@ -28,6 +28,8 @@ export async function runsWaitQuery(
       body: JSON.stringify({
         targets: input.targets,
         ...(rawInput["waitMs"] === undefined ? {} : { waitMs: input.waitMs }),
+        // Only the opt-in travels: false is the default an older daemon's strict input refuses.
+        ...(input.includeBlocking ? { includeBlocking: true } : {}),
       }),
       timeoutMs: input.waitMs + 5_000,
       label: "compact run observation",

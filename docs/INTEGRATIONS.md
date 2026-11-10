@@ -1504,8 +1504,10 @@ live session; whether the harness then read it is not reported. Answers carry no
 that this answer was the one delivered. `claudexor_run_message` sends an
 independent message `{runId, text, idempotencyKey, expectedAttemptId?}` through
 the [live-input channel](ARCHITECTURE.md#live-messages-into-a-running-run); its
-required key is the message id. While a question is pending it answers
-`not_active`/`interaction_pending` and answers nothing. `accepted` means native
+required key is the message id. While a blocking question is pending it
+answers `not_active`/`interaction_pending`; an async question (`delivery:
+async`, the worker keeps going) does not refuse it, and no message answers a
+question. `accepted` means native
 acceptance only; consumption later appears as a `harness.event` status
 `live_input_delivered` carrying the same `message_id`. `delivered` means
 consumption was observed; neither proves obedience. After `delivery_unknown`,
@@ -1518,8 +1520,9 @@ and returns the launch handle. The engine inherits only the mode, scope,
 execution, harness and model groups and the prompt-cache lifetime, which this
 tool cannot change: another lifetime, Default included, needs a new run. Every other control takes its ordinary
 new-run default, not the predecessor's value, unless restated: `access`, `web`
-or `externalContextPolicy`, `credentialProfileId`, `paidBudget`, `maxSeconds`
-and `timeLimitMode`, `review`, `reviewerPanel`, `reviewerModels`,
+or `externalContextPolicy`, `credentialProfileId`, `effort` and `efforts` (an
+`efforts` entry wins for its harness), `paidBudget`, `maxSeconds` and
+`timeLimitMode`, `review`, `reviewerPanel`, `reviewerModels`,
 `reviewerEfforts`, and `continueCarrier` (`auto` or `packet`). A successor of a
 `readonly` Agent run therefore resolves the project's default access, normally
 `workspace_write`, unless `access: "readonly"` is restated. Budget and time
@@ -2119,6 +2122,14 @@ Questions the surface can answer:
   paused — answer via `claudexor follow <run>` or
   `POST /v2/runs/:id/interactions/:id/answer` (see the `docs/FEATURES.md`
   `acp/interactions` row).
+
+An open prompt never holds the turn, though a blocking question still parks the
+agent until it is settled. A prompt closes when its question leaves the run's
+pending list (answered elsewhere, expired, withdrawn), on `session/cancel` or
+when the turn ends: the client gets `$/cancel_request`, the tool call ends
+`failed` and this surface sends no answer. The turn never waits for the editor's
+reply, so an editor that ignores the cancel may keep showing the prompt, and its
+later reply is discarded.
 
 ## Project Instruction Files (AGENTS.md)
 

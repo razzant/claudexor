@@ -1,3 +1,4 @@
+import ClaudexorKit
 import Foundation
 
 extension RunReasonLabel {
@@ -46,6 +47,30 @@ extension TaskRun {
         } ?? (effectiveReviewVerdict == .findings)
         return blocked && operatorDecisionAction == nil
     }
+
+    /// The questions the user can still answer. The engine releases every question
+    /// when the run ends, so a terminal run offers none, even while a snapshot that
+    /// still lists one is in flight or a summary still flags one. The received
+    /// `pendingInteractions` stay as they are until a snapshot settles them;
+    /// nothing here answers or expires a question.
+    var openQuestions: [PendingInteraction] { phase.isTerminal ? [] : pendingInteractions }
+
+    /// A question awaits the user; never on a terminal run (see `openQuestions`).
+    var awaitingAnswer: Bool { waitingOnUser && !phase.isTerminal }
+
+    /// True while questions await an answer and none holds the agent: every one is
+    /// async, so the agent keeps working (`PendingQuestionAttention`). Loaded
+    /// questions decide; without them `serverAsyncQuestionsOnly` stands, the
+    /// engine's flag recorded from a summary or history row (no question payload).
+    var asyncQuestionsOnly: Bool {
+        PendingQuestionAttention.asyncQuestionsOnly(
+            pending: openQuestions, waitingOnUser: awaitingAnswer,
+            serverFlag: serverAsyncQuestionsOnly)
+    }
+
+    /// A pending question holds the agent until it is answered or released:
+    /// the one loud "Needs your answer" state.
+    var blockingQuestionPending: Bool { awaitingAnswer && !asyncQuestionsOnly }
 
     /// "Needs input" / "Incomplete" while the engine's non-overridable
     /// `needsOperatorInput` holds: the lifecycle succeeded but the attested

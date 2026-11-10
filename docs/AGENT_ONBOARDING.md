@@ -234,10 +234,10 @@ Every mutating result carries a `runId`. The decision tree:
    `GET /v2/runs/:id` — a usage limit, a crash, a cancel, a daemon restart, a
    question for you) → continue it, never restart it: `POST /v2/runs`
    `{continueFrom: <runId>, prompt: "<what next, may be empty>"}` (MCP:
-   `claudexor_run_continue`; restate access, web, account, budget, time and
-   review controls the successor must keep). The engine resumes the same vendor
-   session when it can and briefs a new one with the evidence otherwise; the
-   receipt says which.
+   `claudexor_run_continue`; restate access, web, account, effort, budget, time
+   and review controls the successor must keep). The engine resumes the same
+   vendor session when it can and briefs a new one with the evidence otherwise;
+   the receipt says which.
 5. Lost the handle? `claudexor inspect <runId>`, `claudexor follow <runId>`,
    or the MCP durable tools `claudexor_runs` / `claudexor_run_status` /
    `claudexor_run_result` / `claudexor_apply_check`. Launched them under a saved

@@ -46,3 +46,64 @@ public struct RunDelegationInfo: Codable, Sendable, Equatable, Hashable {
         self.remediation = remediation
     }
 }
+
+/// Honest terminal outcome of a run (projected from work_product.yaml): answers
+/// "what did this turn actually do?" — `plan` means a plan, NO files changed.
+/// `applyState` decouples honest application from a clean terminal: a winner can be
+/// `applied` (live tree mutated AND review clean) or `applied_review_blocked` (mutated
+/// but review unconverged — never a green "succeeded"). `revertable` is true while the
+/// live mutation can still be safely restored to `preTurnSha` (tree unchanged since).
+public struct RunResult: Codable, Sendable, Equatable {
+    public struct DiffStat: Codable, Sendable, Equatable {
+        public let files: Int
+        public let additions: Int
+        public let deletions: Int
+    }
+    public let kind: String          // patch | answer | plan | report | none
+    public let diffStat: DiffStat?
+    public let blockers: Int
+    public let adopted: Bool?
+    /// not_applied | applied | applied_review_blocked | reverted.
+    public let applyState: String
+    /// Tree SHA before this turn mutated the in-place tree (revert restore target).
+    public let preTurnSha: String?
+    /// Tree SHA right after this turn's mutation (revert divergence fence).
+    public let postTurnSha: String?
+    /// Immutable external content-addressed revert anchor (survives git gc).
+    public let revertAnchorId: String?
+    /// True when the in-place mutation can still be safely reverted.
+    public let revertable: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case kind, diffStat, blockers, adopted, applyState, preTurnSha, postTurnSha, revertAnchorId, revertable
+    }
+
+    public init(kind: String, diffStat: DiffStat?, blockers: Int, adopted: Bool?,
+                applyState: String = "not_applied", preTurnSha: String? = nil,
+                postTurnSha: String? = nil, revertAnchorId: String? = nil, revertable: Bool = false) {
+        self.kind = kind
+        self.diffStat = diffStat
+        self.blockers = blockers
+        self.adopted = adopted
+        self.applyState = applyState
+        self.preTurnSha = preTurnSha
+        self.postTurnSha = postTurnSha
+        self.revertAnchorId = revertAnchorId
+        self.revertable = revertable
+    }
+
+    /// Tolerate older runs (and the embedded turn-card payloads) that predate the
+    /// honest apply-state fields: default applyState "not_applied", revertable false.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "none"
+        diffStat = try c.decodeIfPresent(DiffStat.self, forKey: .diffStat)
+        blockers = try c.decodeIfPresent(Int.self, forKey: .blockers) ?? 0
+        adopted = try c.decodeIfPresent(Bool.self, forKey: .adopted)
+        applyState = try c.decodeIfPresent(String.self, forKey: .applyState) ?? "not_applied"
+        preTurnSha = try c.decodeIfPresent(String.self, forKey: .preTurnSha)
+        postTurnSha = try c.decodeIfPresent(String.self, forKey: .postTurnSha)
+        revertAnchorId = try c.decodeIfPresent(String.self, forKey: .revertAnchorId)
+        revertable = try c.decodeIfPresent(Bool.self, forKey: .revertable) ?? false
+    }
+}

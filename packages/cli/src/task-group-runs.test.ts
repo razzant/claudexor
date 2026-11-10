@@ -9,11 +9,13 @@ import {
   decodeTaskGroupCursor,
   type TaskGroupRunsInput as GroupInput,
 } from "@claudexor/schema";
-import { digestPendingIdentities } from "../../daemon/src/interactions.js";
+import { InteractionRegistry, digestPendingIdentities } from "../../daemon/src/interactions.js";
 import { readRunObservations } from "../../daemon/src/run-observation.js";
 import { applyCommandInTx, prepareCommandRow } from "../../daemon/src/store/command-rows.js";
 import { SqlCommandQueries } from "../../daemon/src/store/command-queries.js";
+import { SqlEventLedger } from "../../daemon/src/store/event-store.js";
 import { setGlobalGenerationInTx } from "../../daemon/src/store/generations.js";
+import { SqlInteractionStore } from "../../daemon/src/store/interactions.js";
 import { runMutation } from "../../daemon/src/store/mutation.js";
 import { createPartition } from "../../daemon/src/store/partitions.js";
 import { resourceFixture } from "../../daemon/src/store/test-support/resource-fixture.js";
@@ -424,6 +426,55 @@ describe("daemon-owned group projection over real SQLite and shared observations
     runMutation(f.store, (tx) => applyCommandInTx(tx, row, "accept"));
     expect(notices).toEqual([["job-fed", "run-fed"]]);
     unsubscribe();
+  });
+
+  it("keeps group members compact while the same composition answers the wait-many opt-in (#628)", async () => {
+    const f = await sqlFixture();
+    const pending = new SqlInteractionStore(
+      f.store,
+      new SqlEventLedger(f.store, f.blobs, f.generation),
+    );
+    const registry = new InteractionRegistry({
+      forRequest: () => pending,
+      forRun: () => pending,
+    });
+    (f.graph as { interactions: unknown }).interactions = registry;
+    f.seed("job-async", "run-async");
+    f.seed("job-blocking", "run-blocking");
+    const asked = (["async", "blocking"] as const).map((delivery) =>
+      registry.register(
+        {
+          runId: `run-${delivery}`,
+          taskId: "task",
+          attemptId: "a01",
+          harnessId: "codex",
+          request: { interaction_id: "q", source_tool: "fixture", delivery, questions: [] },
+          requestedAt: TIME,
+          timeoutAt: null,
+        },
+        {},
+      ),
+    );
+    const page = await f.source.taskGroupRuns(f.input());
+    expect(TaskGroupRunsResult.parse(page)).toEqual(page);
+    expect(page.members.map((member) => Object.keys(member.observation))).toEqual([
+      ["status", "pending", "token", "problem"],
+      ["status", "pending", "token", "problem"],
+    ]);
+    expect(page.members.map((member) => member.observation.pending)).toEqual([true, true]);
+    const ids = page.members.map((member) => member.jobId);
+    const marked = await f.source.runObservations(ids, undefined, { includeBlocking: true });
+    expect(marked.map((row) => [row.token, "blocking" in row && row.blocking])).toEqual(
+      page.members.map((member) => [
+        member.observation.token,
+        member.jobId === "job-async" ? false : true,
+      ]),
+    );
+    expect(await f.source.runObservations(ids)).toEqual(
+      page.members.map((member) => member.observation),
+    );
+    for (const runId of ["run-async", "run-blocking"]) registry.dropForRun(runId);
+    await Promise.all(asked);
   });
 
   it("selects one bounded page and projects canonical job/run handles with the shared snapshot tokens", async () => {

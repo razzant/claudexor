@@ -261,10 +261,14 @@ enum RunFacts {
             facts.append(Fact(id: "apply", text: text, glyph: glyph, tone: tone,
                               help: "Honest application state of this turn's in-place change."))
         }
-        if task.waitingOnUser {
+        if task.blockingQuestionPending {
             facts.append(Fact(id: "needs_answer", text: "Needs your answer",
                               glyph: "questionmark.bubble.fill", tone: .warning,
                               help: "The harness asked a question; the run is waiting for you and declines benignly only if automatic expiry is configured."))
+        } else if task.asyncQuestionsOnly {
+            facts.append(Fact(id: "async_question", text: "Question asked · still working",
+                              glyph: "questionmark.bubble", tone: .neutral,
+                              help: "The agent asked a question and keeps working. An answer is passed to it as its next message; if nobody answers, nothing is sent."))
         }
         // Best-of count — honest degradation when fewer candidates landed than
         // requested (never a silent full-race read).

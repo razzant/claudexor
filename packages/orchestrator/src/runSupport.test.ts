@@ -216,6 +216,7 @@ describe("harnessEventPayload (run-event projection)", () => {
     const interaction = {
       interaction_id: "ask-1",
       source_tool: "AskUserQuestion",
+      delivery: "blocking" as const,
       questions: [
         {
           id: "q1",

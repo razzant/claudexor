@@ -83,6 +83,7 @@ describe("SQL command retention contract", () => {
           request: {
             interaction_id: interactionId,
             source_tool: "AskUserQuestion",
+            delivery: "blocking",
             questions: [
               {
                 id: "q",
@@ -181,6 +182,7 @@ describe("SQL command retention contract", () => {
       request: {
         interaction_id: interactionId,
         source_tool: "AskUserQuestion",
+        delivery: "blocking",
         questions: [
           { id: "q", question: "Continue?", header: null, options: [], multi_select: false },
         ],
