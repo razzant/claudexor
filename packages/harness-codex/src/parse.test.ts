@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { runCliHarness, type CliRunLoopOptions } from "@claudexor/core";
 import { createCodexAdapter } from "./index.js";
+import { codexAppServerEvents } from "./app-server-protocol.js";
 import { parseCodexEvent, parseCodexStderrFailure, type CodexParseState } from "./parse.js";
 
 const SAMPLE = [
@@ -996,5 +997,113 @@ describe("tool targets are the agent's own actions, kept exact (INV-146)", () =>
       "s1",
     );
     expect(change?.[0]?.tool?.target).toBe(`keys/${token}.txt`);
+  });
+});
+
+describe("async-delivered agent messages (#628)", () => {
+  const QUESTION = "Who should receive the launch update?";
+  // The item the rust-v0.162.1 request_user_input_async handler emits (id =
+  // call_id, phase final_answer, text = the title plus "- option" lines).
+  const carrier = (overrides: Record<string, unknown> = {}) => ({
+    id: "audience-question",
+    text: `${QUESTION}\n- Internal team\n- Customers`,
+    phase: "final_answer",
+    memoryCitation: null,
+    delivery: "async",
+    questions: [{ title: QUESTION, options: ["Internal team", "Customers"] }],
+    ...overrides,
+  });
+
+  it("stays visible but never becomes the turn's final answer", () => {
+    const state: CodexParseState = {};
+    parseCodexEvent(
+      { type: "item.completed", item: { id: "m1", type: "agent_message", text: "Drafted." } },
+      "s1",
+      state,
+    );
+    const asked = parseCodexEvent(
+      { type: "item.completed", item: { type: "agent_message", ...carrier() } },
+      "s1",
+      state,
+    );
+    expect(asked).toEqual([
+      {
+        type: "message",
+        session_id: "s1",
+        ts: expect.any(String),
+        text: `${QUESTION}\n- Internal team\n- Customers`,
+        payload: { delivery: "async", item_id: "audience-question" },
+      },
+    ]);
+    expect(HarnessEvent.safeParse(asked![0]).success).toBe(true);
+    expect(state.lastAgentMessage).toBe("Drafted.");
+    const finals = parseCodexEvent({ type: "turn.completed", usage: {} }, "s1", state)!.filter(
+      (event) => event.final,
+    );
+    expect(finals.map((event) => event.text)).toEqual(["Drafted."]);
+  });
+
+  it("leaves a turn whose only agent text was a question without a typed final", () => {
+    const state: CodexParseState = {};
+    parseCodexEvent(
+      { type: "item.completed", item: { type: "agent_message", ...carrier() } },
+      "s1",
+      state,
+    );
+    expect(state.lastAgentMessage).toBeUndefined();
+    expect(
+      parseCodexEvent({ type: "turn.completed", usage: {} }, "s1", state)!.some((e) => e.final),
+    ).toBe(false);
+  });
+
+  it("is never unwrapped or suppressed as an output-schema envelope", () => {
+    const state: CodexParseState = { envelopeActive: true };
+    // A valid WorkReport envelope: an ordinary message with this text is unwrapped.
+    const envelopeLike = JSON.stringify({
+      work_report: { state: "completed", required_inputs: [] },
+      output: "inner",
+    });
+    expect(
+      parseCodexEvent(
+        { type: "item.completed", item: { type: "agent_message", text: envelopeLike } },
+        "s1",
+        { envelopeActive: true },
+      )?.map((event) => event.text),
+    ).toEqual(["inner"]);
+    const asked = parseCodexEvent(
+      {
+        type: "item.completed",
+        item: { type: "agent_message", ...carrier({ text: envelopeLike }) },
+      },
+      "s1",
+      state,
+    );
+    expect(asked?.map((event) => event.text)).toEqual([envelopeLike]);
+    expect(state.lastAgentMessage).toBeUndefined();
+  });
+
+  it("keeps the delivery through the app-server item rename, and leaves ordinary text alone", () => {
+    const state: CodexParseState = {};
+    const notification = (item: Record<string, unknown>) => ({
+      method: "item/completed",
+      params: { threadId: "root", turnId: "turn-1", item },
+    });
+    expect(
+      codexAppServerEvents(notification({ type: "agentMessage", ...carrier() }), "s1", state),
+    ).toMatchObject([{ type: "message", payload: { delivery: "async" } }]);
+    expect(state.lastAgentMessage).toBeUndefined();
+    // The recorded 0.162.1 layout of an ordinary message carries delivery: null.
+    const ordinary = codexAppServerEvents(
+      notification({
+        ...carrier({ id: "m2", text: "Answer", delivery: null, questions: null }),
+        type: "agentMessage",
+      }),
+      "s1",
+      state,
+    );
+    expect(ordinary).toEqual([
+      { type: "message", session_id: "s1", ts: expect.any(String), text: "Answer" },
+    ]);
+    expect(state.lastAgentMessage).toBe("Answer");
   });
 });

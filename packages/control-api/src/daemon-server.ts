@@ -147,6 +147,7 @@ import {
   type ControlPendingInteraction,
   type LiveMessageDelivery,
   type LiveMessageInput,
+  pendingQuestionAttention,
   ControlRunDecisionRequest,
   ControlRunDecisionResponse,
   ControlRunApplicabilityResponse,
@@ -895,7 +896,7 @@ export class DaemonControlApiServer {
                   operator: this.operatorDecisionFor(rec),
                   children: children.map((record) => ({
                     record,
-                    pending: this.pendingInteractionsFor(record).length > 0,
+                    attention: pendingQuestionAttention(this.pendingInteractionsFor(record, true)),
                   })),
                   deferred,
                 },
@@ -2183,8 +2184,11 @@ export class DaemonControlApiServer {
    */
   private async summarizeRunLive(rec: DaemonRunRecord): Promise<ControlRunSummary> {
     const summary = await this.summarizeRunCached(rec);
-    const waiting = this.pendingInteractionsFor(rec).length > 0;
-    return summary.waitingOnUser === waiting ? summary : { ...summary, waitingOnUser: waiting };
+    const attention = pendingQuestionAttention(this.pendingInteractionsFor(rec, true));
+    return summary.waitingOnUser === attention.waitingOnUser &&
+      summary.asyncQuestionsOnly === attention.asyncQuestionsOnly
+      ? summary
+      : { ...summary, ...attention };
   }
 
   /**
@@ -2244,11 +2248,15 @@ export class DaemonControlApiServer {
     );
   }
 
-  private pendingInteractionsFor(rec: DaemonRunRecord): ControlPendingInteraction[] {
+  /** A run's pending questions. A failed read is unknown, never an empty list, so it fails the
+   * addressed run's own detail; only a row of a wider read (`row`) degrades alone, and a finished
+   * run has no live question left to lose. */
+  private pendingInteractionsFor(rec: DaemonRunRecord, row = false): ControlPendingInteraction[] {
     try {
       return this.opts.services?.pendingInteractions?.(rec.runId ?? rec.id) ?? [];
-    } catch {
-      return [];
+    } catch (error) {
+      if (row || TERMINAL_STATES.has(rec.state)) return [];
+      throw error;
     }
   }
 }

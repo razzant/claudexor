@@ -41,6 +41,10 @@
           "minimum": 0,
           "maximum": 50000,
           "default": 25000
+        },
+        "includeBlocking": {
+          "type": "boolean",
+          "description": "true adds `blocking` to each summary with pending questions; omitted or false returns the compact rows unchanged."
         }
       },
       "required": [

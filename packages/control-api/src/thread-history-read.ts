@@ -63,6 +63,7 @@ export interface ThreadHistorySource {
   runs(ids: string[]): DaemonRunRecord[];
   runInput(record: DaemonRunRecord): {
     waitingOnUser: boolean;
+    asyncQuestionsOnly: boolean;
     operator: ControlOperatorDecisionRecord | null;
     childRunIds: string[];
   };

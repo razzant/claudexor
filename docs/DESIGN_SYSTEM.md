@@ -969,8 +969,8 @@ views in the shared design-system files; screens compose them.
   3. ONE persistent RECEIPT row — status glyph · harness identity · quiet state
      word · outcome/attention chip when present · live elapsed · cash-$ · the
      tool/file counter «9 tools · 3 files» · an expand chevron. Attention states
-     raise ONE loud chip only when they exist ("Needs your answer" > "Needs
-     input"/"Incomplete" for a succeeded run whose attested `work_state` is
+     raise ONE loud chip only when they exist ("Needs your answer" for a blocking
+     question > "Needs input"/"Incomplete" for a succeeded run whose attested `work_state` is
      unfinished, whatever its reason > "Needs you" for a review decision > the
      red terminal label); success carries no chip. The status dot follows: caution
      for unfinished work, a blocked review or failed checks, decided or not,
@@ -1484,7 +1484,8 @@ views in the shared design-system files; screens compose them.
   relation. Implement is a separate Agent action: its row names the effective
   write scope before the click and the request is bound to that disclosed scope.
 - **Live question card (`InteractionCard`).** A harness's mid-run questions
-  render in their own card, which keeps its header row and Send action fixed
+  render in their own card (an async question's header says the agent keeps
+  working and its expiry sends nothing), which keeps its header row and Send action fixed
   around the same max-height middle as plan question cards. Questions, header
   chips and option labels appear in full, exactly as asked: a long option label
   wraps inside its chip, a long header chip wraps too, a header that does not fit
@@ -1492,7 +1493,9 @@ views in the shared design-system files; screens compose them.
   keeps a compact card. Option descriptions show on hover. Each question takes
   its chips or one line of the operator's own words, and Send is enabled once any
   question has an answer: unlike the plan card there is no all-required gate, so
-  questions left empty are sent as a partial answer.
+  questions left empty are sent as a partial answer. A run that has ended shows no
+  card and no question state, even while its last snapshot still lists a question;
+  a late answer the engine refuses says plainly that it was not sent.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the receipt row.
@@ -1652,7 +1655,8 @@ views in the shared design-system files; screens compose them.
   (or another positive finite number of minutes), or **No automatic expiry**.
   The latter persists the existing `interaction_timeout_ms` as `null`; it has no
   blank/reset or magic-duration representation. A pending `InteractionCard`
-  shows its finite countdown or the literal "No automatic expiry". Answer,
+  shows its finite countdown (updated when its words change) or the literal
+  "No automatic expiry". Answer,
   Stop/cancel, an outer run deadline, terminal cleanup, or daemon restart can
   still end an unbounded wait.
 - **Connections (remote execution locations).** The Connections tab lists the

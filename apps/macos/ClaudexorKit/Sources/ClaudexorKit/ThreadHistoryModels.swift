@@ -54,6 +54,10 @@ public struct ThreadHistoryRun: Codable, Sendable, Equatable {
     public let spendEstimated: Bool?
     public let outputReadyState: String
     public let waitingOnUser: Bool
+    /// True while questions are pending and every one is async (the agent keeps
+    /// working); false when none is pending or any is blocking. Nil from older
+    /// engines, read as false.
+    public let asyncQuestionsOnly: Bool?
     public let createdAt: String?
     public let startedAt: String?
     public let finishedAt: String?

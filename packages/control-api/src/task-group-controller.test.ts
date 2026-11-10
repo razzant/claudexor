@@ -62,6 +62,7 @@ itUnix(
           request: {
             interaction_id: `question-${name}`,
             source_tool: "AskUserQuestion",
+            delivery: "blocking",
             questions: [],
           },
           requestedAt: new Date().toISOString(),

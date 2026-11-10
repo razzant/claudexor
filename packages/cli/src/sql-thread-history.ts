@@ -4,6 +4,7 @@ import {
   type createSqlDaemonServices,
 } from "@claudexor/daemon";
 import { createThreadHistoryRead } from "@claudexor/control-api";
+import { pendingQuestionAttention } from "@claudexor/schema";
 
 type Graph = Pick<
   ReturnType<typeof createSqlDaemonServices>,
@@ -25,7 +26,7 @@ export function sqlThreadHistoryReads(current: () => Graph) {
       coverage: (threadId, low, high, ceiling) => reader.coverage(threadId, low, high, ceiling),
       runs: (ids) => (ids.length ? graph.commands.queries.publicList({ ids }) : []),
       runInput: (record) => ({
-        waitingOnUser: graph.interactions.pendingForRun(record.runId ?? record.id).length > 0,
+        ...pendingQuestionAttention(graph.interactions.pendingForRun(record.runId ?? record.id)),
         operator: graph.threads.operatorDecision(record.params, record.runId ?? record.id),
         childRunIds: graph.commands.queries
           .publicList({ delegatedFromRunId: record.runId ?? record.id })

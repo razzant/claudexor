@@ -209,6 +209,14 @@ public struct TranscriptReducer: Sendable {
                 return true
             }
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
+            // #628: an async message (a question asked while the agent keeps
+            // working) is its own visible item and never the turn's answer, so it
+            // is not the final's twin candidate: the ordinary message before it
+            // that the final repeats still drops, and the question stays.
+            if payload["payload"]?["delivery"]?.stringValue == "async" {
+                append(.message(id: "msg-\(seqKey)", text: boundHead(text)))
+                return true
+            }
             let speech = payload["speech"]?["key"]?.stringValue
             // Live deltas (W-C4) grow ONE streaming block; after a final the
             // stream is SEALED (a late stray delta is dropped). A delta

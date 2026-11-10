@@ -86,10 +86,10 @@ struct DelegatedRunRow: View {
                 .padding(.vertical, Theme.Spacing.xs)
                 .cardSurface(hover: true)
 
-                if child.waitingOnUser && child.pendingInteractions.isEmpty {
+                if child.awaitingAnswer && child.openQuestions.isEmpty {
                     if let failure = DelegationPresentation.childInteractionLoadFailure(
-                        waitingOnUser: child.waitingOnUser,
-                        pendingInteractionCount: child.pendingInteractions.count,
+                        waitingOnUser: child.awaitingAnswer,
+                        pendingInteractionCount: child.openQuestions.count,
                         engineError: child.engineError
                     ) {
                         HStack(spacing: Theme.Spacing.sm) {
@@ -111,7 +111,7 @@ struct DelegatedRunRow: View {
                             .font(.caption)
                     }
                 }
-                ForEach(child.pendingInteractions) { pending in
+                ForEach(child.openQuestions) { pending in
                     InteractionCard(interaction: pending)
                 }
             }
@@ -122,7 +122,7 @@ struct DelegatedRunRow: View {
     }
 
     private var interactionLoadKey: String {
-        "delegated-interactions:\(child.id):\(child.waitingOnUser):\(child.pendingInteractions.count)"
+        "delegated-interactions:\(child.id):\(child.awaitingAnswer):\(child.openQuestions.count)"
     }
 
     @ViewBuilder private var statusGlyph: some View {

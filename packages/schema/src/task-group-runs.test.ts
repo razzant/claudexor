@@ -104,6 +104,11 @@ describe("retained task group page schemas", () => {
       ],
     },
     { ...empty, members: [{ ...member, observation: { ...observation, token: null } }] },
+    // Members never carry the wait-many opt-in's blocking fact.
+    {
+      ...empty,
+      members: [{ ...member, observation: { ...observation, pending: true, blocking: false } }],
+    },
     { ...empty, members: Array.from({ length: 201 }, () => member) },
     { ...empty, nextCursor: "x".repeat(2049), hasMore: true },
   ])("rejects expanded or malformed output: %j", (result) => {

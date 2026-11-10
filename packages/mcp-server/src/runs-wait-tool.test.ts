@@ -77,6 +77,31 @@ describe("claudexor_runs_wait", () => {
     expect(args.targets[0]!.runId).toBe(" job-a ");
   });
 
+  it("forwards only a true includeBlocking and advertises the blocking row it returns (#628)", async () => {
+    const marked: RunWaitManyResult = {
+      wakeReason: "attention",
+      attention: [0],
+      summaries: [
+        { status: "running", pending: true, token: TOKEN, problem: null, blocking: false },
+      ],
+    };
+    const runner = vi.fn<RunnerFn>(async () => marked);
+    const targets = [{ runId: "job-a" }];
+    expect(await tool(runner).handler({ targets, includeBlocking: true }, {})).toEqual({
+      text: JSON.stringify(marked),
+      structured: marked,
+    });
+    await tool(runner).handler({ targets, includeBlocking: false }, {});
+    expect(runner.mock.calls.map(([input]) => input)).toEqual([
+      { mode: "__runs_wait", targets, includeBlocking: true },
+      // false is the daemon default; sending it would only fail on an older daemon.
+      { mode: "__runs_wait", targets },
+    ]);
+    const input = tool(runner).inputSchema as { properties: Record<string, { type?: string }> };
+    expect(input.properties["includeBlocking"]).toMatchObject({ type: "boolean" });
+    expect(JSON.stringify(tool(runner).outputSchema)).toContain('"blocking"');
+  });
+
   it.each([0, 50_000])(
     "forwards explicit wait boundary %i unchanged, preserving duplicates",
     async (waitMs) => {

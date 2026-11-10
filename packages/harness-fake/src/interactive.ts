@@ -19,6 +19,7 @@ function questionRequest(sessionId: string, step: 1 | 2): InteractionRequest {
     ? {
         interaction_id: `fake-q1-${sessionId}`,
         source_tool: "AskUserQuestion",
+        delivery: "blocking",
         questions: [
           {
             id: "q1",
@@ -38,6 +39,7 @@ function questionRequest(sessionId: string, step: 1 | 2): InteractionRequest {
     : {
         interaction_id: `fake-q2-${sessionId}`,
         source_tool: "AskUserQuestion",
+        delivery: "blocking",
         questions: [
           {
             id: "q2",

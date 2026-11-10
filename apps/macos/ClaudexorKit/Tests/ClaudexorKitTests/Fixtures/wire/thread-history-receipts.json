@@ -58,6 +58,7 @@
           "spendUsd": null,
           "outputReadyState": "ready",
           "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
           "finishedAt": "2026-10-26T10:00:00Z",
           "delegation": null,
           "delegatedChildRunIds": []
@@ -149,6 +150,7 @@
           "spendUsd": null,
           "outputReadyState": "ready",
           "waitingOnUser": false,
+          "asyncQuestionsOnly": false,
           "finishedAt": "2026-10-26T10:00:00Z",
           "delegation": null,
           "delegatedChildRunIds": [],

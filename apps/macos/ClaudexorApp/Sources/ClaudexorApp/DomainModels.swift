@@ -577,6 +577,7 @@ struct TaskRun: Identifiable, Hashable {
     /// Live harness questions awaiting the user (waiting_on_user).
     var pendingInteractions: [PendingInteraction] = []
     var waitingOnUser: Bool = false
+    var serverAsyncQuestionsOnly: Bool = false
     /// Server-persisted operator unblock decision action (accept_risk/override), if any.
     var operatorDecisionAction: String?
     /// Honest in-place application state (projected from the run's work_product):

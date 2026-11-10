@@ -7,6 +7,7 @@ import {
 } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
 import { BROWSER_MCP_SERVER, browserPageRetrieval } from "@claudexor/core";
+import { isCodexAsyncAgentMessage } from "./async-questions.js";
 import { codexFileChangeEvents } from "./file-change.js";
 import { applyCodexRateLimit, applyCodexTransient, codexReconnectStatus } from "./retry-signals.js";
 import { mcpResultText, mcpToolOutcome, summarizeCodexOutput } from "./tool-output.js";
@@ -310,6 +311,19 @@ export function parseCodexEvent(
     switch (item.type) {
       case "agent_message": {
         const text = String(item.text ?? "");
+        // #628: a message delivered asynchronously (a question asked while the
+        // agent keeps working) stays visible, but it is never the turn's
+        // finality candidate and never an output-schema envelope.
+        if (isCodexAsyncAgentMessage(item))
+          return [
+            {
+              type: "message",
+              session_id: sessionId,
+              ts,
+              text,
+              payload: { delivery: "async", item_id: item.id },
+            },
+          ];
         // Keep the RAW text as the turn's finality candidate: the orchestrator
         // un-nests the FINAL `{work_report, output}` envelope downstream, so the
         // final message must stay raw. Only the VISIBLE intermediate copy below

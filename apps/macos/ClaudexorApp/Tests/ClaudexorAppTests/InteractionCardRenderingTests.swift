@@ -116,6 +116,66 @@ struct InteractionCardRenderingTests {
         #expect(unchanged.height < 2 * short.height)
     }
 
+    /// An async question with this deadline, or with none.
+    static func timed(_ deadline: Date?) -> PendingInteraction {
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return PendingInteraction(interactionId: interactionID, runId: runID, attemptId: "a01",
+            harnessId: "codex", sourceTool: "request_user_input_async", questions: compact().questions,
+            requestedAt: "2026-11-01T00:00:00Z", timeoutAt: deadline.map { stamp.string(from: $0) }, delivery: .async)
+    }
+
+    /// What the card's text reads: AppKit draws its selectable text.
+    static func texts(_ view: NSView) -> [String] {
+        [(view as? NSTextField)?.stringValue].compactMap { $0 } + view.subviews.flatMap(texts)
+    }
+
+    /// SwiftUI's own timeline over the real card, which a schedule's dates cannot
+    /// stand in for: the label says the present words from its first draw and moves
+    /// on the clock alone, with no engine event and nothing else redrawing it. The
+    /// window is never shown; a view outside any window does not tick.
+    @Test func expiryLabelReadsThePresentAndCrossesTheDeadlineAlone() async throws {
+        let application = NSApplication.shared
+        let previousPolicy = application.activationPolicy()
+        application.setActivationPolicy(.prohibited)
+        defer { application.setActivationPolicy(previousPolicy) }
+        var windows: [NSWindow] = []
+        defer { windows.forEach { $0.contentView = nil; $0.close() } }
+        func hosted(_ deadline: Date?) -> NSView {
+            let host = NSHostingView(rootView: Self.card(Self.timed(deadline), width: 680))
+            host.layoutSubtreeIfNeeded()
+            let size = host.fittingSize
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            host.frame = NSRect(origin: .zero, size: size)
+            host.layoutSubtreeIfNeeded()
+            windows.append(window)
+            return host
+        }
+        func words(_ host: NSView) -> [String] {
+            Self.texts(host).filter { $0.hasPrefix("closes") || $0 == "expiring" || $0 == "No automatic expiry" }
+        }
+
+        #expect(words(hosted(Date.now.addingTimeInterval(150))) == ["closes in 2 min"])
+        #expect(words(hosted(nil)) == ["No automatic expiry"])
+        #expect(words(hosted(Date.now.addingTimeInterval(-5))) == ["expiring"])
+
+        let deadline = Date.now.addingTimeInterval(2.5)
+        let near = hosted(deadline)
+        let first = words(near)
+        // A host stalled past the deadline legitimately draws the last words first.
+        if Date.now < deadline { #expect(first == ["closes soon"]) }
+        for _ in 0..<150 where words(near) != ["expiring"] {
+            try await Task.sleep(for: .milliseconds(100))
+            near.layoutSubtreeIfNeeded()
+        }
+        #expect(Date.now >= deadline)
+        #expect(words(near) == ["expiring"])
+        #expect(windows.allSatisfy { !$0.isVisible })
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["CX_INTERACTION_RENDER_OUTPUT"] != nil))
     func renderCardsForVisualReview() async throws {
         let output = try #require(ProcessInfo.processInfo.environment["CX_INTERACTION_RENDER_OUTPUT"])

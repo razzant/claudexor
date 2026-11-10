@@ -583,8 +583,8 @@ PRAGMA user_version=3;`);
   it("fresh DDL indexes membership by the canonical column at the current version", async () => {
     const db = await connect();
     ensureSchema(db);
-    expect(ENGINE_SCHEMA_VERSION).toBe(7);
-    expect(readSchemaIdentity(db).userVersion).toBe(7);
+    expect(ENGINE_SCHEMA_VERSION).toBe(8);
+    expect(readSchemaIdentity(db).userVersion).toBe(8);
     assertGroupIndexes(db);
   });
 
@@ -755,6 +755,127 @@ PRAGMA user_version=3;`);
   });
 });
 
+describeStore("question delivery storage upgrade (#628)", () => {
+  const OVERFLOW = Buffer.alloc(256 * 1024, 0x71);
+  /** Interaction rows of every state as an older engine wrote them: no delivery column. */
+  function seedInteractions(db: DatabaseSync) {
+    const request = (id: string, extra: Record<string, unknown> = {}) =>
+      Buffer.from(
+        JSON.stringify({ interactionId: id, runId: "run-a", requestedAt: "t", ...extra }),
+      );
+    const insert = db.prepare(
+      "INSERT INTO interaction(id,pid,run_id,state,request,resolution) VALUES(?,1,?,?,?,?)",
+    );
+    for (const [id, runId, state, body, resolution] of [
+      ["run-a\u0000pending", "run-a", "pending", request("pending"), null],
+      // Bytes that name async still get the historical meaning: the step reads no body.
+      [
+        "run-a\u0000named-async",
+        "run-a",
+        "pending",
+        request("named-async", { delivery: "async" }),
+        null,
+      ],
+      ["run-a\u0000overflow", "run-a", "pending", OVERFLOW, null],
+      [
+        "run-b\u0000answered",
+        "run-b",
+        "resolved",
+        request("answered"),
+        Buffer.from('{"terminal":"answered"}'),
+      ],
+      ["run-c\u0000raw", "run-c", "interrupted", Buffer.from([0, 0xff, 7]), null],
+    ] as const)
+      insert.run(id, runId, state, body, resolution);
+  }
+  function interactionRows(db: DatabaseSync) {
+    return db
+      .prepare(
+        "SELECT CAST(id AS BLOB) AS id,pid,run_id,state,request,resolution FROM interaction ORDER BY rowid",
+      )
+      .all()
+      .map((row) =>
+        JSON.stringify(row, (_key, value) => (value instanceof Uint8Array ? [...value] : value)),
+      );
+  }
+  const deliveryColumns = (db: DatabaseSync) =>
+    db.prepare("SELECT delivery FROM interaction ORDER BY rowid").all();
+
+  it("adds blocking delivery to every existing row, keeps their bytes and matches fresh DDL", async () => {
+    const db = await populatedOldStore(2);
+    seedInteractions(db);
+    const before = interactionRows(db);
+    ensureSchema(db);
+    expect(readSchemaIdentity(db).userVersion).toBe(ENGINE_SCHEMA_VERSION);
+    expect(interactionRows(db)).toEqual(before);
+    expect(deliveryColumns(db)).toEqual(
+      Array.from({ length: 5 }, () => ({ delivery: "blocking" })),
+    );
+    const fresh = await connect("fresh.sqlite");
+    ensureSchema(fresh);
+    expect(masterRows(db)).toEqual(masterRows(fresh));
+    const keys = (
+      db.prepare("PRAGMA index_xinfo('interaction_pending_delivery')").all() as Array<{
+        name: string | null;
+        key: number;
+      }>
+    )
+      .filter((row) => row.key === 1)
+      .map((row) => row.name);
+    expect(keys).toEqual(["pid", "run_id", "id", "delivery"]);
+    // Only the three pending rows occupy the partial covering index.
+    expect(
+      db
+        .prepare(
+          "SELECT sum(ncell) AS entries FROM dbstat WHERE name='interaction_pending_delivery'",
+        )
+        .get(),
+    ).toEqual({ entries: 3 });
+    const add = db.prepare(
+      "INSERT INTO interaction(id,pid,run_id,state,request,delivery) VALUES(?,1,'run-d','pending',x'7b7d',?)",
+    );
+    expect(add.run("async", "async").changes).toBe(1);
+    expect(add.run("blocking", "blocking").changes).toBe(1);
+    expect(() => add.run("other", "sometimes")).toThrow(/CHECK constraint failed/);
+    expect(() => add.run("null", null)).toThrow(/NOT NULL constraint failed/);
+    expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+  });
+
+  it("rolls back the delivery column together with a late covering-index fault", async () => {
+    const db = await populatedOldStore(2);
+    seedInteractions(db);
+    const beforeRows = interactionRows(db),
+      beforeSchema = masterRows(db),
+      beforeIdentity = readSchemaIdentity(db);
+    const observer = await connect();
+    const dataVersion = () => observer.prepare("PRAGMA data_version").get();
+    const beforeVersion = dataVersion();
+    const exec = db.exec.bind(db);
+    let added = false;
+    const fault = vi.spyOn(db, "exec").mockImplementation((sql) => {
+      for (const statement of sql.split(";").filter((part) => part.trim())) {
+        if (statement.includes("interaction_pending_delivery")) {
+          // The column REALLY exists inside the transaction before the fault.
+          added = (db.prepare("PRAGMA table_info(interaction)").all() as Array<{ name: string }>)
+            .map((column) => column.name)
+            .includes("delivery");
+          throw new Error("injected covering index failure");
+        }
+        exec(statement);
+      }
+    });
+    expect(() => ensureSchema(db)).toThrow("injected covering index failure");
+    fault.mockRestore();
+    expect(added).toBe(true);
+    expect(readSchemaIdentity(db)).toEqual(beforeIdentity);
+    expect(masterRows(db)).toEqual(beforeSchema);
+    expect(interactionRows(db)).toEqual(beforeRows);
+    expect(dataVersion()).toEqual(beforeVersion);
+    ensureSchema(db); // The same untouched file remains upgradeable.
+    expect(deliveryColumns(db)).toHaveLength(5);
+  });
+});
+
 describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
   it("creates the R5 DDL on a fresh file: STRICT tables, WITHOUT ROWID keys, partial indexes, identity", async () => {
     const db = await connect();
@@ -806,6 +927,7 @@ describeStore("engine schema (SYNTHESIS_R5 §5)", () => {
         "event_slot",
         "interaction_pending",
         "interaction_partition_pending",
+        "interaction_pending_delivery",
         "project_root_active",
         "project_current_pid",
         "turn_run",

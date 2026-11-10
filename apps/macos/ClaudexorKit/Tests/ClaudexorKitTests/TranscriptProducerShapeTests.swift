@@ -362,3 +362,45 @@ private final class TranscriptSSEStubProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+/// #628: Codex's async question arrives as a visible message tagged
+/// `delivery: async` (harness-codex parse) between the ordinary message the
+/// final repeats and that final. The question stays and the twin still drops;
+/// a distinct narration stays. Rows are built here in the producer's shape.
+extension TranscriptProducerShapeTests {
+    private static func harnessEvent(_ seq: Int, _ fields: [String: JSONValue]) -> BusEnvelope {
+        var event = fields
+        event["session_id"] = .string("s1")
+        event["harness_id"] = .string("codex")
+        return BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+            "type": .string("harness.event"), "payload": .object(event),
+        ]))
+    }
+
+    private static func foldAskedBetween(_ first: String, asyncTag: Bool) -> [String] {
+        var flags: [String: JSONValue] = ["item_id": .string("call-1")]
+        if asyncTag { flags["delivery"] = .string("async") }
+        var reducer = TranscriptReducer()
+        for env in [
+            harnessEvent(1, ["type": .string("message"), "text": .string(first)]),
+            harnessEvent(2, ["type": .string("message"), "text": .string("Which store should I use?"),
+                             "payload": .object(flags)]),
+            BusEnvelope(seq: 3, kind: "interaction.requested", event: .object([
+                "type": .string("interaction.requested"),
+                "payload": .object(["interaction_id": .string("i1"), "delivery": .string("async")]),
+            ])),
+            harnessEvent(4, ["type": .string("message"), "final": .bool(true), "text": .string("Use SQLite.")]),
+        ] { _ = reducer.apply(env) }
+        return messages(reducer)
+    }
+
+    @Test func anAsyncQuestionMessageIsNeverTheFinalsTwinCandidate() {
+        #expect(Self.foldAskedBetween("Use SQLite.", asyncTag: true) == ["Which store should I use?"])
+        #expect(Self.foldAskedBetween("Checking the schema.", asyncTag: true)
+            == ["Checking the schema.", "Which store should I use?"])
+        // Control: an untagged message in the same place is ordinary narration,
+        // so the final's exact identity check cannot reach the earlier twin.
+        #expect(Self.foldAskedBetween("Use SQLite.", asyncTag: false)
+            == ["Use SQLite.", "Which store should I use?"])
+    }
+}

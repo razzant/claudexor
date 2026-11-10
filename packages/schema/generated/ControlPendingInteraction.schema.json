@@ -113,7 +113,16 @@
             "null"
           ],
           "default": null,
-          "description": "When the interaction times out into a benign decline; null = no timeout."
+          "description": "When the interaction expires unanswered; null = no automatic expiry. A blocking question then declines benignly; an async one closes and nothing is sent."
+        },
+        "delivery": {
+          "type": "string",
+          "enum": [
+            "blocking",
+            "async"
+          ],
+          "description": "How the asking agent waits for the answer: blocking (its native tool call waits until the question is answered, declined, expired or released) or async (the agent keeps working and an answer reaches it later as its next user message). Silence, expiry and the run's end never answer either kind.",
+          "default": "blocking"
         }
       },
       "required": [

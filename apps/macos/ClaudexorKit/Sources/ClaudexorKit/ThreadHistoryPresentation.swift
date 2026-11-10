@@ -32,6 +32,7 @@ extension ThreadHistoryTurn {
                 TurnRunCard(state: value.state, mode: value.mode, strategy: value.strategy, n: value.n,
                     result: value.result, outcomeFacts: value.outcomeFacts, spendUsd: value.spendUsd,
                     outputReadyState: value.outputReadyState, waitingOnUser: value.waitingOnUser,
+                    asyncQuestionsOnly: value.asyncQuestionsOnly,
                     finishedAt: value.finishedAt, delegation: value.delegation,
                     delegatedChildRunIds: value.delegatedChildRunIds)
             }, planHash: planHash, planReadinessOverridden: planReadinessOverridden, enqueueError: enqueueError, continuity: continuity, createdAt: createdAt)

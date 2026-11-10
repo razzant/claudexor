@@ -25,6 +25,7 @@ import {
 } from "./app-server-mcp-startup.js";
 import { CodexCancellation } from "./app-server-cancel.js";
 import { CodexApprovals } from "./app-server-approvals.js";
+import { CodexAsyncQuestions } from "./app-server-async-questions.js";
 import { CodexAutoReview } from "./app-server-auto-review.js";
 import { startCodexTurn } from "./app-server-start.js";
 import { codexAppServerThreadRequest, codexTurnSandboxPolicy } from "./app-server-session.js";
@@ -104,35 +105,45 @@ export async function* runCodexAppServer(
     for (const request of pending.values()) request.reject(error);
     pending.clear();
   };
-  const approvals = new CodexApprovals({
+  const enqueue = (notification: JsonObject): void => {
+    notifications.push(notification);
+    notificationWaiter.wake?.();
+    notificationWaiter.wake = undefined;
+  };
+  // The run facts both native-request owners read.
+  const owned = {
     spec: input.spec,
     io: () => io!,
     threadId: () => nativeThreadId,
     turnId: () => activeTurnId,
     live: () => !cancellation.requested && !processStopped && !abort.signal.aborted,
-    enqueue: (notification) => {
-      notifications.push(notification);
-      notificationWaiter.wake?.();
-      notificationWaiter.wake = undefined;
-    },
-    failed: (error) => {
+    enqueue,
+    failed: (error: Error) => {
       processFailure = error;
       rejectPending(error);
       notificationWaiter.wake?.();
     },
-  });
+  };
+  const approvals = new CodexApprovals(owned);
+  const asyncQuestions = new CodexAsyncQuestions(owned, (message) => steer.send(message));
   const autoReview = new CodexAutoReview({
     spec: input.spec,
     threadId: () => nativeThreadId,
     turnId: () => activeTurnId,
     live: () => !cancellation.requested && !processStopped && !abort.signal.aborted,
   });
+  const closeOwners = (): void => {
+    approvals.close();
+    autoReview.close();
+    asyncQuestions.close();
+  };
   // Only root frames move run state; ownership is defined in app-server-threads.ts.
   const observeOwnNotification = (notification: JsonObject): void => {
     const method = notification["method"];
     const params = asObject(notification["params"]);
     if (!ownsNotification(params, nativeThreadId)) return;
     observeCodexRootError(parseState, method, params);
+    asyncQuestions.observe(method, params);
     if (method === "turn/started") {
       const turn = asObject(params?.["turn"]);
       if (typeof turn?.["id"] === "string") activeTurnId = turn["id"];
@@ -180,9 +191,7 @@ export async function* runCodexAppServer(
     if (typeof object["method"] === "string") {
       observeOwnNotification(object);
       steer.observeEcho(object);
-      notifications.push(object);
-      notificationWaiter.wake?.();
-      notificationWaiter.wake = undefined;
+      enqueue(object);
     }
   };
   const process = (async (): Promise<void> => {
@@ -196,10 +205,7 @@ export async function* runCodexAppServer(
         abortSignal: abort.signal,
         onSpawn(childIo) {
           io = childIo;
-          void childIo.closed.then(() => {
-            approvals.close();
-            autoReview.close();
-          });
+          void childIo.closed.then(() => closeOwners());
           resolveSpawn();
         },
       };
@@ -236,8 +242,7 @@ export async function* runCodexAppServer(
       rejectPending(processFailure);
       throw processFailure;
     } finally {
-      approvals.close();
-      autoReview.close();
+      closeOwners();
       processStopped = true;
       if (abort.signal.aborted)
         rejectPending(cancellation.failure ?? new Error("Codex app-server stopped"));
@@ -305,8 +310,7 @@ export async function* runCodexAppServer(
   let stopPromise: Promise<void> | null = null;
   const stopProcess = (): Promise<void> =>
     (stopPromise ??= (async () => {
-      approvals.close();
-      autoReview.close();
+      closeOwners();
       if (!abort.signal.aborted) abort.abort();
       io?.end();
       await process.catch(() => {});
@@ -337,8 +341,7 @@ export async function* runCodexAppServer(
   const readLifecycle = (): Promise<CodexThreadLifecycle> =>
     readCodexLifecycle(request, nativeThreadId, ownedCommandItemIds);
   const cancel = () => {
-    approvals.close();
-    autoReview.close();
+    closeOwners();
     return cancellation.cancel();
   };
   input.controller?.bind(cancel);
@@ -428,6 +431,7 @@ export async function* runCodexAppServer(
         } else {
           const mapped =
             approvals.events(notification) ??
+            asyncQuestions.events(notification) ??
             autoReview.events(notification) ??
             steer.deliveredEvents(notification) ??
             codexAppServerEvents(notification, input.spec.session_id, parseState);
@@ -525,6 +529,7 @@ export async function* runCodexAppServer(
         if (completedAnswer && codexTeardownFailed(notifications, nativeThreadId, failed))
           throw new Error("Codex completion was invalidated during process teardown");
         yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
+        yield* asyncQuestions.takeEvents(notifications);
         if (!handback) yield* codexSettledTerminal(terminal.events, parseState);
         yield codexCompletedEvent(
           input.spec.session_id,
@@ -542,6 +547,7 @@ export async function* runCodexAppServer(
     if (cancellation.requested) await cancel();
     await stopProcess();
     yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
+    yield* asyncQuestions.takeEvents(notifications);
     if (processFailure && cancellation.requested) cancellation.failure ??= processFailure;
     if (
       cancellation.requested &&

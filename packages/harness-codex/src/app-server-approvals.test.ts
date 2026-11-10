@@ -1,4 +1,8 @@
-import type { InteractionChannel, spawnProcess } from "@claudexor/core";
+import {
+  InteractionChannelError,
+  type InteractionChannel,
+  type spawnProcess,
+} from "@claudexor/core";
 import type { HarnessEvent, InteractionAnswerSet, InteractionRequest } from "@claudexor/schema";
 import { HarnessRunSpec } from "@claudexor/schema";
 import { describe, expect, it } from "vitest";
@@ -211,13 +215,14 @@ function startApprovalRun(
   peer: ReturnType<typeof approvalPeer>,
   signal?: AbortSignal,
   access: "readonly" | "workspace_write" | "full" = "full",
+  channelFailure?: unknown,
 ) {
   const asked = deferred<InteractionRequest>();
   const reply = deferred<InteractionAnswerSet | null>();
   const channel: InteractionChannel = {
     request(request) {
       asked.resolve(request);
-      return reply.promise;
+      return channelFailure === undefined ? reply.promise : Promise.reject(channelFailure);
     },
   };
   const events: HarnessEvent[] = [];
@@ -501,6 +506,64 @@ describe("Codex app-server approval relay", () => {
       result: { decision: "accept" },
     });
     await bounded(run.done);
+  });
+
+  it("declines the native action and records why when the answer channel fails (#622 class)", async () => {
+    const peer = approvalPeer("item/fileChange/requestApproval", "approval-unavailable", {
+      changes: [{ path: "smoke.txt", kind: { type: "add" }, diff: "+safe\n" }],
+    });
+    const failure = new InteractionChannelError(new Error("interaction store unavailable"));
+    const run = startApprovalRun(peer, undefined, "workspace_write", failure);
+    const request = await observedRequest(run);
+    // Fail closed: nobody approved, so the action is declined natively...
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "approval-unavailable",
+      result: { decision: "decline" },
+    });
+    const events = await bounded(run.done);
+    // ...and the run says the channel failed, not that a person declined.
+    expect(
+      events.filter((event) => event.payload?.["code"] === "interaction_answer_unavailable"),
+    ).toEqual([
+      expect.objectContaining({
+        type: "status",
+        text: `item/fileChange/requestApproval ${request.interaction_id} could not be answered: the answer channel failed (interaction store unavailable)`,
+        payload: {
+          code: "interaction_answer_unavailable",
+          reason: "answer_channel_failed",
+          interaction_id: request.interaction_id,
+          error: "interaction store unavailable",
+        },
+      }),
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.at(-1)?.payload?.["harness_reported_error"]).not.toBe(true);
+  });
+
+  it("keeps a native denial without a retry and records why when the answer channel fails", async () => {
+    const peer = approvalPeer("item/autoApprovalReview/completed", "unused", {});
+    const failure = new InteractionChannelError("bridge lost");
+    const run = startApprovalRun(peer, undefined, "workspace_write", failure);
+    const request = await observedRequest(run);
+    const events = await bounded(run.done);
+    expect(peer.writes.filter((frame) => frame["method"] === "turn/start")).toHaveLength(1);
+    expect(
+      peer.writes.some((frame) => frame["method"] === "thread/approveGuardianDeniedAction"),
+    ).toBe(false);
+    expect(
+      events.filter((event) => event.payload?.["code"] === "interaction_answer_unavailable"),
+    ).toEqual([
+      expect.objectContaining({
+        payload: {
+          code: "interaction_answer_unavailable",
+          reason: "answer_channel_failed",
+          interaction_id: request.interaction_id,
+          error: "bridge lost",
+        },
+      }),
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.filter((event) => event.final).at(-1)?.text).toBe("Blocked by policy");
   });
 
   it("maps Decline to native cancel when cancel is offered without decline", async () => {

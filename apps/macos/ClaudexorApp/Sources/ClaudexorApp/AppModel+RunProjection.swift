@@ -50,6 +50,7 @@ extension AppModel {
             task.adopted = result.adopted == true
         }
         task.waitingOnUser = summary.waitingOnUser ?? false
+        task.serverAsyncQuestionsOnly = summary.asyncQuestionsOnly ?? false
         if let route = summary.route {
             task.observedModel = route.observedModel
             task.routeProof = route.verified == true ? .verified : .unverified

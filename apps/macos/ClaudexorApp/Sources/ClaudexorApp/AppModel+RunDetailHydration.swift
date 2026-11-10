@@ -139,6 +139,7 @@ extension AppModel {
             task.outputReadyState = detail.summary.outputReadyState
             task.pendingInteractions = detail.pendingInteractions
             task.waitingOnUser = detail.summary.waitingOnUser ?? !detail.pendingInteractions.isEmpty
+            task.serverAsyncQuestionsOnly = detail.summary.asyncQuestionsOnly ?? false
             if let route = detail.summary.route {
                 task.observedModel = route.observedModel
                 task.routeProof = route.verified == true ? .verified : .unverified

@@ -80,7 +80,7 @@ export class InteractionRegistry {
     const expiresAtMs = parseExpiry(ctx.timeoutAt);
     const store = this.stores.forRequest(params);
     store.request(ctx);
-    return new Promise<InteractionAnswerSet | InteractionHandlerRelease>((resolve) => {
+    return new Promise<InteractionAnswerSet | InteractionHandlerRelease>((resolve, reject) => {
       const key = interactionKey(ctx.runId, ctx.request.interaction_id);
       const entry: LiveEntry = {
         store,
@@ -93,9 +93,20 @@ export class InteractionRegistry {
       if (ctx.signal) {
         entry.onAbort = () => {
           if (this.live.get(key) !== entry) return;
-          store.resolve(ctx.runId, ctx.request.interaction_id, "interrupted");
+          // Withdrawn: nothing reads an answer to it any more. The live waiter
+          // goes first, so none can be handed one even if the record fails.
           this.live.delete(key);
           ctx.signal?.removeEventListener("abort", entry.onAbort!);
+          try {
+            store.resolve(ctx.runId, ctx.request.interaction_id, "interrupted");
+          } catch (error) {
+            // Thrown from an abort listener it would be the daemon's uncaught
+            // exception. The waiter receives it instead. The row stays pending
+            // with no live owner, which a later answer releases as no live
+            // session (below) and restart recovery resolves.
+            reject(error);
+            return;
+          }
           resolve({ kind: "released", reason: "interrupted" });
         };
         ctx.signal.addEventListener("abort", entry.onAbort, { once: true });
@@ -145,18 +156,27 @@ export class InteractionRegistry {
     this.live.delete(key);
     if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
     // `delivered` = committed and handed to the run's live waiter. Whether the
-    // harness process then reads it is the adapter's concern, not proven here.
+    // harness process then reads it is the adapter's concern, not proven here:
+    // an async answer still has to be sent as the agent's next message, and
+    // that send and its echo are separate receipts.
     entry.resolve(parsed.data);
     return { status: "delivered" };
   }
 
   dropForRun(runId: string): void {
-    for (const store of this.storesForRun(runId)) store.resolveRun(runId, "run_terminal");
-    for (const [key, entry] of this.live) {
-      if (!key.startsWith(`${runId}\u0000`)) continue;
-      this.live.delete(key);
-      if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
-      entry.resolve({ kind: "released", reason: "run_terminal" });
+    try {
+      for (const store of this.storesForRun(runId)) store.resolveRun(runId, "run_terminal");
+    } finally {
+      // The run has ended, so none of its waiters may be handed an answer,
+      // even when that record failed. Its failure stays the caller's error;
+      // the rows stay pending with no live owner, which a later answer releases
+      // as no live session (above) and restart recovery resolves.
+      for (const [key, entry] of this.live) {
+        if (!key.startsWith(`${runId}\u0000`)) continue;
+        this.live.delete(key);
+        if (entry.onAbort) entry.signal?.removeEventListener("abort", entry.onAbort);
+        entry.resolve({ kind: "released", reason: "run_terminal" });
+      }
     }
   }
 
@@ -262,5 +282,6 @@ export function pendingInteraction(ctx: InteractionContext): ControlPendingInter
     questions: ctx.request.questions,
     requestedAt: ctx.requestedAt,
     timeoutAt: ctx.timeoutAt,
+    delivery: ctx.request.delivery,
   });
 }

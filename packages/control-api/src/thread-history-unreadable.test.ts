@@ -76,6 +76,7 @@ describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     it("keeps the row and marks its apply coverage unavailable", () => {
       const row = projectHistoryRun(run(false) as never, {
         waitingOnUser: false,
+        asyncQuestionsOnly: false,
         operator: null,
         childRunIds: [],
       });
@@ -86,6 +87,7 @@ describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     it("a readable one keeps complete coverage (control)", () => {
       const row = projectHistoryRun(run(true) as never, {
         waitingOnUser: false,
+        asyncQuestionsOnly: false,
         operator: null,
         childRunIds: [],
       });

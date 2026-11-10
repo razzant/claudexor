@@ -16,7 +16,6 @@ import {
   type ServeStdioOptions,
 } from "@modelcontextprotocol/server/stdio";
 import {
-  effortJsonSchema,
   type ModeKind,
   runControlApplicability,
   validateOptionalNonEmptyString,
@@ -35,6 +34,7 @@ import {
   accessAndLimitProperties,
   externalContextProperties,
   reviewProperties,
+  scalarEffortProperty,
   taskGroupProperties,
 } from "./run-control-properties.js";
 const mcpRunToolResultSchema = inlineJsonSchemaRefs(
@@ -247,7 +247,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         minLength: 1,
         description: "Optional model override for the primary harness.",
       },
-      effort: effortJsonSchema("Optional effort override for the primary harness."),
+      effort: scalarEffortProperty(),
       processingPreference: processingPreferenceSchema,
       ...externalContextProperties(),
       n: {

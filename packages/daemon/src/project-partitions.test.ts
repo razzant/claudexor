@@ -250,7 +250,12 @@ describe("SqlCommandRouter", () => {
       taskId: "task-a",
       attemptId: "a01",
       harnessId: "test",
-      request: { interaction_id: "question", source_tool: "AskUserQuestion", questions: [] },
+      request: {
+        interaction_id: "question",
+        source_tool: "AskUserQuestion",
+        delivery: "blocking",
+        questions: [],
+      },
       requestedAt: new Date().toISOString(),
       timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     });

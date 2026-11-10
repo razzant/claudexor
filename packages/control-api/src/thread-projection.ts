@@ -109,6 +109,7 @@ export function turnRunCard(
     spendUsd: summary.spendUsd ?? null,
     outputReadyState: summary.outputReadyState,
     waitingOnUser: summary.waitingOnUser,
+    asyncQuestionsOnly: summary.asyncQuestionsOnly,
     finishedAt: summary.finishedAt ?? null,
     delegation: summary.delegation,
     delegatedChildRunIds,

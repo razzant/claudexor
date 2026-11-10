@@ -13512,12 +13512,18 @@ describe("interaction channel registration order", () => {
       true,
       20,
     );
-    const res = await channel!.request({
-      interaction_id: "int-2",
-      source_tool: "AskUserQuestion",
-      questions: [{ id: "q1", prompt: "?", options: [], allow_text: true }],
-    } as never);
-    expect(res).toBeNull();
+    // A throwing surface is not a decline (#622): the request rejects with it.
+    await expect(
+      channel!.request({
+        interaction_id: "int-2",
+        source_tool: "AskUserQuestion",
+        questions: [{ id: "q1", prompt: "?", options: [], allow_text: true }],
+      } as never),
+    ).rejects.toMatchObject({
+      name: "InteractionChannelError",
+      code: "answer_channel_failed",
+      message: "sync boom",
+    });
     expect(channel!.pendingCount!()).toBe(0); // suspension released
     expect(channel!.suspensionVersion!()).toBe(2); // begin + end are both observable
   });

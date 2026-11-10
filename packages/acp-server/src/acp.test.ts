@@ -7,6 +7,7 @@ import { noProjectRepoRoot } from "@claudexor/util";
 import { describe, expect, it } from "vitest";
 import { AcpEvents } from "../../harness-acp/src/events.js";
 import { ACP_PROTOCOL_VERSION, AcpServer, type RunnerFn } from "./index.js";
+import { requestInteractionAnswers } from "./interaction-answers.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
 
@@ -518,7 +519,8 @@ describe("AcpServer official SDK projection", () => {
     );
   });
 
-  /** Runs one ACP prompt whose run raises `request`; returns the hook's answer and the turn text. */
+  /** Runs one ACP prompt whose run raises `request`; returns the hook's answer,
+   * the turn text and its tool-call rows as [update, call, status]. */
   async function answerThroughAcp(
     request: Record<string, unknown>,
     choose: Parameters<typeof withClient>[3],
@@ -527,6 +529,7 @@ describe("AcpServer official SDK projection", () => {
     const cwd = project();
     let captured: unknown = "unset";
     let text = "";
+    let calls: Array<[string, string, unknown]> = [];
     await withClient(
       async (params, hooks) => {
         if (params.mode === "__acp_session_new") return { sessionId: "thread-q", cwd };
@@ -545,11 +548,18 @@ describe("AcpServer official SDK projection", () => {
           .filter((update) => update.sessionUpdate === "agent_message_chunk")
           .map((update) => (update as { content: { text?: string } }).content.text ?? "")
           .join("\n");
+        calls = updates
+          .map((note) => note.update)
+          .flatMap((update): Array<[string, string, unknown]> =>
+            update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update"
+              ? [[update.sessionUpdate, update.toolCallId, update.status]]
+              : [],
+          );
       },
       {},
       choose,
     );
-    return { captured, text };
+    return { captured, text, calls };
   }
 
   const skipEveryInclude: Parameters<typeof withClient>[3] = (options) =>
@@ -714,6 +724,358 @@ describe("AcpServer official SDK projection", () => {
         { question_id: "q1", selected_labels: ["macOS", "Linux", "Windows"], free_text: null },
       ],
     });
+  });
+
+  it("closes an async question's prompt as failed when the editor's permission request fails, without an answer", async () => {
+    const cwd = project();
+    let outcome: unknown = "unset";
+    const updates = await withClient(
+      async (params, hooks) => {
+        if (params.mode === "__acp_session_new") return { sessionId: "thread-fail", cwd };
+        outcome = await hooks!.onInteraction!({
+          run_id: "run-fail-1",
+          request: {
+            interaction_id: "int-fail",
+            delivery: "async",
+            questions: [
+              {
+                id: "q1",
+                question: "Which shell?",
+                options: [{ label: "zsh" }, { label: "bash" }],
+              },
+            ],
+          },
+        }).then(
+          (value: unknown) => ({ resolved: value }),
+          (error: unknown) => ({ rejected: error }),
+        );
+        return {
+          runId: "run-fail-1",
+          status: "succeeded",
+          summary: "done",
+          applyEligibility: null,
+        };
+      },
+      async (agent, updates) => {
+        const session = await agent.request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "go" }],
+          _meta: { claudexor: { mode: "agent" } },
+        });
+        return updates.map((note) => note.update);
+      },
+      {},
+      () => {
+        throw new Error("permission prompts are unavailable here");
+      },
+    );
+    // The call opened for the question is closed, never left pending.
+    const call = updates.filter(
+      (update) =>
+        (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
+        update.toolCallId === "int-fail:q1",
+    ) as Array<{ sessionUpdate: string; status?: string; content?: unknown[] }>;
+    expect(call.map((update) => [update.sessionUpdate, update.status])).toEqual([
+      ["tool_call", "pending"],
+      ["tool_call_update", "failed"],
+    ]);
+    // It keeps the question and says it was not answered here and stays open.
+    const closing = JSON.stringify(call[1]?.content ?? []);
+    expect(closing).toContain("Which shell?");
+    expect(closing).toContain("could not be asked here");
+    expect(closing).toContain("`claudexor follow run-fail-1`");
+    // The hook fails: neither an answer nor a decline is made up.
+    expect(outcome).toMatchObject({ rejected: expect.any(Error) });
+  });
+
+  it("fails with both errors when the failed prompt's close cannot be sent either", async () => {
+    const requestFailure = new Error("permission request failed");
+    const closeFailure = new Error("connection closed");
+    const sent: unknown[] = [];
+    const client = {
+      notify: async (_method: string, params: { update: { sessionUpdate: string } }) => {
+        if (params.update.sessionUpdate === "tool_call_update") throw closeFailure;
+        sent.push(params.update);
+      },
+      request: async () => {
+        throw requestFailure;
+      },
+    };
+    const outcome = await requestInteractionAnswers(
+      client as never,
+      "session-1",
+      {
+        run_id: "run-1",
+        request: {
+          interaction_id: "int-1",
+          delivery: "async",
+          questions: [{ id: "q1", question: "Which shell?", options: [{ label: "zsh" }] }],
+        },
+      },
+      async () => undefined,
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBeInstanceOf(AggregateError);
+    expect((outcome as AggregateError).errors).toEqual([requestFailure, closeFailure]);
+    expect(sent).toEqual([
+      expect.objectContaining({ sessionUpdate: "tool_call", status: "pending" }),
+    ]);
+  });
+
+  /** A multi-select question of three options, then a single choice. */
+  const roundRequest = (interactionId: string) => ({
+    interaction_id: interactionId,
+    delivery: "async",
+    questions: [
+      {
+        id: "q1",
+        question: "Which platforms?",
+        multi_select: true,
+        options: [{ label: "macOS" }, { label: "linux" }, { label: "windows" }],
+      },
+      { id: "q2", question: "Which shell?", options: [{ label: "zsh" }] },
+    ],
+  });
+
+  it.each([
+    ["reports the cancellation", null],
+    ["answers before it sees the cancellation", "include"],
+  ] as const)(
+    "ends a multi-select round whose signal aborts during its first option when the editor %s",
+    async (_case, reply) => {
+      const controller = new AbortController();
+      const asked: string[] = [];
+      const { captured, text, calls } = await answerThroughAcp(
+        roundRequest("int-abort"),
+        (_options, request) => {
+          asked.push(request.toolCall.toolCallId);
+          controller.abort({ kind: "interaction_resolved" });
+          return reply;
+        },
+        { signal: controller.signal },
+      );
+      // The open call is closed, and it cannot claim an answer the round dropped.
+      expect(calls).toEqual([
+        ["tool_call", "int-abort:q1:opt-1", "pending"],
+        ["tool_call_update", "int-abort:q1:opt-1", "failed"],
+      ]);
+      expect(asked).toEqual(["int-abort:q1:opt-1"]);
+      expect(captured).toBeNull();
+      expect(text).not.toContain("Which platforms?");
+      expect(text).not.toContain("partial answer");
+      expect(text).not.toContain("No answer was sent");
+    },
+  );
+
+  it("opens no prompt for a round whose signal is already aborted", async () => {
+    const asked: string[] = [];
+    const { captured, text, calls } = await answerThroughAcp(
+      roundRequest("int-closed"),
+      (options, request) => {
+        asked.push(request.toolCall.toolCallId);
+        return options[0]!.optionId;
+      },
+      { signal: AbortSignal.abort({ kind: "bridge_closed" }) },
+    );
+    expect(asked).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(captured).toBeNull();
+    expect(text).not.toContain("Which platforms?");
+  });
+
+  it("answers every option of a multi-select round while its signal stays live", async () => {
+    const { captured, calls } = await answerThroughAcp(
+      roundRequest("int-live"),
+      (options) => options[0]!.optionId,
+      { signal: new AbortController().signal },
+    );
+    expect(captured).toEqual({
+      interaction_id: "int-live",
+      answers: [
+        { question_id: "q1", selected_labels: ["macOS", "linux", "windows"], free_text: null },
+        { question_id: "q2", selected_labels: ["zsh"], free_text: null },
+      ],
+    });
+    expect(calls.filter(([update]) => update === "tool_call_update")).toEqual([
+      ["tool_call_update", "int-live:q1:opt-1", "completed"],
+      ["tool_call_update", "int-live:q1:opt-2", "completed"],
+      ["tool_call_update", "int-live:q1:opt-3", "completed"],
+      ["tool_call_update", "int-live:q2", "completed"],
+    ]);
+  });
+
+  it("still names skipped options and dismissed choices while its signal stays live", async () => {
+    const { captured, text, calls } = await answerThroughAcp(
+      roundRequest("int-skipped"),
+      (options) => (options.some((option) => option.optionId === "skip") ? "skip" : null),
+      { signal: new AbortController().signal },
+    );
+    expect(captured).toBeNull();
+    expect(text).toContain("No answer was sent. The agent keeps working");
+    expect(text).toContain("1. Which platforms? (every option skipped)");
+    expect(text).toContain("2. Which shell? (dismissed without a choice)");
+    // Skipping is an answer to the round's own prompt; dismissing is not.
+    expect(calls.filter(([update]) => update === "tool_call_update")).toEqual([
+      ["tool_call_update", "int-skipped:q1:opt-1", "completed"],
+      ["tool_call_update", "int-skipped:q1:opt-2", "completed"],
+      ["tool_call_update", "int-skipped:q1:opt-3", "completed"],
+      ["tool_call_update", "int-skipped:q2", "failed"],
+    ]);
+  });
+
+  /** A free-text question, an answered choice, then a multi-select round the
+   * signal closes at `step` of its first option. */
+  async function closeRoundAt(step: "opening" | "rejecting" | "picking" | "closing") {
+    const controller = new AbortController();
+    const first = "int-step:q3:opt-1";
+    const calls: Array<[string, string, unknown]> = [];
+    const requested: string[] = [];
+    const said: string[] = [];
+    const client = {
+      notify: async (_method: string, params: { update: Record<string, unknown> }) => {
+        const { sessionUpdate, toolCallId, status } = params.update;
+        calls.push([String(sessionUpdate), String(toolCallId), status]);
+        await Promise.resolve();
+        if (
+          toolCallId === first &&
+          step === (sessionUpdate === "tool_call" ? "opening" : "closing")
+        )
+          controller.abort({ kind: "interaction_resolved" });
+      },
+      request: async (_method: string, params: { toolCall: { toolCallId: string } }) => {
+        const id = params.toolCall.toolCallId;
+        requested.push(id);
+        if (id === first && (step === "rejecting" || step === "picking"))
+          controller.abort({ kind: "interaction_resolved" });
+        if (id === first && step === "rejecting") throw new Error("request cancelled");
+        return {
+          outcome: { outcome: "selected", optionId: id === "int-step:q2" ? "opt-1" : "include" },
+        };
+      },
+    };
+    const outcome = await requestInteractionAnswers(
+      client as never,
+      "session-1",
+      {
+        run_id: "run-1",
+        signal: controller.signal,
+        request: {
+          interaction_id: "int-step",
+          delivery: "async",
+          questions: [
+            { id: "q1", question: "Why?", options: [] },
+            { id: "q2", question: "Which shell?", options: [{ label: "zsh" }] },
+            {
+              id: "q3",
+              question: "Which platforms?",
+              multi_select: true,
+              options: [{ label: "macOS" }, { label: "linux" }],
+            },
+          ],
+        },
+      },
+      async (text) => {
+        said.push(text);
+      },
+    );
+    return { outcome, said, requested, calls, first };
+  }
+
+  it.each([
+    ["while its prompt is being opened", "opening", "failed", false],
+    ["while its request fails", "rejecting", "failed", true],
+    ["while the editor's pick comes back", "picking", "failed", true],
+    ["while its answered option is being closed", "closing", "completed", true],
+  ] as const)(
+    "ends the round without a later option, partial answer or message when closed %s",
+    async (_case, step, lastStatus, requestSent) => {
+      const { outcome, said, requested, calls, first } = await closeRoundAt(step);
+      expect(outcome).toBeNull();
+      expect(said).toEqual([]);
+      expect(requested).toEqual(requestSent ? ["int-step:q2", first] : ["int-step:q2"]);
+      expect(calls).toEqual([
+        ["tool_call", "int-step:q2", "pending"],
+        ["tool_call_update", "int-step:q2", "completed"],
+        ["tool_call", first, "pending"],
+        ["tool_call_update", first, lastStatus],
+      ]);
+    },
+  );
+
+  it("does not report a single choice whose pick arrives after the round closed", async () => {
+    const controller = new AbortController();
+    const calls: Array<[string, string, unknown]> = [];
+    const said: string[] = [];
+    const outcome = await requestInteractionAnswers(
+      {
+        notify: async (_method: string, params: { update: Record<string, unknown> }) => {
+          const { sessionUpdate, toolCallId, status } = params.update;
+          calls.push([String(sessionUpdate), String(toolCallId), status]);
+        },
+        request: async () => {
+          controller.abort({ kind: "interaction_resolved" });
+          return { outcome: { outcome: "selected", optionId: "opt-1" } };
+        },
+      } as never,
+      "session-1",
+      {
+        run_id: "run-1",
+        signal: controller.signal,
+        request: {
+          interaction_id: "int-one",
+          delivery: "async",
+          questions: [
+            { id: "q1", question: "Which shell?", options: [{ label: "zsh" }] },
+            { id: "q2", question: "Which editor?", options: [{ label: "vim" }] },
+          ],
+        },
+      },
+      async (text) => {
+        said.push(text);
+      },
+    );
+    expect(outcome).toBeNull();
+    expect(said).toEqual([]);
+    expect(calls).toEqual([
+      ["tool_call", "int-one:q1", "pending"],
+      ["tool_call_update", "int-one:q1", "failed"],
+    ]);
+  });
+
+  it("still fails the round when a permission request fails while its signal is live", async () => {
+    const failure = new Error("permission request failed");
+    const requested: string[] = [];
+    const calls: Array<[string, unknown]> = [];
+    const outcome = await requestInteractionAnswers(
+      {
+        notify: async (_method: string, params: { update: Record<string, unknown> }) => {
+          calls.push([String(params.update.sessionUpdate), params.update.status]);
+        },
+        request: async (_method: string, params: { toolCall: { toolCallId: string } }) => {
+          requested.push(params.toolCall.toolCallId);
+          throw failure;
+        },
+      } as never,
+      "session-1",
+      {
+        run_id: "run-1",
+        signal: new AbortController().signal,
+        request: roundRequest("int-failed"),
+      },
+      async () => undefined,
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBe(failure);
+    expect(requested).toEqual(["int-failed:q1:opt-1"]);
+    expect(calls).toEqual([
+      ["tool_call", "pending"],
+      ["tool_call_update", "failed"],
+    ]);
   });
 
   it("maps a FAILED daemon lifecycle to refusal instead of a false normal end_turn", async () => {

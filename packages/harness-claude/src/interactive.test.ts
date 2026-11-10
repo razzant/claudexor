@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { ChildStdin } from "@claudexor/core";
-import type { HarnessEvent, InteractionRequest } from "@claudexor/schema";
+import { runCliHarness, spawnProcess, type ChildStdin, type SpawnOptions } from "@claudexor/core";
+import { HarnessEvent, HarnessRunSpec, type InteractionRequest } from "@claudexor/schema";
 import {
   DECLINE_MESSAGE,
   allowResponseFrame,
@@ -16,6 +16,7 @@ import {
   isResultFrame,
   userMessageFrame,
 } from "./interactive.js";
+import { unavailableDenyMessage, type QuestionUnavailableReason } from "./question-outcome.js";
 
 function fakeIo(): { io: ChildStdin; written: string[]; ended: boolean; close(): void } {
   const state = { written: [] as string[], ended: false };
@@ -60,6 +61,29 @@ const NATIVE_ASK = {
     },
   },
 };
+
+/** The same request naming its tool-use id, as the recorded CLI does. */
+const ASK_WITH_TOOL_USE = {
+  ...NATIVE_ASK,
+  request: { ...NATIVE_ASK.request, tool_use_id: "toolu-ask" },
+};
+
+/** The adapter's own "no answer can reach this question" observation for req-1. */
+function unavailable(reason: QuestionUnavailableReason, extra: Record<string, unknown> = {}) {
+  return {
+    type: "status",
+    session_id: "ses-1",
+    ts: expect.any(String),
+    text: expect.stringMatching(/^AskUserQuestion req-1 could not be answered: /),
+    payload: {
+      code: "interaction_answer_unavailable",
+      reason,
+      interaction_id: "req-1",
+      tool_use_id: "toolu-ask",
+      ...extra,
+    },
+  };
+}
 
 /** Native AskUserQuestion input longer than every former display bound
  * (question 2000, header 100, label 500, description 1000 characters). */
@@ -213,16 +237,22 @@ describe("claude interactive control protocol", () => {
     const channel = { request: async () => null };
     for await (const ev of handleControlRequestFrame(NATIVE_ASK, io, "ses-1", channel))
       events.push(ev);
-    expect(events).toHaveLength(1);
-    expect(written[0]).toContain('"behavior":"deny"');
-    expect(written[0]).toContain(DECLINE_MESSAGE.slice(0, 20));
+    // The known decline/expiry path keeps its typed interaction events: no
+    // adapter observation of its own, the benign decline text to the model.
+    expect(events.map((ev) => ev.type)).toEqual(["interaction_requested"]);
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0]!)["response"]["response"]).toEqual({
+      behavior: "deny",
+      message: DECLINE_MESSAGE,
+      interrupt: false,
+    });
   });
 
-  it("releases a pending native question when the child process closes", async () => {
+  it("releases a pending native question when the child process closes, recording that no answer was sent (#622)", async () => {
     const { io, written, close } = fakeIo();
     const events: HarnessEvent[] = [];
     const consuming = (async () => {
-      for await (const ev of handleControlRequestFrame(NATIVE_ASK, io, "ses-1", {
+      for await (const ev of handleControlRequestFrame(ASK_WITH_TOOL_USE, io, "ses-1", {
         request: () => new Promise(() => undefined),
       })) {
         events.push(ev);
@@ -234,7 +264,143 @@ describe("claude interactive control protocol", () => {
     await consuming;
 
     expect(events[0]?.type).toBe("interaction_requested");
+    expect(events[0]?.payload).toEqual({ tool_use_id: "toolu-ask" });
+    expect(events[1]).toEqual(unavailable("process_closed"));
+    expect(events[1]?.text).toBe(
+      "AskUserQuestion req-1 could not be answered: the native process closed before an answer was sent",
+    );
+    expect(events).toHaveLength(2);
     expect(written).toEqual([]);
+  });
+
+  it("tells the run and the model that a run without an answer channel cannot answer, never that the user declined (#622)", async () => {
+    const { io, written } = fakeIo();
+    const events: HarnessEvent[] = [];
+    for await (const ev of handleControlRequestFrame(ASK_WITH_TOOL_USE, io, "ses-1", undefined))
+      events.push(ev);
+    expect(events).toEqual([unavailable("no_answer_channel")]);
+    expect(events[0]?.text).toBe(
+      "AskUserQuestion req-1 could not be answered: this run has no answer channel",
+    );
+    const deny = JSON.parse(written[0]!)["response"]["response"];
+    expect(deny).toEqual({
+      behavior: "deny",
+      message: unavailableDenyMessage("no_answer_channel"),
+      interrupt: false,
+    });
+    expect(deny.message).not.toBe(DECLINE_MESSAGE);
+    expect(deny.message).toContain("this is not the user's decision");
+    expect(() => HarnessEvent.parse(events[0])).not.toThrow();
+  });
+
+  it.each([
+    [
+      "rejects",
+      { request: () => Promise.reject(new Error("journal append failed")) },
+      "journal append failed",
+    ],
+    [
+      "throws synchronously",
+      {
+        request: () => {
+          throw new Error("surface unavailable");
+        },
+      },
+      "surface unavailable",
+    ],
+  ])(
+    "records a channel that %s as a failed answer channel, not a decline, and keeps the run going (#622)",
+    async (_kind, channel, error) => {
+      const { io, written } = fakeIo();
+      const events: HarnessEvent[] = [];
+      for await (const ev of handleControlRequestFrame(ASK_WITH_TOOL_USE, io, "ses-1", channel))
+        events.push(ev);
+      expect(events.map((ev) => ev.type)).toEqual(["interaction_requested", "status"]);
+      expect(events[1]).toEqual(unavailable("answer_channel_failed", { error }));
+      expect(JSON.parse(written[0]!)["response"]["response"]).toEqual({
+        behavior: "deny",
+        message: unavailableDenyMessage("answer_channel_failed"),
+        interrupt: false,
+      });
+    },
+  );
+
+  it.each([
+    [
+      "a send the pipe refused",
+      { send: async () => ({ outcome: "not_written", reason: "failed", error: "write EPIPE" }) },
+      unavailable("response_write_failed", { error: "write EPIPE" }),
+    ],
+    [
+      "a send after stdin was ended",
+      { send: async () => ({ outcome: "not_written", reason: "ended" }) },
+      unavailable("response_write_failed", { error: "stdin was already ended" }),
+    ],
+    [
+      "a send after the process exited",
+      { send: async () => ({ outcome: "not_written", reason: "exited" }) },
+      unavailable("process_closed"),
+    ],
+    [
+      "a plain write that throws (a handle without send)",
+      {
+        write: () => {
+          throw new Error("EPIPE");
+        },
+      },
+      unavailable("response_write_failed", { error: "EPIPE" }),
+    ],
+  ] as const)(
+    "records %s as the question's own status instead of throwing it into the run loop (#622)",
+    async (_kind, handle, status) => {
+      const io = {
+        write: () => undefined,
+        end: () => undefined,
+        closed: new Promise<void>(() => undefined),
+        ...handle,
+      } as ChildStdin;
+      for (const channel of [
+        undefined,
+        { request: async () => null },
+        {
+          request: async () => ({
+            interaction_id: "req-1",
+            answers: [{ question_id: "q1", selected_labels: ["Summary"], free_text: null }],
+          }),
+        },
+      ]) {
+        const events: HarnessEvent[] = [];
+        for await (const ev of handleControlRequestFrame(ASK_WITH_TOOL_USE, io, "ses-1", channel))
+          events.push(ev);
+        // Without a channel the response is the no-channel deny, whose own
+        // status comes first: a response that cannot be written adds a second.
+        expect(events.slice(channel ? 1 : 0)).toEqual(
+          channel ? [status] : [unavailable("no_answer_channel"), status],
+        );
+      }
+    },
+  );
+
+  it("reports a send that never settles as the process closing, never a hang", async () => {
+    let close!: () => void;
+    const io: ChildStdin = {
+      write: () => undefined,
+      send: () => new Promise(() => undefined),
+      end: () => undefined,
+      closed: new Promise<void>((resolve) => (close = resolve)),
+    };
+    const events: HarnessEvent[] = [];
+    const consuming = (async () => {
+      for await (const ev of handleControlRequestFrame(ASK_WITH_TOOL_USE, io, "ses-1", {
+        request: async () => null,
+      }))
+        events.push(ev);
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events.map((ev) => ev.type)).toEqual(["interaction_requested"]);
+    close();
+    await consuming;
+    expect(events.slice(1)).toEqual([unavailable("process_closed")]);
   });
 
   it("denies non-interactive permission requests without liberalizing policy", async () => {
@@ -465,4 +631,115 @@ describe("claude interactive control protocol", () => {
       interrupt: false,
     });
   });
+});
+
+/**
+ * A Claude CLI over the REAL run loop and stdin writer. It asks one question;
+ * in `exit` mode it then leaves a descendant holding its stdout and stderr (a
+ * tool or MCP server would) and exits without waiting, so the session's
+ * `closed` settles only when the descendant lets the pipes go; in `answer`
+ * mode it prints the response it read and finishes after it. The descendant
+ * inherits the CLI's stdin too only when asked, so both pipe states occur.
+ */
+const FAKE_ASKING_CLI = `
+const { spawn } = require('node:child_process');
+const [frameJson, mode, descendantStdin] = process.argv.slice(-3);
+const out = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');
+const rl = require('node:readline').createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const frame = JSON.parse(line);
+  if (frame.type === 'user') {
+    process.stdout.write(frameJson + '\\n');
+    if (mode !== 'exit') return;
+    spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { stdio: [descendantStdin, 'inherit', 'inherit'] });
+    process.stdout.write('', () => process.exit(0));
+  } else if (frame.type === 'control_response') {
+    out({ type: 'answered', response: frame.response.response });
+    out({ type: 'result', subtype: 'success' });
+  }
+});
+rl.on('close', () => process.stdout.write('', () => process.exit(0)));
+`;
+
+async function askOverRealProcess(
+  mode: "exit" | "answer",
+  descendantStdin: "inherit" | "ignore" = "ignore",
+): Promise<{ events: HarnessEvent[]; answered: unknown[] }> {
+  let markExited!: () => void;
+  const exited = new Promise<void>((resolve) => (markExited = resolve));
+  const events: HarnessEvent[] = [];
+  const answered: unknown[] = [];
+  const channel = {
+    request: async (interaction: InteractionRequest) => {
+      // In `exit` mode the answer comes once the CLI's process has exited.
+      if (mode === "exit") await exited;
+      return {
+        interaction_id: interaction.interaction_id,
+        answers: [{ question_id: "q1", selected_labels: ["Summary"], free_text: null }],
+      };
+    },
+  };
+  for await (const ev of runCliHarness({
+    bin: process.execPath,
+    args: ["-e", FAKE_ASKING_CLI, JSON.stringify(ASK_WITH_TOOL_USE), mode, descendantStdin],
+    // The production spawn and stdin writer; only the native exit is observed.
+    spawn: (cmd: string, args: string[], opts: SpawnOptions = {}) =>
+      spawnProcess(cmd, args, {
+        ...opts,
+        onExit: (code, signal) => {
+          opts.onExit?.(code, signal);
+          markExited();
+        },
+      }),
+    spec: HarnessRunSpec.parse({
+      session_id: "ses-1",
+      intent: "implement",
+      prompt: "Ask me",
+      cwd: process.cwd(),
+    }),
+    parseEvent: (obj) => {
+      if ((obj as { type?: string }).type === "answered") answered.push(obj);
+      return [];
+    },
+    session: {
+      initialStdin: initialSessionFrames("Ask me"),
+      matches: isControlRequestFrame,
+      handle: (obj, io) => handleControlRequestFrame(obj, io, "ses-1", channel),
+      closeStdinOn: isResultFrame,
+    },
+  }))
+    events.push(ev);
+  return { events, answered };
+}
+
+describe("claude question responses over the real stdin writer (#622)", () => {
+  it.each([
+    ["holds only its stdout and stderr", "ignore"],
+    ["holds its stdin too", "inherit"],
+  ] as const)(
+    "records an answer that arrives after the CLI exited while a descendant %s, instead of losing it silently",
+    async (_holds, descendantStdin) => {
+      const { events } = await askOverRealProcess("exit", descendantStdin);
+      expect(events.map((ev) => ev.type)).toEqual(["interaction_requested", "status", "completed"]);
+      expect(events[1]).toEqual(unavailable("process_closed"));
+      expect(events.at(-1)?.payload?.["exit_code"]).toBe(0);
+    },
+    20_000,
+  );
+
+  it("writes an answer the live CLI reads, with no unavailable record", async () => {
+    const { events, answered } = await askOverRealProcess("answer");
+    expect(events.map((ev) => ev.type)).toEqual(["interaction_requested", "completed"]);
+    expect(answered).toEqual([
+      {
+        type: "answered",
+        response: expect.objectContaining({
+          behavior: "allow",
+          updatedInput: expect.objectContaining({
+            answers: { "How should I format the output?": "Summary" },
+          }),
+        }),
+      },
+    ]);
+  }, 20_000);
 });

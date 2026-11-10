@@ -46,6 +46,7 @@ import {
   ControlRunSummary,
   PaidBudget,
   type ControlPendingInteraction,
+  pendingQuestionAttention,
   DecisionRecord,
   ModeKind,
   RoutingGoal,
@@ -319,7 +320,7 @@ export function detailFor(
     summary: {
       ...summary,
       outcomeFacts,
-      waitingOnUser: pendingInteractions.length > 0,
+      ...pendingQuestionAttention(pendingInteractions),
       processScope: projectProcessScope(rec, summary.state),
       processScopeLater: projectProcessScopeLater(rec, summary.state),
     },

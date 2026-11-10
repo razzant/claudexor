@@ -344,6 +344,46 @@ fixtures:
       delta_messages: 0
       tool_error_results: 0
       typed_rate_limit: false
+  # SCRIPTED, not a vendor recording (#536): a resumed session in the order the
+  # incident journals show, built from the frame shapes of the two recordings
+  # above. Right after start a result names only an earlier turn's message
+  # (no usage), then the prompt's own turn runs (second system/init, echo,
+  # Bash, an AskUserQuestion round trip, a live message) and its own result
+  # names the prompt. The journals kept normalized events only, not raw frames
+  # or the stdin close, so the earlier result and its position are the
+  # hypothesis this replay pins. `@PROMPT_UUID@` stands for the uuid of the
+  # adapter's own prompt frame; the replay substitutes it.
+  stream-json/scripted-resumed-foreign-result.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "result"
+      final_is_last_message: true
+      thinking_events: 0
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: false
+
+  # SCRIPTED, not a vendor recording (#622): the prompt's own result names it
+  # and closes stdin while a Monitor task (no background claim) keeps the CLI
+  # working; its notification starts another native turn that asks a
+  # question. The replay prints every frame after the prompt at once, so the
+  # question was asked before the CLI could see EOF and read after Claudexor
+  # closed stdin. Frame shapes come from the recordings above, the permission
+  # error text is the one the #622 integration test uses, and the order is
+  # the scenario.
+  stream-json/scripted-question-after-own-result.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 2
+      final_source: "result"
+      final_is_last_message: true
+      thinking_events: 1
+      started_events: 1
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: false
 
   # CONTROLLED ENDPOINT: the same local HTTP 400 body declares
   # error.details.error_code=claude_code_version_too_old. The current CLI

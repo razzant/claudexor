@@ -6080,10 +6080,13 @@ stream-json questions and Codex app-server's native action approvals) can raise
 typed requests mid-run; the
 orchestrator OFFERS the interaction channel only to routes whose manifest
 declares `interactive`. The
-engine emits `interaction.requested` (questions, options, nullable timeout deadline),
-parks ONLY that attempt, and the daemon commits the pending interaction and its
+engine emits `interaction.requested` (questions, options, nullable timeout deadline,
+`delivery`), parks ONLY that attempt when the question is blocking, and the daemon commits the pending interaction and its
 event in the run's global or `project:<id>` partition generation before exposing it via
-`GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). Answers
+`GET /v2/runs/:id` (`pendingInteractions`, `summary.waitingOnUser`). A failed
+read of those rows is unknown, never an empty list: a live run's own detail
+fails with the typed problem, a list row or child card degrades alone, and a
+finished run reports none, having no live question left. Answers
 arrive via `POST /v2/runs/:id/interactions/:id/answer` and are delivered into the
 live session only after the resolution is committed (`interaction.answered`).
 Before committing anything, the daemon checks the answers against the pending
@@ -6125,8 +6128,32 @@ announces that withdrawal once as `interaction.withdrawn` (never a timeout), so
 `claudexor follow` and the macOS card close the obsolete prompt instead of
 letting it block the next question; an answer accepted in the same tick is
 disclosed as `interaction.answer_discarded` (`request_withdrawn`).
+A question's `delivery` says how its asker waits: `blocking` (Claude questions,
+Codex approvals, every historical row) holds the native tool call as above;
+`async` (Codex `request_user_input_async`) holds nothing. An async question
+neither suspends the inactivity watchdog nor refuses live messages, still counts
+as `waitingOnUser` attention, and makes `asyncQuestionsOnly` true only while every
+pending question is async, so a blocking one is never hidden. Codex raises one per
+root native item; its text stays a visible message that answer assembly never takes
+as answer material, even in a turn with no other text. A committed answer is
+steered into the asking turn as the native reply envelope (client message id
+`interaction-answer:<id>`, one `interaction_answer_steer` receipt per send). That
+turn's end withdraws it, a sub-agent's question is not answerable, and silence,
+expiry and the run's end send nothing. When the answer surface itself fails, the
+channel rejects with
+`InteractionChannelError` (cause kept) instead of a decline: a question it never
+registered is not announced, and the adapter records why it went unanswered.
 Declined/timed-out interactive flow-control tools are benign timeline events,
-never blocking tool errors.
+never blocking tool errors. A Claude `AskUserQuestion` error result stays a
+neutral record with its native detail and the session input Claudexor held when
+it read the question, never the user's decline. When the adapter itself cannot
+obtain or send an answer, an `interaction_answer_unavailable` status names why,
+with the request and tool-use ids. Only the no-channel and failed-channel
+denies tell the model so; after a closed process, a response the session's
+`ChildStdin.send` reports unwritten (the child had exited, or the pipe refused
+the write) or a request read after stdin closed, the model sees at most the
+CLI's own error. If such a deny cannot be written either, a second status
+follows for it.
 
 Delegate children use this same interaction contract. A parent/list child
 summary may carry `waitingOnUser:true`, but it does not own the question body;
@@ -6602,15 +6629,23 @@ vendor pin (2.1.281) carries the same frames and flag; the pickup itself is
 recorded on 2.1.283. A
 message that arrives while the model composes its final text stays queued
 and runs as the NEXT native turn inside the same run: the run loop's
-`session.onIo` seam hands the adapter the live handle, `closeStdinOn` returns
-false while a message is written-but-unreceipted, `queued` or `started`, or a
+`session.onIo` seam hands the adapter the live handle (the adapter's own
+wrapper adds the uuid of the prompt frame it wrote), `closeStdinOn` returns
+false while that prompt is running (Claude Code identified commands, by a
+lifecycle frame naming the prompt or a result naming only commands the session
+never sent, and neither a result naming the prompt nor its own terminal state
+has arrived, so a resumed session's earlier result cannot close stdin in either
+order and, usage aside, reaches the run only as `foreign_result` status events,
+never as its error or answer; an error result naming no command ends it as the
+first result does on a CLI that names none), while a message is
+written-but-unreceipted, `queued` or `started`, or a
 run-owned background task is open (`system/task_started` with
 `is_backgrounded: true` … `system/task_notification`, so a background
 continuation is kept too), the second `system/init` folds into the one
 `started` (a `native_turn_started` status marks the turn), each result's
 `usage.cost_usd` is the delta of the cumulative `total_cost_usd`, and the last
 result's final text is the run's answer. No `queued` frame within 2 s answers
-`delivery_unknown`/`response_timeout` (the stdin handle swallows write errors,
+`delivery_unknown`/`response_timeout` (the message write is fire-and-forget,
 so a dead pipe surfaces this way), a session closed with the message still
 unreceipted `delivery_unknown`/`transport_lost`, and a `cancelled|discarded|
 refused` lifecycle state before consumption is typed `live_input_refused`
