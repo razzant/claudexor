@@ -1222,7 +1222,18 @@ invariant or operator decision before proceeding.
   for that subject and route, including an early purchased or vendor-granted
   reset; unknown usage is never zero. Independently scoped restrictions remain
   unless corresponding evidence replaces them. The same durable projection
-  governs every consumer and survives restart. A row that recently answered this
+  governs every consumer and survives restart.
+  **CONCEPT-CHANGE(INV-135), #318:** a typed usage refusal that names no
+  reopening time (`cooldown:reopening_unknown`) is not such an unclassified
+  refusal: no read retires or moves it, whatever quota the read shows, and it
+  ends only at its own bounded engine recheck, after which the next demanded
+  attempt may try the row; nothing probes the vendor for it. Rationale: one
+  vendor code covers a spent window and a workspace out of credits alike, and
+  a successful read does not show that the refused usage or credits returned,
+  so retiring the refusal on any read let a Refresh or the background poll
+  re-admit an account the vendor had just refused. The operator accepted the
+  cost: after a refill the row waits out that recheck.
+  A row that recently answered this
   model's request with a different model (a live, self-expiring
   model-substitution observation), or whose session an unpinned run started
   on it recently ended before any progress for this same requested model (a
@@ -1313,7 +1324,9 @@ invariant or operator decision before proceeding.
   `packages/orchestrator/src/rowAdmission.test.ts` (#363 stale admission);
   `packages/daemon/src/store/account-service.test.ts` +
   `packages/cli/src/account-last-service.integration.test.ts` (last-served
-  order across a restart).
+  order across a restart); `packages/daemon/src/quota-recovery.integration.test.ts`
+  + `packages/cli/src/codex-usage-refusal-recheck.integration.test.ts` (#318
+  refusal recheck).
 - **INV-136** High-volume UI evidence is PROGRESSIVE, BOUNDED, and honest:
   per-run milestone bursts are exactly one in-flight request plus at most one
   trailing refresh (events during the trailing load cannot chain more GETs);

@@ -3,6 +3,11 @@ import { VendorFailureEvidence as VendorFailureSchema } from "@claudexor/schema"
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { claudeTerminalContextEvent } from "./context-signals.js";
 import type { ClaudeEventParser } from "./parse.js";
+import { claudeEntitlementDenial, isClaudeEntitlementDenial } from "./retry-signals.js";
+
+/** The API's own code for a Claude subscription its organization does not
+ * allow this client to use (HTTP 403 in the recorded shape). */
+const CLAUDE_SUBSCRIPTION_DENIED_CODE = "oauth_not_allowed_for_organization";
 
 /** Native stdout result evidence, not a search through model prose. Older
  * CLIs retain the API sentence but omit api_error_code; that remains unknown
@@ -62,6 +67,15 @@ export function withClaudeApiFailureParser(
             installed_version: installedVersion,
           }
         : undefined;
+    // #318: that code is the same typed subscription denial the org-disabled
+    // prose and retry frame carry (`oauth_org_not_allowed`), never transport,
+    // so no same-account retry replays it. The code alone decides; the words
+    // stay the diagnostic and are never read for a cause.
+    const denial =
+      code === CLAUDE_SUBSCRIPTION_DENIED_CODE &&
+      !(parsed ?? []).some((event) => isClaudeEntitlementDenial(event))
+        ? [claudeEntitlementDenial(message ?? code, sessionId, nowIso())]
+        : [];
     return [
       // Replace the result parser's generic subtype error with the native
       // API cause; usage and all non-error evidence keep their order. The
@@ -70,6 +84,7 @@ export function withClaudeApiFailureParser(
       ...(parsed ?? []).flatMap((event) =>
         event.type === "error" ? [] : [maskApiFailureCopy(event, obj.result)],
       ),
+      ...denial,
       {
         type: "error",
         session_id: sessionId,
