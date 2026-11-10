@@ -38,10 +38,36 @@ const ENV = {
   GIT_COMMITTER_NAME: "t",
   GIT_COMMITTER_EMAIL: "t@example.invalid",
 };
-const git = (repo: string, args: string[], env: Record<string, string> = {}, input?: string) =>
-  execFileSync("git", ["-C", repo, ...args], { env: { ...ENV, ...env }, input })
-    .toString("utf8")
-    .trim();
+// #650: a synchronous child blocks this worker, so Vitest's testTimeout cannot fire
+// while it runs. Each Git child gets that same limit: one that lasts this long has
+// already failed its test, so the bound only decides when that failure surfaces.
+// SIGKILL cannot be ignored. The bound ends this child only.
+const GIT_BOUND_MS = 30_000;
+type GitFailure = NodeJS.ErrnoException & { status: number | null; signal: string | null };
+const gitWithin =
+  (timeoutMs: number) =>
+  (repo: string, args: string[], env: Record<string, string> = {}, input?: string) => {
+    const argv = ["-C", repo, ...args];
+    try {
+      return execFileSync("git", argv, {
+        env: { ...ENV, ...env },
+        input,
+        stdio: "pipe", // diagnostics reach the error, not the run log
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+      })
+        .toString("utf8")
+        .trim();
+    } catch (error) {
+      // The same error, its fields kept: the command and its ending lead the message.
+      const failure = error as GitFailure;
+      const { code, status, signal } = failure;
+      const ending = code === "ETIMEDOUT" ? `timed out after ${timeoutMs} ms` : "failed";
+      failure.message = `git ${argv.join(" ")} ${ending} (status ${status}, signal ${signal}): ${failure.message}`;
+      throw failure;
+    }
+  };
+const git = gitWithin(GIT_BOUND_MS);
 
 /** A repository whose committed blob holds CRLF, with `config` set afterwards. */
 function crlfRepo(attributes: string | null, config: Record<string, string> = {}): string {
@@ -169,5 +195,42 @@ describe("the proof's stall bound (O4)", () => {
     expect(proof).toEqual([
       { label: "update-index --refresh (proof)", stallMs: proofStallMs(Buffer.byteLength(body)) },
     ]);
+  });
+});
+
+describe("this file's Git children are bounded and fail honestly (#650)", () => {
+  it("ends a child that never takes its stdin at the bound, and names it", () => {
+    // A stand-in for the blocked Git: it never reads, so this input cannot be
+    // delivered and only SIGKILL ends it. It exits by itself if the bound is lost.
+    const bin = mkdtempSync(join(tmpdir(), "cx-crlf-bin-"));
+    dirs.push(bin);
+    writeFileSync(join(bin, "git"), "#!/bin/sh\ntrap '' TERM\nexec sleep 20\n", { mode: 0o755 });
+    const env = { PATH: `${bin}:${process.env["PATH"] ?? ""}` };
+    const started = Date.now();
+    expect(() =>
+      gitWithin(500)(bin, ["hash-object", "--stdin"], env, "x".repeat(1024 * 1024)),
+    ).toThrow(
+      expect.objectContaining({
+        code: "ETIMEDOUT",
+        status: null,
+        signal: "SIGKILL",
+        message: `git -C ${bin} hash-object --stdin timed out after 500 ms (status null, signal SIGKILL): spawnSync git ETIMEDOUT`,
+      }),
+    );
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("still fails on a Git command that exits nonzero, naming it and its status", () => {
+    const repo = crlfRepo(null);
+    const command = `git -C ${repo} rev-parse --verify refs/heads/absent`;
+    expect(() => git(repo, ["rev-parse", "--verify", "refs/heads/absent"])).toThrow(
+      expect.objectContaining({
+        status: 128,
+        signal: null,
+        message: expect.stringContaining(
+          `${command} failed (status 128, signal null): Command failed: ${command}\n`,
+        ),
+      }),
+    );
   });
 });
