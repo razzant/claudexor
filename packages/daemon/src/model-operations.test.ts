@@ -102,6 +102,8 @@ async function fixture(
   });
   const server = new DaemonServer({
     ...history,
+    // Retention ages commands on the same clock as response expiry.
+    now: () => clock,
     socketPath: socket,
     token: "fixture-control",
     commands,
@@ -893,17 +895,166 @@ describe("model operations over the existing daemon command substrate", () => {
     expect((await f.operations.cancel(first.id)).state).toBe("succeeded");
   });
 
-  it("keeps model idempotency after history cap/age and result acknowledgement", async () => {
-    const f = await fixture(undefined, { maxHistory: 1, idempotencyRetentionMs: 0 });
-    const first = await f.operations.create(f.upload(), "retained-first");
-    await f.terminal(first.id);
-    f.operations.acknowledge(first.id, f.operations.readResult(first.id).sha256);
-    const second = await f.operations.create(f.upload(request("other")), "retained-second");
-    await f.terminal(second.id);
-    expect(f.records()).toHaveLength(2);
-    expect((await f.operations.create(f.upload(), "retained-first")).id).toBe(first.id);
-    expect(f.operations.inspect(first.id).response.state).toBe("acknowledged");
-    expect(f.sends).toHaveBeenCalledTimes(2);
+  it("expires model receipts 30 days after terminal, after result custody and outside the product cap", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const posts = vi.fn();
+    const f = await fixture(
+      async (input, context) => {
+        const content = String(input.messages[0]!.content);
+        await context.onDispatch(route);
+        posts(content);
+        if (content === "torn") throw new Error("upstream disappeared");
+        if (content === "hold") await gate;
+        return result();
+      },
+      { maxHistory: 1, idempotencyRetentionMs: 0 },
+    );
+    cleanup.push(async () => release()); // a failed assertion must not strand the runner
+    const api = new DaemonControlApiServer({
+      token: "fixture-control",
+      daemon: f.client,
+      services: {
+        createModelOperation: f.operations.create.bind(f.operations),
+        getModelOperation: async (id) => f.operations.inspect(id),
+        readModelResult: async (id) => f.operations.readResult(id),
+        acknowledgeModelResult: async (id, digest) => f.operations.acknowledge(id, digest),
+      },
+    });
+    const address = await api.start();
+    cleanup.push(() => api.stop());
+    const http = async (path: string, body?: unknown, key = "unused") => {
+      const response = await fetch(
+        `http://${address.host}:${address.port}/v2/model-operations${path}`,
+        {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            Authorization: "Bearer fixture-control",
+            "X-Claudexor-Protocol-Major": "3",
+            "Content-Type": "application/json",
+            "Idempotency-Key": key,
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        },
+      );
+      const text = await response.text();
+      return { status: response.status, body: text ? JSON.parse(text) : null };
+    };
+    const ackRef = f.upload(request("acked"));
+    const acked = await f.terminal((await f.operations.create(ackRef, "acked")).id);
+    f.operations.acknowledge(acked.id, f.operations.readResult(acked.id).sha256);
+    const ready = await f.terminal(
+      (await f.operations.create(f.upload(request("ready")), "ready")).id,
+    );
+    const tornRef = f.upload(request("torn"));
+    const torn = await f.terminal((await f.operations.create(tornRef, "torn")).id);
+    expect(torn).toMatchObject({ state: "interrupted", dispatch: { state: "unknown" } });
+    const held = await f.operations.create(f.upload(request("hold")), "hold");
+    await vi.waitFor(() => expect(posts).toHaveBeenCalledWith("hold"), { timeout: 10_000 });
+    f.store.accept({
+      id: "account-reset-aged",
+      params: { kind: "account_reset" },
+      idempotencyKey: "account-reset-aged",
+      clientId: "fixture",
+    });
+    f.store.update("account-reset-aged", { state: "succeeded", finishedAt: acked.finishedAt! });
+    const finishedAt = [acked, ready, torn].map((detail) => Date.parse(detail.finishedAt!));
+    const firstAt = Math.min(...finishedAt);
+    const terminalAt = Math.max(...finishedAt);
+    const DAYS_30 = 30 * 24 * 60 * 60 * 1000;
+
+    // The product cap (1) and age (0) never touch model receipts; one ms early keeps all.
+    f.setNow(new Date(firstAt + DAYS_30 - 1));
+    f.server.pruneHistory();
+    expect(f.records()).toHaveLength(5);
+    expect((await f.operations.create(ackRef, "acked")).id).toBe(acked.id);
+    expect(posts).toHaveBeenCalledTimes(4);
+
+    f.setNow(new Date(terminalAt + DAYS_30));
+    f.server.pruneHistory();
+    const retained = f.records().map((record) => record.id);
+    // Acknowledged and unknown-outcome receipts go; the time-expired but unreconciled
+    // response, the running operation and the account reset stay.
+    expect(retained.sort()).toEqual(["account-reset-aged", held.id, ready.id].sort());
+    for (const path of [`/${acked.id}`, `/${acked.id}/result`, `/${torn.id}`])
+      expect(await http(path)).toMatchObject({
+        status: 404,
+        body: { code: "model_operation_not_found" },
+      });
+    expect(
+      await http(`/${acked.id}/ack`, {
+        sha256: acked.response.state === "absent" ? "" : acked.response.ref.sha256,
+      }),
+    ).toMatchObject({ status: 404 });
+    // The released request cannot be replayed into a hidden generation, and a missing
+    // receipt is never the definite pre-dispatch refusal a client may treat as "not sent".
+    for (const [ref, key] of [
+      [ackRef, "acked"],
+      [tornRef, "torn"],
+    ] as const) {
+      const replay = await http("", { request: ref }, key);
+      expect(replay).toMatchObject({ status: 404, body: { code: "resource_not_found" } });
+      expect(replay.body.code).not.toBe("model_request_invalid");
+    }
+    expect(posts).toHaveBeenCalledTimes(4);
+    expect(f.operations.inspect(ready.id).response.state).toBe("expired");
+
+    // Custody settles first (recorded expiry, bytes released); the next pass removes it.
+    expect(f.operations.reconcileResources().errors).toEqual([]);
+    f.server.pruneHistory();
+    expect(
+      f
+        .records()
+        .map((record) => record.id)
+        .sort(),
+    ).toEqual(["account-reset-aged", held.id].sort());
+
+    // A just-finished operation keeps its full pickup window under the same clock.
+    release();
+    const finished = await f.terminal(held.id);
+    expect(finished.response.state).toBe("ready");
+    f.server.pruneHistory();
+    expect(f.operations.readResult(held.id).bytes.length).toBeGreaterThan(0);
+
+    // Documented boundary: after expiry, NEW bytes under the old key are a new request.
+    const again = await f.operations.create(f.upload(request("acked")), "acked");
+    expect(again.id).not.toBe(acked.id);
+    await f.terminal(again.id);
+    expect(posts.mock.calls.filter(([content]) => content === "acked")).toHaveLength(2);
+
+    // A restart keeps the retained receipt readable and the removed one absent.
+    await api.stop();
+    await f.server.stop();
+    f.operations.close();
+    await f.sql.close();
+    const sql = await sqlFixture(f.root);
+    const resources = sql.graph.resources;
+    const reopened = new ModelOperations({
+      commands: sql.graph.commands,
+      resourceQueries: sql.graph.commands.queries,
+      resources: () => resources,
+      now: () => new Date(terminalAt + DAYS_30),
+      enqueue: async () => {
+        throw new Error("replay cannot enqueue");
+      },
+      cancel: async () => {
+        throw new Error("replay cannot cancel");
+      },
+      resolve: async () => {
+        throw new Error("replay cannot resolve a provider");
+      },
+    });
+    cleanup.push(async () => {
+      reopened.close();
+      await sql.close();
+    });
+    expect(reopened.readResult(held.id).bytes.length).toBeGreaterThan(0);
+    expect(() => reopened.inspect(acked.id)).toThrowError(
+      expect.objectContaining({ code: "model_operation_not_found", status: 404 }),
+    );
+    await expect(reopened.create(ackRef, "acked")).resolves.toMatchObject({ id: again.id });
   });
 
   it("does not report a provider response when the durable dispatch write fails", async () => {

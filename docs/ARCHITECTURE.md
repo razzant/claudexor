@@ -3304,28 +3304,30 @@ original payload stays in the caller's history. The live transport continuation
 binds to the model the terminal response named, so a turn another model answered
 is not replayed under the requested model, and an unknown model leaves it unbound.
 
-`ModelOperations` uses the existing daemon command store, idempotency lookup,
-queue capacity, cancellation and terminal boundary. Model runners use their class
-limit and any explicit global limit described in [Main Execution Paths](#6-main-execution-paths);
-their permit stays occupied until runner settlement, including cancellation, but
-not while awaiting a client's result-digest ACK, and they are not Agent Runs. The command store holds content hashes and resource references, not the
-conversation. A model-purpose upload uses `ResourceStore`'s atomic finalization;
-its contents are delivered exactly like every other working input (INV-146),
-and it cannot resolve as an ordinary Agent attachment. Create and dispatch
-read those request bytes off the request thread. Result GET stays on the
-synchronous read, so acknowledgement cannot interleave with it. Engine authorization
-never enters the model payload.
+`ModelOperations` reuses daemon commands, idempotency, queue capacity,
+cancellation and terminal state. Model runners obey their class and explicit
+global limits ([Main Execution Paths](#6-main-execution-paths)); permits last
+through runner settlement, cancellation included, but not the result-digest ACK
+wait. They are not Agent Runs. Commands hold content hashes and resource refs,
+not conversations. Model uploads use `ResourceStore` atomic finalization and
+exact input delivery (INV-146); they cannot become Agent attachments. Create and
+dispatch read request bytes off the request thread; result GET is synchronous,
+so ACK cannot interleave. Engine authorization never enters the payload.
 
 Result GET returns exact digest-bound bytes without acknowledging them. A client
 accepts custody before ACK and recovers a lost local reply through the same
 operation identity. Request bytes are released at terminal state, response bytes
 after ACK and unacknowledged responses 30 days after readiness; existing
-maintenance reclaims crash residue. A recorded response expiry stays the release
+maintenance reclaims crash residue, then calls the daemon's `pruneHistory`
+owner (including cancellation-set cleanup) through both runtime compositions. A recorded response expiry stays the release
 timestamp through delayed cleanup and restart, while an ordinary ACK uses its
 actual release time. Redundant uploads on an idempotent create are released
-without touching another live command's input. Compact model receipts and
-idempotency bindings are excluded from Agent history age/cap pruning, so an
-expired or acknowledged result cannot trigger another generation. A provider
+without touching another live command's input. Outside the Agent history cap, a
+model receipt and its idempotency binding leave 30 days after the terminal once
+response and resources settle; until then a same-key create replays without
+another generation. Later reads answer `model_operation_not_found` (a released
+request `resource_not_found`), proving neither non-dispatch nor cost; new bytes
+under the old key are a new request. A provider
 refusal, a never-dispatched operation and an unknown outcome after engine death
 are separate facts. A crash after response bytes are published but before the
 terminal SQL commit keeps an unknown outcome; uncommitted bytes cannot certify a
@@ -5192,11 +5194,15 @@ no keep-last, like any unregistered namespace). Native-session references and
 generations (including archived threads and pending interactions); unreadable references
 fail closed, and unavailable project generations protect their namespaces. Unknown
 project roots are disclosed as their runtime namespace. Bulk inventory yields
-to admission; SQL history uses rowid-keyset pages without holding a cursor or
-transaction across a yield. Each run deletion rereads changed SQL owners and mutable filesystem protections
-after its asynchronous byte walk and retirement preparation. Connection-local TEMP
-triggers observe row identities while the pass runs; no durable schema or writer is
-added. Typed reference reads are shared with the initial inventory. Each distinct immutable command request is parsed once per pass by its content digest, including changed-owner refreshes. Combined run/native retention shares one SQL inventory and observer; standalone native retention owns and closes its own inventory. No durable schema changes. Quota/event
+to admission; rowid-keyset pages hold no cursor or transaction across yields.
+Command SQL reads only product/delivery rows in windows of 1,000 existing rows.
+After its async byte walk and retirement preparation, each run deletion rereads
+changed SQL owners and mutable filesystem protections. Connection-local TEMP
+triggers observe row identities during the pass, adding no durable schema or
+writer. Initial inventory and refresh share typed reference reads; immutable
+command requests are parsed once per pass by digest, including refreshes.
+Combined run/native retention shares one SQL inventory and observer; standalone
+native retention owns and closes its own. Quota/event
 writes and unrelated metadata do not restart it. References accumulate during a pass
 and lifecycle records refresh before the synchronous last proof and expiration marker.
 Large change batches yield between reads. A partition first seen during the pass is read

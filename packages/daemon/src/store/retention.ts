@@ -3,6 +3,7 @@ import { isHarnessMaintenanceOperation, isModelOperation } from "@claudexor/sche
 import { journalFoldPolicy } from "../journal-fold-policy.js";
 import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 import type { EngineStore } from "./store.js";
+import { occupiedWindowEnd } from "./retention-pages.js";
 
 export interface EventInput {
   type: string;
@@ -189,6 +190,52 @@ export const RETAINED_PREDECESSOR_SQL = `SELECT EXISTS(
 
 export const COMMAND_RETENTION_CAP = 500;
 export const COMMAND_RETENTION_BATCH = 100;
+
+/** Owner-approved model receipt life (#637): 30 days after the terminal, never
+ * the product cap and never earlier than result custody. Fixed, like the
+ * response window, so the product age knob cannot shorten it. */
+export const MODEL_RECEIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** One occupied window of expired model receipts. Queued/running work, unknown
+ * lifecycle strings, a still-ready response and any referenced resource that is
+ * not yet released or expired stay. Archived generations keep their evidence. */
+export const MODEL_RECEIPT_PAGE_SQL = `SELECT rowid AS retention_rowid, id FROM command NOT INDEXED
+  WHERE rowid > ?1 AND rowid <= ?2 AND kind = 'model' AND live = 1
+    AND state IN ('succeeded','failed','cancelled','interrupted') AND finished_at <= ?3
+    AND (response_state IS NULL OR response_state IN ('absent','acknowledged','expired'))
+    AND NOT EXISTS(SELECT 1 FROM resource r
+      WHERE r.id IN (command.request_resource_id, command.response_resource_id)
+        AND r.state NOT IN ('released','expired'))
+  ORDER BY rowid LIMIT ?4`;
+
+export interface ModelReceiptSelection {
+  ids: string[];
+  /** Disposable scan progress; a cursor past the last row wraps to the oldest. */
+  next: number;
+}
+
+/** Examine at most one window of existing rows after `after` (wrapping to the
+ * oldest when none follow), so a call's work is bounded by the window, not by
+ * model history or the rowid gaps deleted history leaves. Rowid order is
+ * creation order; a full cycle revisits rows that later become eligible. */
+export function modelReceiptCandidates(
+  store: EngineStore,
+  input: { now: Date; after: number; batch?: number; window?: number },
+): ModelReceiptSelection {
+  const batch = input.batch ?? COMMAND_RETENTION_BATCH;
+  let after = input.after;
+  let end = occupiedWindowEnd(store, "command", after, input.window);
+  if (end === null && after > 0)
+    end = occupiedWindowEnd(store, "command", (after = 0), input.window);
+  if (end === null) return { ids: [], next: 0 };
+  const cutoff = new Date(input.now.getTime() - MODEL_RECEIPT_RETENTION_MS).toISOString();
+  const rows = store.prepare(MODEL_RECEIPT_PAGE_SQL).all(after, end, cutoff, batch) as Array<{
+    retention_rowid: number;
+    id: string;
+  }>;
+  const next = rows.length === batch ? rows[rows.length - 1]!.retention_rowid : end;
+  return { ids: rows.map((row) => row.id), next };
+}
 
 export interface PrunableCommand {
   id: string;

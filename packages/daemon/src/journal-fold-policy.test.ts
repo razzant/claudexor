@@ -213,7 +213,7 @@ function buildFixture() {
   commands.update("job-d", { state: "succeeded", finishedAt: T0 });
   commands.prune(["job-b", "job-d"]);
 
-  // job-m: a model-operation receipt, retained forever.
+  // job-m: a model-operation receipt, outside the product prune above.
   accept("job-m", {
     kind: "model",
     request: { resourceId: "res-1", sha256: `sha256:${"b".repeat(64)}`, sizeBytes: 3 },

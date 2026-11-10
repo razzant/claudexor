@@ -166,7 +166,7 @@ export async function main(): Promise<void> {
         client: selfClient,
         authority: delegation.authority,
         admission: (id) => server.admission(id),
-        deferred: () => server.deferred,
+        daemon: () => server,
         authReadiness: () => readiness,
         bus,
         runtimeConcurrencyCaps: caps,

@@ -246,8 +246,6 @@ export class ModelOperations {
     }
   }
 
-  /** Existing maintenance invokes this after journal recovery/admission. Live
-   * command refs protect bytes; operational blobs cannot recreate a terminal. */
   reconcileResources(dryRun = false): { released: string[]; errors: string[] } {
     const report = { released: [] as string[], errors: [] as string[] };
     const now = this.now().getTime();
