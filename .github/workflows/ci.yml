@@ -9,9 +9,13 @@ permissions:
   contents: read
 
 jobs:
+  # Each job is bounded at about twice its slowest successful run, never below
+  # ten minutes, so a hung step fails visibly instead of holding a required
+  # check for GitHub's six-hour default. Raise a bound when honest runs near it.
   build-test:
     name: Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -83,8 +87,15 @@ jobs:
       - name: Typecheck (packages + tests + scripts)
         run: pnpm typecheck && pnpm typecheck:tests
 
+      # Bounded inside the job, so the listing below still runs after a hang.
       - name: Test
+        id: test
+        timeout-minutes: 40
         run: pnpm test
+
+      - name: List processes left after the test step failed or timed out
+        if: failure() && steps.test.outcome == 'failure'
+        run: ps axww -o user,pid,ppid,pgid,stat,etime,command | awk -v user="$(id -un)" 'NR == 1 || $1 == user'
 
       - name: Verify generated JSON Schema is up to date
         run: |
@@ -201,6 +212,7 @@ jobs:
     needs: [build-test, windows-test, swift]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Require every Node matrix leg to succeed
         # `needs.<job>.result` collapses the whole matrix: it is `success` only
@@ -228,6 +240,7 @@ jobs:
   windows-test:
     name: Windows ${{ matrix.runner }} (Node ${{ matrix.node-version }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -464,6 +477,7 @@ jobs:
 
   swift:
     runs-on: macos-26
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
