@@ -35,12 +35,17 @@ type CommandRow = {
 };
 const COLUMNS =
   "id,pid,kind,run_id AS runId,run_dir AS runDir,state,finished_at AS finishedAt,continue_from,params_sha";
+/** The only kinds `readRow` acts on (#638): model, maintenance and reset rows
+ * own no run files, so the pass reads them only as a changed-owner refresh. */
+const ACTED_COMMAND_KINDS = "kind IN ('product','delivery')";
 
 export async function commandRetentionReferences(
   store: EngineStore,
   retained: (pid: number) => boolean,
   referencedRunIds = new Set<string>(),
   signal?: AbortSignal,
+  /** Equivalence tests pass `null` to replay the unfiltered page order. */
+  where: string | null = ACTED_COMMAND_KINDS,
 ) {
   const blobs = new BlobFiles(store);
   const paramsByDigest = new Map<string, ReturnType<typeof Dependencies.parse>>();
@@ -131,7 +136,13 @@ export async function commandRetentionReferences(
       );
     }
   };
-  for await (const rows of retentionPages<CommandRow>(store, "command", COLUMNS, signal)) {
+  for await (const rows of retentionPages<CommandRow>(
+    store,
+    "command",
+    COLUMNS,
+    signal,
+    where ?? undefined,
+  )) {
     for (const row of rows) {
       await yieldToAdmission();
       signal?.throwIfAborted();

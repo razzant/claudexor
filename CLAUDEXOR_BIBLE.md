@@ -518,9 +518,16 @@ invariant or operator decision before proceeding.
   Model resources use the same upload/blob owner with atomic, replayable
   finalization. Request bytes are released when the operation terminates;
   response bytes after explicit digest-bound acknowledgement, or 30 days from
-  readiness if unacknowledged. The compact command receipt survives cleanup:
-  repeat retrieval cannot turn into another generation. Existing maintenance
-  reclaims crash residue; the caller retains conversation history.
+  readiness if unacknowledged. Existing maintenance reclaims crash residue;
+  the caller retains conversation history.
+  CONCEPT-CHANGE(INV-064), #637: the compact command receipt and its
+  idempotency binding last 30 days after the terminal and never before the
+  response and both resources settle; until then a same-key create cannot turn
+  into another generation. A missing receipt proves neither non-dispatch nor
+  cost. Rationale: an uncapped receipt per model call grew without bound, and
+  its host retries only within a live call. verify:
+  `packages/daemon/src/model-operations.test.ts`,
+  `packages/daemon/src/store/model-receipt-retention.test.ts`.
 - **INV-065** Every selected lane must declare finite MIME, byte/count and
   transport support for every mandatory attachment. Mixed pools fail before
   enqueue when any selected lane cannot receive the same bytes; adapters verify

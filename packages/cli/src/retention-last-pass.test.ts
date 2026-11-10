@@ -173,6 +173,43 @@ it.each(["model", "upload"])(
     });
   },
 );
+it("periodic retention uses the daemon's history policy and releases cancelled ids, but preview does neither", async () => {
+  const { root, sql } = await fixture();
+  const runtime = createSqlDaemonRuntime(sql.graph, {
+    server: {
+      socketPath: join(root, "unused.sock"),
+      token: "fixture",
+      maxHistory: 0,
+      idempotencyRetentionMs: 0,
+      now: () => new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+    },
+    authReadiness: () => ({ invalidate() {} }),
+    agent: () => async () => ({ lifecycle: "succeeded" }),
+  });
+  cleanup.push(() => runtime.stop());
+  sql.graph.commands.current().accept({
+    id: "cancelled-retention",
+    params: { mode: "ask", prompt: "never run" },
+    idempotencyKey: "cancelled-retention",
+    clientId: "fixture",
+  });
+  runtime.server.cancelJob("cancelled-retention");
+  // This memory-retention claim has no public projection; inspect the existing
+  // set rather than add a production API only to expose its size.
+  const cancelled = Reflect.get(runtime.server, "cancelled") as Set<string>;
+  expect(cancelled.has("cancelled-retention")).toBe(true);
+  const prune = vi.spyOn(runtime.server, "pruneHistory");
+  const run = runtime.retention(async () => receipt());
+  await run({ dry_run: true });
+  expect(prune).not.toHaveBeenCalled();
+  expect(sql.records().map((record) => record.id)).toContain("cancelled-retention");
+  expect(cancelled.has("cancelled-retention")).toBe(true);
+  await run({ dry_run: false });
+  expect(prune).toHaveBeenCalledTimes(1);
+  expect(sql.records()).toEqual([]);
+  expect(cancelled.size).toBe(0);
+});
+
 it("drains the actual persistence barrier before shutdown and propagates a barrier failure", async () => {
   const { sql } = await fixture();
   const flush = sql.store.flushed.bind(sql.store);

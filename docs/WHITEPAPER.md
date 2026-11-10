@@ -63,7 +63,7 @@ while the caller decides when to update and whether to continue its work.
 Model content and authorization are distinct responsibilities. The caller's model
 payload keeps its supplied content, including examples that resemble credentials;
 the adapter's own authorization never enters that payload. Temporary exchange
-bytes support result recovery, while compact receipts retain operation identity.
+bytes support recovery; compact receipts keep operation identity for 30 days after termination.
 The calling application remains responsible for conversation history. This narrow
 content boundary does not change the protections on Agent tasks and attachments.
 

@@ -34,7 +34,8 @@ that owns its conversation and tools, not an OpenAI-compatible server or an
 Agent Run. The operation catalog and generated schemas describe upload purpose,
 request/response shapes, exact account metadata, status, cancellation and ACK.
 
-Use the stable operation identity to recover a lost local reply. Accept the
+Use the stable operation identity to recover a lost local reply within 30 days
+of its end; a later miss is unknown, never proof it did not run. Accept the
 digest-bound result into the caller's own history before acknowledging it;
 reading alone does not acknowledge custody. See
 [Caller-owned model operations](ARCHITECTURE.md#caller-owned-model-operations)

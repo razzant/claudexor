@@ -547,7 +547,7 @@ describe("SQL command retention contract", () => {
     ]);
   });
 
-  it("retires only aged model/reset event copies in bounded passes and keeps their receipts/bindings forever", async () => {
+  it("retires 30-day model receipts with their events and bindings, keeping account resets and only aging their event copies", async () => {
     const f = await fixture(),
       pid = f.generations[0]!.pid,
       events = new SqlEventLedger(f.store, f.blobs, f.generations[0]!);
@@ -587,11 +587,21 @@ describe("SQL command retention contract", () => {
         });
       }
     });
-    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
-    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 20 });
-    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
-    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 0 });
+    const models = rows.filter((_, i) => i % 2 === 0).map(({ prepared }) => prepared.row.id);
+    // Product cap/age are 0 here: model receipts follow only their own 30 days.
+    expect(f.pruner.pruneHistory(0, 0, Date.parse(OLD) + MONTH - 1)).toEqual([]);
     expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 120 });
-    expect(f.store.prepare("SELECT count(*) AS n FROM idempotency").get()).toEqual({ n: 120 });
+    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual(models);
+    // One batch removed each model receipt's own event keys; reset copies age separately.
+    expect(f.store.prepare("SELECT count(*) AS n FROM event").get()).toEqual({ n: 0 });
+    expect(f.pruner.pruneHistory(0, 0, NOW)).toEqual([]);
+    expect(f.store.prepare("SELECT DISTINCT kind FROM command").all()).toEqual([
+      { kind: "account_reset" },
+    ]);
+    expect(f.store.prepare("SELECT count(*) AS n FROM command").get()).toEqual({ n: 60 });
+    expect(f.store.prepare("SELECT count(*) AS n FROM idempotency").get()).toEqual({ n: 60 });
+    expect(
+      f.store.prepare("SELECT count(*) AS n FROM idempotency WHERE target_id LIKE 'model-%'").get(),
+    ).toEqual({ n: 0 });
   });
 });

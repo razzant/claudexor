@@ -66,7 +66,7 @@ export function createSqlDaemonRuntime(
     authority,
     bus,
     admission: (id) => server.admission(id),
-    deferred: () => server.deferred,
+    daemon: () => server,
     runtimeConcurrencyCaps: options.server.runtimeConcurrencyCaps,
   });
   const server = new DaemonServer({
@@ -104,8 +104,8 @@ export function createSqlDaemonExecutors(
     client: DaemonLocalClient;
     authority: DelegationBudgetAuthority;
     admission: (id: string) => JobAdmission | null;
-    /** The serving daemon's deferred owner, read when a settlement arrives. */
-    deferred: () => Pick<DaemonServer["deferred"], "processScopeSettled">;
+    /** The serving queue owns deferred settlement and history/cancellation cleanup. */
+    daemon: () => Pick<DaemonServer, "deferred" | "pruneHistory">;
     authReadiness: () => Pick<AuthReadinessService, "invalidate">;
     bus: RunEventBus;
     runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
@@ -156,7 +156,7 @@ export function createSqlDaemonExecutors(
     options.laterScopes ?? daemonRunScopeIndex(),
     {
       run: (runId) => graph.commands.queries.getByRunId(runId),
-      settled: (jobId) => options.deferred().processScopeSettled(jobId),
+      settled: (jobId) => options.daemon().deferred.processScopeSettled(jobId),
     },
   );
   return {
@@ -179,7 +179,10 @@ export function createSqlDaemonExecutors(
       const wrapped = models.withRetention(runner);
       return recordLastRetention(
         afterRetention(wrapped, (request) => {
-          if (!request.dry_run) graph.resources.pruneUploadBindings();
+          if (!request.dry_run) {
+            options.daemon().pruneHistory();
+            graph.resources.pruneUploadBindings();
+          }
         }),
         graph.store,
       );
