@@ -336,11 +336,11 @@ import { savedForSynthesis } from "./savedCandidate.js";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import type { EventLog, TerminalPersistenceHook, TerminalStagingHook } from "@claudexor/event-log";
 import { buildContextPack, writeEvidencePacket } from "@claudexor/context";
-import { RawPatchLane, correctableRefusal, endsConvergence } from "./rawPatchLane.js";
+import { RawAdoption, RawPatchLane, correctableRefusal, endsConvergence } from "./rawPatchLane.js";
 import { runRuntimeRoot } from "./run-runtime-root.js";
 import {
   WorkspaceManager,
-  snapshotTree,
+  rawAwareSnapshot,
   type EnsureGitRepositoryResult,
 } from "@claudexor/workspace";
 import {
@@ -3098,11 +3098,7 @@ export class Orchestrator {
     // run — revert is simply unavailable then.
     let preTurnSha: string | null = null;
     if (mutatingRun && input.inPlace === true && input.workspaceKind !== "directory") {
-      try {
-        preTurnSha = await snapshotTree(execRoot);
-      } catch {
-        preTurnSha = null;
-      }
+      preTurnSha = await rawAwareSnapshot(execRoot).catch(() => null);
     }
 
     // ContextPack is LAZY: agent/race candidates explore the live tree
@@ -3176,6 +3172,7 @@ export class Orchestrator {
       const envelopes = reviewEnvelopes.splice(0);
       for (const env of envelopes) await kept.settle(wsm, env, runsBySlot);
     };
+    const rawAdoption = new RawAdoption(execRoot, input);
     const candidateAccess = contract.access.effective_profile;
 
     interface CandidateSlot {
@@ -3325,6 +3322,8 @@ export class Orchestrator {
               requestedSingleCandidate &&
               slot.routed.implementationTransport !== "git_patch_envelope"),
         });
+        // A continueFrom envelope already owns its record: no empty source overwrites it.
+        if (!input.continuation?.adopt) await rawAdoption.seed(envelope.worktree_path);
         harnessHome = this.harnessHomeFor(wsm, envelope, slot.routed, input);
         const run = await this.runCandidateInEnvelope(
           slot.routed,
@@ -3544,6 +3543,8 @@ export class Orchestrator {
             }
           }
         }
+        if (!effectiveRun.errored && secretDiff.hasCandidateChanges(effectiveRun))
+          await rawAdoption.keep(effectiveRun.attemptId, envelope.worktree_path);
         runsBySlot[slotIdx] = effectiveRun;
         reviewEnvelopes.push(envelope);
         envelope = undefined;
@@ -3679,11 +3680,7 @@ export class Orchestrator {
       requestedSingleCandidate &&
       needsPostTurnFence(runs)
     ) {
-      try {
-        earlyPostTurnSha = await snapshotTree(execRoot);
-      } catch {
-        earlyPostTurnSha = null;
-      }
+      earlyPostTurnSha = await rawAwareSnapshot(execRoot).catch(() => null);
     }
 
     if (input.signal?.aborted) {
@@ -3881,6 +3878,7 @@ export class Orchestrator {
               workspaceKind: input.workspaceKind,
               scopePaths: input.scopePaths,
             });
+            await rawAdoption.seed(envelope.worktree_path);
             const synthHome = this.harnessHomeFor(wsm, envelope, synthRouted, input);
             const run = await this.runCandidateInEnvelope(
               synthRouted,
@@ -3937,6 +3935,8 @@ export class Orchestrator {
                 run.telemetry.usageCost,
               ),
             );
+            if (!run.errored && secretDiff.hasCandidateChanges(run))
+              await rawAdoption.keep(run.attemptId, envelope.worktree_path);
             reviewEnvelopes.push(envelope);
             envelope = undefined;
             // D-16 r8: only a WORKING synth is reviewed/adopted (same veto owner
@@ -4229,8 +4229,9 @@ export class Orchestrator {
                 applied: true,
                 patch_sha256: patchSha256,
                 winner: winnerRun.attemptId,
+                ...(await rawAdoption.publish(winnerRun.attemptId)),
               });
-              postTurnSha = await snapshotTree(execRoot).catch(() => null);
+              postTurnSha = await rawAwareSnapshot(execRoot).catch(() => null);
               revertAnchorId = await anchors.after(winnerRun, applied);
             } else {
               // A write that could not be taken back stays live and revertable (INV-114).
@@ -4245,6 +4246,7 @@ export class Orchestrator {
                 patch_sha256: patchSha256,
                 detail: redactSecrets(applied.detail ?? "apply failed"),
                 tree_mutated: applied.treeMutated,
+                ...(adopted ? await rawAdoption.publish(winnerRun.attemptId) : {}),
               });
             }
           }
@@ -4836,11 +4838,7 @@ export class Orchestrator {
       // access level the envelope did not actually run with.
       const convergenceAccess = contract.access.effective_profile;
       if (input.inPlace === true && input.workspaceKind !== "directory") {
-        try {
-          preTurnSha = await snapshotTree(execRoot);
-        } catch {
-          preTurnSha = null;
-        }
+        preTurnSha = await rawAwareSnapshot(execRoot).catch(() => null);
       }
       envelope = await wsm.create({
         taskId,
@@ -5054,11 +5052,7 @@ export class Orchestrator {
         // harness mutated it, before this attempt's review). The last attempt's
         // value is the revert target persisted into work_product.yaml (an unchanged one has none).
         if (input.inPlace && input.workspaceKind !== "directory" && needsPostTurnFence([run])) {
-          try {
-            lastPostTurnSha = await snapshotTree(execRoot);
-          } catch {
-            lastPostTurnSha = null;
-          }
+          lastPostTurnSha = await rawAwareSnapshot(execRoot).catch(() => null);
         }
 
         // Cancellation/deadline keeps priority over a belt failure finalized concurrently.

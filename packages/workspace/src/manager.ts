@@ -38,6 +38,7 @@ import {
   writeEnvelopeCustody,
 } from "./envelope-custody.js";
 import { snapshotLegacyDirectoryBaseline } from "./plain-diff.js";
+import { rawAcceptedPaths, rawAwareSnapshot } from "./raw-patch.js";
 import { capturePlainDiff } from "./plain-diff-capture.js";
 import {
   CLAUDE_BRIDGE_BASENAME,
@@ -52,7 +53,6 @@ import {
   isolatedCloneAdd,
   isGitRepo,
   revParse,
-  snapshotTree,
   statusPorcelain,
   stashCreate,
   worktreePrune,
@@ -211,7 +211,7 @@ export class WorkspaceManager {
           this.projectRoot,
           await repositoryObjectFormat(this.repoRoot),
         );
-      const baseSha = !readOnly && gitRepo ? await snapshotTree(this.repoRoot) : null;
+      const baseSha = !readOnly && gitRepo ? await rawAwareSnapshot(this.repoRoot) : null;
       if (!readOnly && !gitRepo) snapshotLegacyDirectoryBaseline(this.repoRoot, base);
       return WorkspaceEnvelopeSchema.parse({
         id: envelopeId,
@@ -241,16 +241,17 @@ export class WorkspaceManager {
 
     const porcelain = await statusPorcelain(this.repoRoot);
     const dirty = porcelain.trim().length > 0;
-    if (dirty) {
-      if (dirtyPolicy === "refuse") {
-        throw new WorkspaceError(
-          "working tree is dirty; commit/stash or set dirty_policy: snapshot",
-        );
-      }
+    if (dirty && dirtyPolicy === "refuse") {
+      throw new WorkspaceError("working tree is dirty; commit/stash or set dirty_policy: snapshot");
+    }
+    // A snapshot base holds what an accepted raw patch left in this tree: status
+    // cannot show an ignored one, and the next candidate would start without it (#594).
+    const keep = dirtyPolicy === "snapshot" ? await rawAcceptedPaths(this.repoRoot, baseRef) : [];
+    if (dirty || keep.length > 0) {
       // snapshot: a stash-create commit becomes the base SHA without touching
       // the live tree. (The include/stash aliases and the untested `copy`
       // variant were retired in the v0.15 triage.)
-      const snap = await stashCreate(this.repoRoot);
+      const snap = await stashCreate(this.repoRoot, {}, [], keep);
       if (snap) baseSha = snap;
     }
 
@@ -418,11 +419,13 @@ export class WorkspaceManager {
       this.bridgeCreatedFact(env) && isGeneratedClaudeBridge(env.worktree_path)
         ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
         : [];
+    // What an accepted raw patch wrote is the candidate's, ignored or not (#594).
+    const keep = await rawAcceptedPaths(env.worktree_path, env.base_sha ?? "HEAD");
     const captured = await captureWorkingTreeTransient(
       env.worktree_path,
       env.base_sha ?? "HEAD",
       [...artifactExcludes, ...bridgeExcludes],
-      { projectRoot: this.projectRoot ?? env.repo_root, owner },
+      { projectRoot: this.projectRoot ?? env.repo_root, owner, keep },
     );
     return {
       diff: captured.patch,

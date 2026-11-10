@@ -7,13 +7,26 @@
  * with its usage kept, never a crashed process.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { ArtifactStore } from "@claudexor/artifact-store";
 import type { HarnessAdapter } from "@claudexor/core";
+import { revertInPlaceFromAnchor, verifyAndDeliver } from "@claudexor/delivery";
 import { createRawApiAdapter } from "@claudexor/harness-raw-api";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { ControlRunSummary, type HarnessRunSpec } from "@claudexor/schema";
+import { projectRuntimeDir } from "@claudexor/util";
+import {
+  WorkspaceManager,
+  createPairRevertAnchor,
+  ensureThreadWorktree,
+  rawAcceptedPaths,
+  retainedEnvelopeOfRun,
+} from "@claudexor/workspace";
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
+import { runKeepReason } from "../../control-api/src/retention-candidates.js";
+import { runDeliverable } from "../../control-api/src/run-exact-patch.js";
 import { detailFor, summarizeRun } from "../../control-api/src/run-projection.js";
 import type { DaemonRunRecord } from "../../control-api/src/run-record.js";
 import {
@@ -32,6 +45,7 @@ import {
   telemetryRecord,
   type Loopback,
 } from "./test-support/raw-api-loopback.js";
+import { applyThreadDiff } from "./thread-delivery.js";
 
 // Real Git runs: the timeouts detect hangs, and a busy machine is not one.
 vi.setConfig({ testTimeout: 300_000, hookTimeout: 120_000 });
@@ -350,6 +364,482 @@ describe("what a gate leaves between rounds (#551)", () => {
     expect(readFileSync(join(result.runDir, "final", "patch.diff"), "utf8")).not.toContain(
       "gate.log",
     );
+  });
+});
+
+describe("a file an accepted patch writes stays in the result whatever the ignore rules say (#594)", () => {
+  const ignoringLogs = () => committed({ ".gitignore": "*.log\n" });
+  const finalPatch = (runDir: string) => readFileSync(join(runDir, "final", "patch.diff"), "utf8");
+  /** The run as the daemon records it: what the Apply route reads. */
+  const recordOf = (result: {
+    runId: string;
+    taskId: string;
+    runDir: string;
+  }): DaemonRunRecord => ({
+    id: "job-raw",
+    runId: result.runId,
+    taskId: result.taskId,
+    state: "succeeded",
+    runDir: result.runDir,
+    params: { mode: "agent", prompt: "Build the feature" },
+  });
+  const removal = (path: string, line: string) =>
+    `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-${line}\n`;
+
+  it("one attempt: Apply delivers it with the rest and Revert takes it back, behind the same fences", async () => {
+    const repo = ignoringLogs();
+    const base = git(repo, "rev-parse", "HEAD");
+    writeFileSync(join(repo, "user.log"), "the user's own log\n");
+    provider.answers = [
+      { patch: create("debug.log", "proposed") + edit("README.md", "# repo", "# raw") },
+    ];
+    const result = await rounds(openrouter(), repo, 1, { attempts: undefined, n: 1 });
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    expect(provider.posts).toHaveLength(1);
+    expect(finalPatch(result.runDir)).toContain("diff --git a/debug.log b/debug.log");
+    expect(finalPatch(result.runDir)).not.toContain("user.log");
+    deliverFromBase(repo, base, result.runDir, {
+      "README.md": "# raw\n",
+      "debug.log": "proposed\n",
+    });
+    expect(existsSync(join(repo, "debug.log"))).toBe(false);
+
+    // Apply as its route does: the run's saved result, through the delivery owner.
+    const delivery = runDeliverable(recordOf(result), repo)!;
+    const apply = () =>
+      verifyAndDeliver(
+        repo,
+        delivery.deliverable,
+        { mode: "apply", projectRoot: repo, owner: result.runDir },
+        [],
+      );
+    // A file of the user's own at that ignored path is never overwritten.
+    writeFileSync(join(repo, "debug.log"), "the user's own debug log\n");
+    expect(await apply()).toMatchObject({
+      applied: false,
+      treeMutated: false,
+      refusal: { code: "delivery_path_occupied", paths: ["debug.log"] },
+    });
+    expect(readFileSync(join(repo, "debug.log"), "utf8")).toBe("the user's own debug log\n");
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
+    rmSync(join(repo, "debug.log"));
+    const applied = await apply();
+    expect(applied).toMatchObject({ applied: true });
+    expect(readFileSync(join(repo, "debug.log"), "utf8")).toBe("proposed\n");
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# raw\n");
+
+    // Revert works on the delivered pair: a later edit of the file is the user's.
+    const anchor = await createPairRevertAnchor(repo, applied.deliveryPair!, repo);
+    writeFileSync(join(repo, "debug.log"), "edited after the apply\n");
+    expect(await revertInPlaceFromAnchor(repo, anchor, repo)).toMatchObject({
+      reverted: false,
+      refusal: { code: "revert_conflict" },
+    });
+    expect(readFileSync(join(repo, "debug.log"), "utf8")).toBe("edited after the apply\n");
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# raw\n");
+    writeFileSync(join(repo, "debug.log"), "proposed\n");
+    expect(await revertInPlaceFromAnchor(repo, anchor, repo)).toMatchObject({ reverted: true });
+    expect(existsSync(join(repo, "debug.log"))).toBe(false);
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
+    expect(readFileSync(join(repo, "user.log"), "utf8")).toBe("the user's own log\n");
+    expect(git(repo, "status", "--porcelain")).toBe("");
+  });
+
+  it("a proposal that writes only an ignored file is a change, held like any other", async () => {
+    const repo = ignoringLogs();
+    const base = git(repo, "rev-parse", "HEAD");
+    provider.answers = [{ patch: create("debug.log", "proposed") }];
+    const result = await rounds(openrouter(), repo, 1, { attempts: undefined, n: 1 });
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    expect(result.facts.noChanges).toBe(false);
+    expect(result.facts.reason).toBeNull();
+    const workProduct = new ArtifactStore(result.runDir).readYaml<{
+      meta: Record<string, unknown>;
+    }>(join(result.runDir, "final", "work_product.yaml"));
+    expect(workProduct?.meta["capturedNoGitChange"]).toBe(false);
+    deliverFromBase(repo, base, result.runDir, { "debug.log": "proposed\n" });
+    // Retention judges it as it judges any finished run: an old one, referenced by nothing.
+    const errors: unknown[] = [];
+    const finished = { runId: result.runId, state: "succeeded", finishedAt: "2020-01-01" };
+    expect(
+      runKeepReason(result.runDir, result.runId, finished, new Set(), Date.now(), (e) =>
+        errors.push(e),
+      ),
+    ).toBe("actionable");
+    expect(errors).toEqual([]);
+  });
+
+  it.each([
+    ["edits", edit("debug.log", "proposed", "edited"), "edited\n"],
+    ["deletes", removal("debug.log", "proposed"), null],
+  ])("a later round %s the ignored file an earlier round wrote", async (_verb, change, kept) => {
+    const repo = ignoringLogs();
+    const base = git(repo, "rev-parse", "HEAD");
+    provider.answers = [
+      { patch: create("debug.log", "proposed") + edit("README.md", "# repo", "# draft") },
+      { patch: change + edit("README.md", "# draft", "# final") },
+    ];
+    const result = await rounds(openrouter(), repo, 2, { tests: [gateOn("README.md", "# final")] });
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    expect(provider.posts).toHaveLength(2);
+    // The second round reads the file the first wrote, and may change it.
+    const second = sentPacket(provider.posts[1]);
+    expect(second.readable_files.find((file) => file.path === "debug.log")?.content).toBe(
+      "proposed\n",
+    );
+    expect(second.editable_paths).toContain("debug.log");
+    deliverFromBase(repo, base, result.runDir, {
+      "README.md": "# final\n",
+      ...(kept === null ? {} : { "debug.log": kept }),
+    });
+    if (kept === null) expect(finalPatch(result.runDir)).not.toContain("debug.log");
+  });
+
+  it("a later round that creates it again is told it exists, and may correct that", async () => {
+    const repo = ignoringLogs();
+    const base = git(repo, "rev-parse", "HEAD");
+    provider.answers = [
+      { patch: create("debug.log", "proposed") + edit("README.md", "# repo", "# draft") },
+      { patch: create("debug.log", "proposed again") + edit("README.md", "# draft", "# final") },
+      { patch: edit("debug.log", "proposed", "edited") + edit("README.md", "# draft", "# final") },
+    ];
+    const result = await rounds(openrouter(), repo, 3, { tests: [gateOn("README.md", "# final")] });
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    expect(provider.posts).toHaveLength(3);
+    expect(attemptRecord(result.runDir, "a02")).toContain("raw_patch_stale_preimage");
+    deliverFromBase(repo, base, result.runDir, {
+      "README.md": "# final\n",
+      "debug.log": "edited\n",
+    });
+  });
+
+  it("a kept envelope keeps it: a fresh manager captures it and a continueFrom successor edits and delivers it", async () => {
+    const repo = ignoringLogs();
+    const base = git(repo, "rev-parse", "HEAD");
+    provider.answers = [
+      { patch: create("debug.log", "proposed") },
+      {
+        patch:
+          edit("debug.log", "proposed", "continued") + edit("README.md", "# repo", "# continued"),
+      },
+    ];
+    // Stopped as its answer arrives: the accepted patch is applied, and the run's
+    // unfinished work is kept for continuation.
+    const stop = new AbortController();
+    const first = await rounds(openrouter(), repo, 1, {
+      attempts: undefined,
+      n: 1,
+      continuation: { retain: true },
+      signal: stop.signal,
+      onHarnessEvent: (event: { type: string }) => {
+        if (event.type === "usage") stop.abort();
+      },
+    });
+    expect(first.lifecycle, first.summary).toBe("cancelled");
+    const kept = retainedEnvelopeOfRun(first.runDir, first.runId);
+    expect(kept).not.toBeNull();
+    expect(readFileSync(join(kept!.envelope.worktree_path, "debug.log"), "utf8")).toBe(
+      "proposed\n",
+    );
+    // A manager that never saw that run captures what its accepted patch wrote.
+    const fresh = await new WorkspaceManager(repo).captureDiff(kept!.envelope);
+    expect(fresh.captureIncomplete).toBe(false);
+    expect(fresh.diff).toContain("diff --git a/debug.log b/debug.log");
+
+    const next = await rounds(openrouter(), repo, 1, {
+      attempts: undefined,
+      n: 1,
+      prompt: "Finish the feature",
+      continuation: {
+        retain: true,
+        adopt: kept,
+        from: {
+          runId: first.runId,
+          runDir: first.runDir,
+          state: first.lifecycle,
+          workOrder: "Build the feature",
+          preference: "auto",
+        },
+      },
+    });
+    expect(next.lifecycle, next.summary).toBe("succeeded");
+    expect(provider.posts).toHaveLength(2);
+    const packet = sentPacket(provider.posts[1]);
+    expect(packet.readable_files.find((file) => file.path === "debug.log")?.content).toBe(
+      "proposed\n",
+    );
+    expect(packet.editable_paths).toContain("debug.log");
+    deliverFromBase(repo, base, next.runDir, {
+      "README.md": "# continued\n",
+      "debug.log": "continued\n",
+    });
+    // Apply delivers the continued result, ignored file included, and Revert takes it back.
+    const applied = await verifyAndDeliver(
+      repo,
+      runDeliverable(recordOf(next), repo)!.deliverable,
+      { mode: "apply", projectRoot: repo, owner: next.runDir },
+      [],
+    );
+    expect(applied).toMatchObject({ applied: true });
+    expect(readFileSync(join(repo, "debug.log"), "utf8")).toBe("continued\n");
+    const anchor = await createPairRevertAnchor(repo, applied.deliveryPair!, repo);
+    expect(await revertInPlaceFromAnchor(repo, anchor, repo)).toMatchObject({ reverted: true });
+    expect(existsSync(join(repo, "debug.log"))).toBe(false);
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
+  });
+
+  /** The real adapter, with `fault` done to the envelope's own Git store once its answer
+   * arrived: between the packet's dispatch and the patch's acceptance. */
+  const faulting = (fault: (gitDir: string) => void) => {
+    const adapter = openrouter();
+    const run = adapter.run.bind(adapter);
+    const seen = { cwd: "" };
+    adapter.run = async function* (spec) {
+      seen.cwd = spec.cwd;
+      for await (const event of run(spec)) {
+        if (event.type === "usage") fault(git(spec.cwd, "rev-parse", "--absolute-git-dir"));
+        yield event;
+      }
+    };
+    return { adapter, seen };
+  };
+
+  it("a record fault before the patch lands applies nothing and never reads as no change", async () => {
+    const repo = ignoringLogs();
+    provider.answers = [{ patch: create("debug.log", "proposed") }];
+    const { adapter, seen } = faulting((gitDir) => {
+      mkdirSync(join(gitDir, "refs", "worktree"), { recursive: true });
+      writeFileSync(join(gitDir, "refs", "worktree", "claudexor"), "in the record's way\n");
+    });
+    const result = await rounds(adapter, repo, 1, { attempts: undefined, n: 1 });
+    expect(result.lifecycle).toBe("failed");
+    // Unknown, never a proof of no change: the capture could not read the record.
+    expect(result.facts.noChanges).toBeNull();
+    expect(result.facts.reason).toBe("capture_refused");
+    expect(result.summary).toContain("raw_patch_requires_isolation");
+    expect(attemptRecord(result.runDir)).toContain("disposition: retained");
+    // The refused patch never reached the kept worktree.
+    expect(existsSync(seen.cwd)).toBe(true);
+    expect(existsSync(join(seen.cwd, "debug.log"))).toBe(false);
+  });
+
+  it("a record fault after the patch landed loses nothing: the file reaches the result", async () => {
+    const repo = ignoringLogs();
+    const base = git(repo, "rev-parse", "HEAD");
+    provider.answers = [{ patch: create("debug.log", "proposed") }];
+    const { adapter } = faulting((gitDir) => {
+      const accepted = join(gitDir, "refs", "worktree", "claudexor", "raw-accepted");
+      mkdirSync(accepted, { recursive: true });
+      writeFileSync(join(accepted, "inner"), "in the accepted record's way\n");
+    });
+    const result = await rounds(adapter, repo, 1, { attempts: undefined, n: 1 });
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    expect(result.facts.noChanges).toBe(false);
+    expect(finalPatch(result.runDir)).toContain("diff --git a/debug.log b/debug.log");
+    deliverFromBase(repo, base, result.runDir, { "debug.log": "proposed\n" });
+  });
+
+  it("what a native round or a gate leaves ignored stays out beside it", async () => {
+    const repo = ignoringLogs();
+    const base = git(repo, "rev-parse", "HEAD");
+    const native: HarnessRunSpec[] = [];
+    const reader = nativeReader("native", "anthropic", native, (spec) => {
+      writeFileSync(join(spec.cwd, "native.txt"), `from native ${native.length}\n`);
+      writeFileSync(join(spec.cwd, "native.log"), "a native round's own log\n");
+    });
+    provider.answers = [
+      { patch: create("debug.log", "proposed") + edit("native.txt", "from native 2", "from raw") },
+    ];
+    const gate = {
+      program: process.execPath,
+      envAllowlist: [],
+      args: [
+        "-e",
+        'const fs=require("fs");fs.writeFileSync("gate.log","ran\\n");process.exit(fs.readFileSync("native.txt","utf8").includes("from raw")?0:1)',
+      ],
+    };
+    const result = await new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["native", reader],
+        ["openrouter", openrouter()],
+      ]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "Build the feature",
+      mode: "agent",
+      harnesses: ["native", "openrouter"],
+      models: { openrouter: "vendor/big" },
+      attempts: 3,
+      review: false,
+      tests: [gate],
+    });
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    expect(native).toHaveLength(2);
+    expect(provider.posts).toHaveLength(1);
+    const manifest = sentPacket(provider.posts[0]).file_manifest.map((entry) => entry.path);
+    expect(manifest).toContain("native.txt");
+    expect(manifest).not.toContain("native.log");
+    expect(manifest).not.toContain("gate.log");
+    const patch = finalPatch(result.runDir);
+    expect(patch).toContain("diff --git a/debug.log b/debug.log");
+    expect(patch).not.toContain("native.log");
+    expect(patch).not.toContain("gate.log");
+    deliverFromBase(repo, base, result.runDir, {
+      "native.txt": "from raw\n",
+      "debug.log": "proposed\n",
+    });
+  });
+});
+
+describe("a persistent thread keeps what its raw turns actually adopted, and nothing else (#594)", () => {
+  const closing: Array<{ close(): Promise<void> }> = [];
+  const runtimeDirs: string[] = [];
+  afterEach(async () => {
+    for (const store of closing.splice(0)) await store.close();
+    for (const dir of runtimeDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A real SQL thread with its persistent worktree, and turns through the real Orchestrator. */
+  const threadProject = async () => {
+    const repo = realpathSync(committed({ ".gitignore": "*.log\n" }));
+    runtimeDirs.push(projectRuntimeDir(repo));
+    const sql = await sqlFixture(realpathSync(ownedDir("cx-raw-thread-sql-")));
+    closing.push(sql);
+    const threads = sql.graph.threads;
+    const { id } = threads.createThread({ repoRoot: repo, workspace: "isolated" });
+    const worktree = await ensureThreadWorktree(repo, id);
+    threads.setThreadWorktree(id, worktree.path, worktree.baseSha);
+    const turn = async (
+      registry: HarnessAdapter[],
+      input: Record<string, unknown> = {},
+      panel: HarnessAdapter[] = [],
+    ) => {
+      const result = await new Orchestrator({
+        registry: new Map([...registry, ...panel].map((adapter) => [adapter.id, adapter])),
+        ...(panel.length > 0
+          ? { reviewerPanel: panel.map((adapter) => ({ harness: adapter.id })) }
+          : { reviewers: [] }),
+      }).run({
+        repoRoot: repo,
+        executionRoot: worktree.path,
+        inPlace: true,
+        prompt: "Build the feature",
+        mode: "agent",
+        harnesses: registry.map((adapter) => adapter.id),
+        models: { openrouter: "vendor/big" },
+        n: 1,
+        review: false,
+        ...input,
+      });
+      threads.bindTurnRun(threads.createTurn(id, "turn").id, result.runId);
+      return result;
+    };
+    const accepted = () => rawAcceptedPaths(worktree.path, "HEAD");
+    return { repo, id, threads, worktree: worktree.path, turn, accepted };
+  };
+  const read = (root: string, path: string) => readFileSync(join(root, path), "utf8");
+
+  it("a raw turn before any Apply reads and edits an earlier turn's file; Apply delivers it alone", async () => {
+    const t = await threadProject();
+    writeFileSync(join(t.worktree, "incidental.log"), "not accepted\n");
+    provider.answers = [
+      { patch: create("debug.log", "proposed") + edit("README.md", "# repo", "# raw") },
+      { patch: edit("debug.log", "proposed", "edited") },
+    ];
+    const first = await t.turn([openrouter()]);
+    expect(first.lifecycle, first.summary).toBe("succeeded");
+    expect(read(t.worktree, "debug.log")).toBe("proposed\n");
+    expect(await t.accepted()).toContain("debug.log");
+    expect(existsSync(join(t.repo, "debug.log"))).toBe(false);
+
+    const second = await t.turn([openrouter()]);
+    expect(second.lifecycle, second.summary).toBe("succeeded");
+    const packet = sentPacket(provider.posts[1]);
+    expect(packet.readable_files.find((file) => file.path === "debug.log")?.content).toBe(
+      "proposed\n",
+    );
+    expect(packet.editable_paths).toContain("debug.log");
+    expect(packet.file_manifest.map((entry) => entry.path)).not.toContain("incidental.log");
+    expect(read(t.worktree, "debug.log")).toBe("edited\n");
+
+    const applied = await applyThreadDiff(t.threads, t.id, { mode: "apply" });
+    expect(applied).toMatchObject({ applied: true, status: "applied" });
+    expect(read(t.repo, "debug.log")).toBe("edited\n");
+    expect(read(t.repo, "README.md")).toBe("# raw\n");
+    expect(existsSync(join(t.repo, "incidental.log"))).toBe(false);
+  });
+
+  it("a later in-place native turn does not report the file a raw turn left as its own", async () => {
+    const t = await threadProject();
+    provider.answers = [{ patch: create("debug.log", "proposed") }];
+    const first = await t.turn([openrouter()]);
+    expect(first.lifecycle, first.summary).toBe("succeeded");
+    const specs: HarnessRunSpec[] = [];
+    const native = await t.turn(
+      [
+        nativeReader("native", "anthropic", specs, (spec) => {
+          writeFileSync(join(spec.cwd, "native.txt"), "from native\n");
+        }),
+      ],
+      { models: {} },
+    );
+    expect(native.lifecycle, native.summary).toBe("succeeded");
+    expect(specs[0]?.cwd).toBe(t.worktree);
+    const patch = readFileSync(join(native.runDir, "final", "patch.diff"), "utf8");
+    expect(patch).toContain("native.txt");
+    expect(patch).not.toContain("debug.log");
+    expect(read(t.worktree, "debug.log")).toBe("proposed\n");
+  });
+
+  it("a candidate its gate rejected changes neither the worktree nor the membership", async () => {
+    const t = await threadProject();
+    provider.answers = [
+      { patch: create("debug.log", "rejected") },
+      { patch: create("debug.log", "accepted") },
+    ];
+    const rejected = await t.turn([openrouter()], { tests: [gateOn("README.md", "# never")] });
+    expect(readFileSync(join(rejected.runDir, "final", "work_product.yaml"), "utf8")).toContain(
+      "apply_state: not_applied",
+    );
+    expect(existsSync(join(t.worktree, "debug.log"))).toBe(false);
+    expect(await t.accepted()).toEqual([]);
+
+    const next = await t.turn([openrouter()]);
+    expect(next.lifecycle, next.summary).toBe("succeeded");
+    expect(sentPacket(provider.posts[1]).file_manifest.map((entry) => entry.path)).not.toContain(
+      "debug.log",
+    );
+    expect(read(t.worktree, "debug.log")).toBe("accepted\n");
+    expect(await t.accepted()).toEqual(["debug.log"]);
+  });
+
+  it("of two raw candidates only the winner's file joins the membership", async () => {
+    const t = await threadProject();
+    const rawB = createRawApiAdapter({
+      id: "raw-b",
+      providerFamily: "unknown",
+      baseUrl: provider.baseUrl,
+      keyEnv: KEY_ENV,
+    });
+    provider.answers = [{ patch: create("one.log", "one") }, { patch: create("two.log", "two") }];
+    const result = await t.turn(
+      [openrouter(), rawB],
+      {
+        n: 2,
+        models: { openrouter: "vendor/big", "raw-b": "vendor/big" },
+        synthesis: "never",
+        review: true,
+      },
+      [nativeReader("reader-a", "anthropic", []), nativeReader("reader-b", "google", [])],
+    );
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    const present = ["one.log", "two.log"].filter((path) => existsSync(join(t.worktree, path)));
+    expect(
+      present,
+      readFileSync(join(result.runDir, "final", "work_product.yaml"), "utf8"),
+    ).toHaveLength(1);
+    expect(await t.accepted()).toEqual(present);
   });
 });
 

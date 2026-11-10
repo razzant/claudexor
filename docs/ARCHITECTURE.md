@@ -2696,7 +2696,27 @@ states each delivered file's blob figures and why any other is left out. So a la
 round, or a raw round after a native one, reads what the earlier round left, new
 files carry their own blobs, and identity and content are one object. The patch applies only
 if the worktree still holds that exact tree (`raw_patch_base_mismatch` otherwise); capture stays base to
-candidate, so the final result holds every round. A refused patch is the attempt's
+candidate, so the final result holds every round. The envelope records what it accepted
+in per-worktree refs of its own repository: `refs/worktree/claudexor/raw-accepted` names a tree
+of only the paths accepted patches wrote, as last written. Before a patch's first byte reaches
+the worktree one transaction writes `raw-pending` (that tree with this patch's paths; renamed
+or deleted ones leave) and `raw-pending-result` (the exact tree the patch leaves); another
+then makes the pending tree accepted. A file either names beyond the base enters the next
+round's tree and the envelope's captures by exact path while it is still a file, even when an
+ignore rule matches it, so the result, Apply, Revert and the next round carry it; each view
+keeps its own exclusions (nested repositories, so a file inside one stays out; in the capture,
+the generated `CLAUDE.md` bridge). In a persistent thread each turn starts from the worktree's
+record and files, and only the adopted winner's record replaces it. The record goes with a kept envelope, so a fresh manager, an
+adopting `continueFrom` successor and the settlement and crash-sweep change checks see the
+file too; no other ignored file, a gate's or a native round's, enters, even one a later patch's
+ignore rule comes to match. A record that cannot be written, or a pending one an earlier patch
+never completed (unless the worktree holds exactly its result: that promotion is finished
+first), refuses the patch as `raw_patch_requires_isolation` before anything is written; a
+patch that fails past `git apply --check` is refused the same way, its pending record still
+naming what it wrote. A record that cannot be read is never read as nothing accepted: the
+capture refuses (`capture_refused`, source kept), and the change checks count it as a change;
+Git before 2.43 (no `show-ref --exists`) cannot tell a failed lookup from a missing ref and
+reads it as absence. A refused patch is the attempt's
 typed failure (`RunFailure.code`), never a crashed process or a same-prompt retry.
 The code names what is wrong, not whether a request was sent: a patch intent
 without its packet (`raw_patch_missing_evidence`) and an over-window request are
