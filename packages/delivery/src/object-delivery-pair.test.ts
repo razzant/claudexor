@@ -1,15 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   captureWorkingTreeTransient,
   createPairRevertAnchor,
+  composeOnTarget,
   GitOperationError,
   isolatedCloneAdd,
 } from "@claudexor/workspace";
 import { revertInPlaceFromAnchor, verifyAndDeliver } from "./index.js";
+import { targetSnapshots } from "./object-custody.js";
 
 // #535 repair r1 (F7): the delivery pair (T, M) must be in the project store
 // before the target is mutated, and a replay of an already-applied delivery
@@ -93,6 +95,36 @@ async function fixture() {
 
 const noSpace = () =>
   new GitOperationError("capture_space_insufficient", "object copy needs more space than is free");
+
+it("composes a second edit of an accepted ignored file onto a target in a repository subdirectory (#594)", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "cx-delivery-sub-"));
+  dirs.push(repo);
+  git(repo, ["init", "-q", "-b", "main"]);
+  writeFileSync(join(repo, ".gitignore"), "*.log\n");
+  mkdirSync(join(repo, "sub"));
+  writeFileSync(join(repo, "sub", "kept.txt"), "kept\n");
+  git(repo, ["add", "-A"]);
+  git(repo, ["commit", "-qm", "base"]);
+  const log = join(repo, "sub", "result.log");
+  const treeWith = (text: string) => {
+    writeFileSync(log, text);
+    const index = { ...ENV, GIT_INDEX_FILE: join(repo, ".git", "pair-index") };
+    execFileSync("git", ["-C", repo, "read-tree", "HEAD"], { env: index });
+    execFileSync("git", ["-C", repo, "add", "-f", "sub/result.log"], { env: index });
+    return execFileSync("git", ["-C", repo, "write-tree"], { env: index }).toString("utf8").trim();
+  };
+  const candidate = treeWith("second\n");
+  const base = treeWith("first\n");
+  const result = { base_tree: base, candidate_tree: candidate } as Parameters<
+    typeof targetSnapshots
+  >[2];
+
+  const snapshot = await targetSnapshots(join(repo, "sub"), repo, result, true);
+  const target = git(repo, ["rev-parse", `${await snapshot()}^{tree}`]);
+
+  expect(git(repo, ["ls-tree", "-r", "--name-only", target])).toContain("sub/result.log");
+  expect(await composeOnTarget({ repo, base, target, candidate })).toMatchObject({ ok: true });
+});
 
 describe("delivery pair custody precedes mutation (F7)", () => {
   it("apply: a store fault refuses before any file is written", async () => {

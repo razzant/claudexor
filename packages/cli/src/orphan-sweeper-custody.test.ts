@@ -11,10 +11,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { commandScopeRoots } from "@claudexor/daemon";
+import { RawContextPacket, RawGitPatchEnvelope } from "@claudexor/schema";
+import { sha256 } from "@claudexor/util";
 import {
   WorkspaceManager,
   adoptRetainedEnvelope,
+  consumeRawPatchEnvelope,
   envelopeBaseOf,
+  rawCandidateTree,
   readEnvelopeCustody,
   retainForContinuation,
   retainForInspection,
@@ -112,6 +116,85 @@ describe("crash GC honors continuation custody", () => {
     // Recovery restored its per-attempt address; it is not a continuation source.
     expect(retainedSourcesOfRun(runDir, "run-task-inspect")).toHaveLength(1);
     expect(retainedEnvelopeOfRun(runDir, "run-task-inspect")).toBeNull();
+  });
+
+  it("keeps an interrupted envelope whose only change is an ignored file an accepted raw patch wrote", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, ".gitignore"), "*.log\n");
+    execFileSync("git", ["-C", repo, "add", "-A"]);
+    execFileSync("git", ["-C", repo, "commit", "-qm", "ignore logs"]);
+    const runDir = temp("run");
+    const custodyOf = (taskId: string, dir: string) => ({ runId: `run-${taskId}`, runDir: dir });
+    const accepted = await new WorkspaceManager(repo).create({
+      taskId: "task-raw",
+      attemptId: "a01",
+      baseRef: "HEAD",
+      custody: custodyOf("task-raw", runDir),
+    });
+    // The engine accepts a raw proposal that writes only an ignored file.
+    const tree = await rawCandidateTree(accepted.worktree_path);
+    const context = RawContextPacket.parse({
+      schema_version: 1,
+      packet_hash: `sha256:${tree}`,
+      base_commit_sha: accepted.base_sha,
+      base_tree_sha: tree,
+      readable_files: [],
+      editable_paths: [],
+      creatable_roots: ["."],
+      file_manifest: [],
+      omissions: [],
+      evidence_refs: [],
+    });
+    const patch =
+      "diff --git a/debug.log b/debug.log\nnew file mode 100644\n--- /dev/null\n+++ b/debug.log\n@@ -0,0 +1 @@\n+accepted\n";
+    await consumeRawPatchEnvelope({
+      repoRoot: repo,
+      worktreePath: accepted.worktree_path,
+      baseCommitSha: accepted.base_sha!,
+      context,
+      envelope: RawGitPatchEnvelope.parse({
+        schema_version: 1,
+        context_packet_hash: context.packet_hash,
+        base_tree_sha: tree,
+        patch,
+        patch_hash: sha256(patch),
+        touched_paths: [{ path: "debug.log", expected_blob_oid: null }],
+      }),
+    });
+    // What a gate or a native process leaves ignored is no reason to keep an envelope.
+    const incidental = await new WorkspaceManager(repo).create({
+      taskId: "task-raw-idle",
+      attemptId: "a01",
+      baseRef: "HEAD",
+      custody: custodyOf("task-raw-idle", temp("idle-run")),
+    });
+    writeFileSync(join(incidental.worktree_path, "gate.log"), "incidental\n");
+    ownerDied(envelopeBaseOf(accepted));
+    ownerDied(envelopeBaseOf(incidental));
+
+    const actions = await sweepOrphanWorkspaces({
+      knownProjectRoots: () =>
+        commandScopeRoots([{ params: { scope: { kind: "project", root: repo } } }]),
+    });
+
+    expect(actions.some((a) => a.startsWith("retained interrupted envelope task-raw/a01"))).toBe(
+      true,
+    );
+    expect(existsSync(envelopeBaseOf(incidental))).toBe(false);
+    // Its successor adopts the same files, and a manager that never saw the run
+    // captures and shows the accepted one.
+    const custody = retainedEnvelopeOfRun(runDir, "run-task-raw");
+    expect(custody?.envelope.id).toBe(accepted.id);
+    const adopted = adoptRetainedEnvelope(custody!, { runId: "run-next", runDir: temp("next") });
+    const captured = await new WorkspaceManager(repo).captureDiff(adopted);
+    expect(captured.captureIncomplete).toBe(false);
+    expect(captured.diff).toContain("diff --git a/debug.log b/debug.log");
+    const next = await rawCandidateTree(adopted.worktree_path);
+    expect(
+      execFileSync("git", ["-C", adopted.worktree_path, "ls-tree", "--name-only", next], {
+        encoding: "utf8",
+      }).split("\n"),
+    ).toContain("debug.log");
   });
 
   it("keeps the edits of a run interrupted mid-attempt and sweeps an untouched one", async () => {

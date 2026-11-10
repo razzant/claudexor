@@ -2,6 +2,7 @@ import {
   copyFileSync,
   existsSync,
   mkdtempSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -10,16 +11,54 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
-import { lstatPresent } from "./fs-presence.js";
+import { lstatPresent, reachableFile } from "./fs-presence.js";
 import {
   nestedRepositoryExcludes,
   untrackedNestedRepositories,
 } from "./git-nested-repositories.js";
 import { diskProgress, gitObserved, proofStallMs, treeBlobBytes } from "./git-observed.js";
 import { git, gitEnv, revParse, SCRATCH_INDEX_CONFIG } from "./git-run.js";
+import { pathspecBatches } from "./object-compose.js";
 import { outsideSparseCheckout } from "./object-sparse.js";
 
 type GitEnv = Record<string, string>;
+
+/**
+ * Take the paths an accepted raw patch wrote (#594) into the scratch index `env`
+ * names, whatever the ignore rules say: each one that is a file or symlink Git can
+ * reach, by its literal top-relative path, never a directory and never another ignored
+ * file. `cwd` is where the caller's own `add` runs, the repository's top level or a
+ * subdirectory: `scope` says whether that add covers the whole tree or only `cwd`, and
+ * a kept path outside it stays out. The view's exact exclusions and sparse patterns still win.
+ */
+export async function addKeptPaths(
+  cwd: string,
+  env: GitEnv,
+  keep: readonly string[],
+  excludes: readonly string[],
+  progress: () => number,
+  scope: "tree" | "cwd",
+): Promise<void> {
+  if (keep.length === 0) return;
+  // `--show-cdup` is only `../` steps, so no worktree path, whatever its spelling, is parsed.
+  const { stdout } = await gitObserved(cwd, ["rev-parse", "--show-cdup", "--show-prefix"], {
+    env,
+    label: "rev-parse (kept paths)",
+  });
+  const lineEnd = stdout.indexOf("\n");
+  const top = join(realpathSync(cwd), stdout.slice(0, lineEnd));
+  const prefix = scope === "cwd" ? stdout.slice(lineEnd + 1, -1) : "";
+  const reachable = keep.filter((path) => path.startsWith(prefix) && reachableFile(top, path));
+  // `git add` refuses out-of-pattern paths; delivery names that refusal before writing.
+  const outside = new Set((await outsideSparseCheckout(top, reachable, env)) ?? []);
+  const present = reachable.filter((path) => !outside.has(path));
+  for (const batch of pathspecBatches(present))
+    await gitObserved(cwd, [...SCRATCH_INDEX_CONFIG, "add", "-f", "--", ...batch, ...excludes], {
+      env,
+      label: "add -f (accepted paths)",
+      progress,
+    });
+}
 
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -186,11 +225,14 @@ async function snapshotStatus(
  * `objects`: where the snapshot's objects go instead (a dry run's scratch).
  * `exact`: paths the caller decides on, which a clean answer has read by content
  * ({@link snapshotStatus}); a dirty snapshot reads every file anyway.
+ * `keep`: paths an accepted raw patch wrote, taken in whatever the ignore rules
+ * say ({@link addKeptPaths}); `git status` cannot show them, so they skip its answer.
  */
 export async function stashCreate(
   repo: string,
   objects: GitEnv = {},
   exact: readonly string[] = [],
+  keep: readonly string[] = [],
 ): Promise<string | null> {
   // Unique per call: concurrent envelope creates (a best_of_n wave) must never
   // collide on the scratch index (same pid + same millisecond is real). It lives
@@ -212,7 +254,7 @@ export async function stashCreate(
     const status = await snapshotStatus(repo, objects, scratchDir, exact);
     if (status && status.code !== 0)
       throw new WorkspaceError(`snapshot status failed: ${status.stderr.trim()}`);
-    if (status && status.stdout.length === 0) return null;
+    if (status && status.stdout.length === 0 && keep.length === 0) return null;
     const head = await git(repo, ["rev-parse", "HEAD"]);
     if (head.code !== 0)
       throw new WorkspaceError(`snapshot rev-parse HEAD failed: ${head.stderr.trim()}`);
@@ -245,12 +287,14 @@ export async function stashCreate(
       },
     );
     if (add.code !== 0) throw new WorkspaceError(`snapshot add -A failed: ${add.stderr.trim()}`);
+    const excludes = nestedRepositoryExcludes(nested);
+    await addKeptPaths(repo, env, keep, excludes, diskProgress(repo), "tree");
     const writeTree = await gitEnv(repo, [...SCRATCH_INDEX_CONFIG, "write-tree"], env);
     if (writeTree.code !== 0)
       throw new WorkspaceError(`snapshot write-tree failed: ${writeTree.stderr.trim()}`);
     const tree = writeTree.stdout.trim();
     // Read without the clean check: a tree equal to HEAD's is no change either.
-    if (!status && tree === (await revParse(repo, "HEAD^{tree}"))) return null;
+    if ((!status || keep.length > 0) && tree === (await revParse(repo, "HEAD^{tree}"))) return null;
     const commit = await gitEnv(
       repo,
       [
@@ -283,9 +327,13 @@ export async function stashCreate(
  * diff base for in-place threads: snapshot at turn start, snapshot at turn end,
  * `diffTrees(base, end)` yields exactly that turn's net change (pre-existing dirty
  * state is folded into `base`, so the reviewer never sees prior turns' edits).
- * `exact`: as for {@link stashCreate}.
+ * `exact` and `keep`: as for {@link stashCreate}.
  */
-export async function snapshotTree(repo: string, exact: readonly string[] = []): Promise<string> {
-  const snap = await stashCreate(repo, {}, exact);
+export async function snapshotTree(
+  repo: string,
+  exact: readonly string[] = [],
+  keep: readonly string[] = [],
+): Promise<string> {
+  const snap = await stashCreate(repo, {}, exact, keep);
   return snap ?? (await revParse(repo, "HEAD"));
 }

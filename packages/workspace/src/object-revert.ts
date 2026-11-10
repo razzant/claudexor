@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
 import type { GitDeliveryPair, GitResultRefusal } from "@claudexor/schema";
-import { lstatPresent } from "./fs-presence.js";
+import { reachableFile } from "./fs-presence.js";
 import {
   composeOnTarget,
   parseRawRecords,
@@ -103,18 +103,13 @@ async function asWrittenTree(
 }
 
 /**
- * Whether `path` is a file or symlink Git can reach: no parent is a symlink or a
- * file. Only ENOENT and ENOTDIR are absence: a path the revert cannot look at (a
- * parent it cannot search, an I/O error) is thrown, so the revert refuses with
- * nothing written instead of calling the addition gone.
+ * Whether a delivered addition is still a file or symlink Git can reach. A path the
+ * revert cannot look at (a parent it cannot search, an I/O error) is thrown, so the
+ * revert refuses with nothing written instead of calling the addition gone.
  */
-function reachableFile(worktree: string, path: string): boolean {
+function reachableAddition(worktree: string, path: string): boolean {
   try {
-    const parts = path.split("/");
-    for (let at = 1; at < parts.length; at += 1)
-      if (!lstatPresent(join(worktree, ...parts.slice(0, at)))?.isDirectory()) return false;
-    const stat = lstatPresent(join(worktree, path));
-    return stat !== undefined && !stat.isDirectory();
+    return reachableFile(worktree, path);
   } catch (error) {
     throw new WorkspaceError(
       `the revert cannot tell whether ${path}, which the delivery added, is still as delivered: ${error instanceof Error ? error.message : String(error)}`,
@@ -167,7 +162,7 @@ export async function pairPaths(
 }
 
 /** Which of `paths` `tree` holds, read through the same literal pathspec batches. */
-async function heldBy(worktree: string, tree: string, paths: readonly string[]) {
+export async function heldBy(worktree: string, tree: string, paths: readonly string[]) {
   const held = new Set<string>();
   for (const batch of pathspecBatches(paths)) {
     const listed = await gitObserved(
@@ -201,7 +196,7 @@ async function withDeliveredAdditions(
   const added = delivered
     .filter((record) => record.oldMode === "000000" && record.newMode !== "160000")
     .map((record) => record.src)
-    .filter((path) => reachableFile(worktree, path));
+    .filter((path) => reachableAddition(worktree, path));
   if (added.length === 0) return { ok: true, tree: currentTree };
   const inS = await heldBy(worktree, currentTree, added);
   const hidden = added.filter((path) => !inS.has(path));

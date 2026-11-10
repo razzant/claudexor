@@ -187,4 +187,99 @@ describe("thread delivery keeps credential-shaped bytes exact and gates only pub
       expect(git(remote, "for-each-ref")).toBe(remoteRefsBefore);
     },
   );
+
+  it("keeps an accepted ignored file through thread Apply, the next Raw turn, second Apply, and Revert", async () => {
+    const { repo } = projectWithOrigin();
+    writeFileSync(join(repo, ".gitignore"), "*.log\n");
+    git(repo, "add", ".gitignore");
+    git(repo, "commit", "-m", "ignore logs");
+    const storeRoot = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-raw-")));
+    dirs.push(storeRoot);
+    const sql = await sqlFixture(storeRoot);
+    stores.push(sql);
+    const threads = sql.graph.threads;
+    const thread = threads.createThread({ repoRoot: repo, workspace: "isolated" });
+    const worktree = await ensureThreadWorktree(repo, thread.id);
+    threads.setThreadWorktree(thread.id, worktree.path, worktree.baseSha);
+    threads.bindTurnRun(threads.createTurn(thread.id, "raw file").id, "run-raw");
+    const { RawContextPacket, RawGitPatchEnvelope } = await import("@claudexor/schema");
+    const { sha256 } = await import("@claudexor/util");
+    const { consumeRawPatchEnvelope, rawCandidateTree, rawAcceptedPaths, createPairRevertAnchor } =
+      await import("@claudexor/workspace");
+    const { revertInPlaceFromAnchor } = await import("@claudexor/delivery");
+    const add = (text: string) =>
+      `diff --git a/result.log b/result.log\nnew file mode 100644\n--- /dev/null\n+++ b/result.log\n@@ -0,0 +1 @@\n+${text}\n`;
+    const edit = (from: string, to: string) =>
+      `diff --git a/result.log b/result.log\n--- a/result.log\n+++ b/result.log\n@@ -1 +1 @@\n-${from}\n+${to}\n`;
+    const rawRound = async (patch: string, touched: string[]) => {
+      const base = threads.getThread(thread.id)!.workspace.base_sha!;
+      const tree = await rawCandidateTree(worktree.path);
+      const files = git(worktree.path, "ls-tree", "-r", tree)
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [modeOid, path] = line.split("\t");
+          const [, mode, oid] = modeOid!.split(" ");
+          const content = execFileSync("git", ["-C", worktree.path, "cat-file", "blob", oid!], {
+            encoding: "utf8",
+          });
+          return { path, mode, blob_oid: oid, content_hash: sha256(content), content };
+        });
+      const packet = RawContextPacket.parse({
+        schema_version: 1,
+        packet_hash: `sha256:${tree}`,
+        base_commit_sha: base,
+        base_tree_sha: tree,
+        readable_files: files,
+        editable_paths: files.map((file) => file.path),
+        creatable_roots: ["."],
+        file_manifest: files.map((file) => ({
+          path: file.path,
+          disposition: "full",
+          bytes: Buffer.byteLength(file.content),
+          hash: file.content_hash,
+        })),
+        omissions: [],
+        evidence_refs: files.map((file) => `git:${tree}:${file.path}:${file.blob_oid}`),
+      });
+      await consumeRawPatchEnvelope({
+        repoRoot: repo,
+        worktreePath: worktree.path,
+        baseCommitSha: base,
+        context: packet,
+        envelope: RawGitPatchEnvelope.parse({
+          schema_version: 1,
+          context_packet_hash: packet.packet_hash,
+          base_tree_sha: tree,
+          patch,
+          patch_hash: sha256(patch),
+          touched_paths: touched.map((path) => ({
+            path,
+            expected_blob_oid: files.find((file) => file.path === path)?.blob_oid ?? null,
+          })),
+        }),
+      });
+    };
+    await rawRound(add("first"), ["result.log"]);
+    const first = await applyThreadDiff(threads, thread.id, { mode: "apply" });
+    expect(first.applied).toBe(true);
+    expect(readFileSync(join(repo, "result.log"), "utf8")).toBe("first\n");
+    await rawRound(edit("first", "second"), ["result.log"]);
+    const second = await applyThreadDiff(threads, thread.id, { mode: "apply" });
+    expect(second).toMatchObject({ applied: true, status: "applied" });
+    expect(readFileSync(join(repo, "result.log"), "utf8")).toBe("second\n");
+    expect(
+      await rawAcceptedPaths(worktree.path, threads.getThread(thread.id)!.workspace.base_sha!),
+    ).toContain("result.log");
+    const secondAnchor = await createPairRevertAnchor(repo, second.delivery!.deliveryPair!, repo);
+    expect(await revertInPlaceFromAnchor(repo, secondAnchor, repo)).toMatchObject({
+      reverted: true,
+    });
+    expect(readFileSync(join(repo, "result.log"), "utf8")).toBe("first\n");
+    const firstAnchor = await createPairRevertAnchor(repo, first.delivery!.deliveryPair!, repo);
+    expect(await revertInPlaceFromAnchor(repo, firstAnchor, repo)).toMatchObject({
+      reverted: true,
+    });
+    expect(existsSync(join(repo, "result.log"))).toBe(false);
+  });
 });

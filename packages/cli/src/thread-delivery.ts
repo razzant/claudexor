@@ -5,6 +5,7 @@ import {
   captureWorkingTreeTransient,
   captureFailureEvidence,
   git,
+  rawAcceptedPaths,
   snapshotTree,
 } from "@claudexor/workspace";
 import type { ControlDeliveryResponse } from "@claudexor/schema";
@@ -44,11 +45,15 @@ export async function applyThreadDiff(
   }
   const projectRoot = thread.repo.root;
   const base = ws.base_sha ?? "HEAD";
+  // Raw API writes may be ignored by the project's rules, but their exact accepted
+  // membership belongs to this persistent thread and must survive Apply and realignment.
+  const keep = await rawAcceptedPaths(ws.worktree_path, base);
   // The thread's own runtime directory keeps the captured objects in the store.
   const owner = dirname(ws.worktree_path);
   const captured = await captureWorkingTreeTransient(ws.worktree_path, base, [], {
     projectRoot,
     owner,
+    keep,
   });
   if (captured.captureIncomplete) {
     const failure = captureFailureEvidence(captured.captureFailure);
@@ -104,7 +109,7 @@ export async function applyThreadDiff(
     opts.gates ?? [],
   );
   if (delivered.applied) {
-    const targetSha = await snapshotTree(projectRoot);
+    const targetSha = await snapshotTree(projectRoot, [], keep);
     threads.setThreadWorktree(
       id,
       ws.worktree_path,

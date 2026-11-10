@@ -13,7 +13,6 @@ import {
   git,
   materializeTree,
   occupiedByWrite,
-  pairPaths,
   retainedDeliveryPair,
   revParse,
   snapshotTree,
@@ -37,6 +36,7 @@ import {
   retainPairOrRefuse,
   storeFaultRefusal,
   takeBackWrite,
+  targetSnapshots,
   typed,
 } from "./object-custody.js";
 import { PR_UNRENDERED_REFUSAL } from "./publication.js";
@@ -232,10 +232,8 @@ async function composeAndVerify(
   const projectRoot = options.projectRoot ?? repoRoot;
   const missing = await importOrRefuse(projectRoot, top, [result.base_tree, result.candidate_tree]);
   if (missing) return refused(mode, await snapshotTree(repoRoot), missing);
-  // Apply reads the result's paths by content; commit-class trusts the real index's stat cache.
-  const exact =
-    mode === "apply" ? await pairPaths(top, result.base_tree, result.candidate_tree) : [];
-  const targetPreimageSha = await snapshotTree(repoRoot, exact);
+  const snapshotTarget = await targetSnapshots(repoRoot, top, result, mode === "apply");
+  const targetPreimageSha = await snapshotTarget();
   const targetTree = await treeOf(top, targetPreimageSha);
   const onto =
     mode === "apply"
@@ -327,7 +325,7 @@ async function composeAndVerify(
       finalVerify,
       targetPreimageSha,
     };
-  const observed = await snapshotTree(repoRoot, exact);
+  const observed = await snapshotTarget();
   if ((await treeOf(top, observed)) !== targetTree)
     return refused(
       mode,

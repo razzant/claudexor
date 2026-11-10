@@ -14,6 +14,8 @@ import { applyThreadDiff } from "./thread-delivery.js";
 vi.mock("@claudexor/workspace", async (original) => ({
   ...(await original<typeof import("@claudexor/workspace")>()),
   captureWorkingTreeTransient: vi.fn(),
+  // The fixture's worktree path is not a repository: this capture has no accepted paths.
+  rawAcceptedPaths: async () => [],
 }));
 vi.mock("@claudexor/delivery", async (original) => ({
   ...(await original<typeof import("@claudexor/delivery")>()),

@@ -1,4 +1,5 @@
 import { lstatSync, statSync, type Stats } from "node:fs";
+import { join } from "node:path";
 
 const absence = (error: unknown) => {
   const code = (error as NodeJS.ErrnoException | null)?.code;
@@ -30,4 +31,15 @@ export function lstatPresent(path: string): Stats | undefined {
     if (absence(error)) return undefined;
     throw error;
   }
+}
+
+/** Whether `path` below `root` is a file or symlink Git can reach: no parent is a
+ * symlink or a file. Presence reads as {@link lstatPresent}: anything but ENOENT and
+ * ENOTDIR is thrown, never read as absence. */
+export function reachableFile(root: string, path: string): boolean {
+  const parts = path.split("/");
+  for (let at = 1; at < parts.length; at += 1)
+    if (!lstatPresent(join(root, ...parts.slice(0, at)))?.isDirectory()) return false;
+  const stat = lstatPresent(join(root, path));
+  return stat !== undefined && !stat.isDirectory();
 }
