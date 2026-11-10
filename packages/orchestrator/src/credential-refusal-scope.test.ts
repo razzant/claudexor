@@ -14,6 +14,10 @@ import { CredentialUnusableLedger } from "../../daemon/src/credential-unusable-l
 import { PreProgressRefusalLedger } from "../../daemon/src/pre-progress-refusal-ledger.js";
 import { createClaudeParser } from "../../harness-claude/src/parse.js";
 import {
+  withClaudeApiFailureParser,
+  withClaudeVendorFailure,
+} from "../../harness-claude/src/vendor-failure.js";
+import {
   applicableCredentialUnusable,
   composeCredentialProfileEvidence,
 } from "./account-evidence.js";
@@ -26,7 +30,7 @@ import {
 import { createCredentialExecutionObserver } from "./credential-execution.js";
 import { selectedProfileAvailability } from "./credential-profiles.js";
 import { dominantHarnessFailureCategory } from "./harnessFailure.js";
-import { run } from "./inrun-continuity.test-support.js";
+import { limit, run, seedSession } from "./inrun-continuity.test-support.js";
 
 // #609: a refusal keeps its actual subject and scope. Every stream below is raw
 // vendor frames through the Claude adapter's real parser, the production subject
@@ -91,6 +95,54 @@ const PROSE_ONLY = [
   "Your organization is not allowed to use claude-opus-5-5",
   "OAuth token for this organization cannot access claude-opus-5-5",
 ];
+/** #318: a stdout result whose exact API error code denies this subscription,
+ * through the adapter's own parser composition. Synthetic words: the code decides. */
+const DENIED_CODE = "oauth_not_allowed_for_organization";
+const DENIED_WORDS =
+  "Claude Code can't use your Claude subscription, usually because a payment is past due · fixture remedy";
+const recordedResult = (): Record<string, unknown> => {
+  const lines = readFileSync(
+    new URL(
+      "../../harness-claude/fixtures/signals/vendor-cli-too-old-2.1.288.jsonl",
+      import.meta.url,
+    ),
+    "utf8",
+  )
+    .split("\n")
+    .filter(Boolean);
+  const { session_id: _native, ...result } = JSON.parse(lines.at(-1)!) as Record<string, unknown>;
+  return result;
+};
+const deniedResult = (code: string | null) => ({
+  ...recordedResult(),
+  api_error_status: 403,
+  ...(code ? { api_error_code: code } : { api_error_code: undefined }),
+  result: DENIED_WORDS,
+});
+const nativeParsed =
+  (...frames: Array<Record<string, unknown>>): Frames =>
+  (sessionId) => {
+    const parser = withClaudeApiFailureParser(createClaudeParser(), null);
+    return frames.flatMap((frame) => parser(frame, sessionId) ?? []);
+  };
+const orgExactCode = nativeParsed(deniedResult(DENIED_CODE));
+const deniedWordsOnly = nativeParsed(deniedResult(null));
+/** The same try as the adapter ends it: its frames, then the failed exit with the
+ * vendor record `withClaudeVendorFailure` attaches. */
+async function adapterTerminal(frames: Frames): Promise<HarnessEvent[]> {
+  async function* stream(): AsyncGenerator<HarnessEvent> {
+    yield* frames("fixture");
+    yield {
+      type: "completed",
+      session_id: "fixture",
+      ts: new Date().toISOString(),
+      payload: { exit_code: 1, harness_reported_error: true },
+    } as HarnessEvent;
+  }
+  const out: HarnessEvent[] = [];
+  for await (const event of withClaudeVendorFailure(stream())) out.push(event);
+  return out;
+}
 
 function fixture() {
   const t0 = Date.now();
@@ -351,6 +403,8 @@ describe("a subscription-wide refusal (#609)", () => {
     ["the entitlement result on a run naming a model", OPUS, orgDisabledResult],
     ["the typed retry frame on a run naming a model", OPUS, orgRetryFrame],
     ["the entitlement result on a run naming none", null, orgDisabledResult],
+    ["the exact stdout result code on a run naming a model (#318)", OPUS, orgExactCode],
+    ["the exact stdout result code on a run naming none (#318)", null, orgExactCode],
   ] as const)(
     "%s covers every model of that exact subject for an hour",
     async (_name, model, frames) => {
@@ -514,6 +568,41 @@ describe("a subscription-wide refusal (#609)", () => {
     expect(f.ledger.live()).toHaveLength(1);
     f.advance(61_000);
     expect(f.ledger.live()).toEqual([]);
+  });
+
+  it("from the exact stdout result code keeps the class's own recovery: service, credential change, expiry (#318)", () => {
+    const f = fixture();
+    f.refused({ model: OPUS }, orgExactCode);
+    f.served({ model: SONNET }, SONNET);
+    expect(f.ledger.live()).toEqual([]);
+    f.refused({ model: OPUS }, orgExactCode);
+    f.ledger.clearSubject("claude", "work");
+    expect(f.ledger.live()).toEqual([]);
+    f.refused({ model: OPUS }, orgExactCode);
+    f.ledger.noteCredentialChange();
+    expect(f.ledger.live()).toEqual([]);
+    f.refused({ model: OPUS }, orgExactCode);
+    f.advance(59 * 60_000);
+    expect(f.ledger.live()).toHaveLength(1);
+    f.advance(61_000);
+    expect(f.ledger.live()).toEqual([]);
+  });
+
+  it("is proven by the exact code alone: the same words without it record nothing (#318)", async () => {
+    const f = fixture();
+    f.refused({ model: null }, deniedWordsOnly);
+    f.refused({ model: OPUS }, deniedWordsOnly);
+    expect(f.ledger.live()).toEqual([]);
+    expect(transientsOf(deniedWordsOnly)).toEqual([]);
+    expect(transientsOf(orgExactCode)).toMatchObject([
+      {
+        category: "capability_refused",
+        adapterCode: "oauth_org_not_allowed",
+        retryable: false,
+        entitlementDenied: true,
+      },
+    ]);
+    expect(await f.pin(work, OPUS)).toBe("available");
   });
 
   it("a credential change voids it, and a try bound before the change cannot recreate it", async () => {
@@ -797,4 +886,109 @@ describe("the real Orchestrator's account path (#609)", () => {
     });
     expect(sibling.spawns.map((spawn) => spawn.profile)).toEqual(["b"]);
   }, 120_000);
+
+  /** #318's observed shape: an account that acted hops on a typed limit, and the
+   * next account's every try meets the exact code, which ends with exit 1. */
+  const deniedAfterHop = (terminal: HarnessEvent[]): Script =>
+    function* ({ profile, spec, emit }) {
+      if (profile === "a") {
+        seedSession(spec.cwd, "a", "sid-A");
+        yield emit({ type: "started", payload: { native_session_id: "sid-A" } });
+        writeFileSync(join(spec.cwd, "part1.txt"), "first half\n");
+        yield emit({ type: "file_change", payload: { path: "part1.txt" } });
+        yield* limit(emit);
+        return;
+      }
+      yield emit({ type: "started", payload: { native_session_id: "sid-A" } });
+      for (const event of terminal)
+        yield emit({ ...event, session_id: spec.session_id, ts: new Date().toISOString() });
+    };
+
+  it("after progress, the exact code ends the attempt on that account with its own record: no same-account retry (#318)", async () => {
+    const e = evidence();
+    const terminal = await adapterTerminal(orgExactCode);
+    const o = await run({
+      mode: "agent",
+      profiles: ["a", "b"],
+      maxRetries: 2,
+      deps: e.deps,
+      script: deniedAfterHop(terminal),
+    });
+    expect(o.spawns.map((spawn) => spawn.profile)).toEqual(["a", "b"]);
+    expect(o.rotated).toMatchObject([{ from_profile_id: "a", to_profile_id: "b" }]);
+    expect(o.result.lifecycle).toBe("failed");
+    expect(o.resumable).toMatchObject({ cause: "other" });
+    const failed = JSON.stringify(o.events.find((event) => event.type === "run.failed"));
+    expect(failed).toContain(DENIED_WORDS);
+    expect(e.unusable.live()).toMatchObject([
+      {
+        profile_id: "b",
+        model: null,
+        credential_route: "vendor_native",
+        code: "capability_refused",
+        detail: "oauth_org_not_allowed",
+      },
+    ]);
+  }, 120_000);
+
+  it("control: the same words with no code stay an untyped failure the same account retries", async () => {
+    const e = evidence();
+    const terminal = await adapterTerminal(deniedWordsOnly);
+    const o = await run({
+      mode: "agent",
+      profiles: ["a", "b"],
+      maxRetries: 2,
+      deps: e.deps,
+      script: deniedAfterHop(terminal),
+    });
+    expect(o.spawns.map((spawn) => spawn.profile)).toEqual(["a", "b", "b", "b"]);
+    expect(e.unusable.live()).toEqual([]);
+  }, 120_000);
+
+  it("a pin meets the exact code once: no retry, no other account or route, and the next pinned run is refused before spawn (#318)", async () => {
+    const e = evidence();
+    const terminal = await adapterTerminal(orgExactCode);
+    const refuseA: Script = function* ({ profile, spec, emit }) {
+      yield emit({ type: "started" });
+      if (profile === "a") {
+        for (const event of terminal)
+          yield emit({ ...event, session_id: spec.session_id, ts: new Date().toISOString() });
+        return;
+      }
+      yield emit({ type: "message", text: "served", final: true });
+      yield emit({ type: "completed" });
+    };
+    const first = await run({
+      mode: "agent",
+      profiles: ["a", "b"],
+      pinned: "a",
+      maxRetries: 2,
+      deps: e.deps,
+      script: refuseA,
+    });
+    expect(first.spawns.map((spawn) => spawn.profile)).toEqual(["a"]);
+    expect(first.rotated).toEqual([]);
+    expect(first.result.lifecycle).toBe("failed");
+    expect(e.unusable.live()).toMatchObject([
+      { profile_id: "a", model: null, credential_route: "vendor_native" },
+    ]);
+    const next = await run({
+      mode: "agent",
+      profiles: ["a", "b"],
+      pinned: "a",
+      maxRetries: 2,
+      deps: e.deps,
+      script: refuseA,
+    });
+    expect(next.spawns).toEqual([]);
+    expect(next.result.lifecycle).toBe("failed");
+    const pool = await run({
+      mode: "agent",
+      profiles: ["a", "b"],
+      maxRetries: 2,
+      deps: e.deps,
+      script: refuseA,
+    });
+    expect(pool.spawns.map((spawn) => spawn.profile)).toEqual(["b"]);
+  }, 180_000);
 });

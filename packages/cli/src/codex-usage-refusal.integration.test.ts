@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { DaemonControlApiServer } from "@claudexor/control-api";
 import type { HarnessAdapter, spawnProcess } from "@claudexor/core";
@@ -656,10 +656,12 @@ describe("Codex typed usage refusal, adapter → orchestrator → daemon (#558, 
     expect(oldOuroborosHealsOnTimer(next.failure!)).toBe(false);
   });
 
-  it("only a newer recognized quota read lets the pinned account try again, with no wait of its own", async () => {
+  it("no quota read retires or moves the refusal: its own recheck alone lets the pinned account try again (#318)", async () => {
     const f = fixture({ a: (spawn) => (spawn === 0 ? "refuse_after_progress" : "succeed") });
     await f.runOnce("a");
-    const read = (observed_at: string) =>
+    const [refusal] = f.cooldown("a");
+    const recheck = Date.parse(refusal!.cooldown_until!);
+    const read = (observed_at: string, usedRatio: number | null | "none") =>
       f.quota.upsert({
         subject: {
           harness: "codex",
@@ -667,29 +669,52 @@ describe("Codex typed usage refusal, adapter → orchestrator → daemon (#558, 
           plan_label: null,
           subject_id: "a",
         },
-        constraints: [
-          {
-            id: "primary",
-            label: "5 hour",
-            used_ratio: 0.2,
-            window_seconds: 18_000,
-            resets_at: new Date(Date.now() + 6 * 60 * 60_000).toISOString(),
-            cooldown_until: null,
-          },
-        ],
+        constraints:
+          usedRatio === "none"
+            ? []
+            : [
+                {
+                  id: "primary",
+                  label: "5 hour",
+                  used_ratio: usedRatio,
+                  window_seconds: 18_000,
+                  resets_at: new Date(Date.now() + 6 * 60 * 60_000).toISOString(),
+                  cooldown_until: null,
+                },
+              ],
         source: "codex_app_server",
         observed_at,
         freshness: "fresh",
       });
-    // An older in-flight read cannot disprove the refusal.
-    read(new Date(Date.now() - 60_000).toISOString());
-    expect(f.cooldown("a")).toHaveLength(1);
-    expect((await f.runOnce("a")).spawns).toEqual([]);
-    read(new Date().toISOString());
-    expect(f.cooldown("a")).toEqual([]);
-    const retried = await f.runOnce("a");
-    expect(retried.spawns).toEqual([{ profile: "a", resume: null }]);
-    expect(retried.result.lifecycle).toBe("succeeded");
+    // An older in-flight read, then newer recognized measured, unknown and empty reads.
+    read(new Date(Date.now() - 60_000).toISOString(), 0.2);
+    for (const usedRatio of [0.2, null, "none"] as const) {
+      read(new Date().toISOString(), usedRatio);
+      // Neither retired nor moved: the same refusal with the same recheck.
+      expect(f.cooldown("a")).toEqual([refusal]);
+    }
+    const early = await f.runOnce("a");
+    expect(early.spawns).toEqual([]);
+    expect(early.failure).toMatchObject({
+      code: null,
+      resetsAt: null,
+      quotaRefusal: { constraintId: REOPENING_UNKNOWN_COOLDOWN_ID },
+    });
+    // The real registry and preflight read a moved clock: just before the
+    // recheck the account is still refused before spawn, at it the demanded
+    // pinned run starts. Nothing probed the vendor in between.
+    vi.useFakeTimers({ toFake: ["Date"], now: recheck - 30_000, shouldAdvanceTime: true });
+    try {
+      expect((await f.runOnce("a")).spawns).toEqual([]);
+      vi.setSystemTime(recheck);
+      expect(f.cooldown("a")).toEqual([refusal]);
+      const retried = await f.runOnce("a");
+      expect(retried.spawns).toEqual([{ profile: "a", resume: null }]);
+      expect(retried.result.lifecycle).toBe("succeeded");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(f.spawns.map((spawn) => spawn.profile)).toEqual(["a", "a"]);
   });
 
   it("a raw model call's account catalog and pool mapping keep the refusal out of the timer class", async () => {

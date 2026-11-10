@@ -186,13 +186,17 @@ export function withoutSupersededQuotaConstraints(
     return existing;
   }
   const constraints = existing.constraints.filter((constraint) => {
-    // A generic refusal retained no window identity, nor does a usage refusal
-    // with no reopening time (#558). A successful recognized read permits the
-    // next requested attempt, including unknown/empty quota; it does not
-    // promise that the provider will accept that attempt. Its request-kind
-    // scope narrows what it blocks, not which read retires it.
+    // A usage refusal with no reopening time (#558) outlives every read
+    // (#318): an empty, unknown or measured window does not show that the
+    // refused usage or credits returned. Only its own bounded recheck
+    // (`cooldown_until`, which no read moves) ends the block.
+    if (constraint.id === REOPENING_UNKNOWN_COOLDOWN_ID) return true;
+    // A generic refusal retained no window identity. A successful recognized
+    // read permits the next requested attempt, including unknown/empty quota;
+    // it does not promise that the provider will accept that attempt. Its
+    // request-kind scope narrows what it blocks, not which read retires it.
     if (
-      (constraint.id === "cooldown" || constraint.id === REOPENING_UNKNOWN_COOLDOWN_ID) &&
+      constraint.id === "cooldown" &&
       !constraint.applies_to_models?.length &&
       !constraint.applies_to_model_prefixes?.length
     ) {

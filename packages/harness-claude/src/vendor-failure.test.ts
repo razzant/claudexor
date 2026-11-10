@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { HarnessEvent as EventSchema, HarnessRunSpec } from "@claudexor/schema";
+import { HarnessEvent as EventSchema, HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { runCliHarness } from "@claudexor/core";
 import { createClaudeAdapter } from "./index.js";
 import { createClaudeParser } from "./parse.js";
@@ -273,4 +273,130 @@ describe("Claude native API failure evidence", () => {
       expect(out.at(-1)?.payload?.["vendor_failure"]).toBeUndefined();
     },
   );
+});
+
+/** #318: the stdout result for a Claude subscription its organization does not
+ * allow this client to use. The exact API error code is the evidence; the words
+ * (neutral synthetic remedy text) only explain it. */
+const DENIED_CODE = "oauth_not_allowed_for_organization";
+const DENIED_WORDS =
+  "Claude Code can't use your Claude subscription, usually because a payment is past due · fixture remedy";
+const denied = (extra: Record<string, unknown> = {}) => ({
+  ...recording("2.1.288").at(-1),
+  api_error_status: 403,
+  api_error_code: DENIED_CODE,
+  result: DENIED_WORDS,
+  ...extra,
+});
+const typedDenials = (events: HarnessEvent[]) =>
+  events.filter((event) => event.status?.error_category === "oauth_org_not_allowed");
+
+describe("Claude's exact subscription-denied API code (#318)", () => {
+  it("is the existing typed subscription denial beside the vendor's own record, never transport", () => {
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied(),
+      "fixture",
+    )!;
+    for (const event of events) EventSchema.parse(event);
+    const [denial, ...more] = typedDenials(events);
+    expect(more).toEqual([]);
+    expect(denial).toMatchObject({
+      type: "status",
+      text: `entitlement: ${DENIED_WORDS}`,
+      status: { kind: "api_retry", error_category: "oauth_org_not_allowed" },
+      payload: { entitlement_denied: true },
+    });
+    const errors = events.filter((event) => event.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toBe(DENIED_WORDS);
+    expect(errors[0]!.request_refusal).toBeUndefined();
+    expect(errors[0]!.payload).toEqual({
+      api_error_status: 403,
+      vendor_failure: { code: DENIED_CODE, message: DENIED_WORDS, source: "claude_stdout" },
+    });
+    expect(events.indexOf(denial!)).toBeLessThan(events.indexOf(errors[0]!));
+    expect(events.some((event) => event.final || event.transient || event.rate_limit)).toBe(false);
+  });
+
+  it.each([
+    ["the same words with no code", { api_error_code: undefined }],
+    ["the same words under another code", { api_error_code: "permission_error" }],
+    ["the code on an ordinary answer", { is_error: false }],
+  ])("%s is no denial: the words are never read for a cause", (_name, extra) => {
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied(extra),
+      "fixture",
+    )!;
+    expect(typedDenials(events)).toEqual([]);
+  });
+
+  it("with the org-disabled words as well, is still one denial", () => {
+    const words =
+      "Your organization has disabled Claude subscription access for Claude Code · fixture remedy";
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied({ result: words }),
+      "fixture",
+    )!;
+    expect(typedDenials(events)).toHaveLength(1);
+    expect(events.find((event) => event.type === "error")?.payload?.["vendor_failure"]).toEqual({
+      code: DENIED_CODE,
+      message: words,
+      source: "claude_stdout",
+    });
+  });
+
+  it("masks a secret in the denial's copy of the words (INV-146)", () => {
+    const secret = ["sk-ant-api03", "Cl4udeDeniedCopy7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2"].join("-");
+    const events = withClaudeApiFailureParser(createClaudeParser(), binaryPath)(
+      denied({ result: `${DENIED_WORDS} ${secret}` }),
+      "fixture",
+    )!;
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(typedDenials(events)[0]?.text).toBe(`entitlement: ${DENIED_WORDS} [redacted]`);
+  });
+
+  it("the real adapter/run loop carries the denial and the terminal vendor evidence", async () => {
+    const [init, synthetic] = recording("2.1.288");
+    const turn = structuredClone(synthetic!);
+    turn.message.content[0].text = DENIED_WORDS;
+    const records = [init!, turn, denied()];
+    const adapter = createClaudeAdapter({
+      probeAuthStatus: async () => ({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+      }),
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      probeEffortLevels: async () => ({ levels: [], live: true }),
+      runCliHarness: (options) =>
+        runCliHarness({
+          ...options,
+          bin: process.execPath,
+          args: [
+            "-e",
+            `process.stdout.write(${JSON.stringify(records.map((row) => JSON.stringify(row)).join("\n") + "\n")},()=>{process.exitCode=1})`,
+          ],
+        }),
+    });
+    const events: HarnessEvent[] = [];
+    for await (const event of adapter.run(
+      HarnessRunSpec.parse({
+        session_id: "replay",
+        intent: "implement",
+        prompt: "fixture",
+        cwd: process.cwd(),
+        access: "full",
+        auth_preference: "subscription",
+      }),
+    ))
+      events.push(event);
+    expect(typedDenials(events)).toMatchObject([{ payload: { entitlement_denied: true } }]);
+    expect(events.at(-1)?.payload).toMatchObject({
+      exit_code: 1,
+      harness_reported_error: true,
+      vendor_failure: { code: DENIED_CODE, message: DENIED_WORDS, source: "claude_stdout" },
+    });
+  });
 });

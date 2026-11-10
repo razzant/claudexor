@@ -266,9 +266,13 @@ describe("image requests over the existing model-operation substrate", () => {
       undefined,
       "image",
     );
+    // Never sent: only the image model create validated is named, no failure (#649).
     expect(await f.operations.cancel(queued.id)).toMatchObject({
       state: "cancelled",
-      dispatch: { state: "not_started" },
+      dispatch: { state: "not_started", startedAt: null, route: null },
+      response: { state: "absent" },
+      cost: null,
+      problem: { code: "model_operation_cancelled", context: { requestedModel: "gpt-image-2" } },
     });
     await f.operations.cancel(first.id);
     release();
@@ -317,11 +321,16 @@ describe("image requests over the existing model-operation substrate", () => {
     const done = await f.terminal(created.id);
     expect(done).toMatchObject({
       state: "failed",
-      dispatch: { state: "response_received" },
+      dispatch: { state: "response_received", route: { model: null } },
       usage: { input_tokens: 1474 },
-      problem: { code: "response_rejected" },
+      problem: { code: "response_rejected", context: { requestedModel: "gpt-image-2" } },
       response: { state: "ready" },
     });
+    // The published result carries the same named problem as the receipt.
+    expect(
+      ImageCallResult.parse(JSON.parse(f.operations.readResult(created.id).bytes.toString()))
+        .problem,
+    ).toEqual(done.problem);
   });
 
   it("marks an interrupted image send unknown rather than never-sent", async () => {
@@ -357,7 +366,7 @@ describe("image requests over the existing model-operation substrate", () => {
     expect(done).toMatchObject({
       state: "failed",
       dispatch: { state: "not_started" },
-      problem: { code: "model_source_unavailable" },
+      problem: { code: "model_source_unavailable", context: { requestedModel: "gpt-image-2" } },
     });
   });
 });

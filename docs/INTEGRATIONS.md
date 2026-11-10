@@ -704,8 +704,8 @@ retry from it, even when another of the account's windows has a date, since that
 date belongs to that window. `credential_pool_exhausted` with `resetsAt: null`
 likewise promises no time, and one such member leaves the whole pool undated. A
 vendor-dated window with no such refusal beside it keeps
-`subscription_window_exhausted` and its `resetsAt`. A newer successful quota read
-retires the refusal, so the next run may try the account again.
+`subscription_window_exhausted` and its `resetsAt`. No quota read retires the
+refusal (#318): only the engine's own bounded recheck lets a later run try the account.
 The failure's `poolAttempts` (on `summary.failure`, the run detail, the run list
 and MCP run results) lists every failed execution try in order, each with its account row,
 requested model, phase, typed category and its own redacted error text, so a

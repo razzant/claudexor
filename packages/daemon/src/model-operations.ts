@@ -136,15 +136,23 @@ export class ModelOperations {
       // and release this input meanwhile: a failed read asks the idempotency record
       // again and answers with that accepted handle. Only when none exists does the
       // failure stand, and then model_request_invalid proves no command was accepted.
+      let requestedModel: string | undefined;
       try {
-        if (requestKind === "image") await this.readImageRequest(request);
-        else await this.readRequest(request);
+        requestedModel = (
+          requestKind === "image"
+            ? await this.readImageRequest(request)
+            : await this.readRequest(request)
+        ).model;
       } catch (error) {
         const accepted = findAcceptedCommand(this.deps.commands, envelope);
         if (!accepted) throw error;
         id = accepted.id;
       }
-      id ??= (await this.deps.enqueue(envelope)).id;
+      // The bytes just validated name the model in the durable params, outside
+      // idempotency identity, for a terminal whose execution never reads them (#649).
+      id ??= (
+        await this.deps.enqueue({ ...envelope, request: { ...envelope.request, requestedModel } })
+      ).id;
     }
     // Re-uploaded copies can lose either the early lookup or the enqueue race.
     // Release only the unused copy; another live command may still own it.
@@ -327,11 +335,32 @@ export class ModelOperations {
     if (isTerminalLifecycle(record.state) && evidence.dispatch.state === "started") {
       evidence.dispatch = { ...evidence.dispatch, state: "unknown" };
     }
+    // A terminal without an execution receipt (queued cancel, restart recovery)
+    // names the params declaration (create's parsed bytes, or a raw enqueue's
+    // unverified claim); historical params carry none, so they read as before
+    // (#649).
+    const params = ModelOperationParams.safeParse(record.params);
+    const requestedModel = params.success ? params.data.requestedModel : undefined;
     if (!evidence.problem && record.error)
       evidence.problem = ControlProblem.parse({
         code: record.errorCode || "model_operation_interrupted",
         message: redactSecrets(record.error),
         retryable: false,
+        context: requestedModel ? { requestedModel } : {},
+      });
+    else if (
+      !evidence.problem &&
+      requestedModel &&
+      record.state === "cancelled" &&
+      evidence.dispatch.startedAt === null &&
+      evidence.response.state === "absent"
+    )
+      // Cancelled before any send was attempted: an honest cancellation, never a failure.
+      evidence.problem = ControlProblem.parse({
+        code: "model_operation_cancelled",
+        message: "The model operation was cancelled before it started; nothing was sent.",
+        retryable: false,
+        context: { requestedModel },
       });
     return evidence;
   }

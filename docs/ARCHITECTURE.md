@@ -1835,9 +1835,11 @@ blocked only for that cooldown's own bounded default and its end is a recheck
 instant, never a reset. While active and applicable it decides the account's
 verdict whatever else blocks the account: another window's reset, a vendor retry
 delay or a vendor reset day keeps its meaning for that window alone and promises
-nothing about the account. Like the generic refusal it names no window, so a
-newer recognized primary read retires it under the reconciliation rules below,
-which permits the next attempt. No transport retry replays the refused account,
+nothing about the account. Unlike the generic refusal, no quota read retires or
+moves it (#318): an empty, unknown or measured read does not show that the
+refused usage or credits returned. Its own recheck alone admits the next demanded
+attempt; nothing probes the vendor, and demand at that instant is not serialized.
+No transport retry replays the refused account,
 a reviewer seat's included, even when the refusal's words also read as a broken
 stream. A vendor-dated window with no such refusal
 beside it keeps its existing code and reset. A pinned account refused this way,
@@ -1921,7 +1923,8 @@ bounded, in-memory `CredentialUnusableLedger`. Its scope follows what the vendor
 typed category proves, with one owner (`credentialStreamRefusal`) for the observer
 and the differential probe: an auth rejection, or a denial of subscription access on
 the observed subscription route that the adapter proved (`entitlement_denied`: the
-vendor's exact `oauth_org_not_allowed` code or its recorded result), covers every
+vendor's exact `oauth_org_not_allowed` code, its recorded result, or the stdout
+result's exact `oauth_not_allowed_for_organization` API code, #318), covers every
 model of that exact subject and route and never another route, row or harness. Any
 other capability refusal covers only the model the run requested, including prose the
 parser's fallback files under the same category, which keeps its diagnostics and retry
@@ -3396,6 +3399,18 @@ and a mixed, unknown, empty or disabled pool stays unavailable with compact
 exhaustion. Legacy selected-account catalog reads obey the same current quota admission
 without starting a generation. The opt-in account view enumerates enabled
 inventories separately, as described [above](#processing-and-account-catalogs).
+
+A failed or interrupted operation, or one cancelled before starting, names its
+requested model as problem context `requestedModel` when known; `route.model`
+stays provider-observed or null. Execution names the model of the request bytes
+it read, none if they do not parse. A terminal before that read or without an
+execution receipt (queued cancel, unreadable input, restart recovery) names the
+params `requestedModel`, kept outside idempotency identity: create's parsed
+bytes, or an unverified raw `claudexor.enqueue` claim. A queued cancel reports
+`model_operation_cancelled` with dispatch `not_started` and no response; records
+without the name read as before. An older release refuses a root this one served
+([semantic floor](#upgrade-backup-and-restore)); only an older build of the same
+version could open it, and it reports such operations as not found.
 
 A terminal response may disclose a model other than the requested one, with no
 error and nothing in the account's quota. The result then carries the optional
@@ -7224,15 +7239,16 @@ primary observation reconciles old reactive constraints at the registry write ow
 its witness and changed reactive snapshots commit in one SQL event transaction, even
 for timestamp-only re-observation. Reversed arrival uses the same witness, so a
 delayed old refusal cannot revive a retired block, and request-start timestamps
-keep an older in-flight poll from erasing a newer refusal. A generic unclassified block,
-like a usage refusal with no reopening time (`cooldown:reopening_unknown`), can yield to a
-successful response without measured windows (usage stays unknown),
+keep an older in-flight poll from erasing a newer refusal. A generic unclassified block
+can yield to a successful response without measured windows (usage stays unknown),
 while independently identified or model-scoped windows need matching measured
 replacement; a Codex refusal's text scope limits what it blocks, not which read
 retires it. The read permits the next attempt without promising the provider accepts it:
 a vendor that refuses again records the refusal again.
 This permits purchased or vendor-granted early resets without waiting for an obsolete
-timer. Malformed Codex responses never become successful empty observations.
+timer. A usage refusal with no reopening time (`cooldown:reopening_unknown`) yields to
+no read, so a refill is admitted only at its own recheck. Malformed Codex responses
+never become successful empty observations.
 
 Native Claude `rate_limit_event` measurements and Codex's execution app-server
 `account/rateLimits/updated` notifications use incremental sources

@@ -855,6 +855,93 @@ if (
   errors.push("server.json: executable npm MCP identity or package arguments drifted");
 }
 
+// #650: a hung step must fail visibly, not hold a job for GitHub's six-hour
+// default. CI jobs and release jobs that neither sign nor publish carry a job
+// bound; package-macos bounds its gates step instead, and each full test step
+// is followed by a listing of the processes it left. Publication stays unbounded.
+errors.push(...hangBoundFindings(ci, release));
+const ciListing =
+  "      - name: List processes left after the test step failed or timed out\n        if: failure() && steps.test.outcome == 'failure'\n";
+const gatesListing =
+  "      - name: List processes left after the release gates failed or timed out\n        if: failure() && steps.gates.outcome == 'failure'\n";
+for (const [label, mutatedCi, mutatedRelease] of [
+  [
+    "a CI job without its bound",
+    ci.replace("    runs-on: macos-26\n    timeout-minutes: 25\n", "    runs-on: macos-26\n"),
+    release,
+  ],
+  [
+    "a new CI job without a bound",
+    ci.replace(
+      "\n  swift:\n",
+      "\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n\n  swift:\n",
+    ),
+    release,
+  ],
+  [
+    "a release smoke job without its bound",
+    ci,
+    release.replace(
+      "    needs: [prepare, package-macos]\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n",
+      "    needs: [prepare, package-macos]\n    runs-on: ubuntu-latest\n",
+    ),
+  ],
+  [
+    "npm publication cut short by a job bound",
+    ci,
+    release.replace(
+      "    if: needs.prepare.outputs.mode == 'publish'\n    runs-on: macos-26\n",
+      "    if: needs.prepare.outputs.mode == 'publish'\n    runs-on: macos-26\n    timeout-minutes: 120\n",
+    ),
+  ],
+  [
+    "signing and notarization cut short by a job bound",
+    ci,
+    release.replace(
+      "    runs-on: macos-26\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n",
+      "    runs-on: macos-26\n    timeout-minutes: 120\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n",
+    ),
+  ],
+  [
+    "the CI test step without its bound",
+    ci.replace("        id: test\n        timeout-minutes: 40\n", "        id: test\n"),
+    release,
+  ],
+  [
+    "a CI test step bound the job bound would preempt",
+    ci.replace(
+      "        id: test\n        timeout-minutes: 40\n",
+      "        id: test\n        timeout-minutes: 60\n",
+    ),
+    release,
+  ],
+  [
+    "the release gates step without its bound",
+    ci,
+    release.replace(
+      "        id: gates\n        shell: bash\n        timeout-minutes: 100\n",
+      "        id: gates\n        shell: bash\n",
+    ),
+  ],
+  [
+    "a CI test step without its process listing",
+    ci.replace(ciListing, "      - name: Unrelated\n        if: failure()\n"),
+    release,
+  ],
+  [
+    "a release process listing that runs after every failure",
+    ci,
+    release.replace(gatesListing, gatesListing.replace(" && steps.gates.outcome == 'failure'", "")),
+  ],
+]) {
+  if (
+    (mutatedCi === ci && mutatedRelease === release) ||
+    hangBoundFindings(mutatedCi, mutatedRelease).length === 0
+  ) {
+    errors.push(`release-workflow-check self-test: failed to reject ${label}`);
+  }
+}
+
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);
 if (directInputs.length !== 7) {
   errors.push(
@@ -1371,6 +1458,66 @@ function remoteSmokeGateFindings(workflow) {
     }
   }
   return findings;
+}
+
+function hangBoundFindings(ciWorkflow, releaseWorkflow) {
+  const findings = [];
+  const minutes = (text, indent) =>
+    Number(
+      new RegExp(`^ {${indent}}timeout-minutes: ([1-9][0-9]*)\\s*$`, "m").exec(text)?.[1] ?? 0,
+    );
+  // Signing, notarization, attestation and publication are never cut short.
+  const unbounded = new Set(["package-macos", "publish-npm", "publish-release"]);
+  for (const [file, workflow] of [
+    ["ci.yml", ciWorkflow],
+    ["release.yml", releaseWorkflow],
+  ]) {
+    for (const job of workflowJobs(workflow)) {
+      const bounded = minutes(jobSection(workflow, job), 4) > 0;
+      if (file === "release.yml" && unbounded.has(job)) {
+        if (bounded)
+          findings.push(`${file}: ${job} signs or publishes and must carry no job timeout-minutes`);
+      } else if (!bounded) {
+        findings.push(`${file}: job ${job} must declare a finite timeout-minutes`);
+      }
+    }
+  }
+  for (const [file, workflow, job, step, id] of [
+    ["ci.yml", ciWorkflow, "build-test", "Test", "test"],
+    ["release.yml", releaseWorkflow, "package-macos", "Deterministic release gates", "gates"],
+  ]) {
+    const section = jobSection(workflow, job);
+    const suite = stepBody(section, step);
+    const stepBound = minutes(suite, 8);
+    const jobBound = minutes(section, 4);
+    if (!new RegExp(`^ {8}id: ${id}\\s*$`, "m").test(suite) || stepBound === 0) {
+      findings.push(
+        `${file}: the ${step} step of ${job} needs id ${id} and a finite timeout-minutes`,
+      );
+    } else if (jobBound > 0 && stepBound >= jobBound) {
+      findings.push(`${file}: the ${step} step bound must end before the ${job} job bound`);
+    }
+    const after = suite ? section.slice(section.indexOf(suite) + suite.length) : "";
+    const next = /^ {6}- [\s\S]*?(?=^ {6}- |(?![\s\S]))/m.exec(after)?.[0] ?? "";
+    if (
+      !next.includes(`        if: failure() && steps.${id}.outcome == 'failure'\n`) ||
+      !/^ {8}run: ps axww -o [^\n]*\bcommand\b/m.test(next)
+    ) {
+      findings.push(
+        `${file}: the step after ${step} must list the processes left when that step failed or timed out`,
+      );
+    }
+  }
+  return findings;
+}
+
+/** The job keys of a workflow, in order. */
+function workflowJobs(workflow) {
+  const text = workflow.replace(/\r\n/g, "\n");
+  const start = text.search(/^jobs:\n/m);
+  return start < 0
+    ? []
+    : [...text.slice(start).matchAll(/^ {2}([a-z0-9-]+):\n/gm)].map((match) => match[1]);
 }
 
 function replaceLastOccurrence(text, needle, replacement) {
