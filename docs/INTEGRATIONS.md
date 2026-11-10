@@ -1692,7 +1692,7 @@ policy. A non-`workspaceWrite` echo refuses
 `codex_auxiliary_roots_unavailable` before the turn, and the legacy exec
 transport refuses the list because a `-c` root could not be revoked later.
 
-When native automatic review denies a command or execve action, Claudexor waits
+When native automatic review denies a command, execve or correlatable MCP tool call, Claudexor waits
 for that root turn to settle, then returns its exact action, rationale and final
 output through the same interaction channel. There are no timed checkpoints.
 The controller can decline if the action is unnecessary or outside its authority,
@@ -1708,6 +1708,24 @@ session under the same native review policy; that turn consumes usage like any
 other and is not a promise of success or of a separate charge. It is not native
 `accept`, a full access fallback, or a policy amendment. The native RPC
 acknowledges submission, not execution; inspect the follow-up result.
+
+For MCP tool denials, the original server, tool and arguments are shown only when
+the root thread and turn's started tool item matches the review's target item,
+server, tool and connector identity. The authorization submitted to Codex is
+contextual: the native event does not bind the retry to the displayed arguments,
+and the model can change them. The next turn is asked to retry the original call,
+but native review may still deny it. Do not claim argument-bound enforcement or
+execution from the submitted authorization. Missing, ambiguous, oversized or
+unmatched call evidence leaves the denial in place.
+
+Separately, simple empty-form MCP elicitations in a workspace-write
+session are delivered as blocking interactions. Their origin and complete
+request details are untrusted: an elicitation is not proven to be a native tool-call
+approval, and its server may already be executing the tool. The controller
+may accept or decline that particular request; no persistent approval is
+sent. Other access profiles, missing channels, stale requests, nonempty forms,
+URL and verification modes are declined. They emit
+`codex_mcp_elicitation_not_offered` rather than assuming a decision.
 
 Claudexor never offers a denial it cannot present exactly: missing/unknown
 action fields, oversized details, unsupported actions (automatic-review

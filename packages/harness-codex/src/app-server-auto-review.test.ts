@@ -62,6 +62,365 @@ function setup(access = "workspace_write", channel = true) {
 }
 
 describe("native automatic review handback", () => {
+  it("keeps accepting new MCP calls after the recent-item cache fills", () => {
+    const t = setup();
+    for (let id = 0; id < 300; id++)
+      t.review.observe({
+        method: "item/started",
+        params: {
+          threadId: "root",
+          turnId: "turn",
+          item: {
+            id: String(id),
+            type: "mcpToolCall",
+            server: "wiki",
+            tool: "read",
+            arguments: { id },
+          },
+        },
+      });
+    t.review.observe(
+      denial({
+        targetItemId: "299",
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+      }),
+    );
+    expect(t.review.interactions("turn", "Blocked")[0]?.type).toBe("interaction_requested");
+    expect(t.asks[0]!.questions[0]!.question).toContain('"id": 299');
+  });
+
+  it("preserves a denial's correlated call while later MCP calls evict recent items", () => {
+    const t = setup();
+    t.review.observe({
+      method: "item/started",
+      params: {
+        threadId: "root",
+        turnId: "turn",
+        item: {
+          id: "item",
+          type: "mcpToolCall",
+          server: "wiki",
+          tool: "read",
+          arguments: { slug: "support" },
+        },
+      },
+    });
+    t.review.observe(
+      denial({
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+      }),
+    );
+    for (let id = 0; id < 300; id++)
+      t.review.observe({
+        method: "item/started",
+        params: {
+          threadId: "root",
+          turnId: "turn",
+          item: {
+            id: String(id),
+            type: "mcpToolCall",
+            server: "wiki",
+            tool: "read",
+            arguments: { id },
+          },
+        },
+      });
+    expect(t.review.interactions("turn", "Blocked")[0]?.type).toBe("interaction_requested");
+    expect(t.asks[0]!.questions[0]!.question).toContain('"slug": "support"');
+  });
+
+  it("invalidates a duplicate reviewed item even after recent-item eviction", () => {
+    const t = setup();
+    const item = (args: object) => ({
+      method: "item/started",
+      params: {
+        threadId: "root",
+        turnId: "turn",
+        item: { id: "item", type: "mcpToolCall", server: "wiki", tool: "read", arguments: args },
+      },
+    });
+    t.review.observe(item({ slug: "first" }));
+    t.review.observe(
+      denial({
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+      }),
+    );
+    for (let id = 0; id < 300; id++)
+      t.review.observe({
+        method: "item/started",
+        params: {
+          threadId: "root",
+          turnId: "turn",
+          item: {
+            id: String(id),
+            type: "mcpToolCall",
+            server: "wiki",
+            tool: "read",
+            arguments: { id },
+          },
+        },
+      });
+    t.review.observe(item({ slug: "second" }));
+    expect(t.review.interactions("turn", "Blocked")[0]?.payload).toMatchObject({
+      code: "codex_auto_review_not_offered",
+    });
+    expect(t.asks).toEqual([]);
+  });
+
+  it("does not accept a reused evicted item ID before its first review", () => {
+    const t = setup();
+    const item = (id: string, args: object) => ({
+      method: "item/started",
+      params: {
+        threadId: "root",
+        turnId: "turn",
+        item: { id, type: "mcpToolCall", server: "wiki", tool: "read", arguments: args },
+      },
+    });
+    t.review.observe(item("item", { slug: "first" }));
+    for (let id = 0; id < 300; id++) t.review.observe(item(String(id), { id }));
+    t.review.observe(item("item", { slug: "second" }));
+    t.review.observe(
+      denial({
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+      }),
+    );
+    expect(t.review.interactions("turn", "Blocked")[0]?.payload).toMatchObject({
+      code: "codex_auto_review_not_offered",
+    });
+    expect(t.asks).toEqual([]);
+  });
+
+  it.each(["invalid", [], {}, { connectorId: "other" }])(
+    "refuses invalid or mismatched connector context %j",
+    (appContext) => {
+      const t = setup();
+      t.review.observe({
+        method: "item/started",
+        params: {
+          threadId: "root",
+          turnId: "turn",
+          item: {
+            id: "item",
+            type: "mcpToolCall",
+            server: "wiki",
+            tool: "read",
+            arguments: { slug: "support" },
+            appContext,
+          },
+        },
+      });
+      t.review.observe(
+        denial({
+          action: {
+            type: "mcpToolCall",
+            server: "wiki",
+            toolName: "read",
+            connectorId: null,
+            connectorName: null,
+            toolTitle: null,
+          },
+        }),
+      );
+      expect(t.review.interactions("turn", "Blocked")[0]?.payload).toMatchObject({
+        code: "codex_auto_review_not_offered",
+      });
+      expect(t.asks).toEqual([]);
+    },
+  );
+  it("offers a clearly contextual retry for a matching denied MCP tool call", async () => {
+    const t = setup();
+    t.review.observe({
+      method: "item/started",
+      params: {
+        threadId: "root",
+        turnId: "turn",
+        item: {
+          id: "item",
+          type: "mcpToolCall",
+          server: "wiki",
+          tool: "read",
+          arguments: { slug: "support" },
+        },
+      },
+    });
+    t.review.observe(
+      denial({
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+      }),
+    );
+    expect(t.review.interactions("turn", "The lookup was refused.")).toHaveLength(1);
+    const question = t.asks[0]!.questions[0]!.question;
+    expect(question).toContain('"slug": "support"');
+    expect(question).toMatch(/not.*bound.*arguments/i);
+    const pending = t.review.takeRetries();
+    t.answer(["Authorize one retry"]);
+    expect(await pending).toMatchObject([
+      { action: { type: "mcp_tool_call", server: "wiki", tool_name: "read" } },
+    ]);
+  });
+
+  it("does not repeatedly authorize the same denied MCP tool", async () => {
+    const t = setup();
+    const action = {
+      type: "mcpToolCall",
+      server: "wiki",
+      toolName: "read",
+      connectorId: null,
+      connectorName: null,
+      toolTitle: null,
+    };
+    t.review.observe({
+      method: "item/started",
+      params: {
+        threadId: "root",
+        turnId: "turn",
+        item: {
+          id: "item",
+          type: "mcpToolCall",
+          server: "wiki",
+          tool: "read",
+          arguments: { slug: "support" },
+        },
+      },
+    });
+    t.review.observe(denial({ action }));
+    t.review.interactions("turn", "Blocked");
+    const result = t.review.takeRetries();
+    t.answer(["Authorize one retry"]);
+    await result;
+    t.review.observe(denial({ action, reviewId: "retry-denied" }));
+    expect(t.review.interactions("turn", "Still blocked")[0]?.payload).toMatchObject({
+      code: "codex_auto_review_not_offered",
+    });
+    expect(t.asks).toHaveLength(1);
+  });
+
+  it.each([
+    { targetItemId: null },
+    { targetItemId: "other" },
+    {
+      action: {
+        type: "mcpToolCall",
+        server: "wiki",
+        toolName: "write",
+        connectorId: null,
+        connectorName: null,
+        toolTitle: null,
+      },
+    },
+  ])("does not offer an MCP retry without an exact item correlation: %j", async (overrides) => {
+    const t = setup();
+    t.review.observe({
+      method: "item/started",
+      params: {
+        threadId: "root",
+        turnId: "turn",
+        item: {
+          id: "item",
+          type: "mcpToolCall",
+          server: "wiki",
+          tool: "read",
+          arguments: { slug: "support" },
+        },
+      },
+    });
+    t.review.observe(
+      denial({
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+        ...overrides,
+      }),
+    );
+    expect(t.review.interactions("turn", "Blocked")).toEqual([
+      expect.objectContaining({
+        payload: expect.objectContaining({ code: "codex_auto_review_not_offered" }),
+      }),
+    ]);
+    expect(t.asks).toEqual([]);
+  });
+
+  it.each(["foreign-thread", "foreign-turn", "duplicate", "oversized"])(
+    "refuses untrustworthy MCP call evidence: %s",
+    (kind) => {
+      const t = setup();
+      const frame = {
+        method: "item/started",
+        params: {
+          threadId: kind === "foreign-thread" ? "other" : "root",
+          turnId: kind === "foreign-turn" ? "other" : "turn",
+          item: {
+            id: "item",
+            type: "mcpToolCall",
+            server: "wiki",
+            tool: "read",
+            arguments: { slug: kind === "oversized" ? "x".repeat(33_000) : "support" },
+          },
+        },
+      };
+      t.review.observe(frame);
+      if (kind === "duplicate") t.review.observe(frame);
+      t.review.observe(
+        denial({
+          action: {
+            type: "mcpToolCall",
+            server: "wiki",
+            toolName: "read",
+            connectorId: null,
+            connectorName: null,
+            toolTitle: null,
+          },
+        }),
+      );
+      expect(t.review.interactions("turn", "Blocked")).toEqual([
+        expect.objectContaining({
+          payload: expect.objectContaining({ code: "codex_auto_review_not_offered" }),
+        }),
+      ]);
+      expect(t.asks).toEqual([]);
+    },
+  );
   it("waits for terminal context and explicit exact-action authorization", async () => {
     const t = setup();
     t.review.observe(denial());
@@ -313,6 +672,45 @@ describe("native automatic review handback", () => {
       { review_id: "one", state: "acknowledged" },
       { review_id: "two", state: "submitted" },
     ]);
+  });
+
+  it("reuses the exact sandbox policy on an authorized continuation", async () => {
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const settled = new CodexAutoReview({
+      spec: HarnessRunSpec.parse({
+        session_id: "test",
+        intent: "implement",
+        prompt: "work",
+        cwd: process.cwd(),
+        access: "workspace_write",
+      }),
+      threadId: () => "root",
+      turnId: () => null,
+      live: () => true,
+    });
+    const sandboxPolicy = {
+      type: "workspaceWrite",
+      writableRoots: ["/workspace/allowed"],
+      networkAccess: false,
+    };
+    await settled.retry(
+      [{ id: "review", action: { type: "mcp_tool_call", server: "wiki", tool_name: "read" } }],
+      async (method, params) => {
+        requests.push({ method, params });
+        return {};
+      },
+      async () => ({
+        threadStatus: "idle",
+        threadSettled: true,
+        goalActive: false,
+        ownedBackground: [],
+      }),
+      sandboxPolicy,
+    );
+    expect(requests[1]).toMatchObject({
+      method: "turn/start",
+      params: { sandboxPolicy, approvalPolicy: "on-request", approvalsReviewer: "auto_review" },
+    });
   });
 
   it("does not start a retry after cancellation even if an authorization RPC was acknowledged", async () => {

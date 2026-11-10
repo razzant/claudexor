@@ -76,6 +76,15 @@ function approvalPeer(
               params: { threadId: "thread-approval", turn: { id: turnId } },
             });
             push({ id: frame["id"], result: { turn: { id: turnId } } });
+            if (turnCount === 1 && itemDetails["type"] === "mcpToolCall")
+              push({
+                method: "item/started",
+                params: {
+                  threadId: "thread-approval",
+                  turnId,
+                  item: { id: "item-approval", ...itemDetails },
+                },
+              });
             if (turnCount === 1)
               push({
                 method,
@@ -273,6 +282,173 @@ function answer(
 }
 
 describe("Codex app-server approval relay", () => {
+  it("fails closed on an elicitation that reuses a pending command RPC id", async () => {
+    const peer = approvalPeer("item/commandExecution/requestApproval", 7, {
+      command: "pwd",
+      cwd: process.cwd(),
+    });
+    const run = startApprovalRun(peer);
+    const request = await observedRequest(run);
+    peer.push({
+      id: 7,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-approval",
+        turnId: "turn-approval",
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow?",
+        requestedSchema: { type: "object", properties: {} },
+      },
+    });
+    const events = await bounded(run.done);
+    run.reply(answer(request, ["Approve once"]));
+    expect(
+      peer.writes.filter((frame) => frame["id"] === 7 && frame["method"] === undefined),
+    ).toEqual([]);
+    expect(events.some((event) => event.type === "error")).toBe(true);
+  });
+  it.each([
+    ["Accept request", "accept"],
+    ["Decline", "decline"],
+  ])("answers a simple untrusted MCP server request with %s", async (choice, action) => {
+    const peer = approvalPeer(
+      "mcpServer/elicitation/request",
+      "mcp-request",
+      {},
+      {
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow lookup?",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: { tool_params: { slug: "support" } },
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    const request = await observedRequest(run);
+    expect(request.source_tool).toBe("mcpServer/elicitation/request");
+    expect(request.questions[0]!.question).toContain('"slug": "support"');
+    expect(request.questions[0]!.question).toContain("not verified as a native tool-call approval");
+    run.reply(answer(request, [choice]));
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "mcp-request",
+      result: { action, content: action === "accept" ? {} : null, _meta: null },
+    });
+    await bounded(run.done);
+  });
+
+  it.each(["readonly", "full"] as const)(
+    "declines an MCP server request under %s without asking",
+    async (access) => {
+      const peer = approvalPeer(
+        "mcpServer/elicitation/request",
+        "mcp-request",
+        {},
+        {
+          serverName: "wiki",
+          mode: "form",
+          message: "Allow?",
+          requestedSchema: { type: "object", properties: {} },
+        },
+      );
+      const run = startApprovalRun(peer, undefined, access);
+      expect(await bounded(peer.wroteApproval)).toEqual({
+        id: "mcp-request",
+        result: { action: "decline", content: null, _meta: null },
+      });
+      await bounded(run.done);
+    },
+  );
+
+  it("declines unsupported MCP form schemas rather than accepting incomplete input", async () => {
+    const peer = approvalPeer(
+      "mcpServer/elicitation/request",
+      "mcp-request",
+      {},
+      {
+        serverName: "wiki",
+        mode: "form",
+        message: "Type a value",
+        requestedSchema: { type: "object", properties: { value: { type: "string" } } },
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "mcp-request",
+      result: { action: "decline", content: null, _meta: null },
+    });
+    await bounded(run.done);
+  });
+
+  it.each([
+    { threadId: "foreign" },
+    { turnId: null },
+    { serverName: "" },
+    { mode: "url", url: "https://example.test/verify" },
+    { message: "x".repeat(33_000) },
+  ])("declines unsupported or uncorrelated MCP requests %j", async (overrides) => {
+    const peer = approvalPeer(
+      "mcpServer/elicitation/request",
+      "mcp-request",
+      {},
+      {
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow?",
+        requestedSchema: { type: "object", properties: {} },
+        ...overrides,
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    expect(await bounded(peer.wroteApproval)).toEqual({
+      id: "mcp-request",
+      result: { action: "decline", content: null, _meta: null },
+    });
+    const events = await bounded(run.done);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "status" &&
+          event.payload?.["code"] === "codex_mcp_elicitation_not_offered",
+      ),
+    ).toBe(true);
+  });
+  it("presents a denied MCP call and carries the original arguments into the next turn", async () => {
+    const peer = approvalPeer(
+      "item/autoApprovalReview/completed",
+      "unused",
+      { type: "mcpToolCall", server: "wiki", tool: "read", arguments: { slug: "support" } },
+      {
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+      },
+    );
+    const run = startApprovalRun(peer, undefined, "workspace_write");
+    const request = await observedRequest(run);
+    expect(request.questions[0]!.question).toContain('"slug": "support"');
+    expect(request.questions[0]!.question).toMatch(/not bound to these arguments/);
+    run.reply(answer(request, ["Authorize one retry"]));
+    const events = await bounded(run.done);
+    const authorization = peer.writes.find(
+      (frame) => frame["method"] === "thread/approveGuardianDeniedAction",
+    );
+    expect(authorization?.["params"]).toMatchObject({
+      event: { action: { type: "mcp_tool_call", server: "wiki", tool_name: "read" } },
+    });
+    const turns = peer.writes.filter((frame) => frame["method"] === "turn/start");
+    expect(turns).toHaveLength(2);
+    expect(JSON.stringify(turns[1])).toContain("support");
+    expect(events.at(-1)).toMatchObject({
+      type: "completed",
+      payload: { native_turn_id: "turn-approval-2" },
+    });
+  });
   it("returns to the controller after a native denial, then re-reviews one explicitly authorized retry", async () => {
     const peer = approvalPeer("item/autoApprovalReview/completed", "unused", {});
     const run = startApprovalRun(peer, undefined, "workspace_write");
