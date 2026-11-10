@@ -1,3 +1,4 @@
+export { COPILOT_PROGRAM } from "./program.js";
 import type { HarnessAdapter } from "@claudexor/core";
 import type { AcpEntry } from "./entry.js";
 import { acpCapabilityProfile } from "./manifest.js";
@@ -16,6 +17,7 @@ export function createAcpAdapter(entry: AcpEntry): HarnessAdapter {
       reason: "ACP supplies no vendor-independent native storage retirement contract.",
     },
     id: entry.id,
+    program: entry.program,
     // Only an entry that declares levels has a separate effort knob to resolve.
     ...(entry.effortLevels.length ? { effortParameter: "--effort" } : {}),
     capabilityProfile: profile,

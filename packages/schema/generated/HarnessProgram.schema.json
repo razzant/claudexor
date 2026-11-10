@@ -1,0 +1,267 @@
+{
+  "$ref": "#/definitions/HarnessProgram",
+  "definitions": {
+    "HarnessProgram": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "launchers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "realPathPattern": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "overrideEnv": {
+          "type": "string"
+        },
+        "platforms": {
+          "type": "object",
+          "properties": {
+            "darwin": {
+              "type": "object",
+              "properties": {
+                "launcherDirs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "install": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "exec"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "args": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "env": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "command",
+                        "args"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "script"
+                        },
+                        "url": {
+                          "type": "string",
+                          "format": "uri",
+                          "pattern": "^https\\:\\/\\/"
+                        },
+                        "interpreter": {
+                          "type": "string"
+                        },
+                        "interpreterArgs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "args": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "env": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "url",
+                        "interpreter",
+                        "interpreterArgs",
+                        "args"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "update": {
+                  "$ref": "#/definitions/HarnessProgram/properties/platforms/properties/darwin/properties/install"
+                },
+                "exactVersion": {
+                  "$ref": "#/definitions/HarnessProgram/properties/platforms/properties/darwin/properties/install"
+                },
+                "newest": {
+                  "type": "object",
+                  "properties": {
+                    "url": {
+                      "$ref": "#/definitions/HarnessProgram/properties/platforms/properties/darwin/properties/install/anyOf/1/properties/url"
+                    },
+                    "pick": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "text"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "json"
+                            },
+                            "field": {
+                              "type": "string"
+                            },
+                            "stripPrefix": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "field"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "pattern"
+                            },
+                            "pattern": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "pattern"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "url",
+                    "pick"
+                  ],
+                  "additionalProperties": false
+                },
+                "architectures": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "reasons": {
+                  "type": "object",
+                  "properties": {
+                    "install": {
+                      "type": "string"
+                    },
+                    "update": {
+                      "type": "string"
+                    },
+                    "exactVersion": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "launcherDirs"
+              ],
+              "additionalProperties": false
+            },
+            "linux": {
+              "$ref": "#/definitions/HarnessProgram/properties/platforms/properties/darwin"
+            },
+            "win32": {
+              "$ref": "#/definitions/HarnessProgram/properties/platforms/properties/darwin"
+            }
+          },
+          "additionalProperties": false
+        },
+        "installationEnv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "legacyNpmPackage": {
+          "type": "string"
+        },
+        "majorVersion": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "childUpdateEnv": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "childUpdateArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "launchers",
+        "overrideEnv",
+        "platforms",
+        "installationEnv"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

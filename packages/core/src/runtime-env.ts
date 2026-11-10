@@ -1,3 +1,4 @@
+import { programLauncherDirs } from "./program-registry.js";
 import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { commandForFile, interpretedCommand, type HarnessCommand } from "./npm-launch.js";
@@ -199,8 +200,7 @@ export function normalizedHarnessPath(
     join(home, ".local", "bin"),
     // Cursor's vendor installer may choose this legacy vendor-owned prefix
     // instead of ~/.local/bin; discovery and execution must resolve either.
-    join(home, ".cursor", "bin"),
-    join(home, ".grok", "bin"),
+    ...programLauncherDirs(source, platform),
     join(home, ".npm-global", "bin"),
     join(home, ".bun", "bin"),
     "/opt/homebrew/bin",
@@ -286,6 +286,7 @@ export function resolveHarnessCommandOnPath(
   platform: NodeJS.Platform = process.platform,
   source: NodeJS.ProcessEnv = process.env,
   cwd?: string,
+  maskedPaths: readonly string[] = [],
 ): HarnessCommandResolution {
   const names = binaryNameCandidates(bin, platform);
   // Absolute and explicitly relative paths are exact choices, not PATH searches.
@@ -296,7 +297,9 @@ export function resolveHarnessCommandOnPath(
   const skipped: SkippedLaunchCandidate[] = [];
   let command: HarnessCommand | null = null;
   for (const candidate of candidates) {
+    if (maskedPaths.includes(candidate)) continue;
     command = commandForFile(candidate, pathValue, platform, delimiter, source);
+    if (command && maskedPaths.includes(command.entrypoint)) { command = null; continue; }
     if (command) break;
     const kind = lstatKind(candidate);
     if (!kind) continue;

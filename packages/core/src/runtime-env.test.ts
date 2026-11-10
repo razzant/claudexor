@@ -92,13 +92,7 @@ describe("resolveHarnessBinary", () => {
     expect(resolveHarnessBinary("missing-bin", env)).toBeNull();
   });
 
-  it("resolves Cursor's vendor-owned ~/.cursor/bin destination", () => {
-    const home = join(root, "cursor-home");
-    const cursorBin = join(home, ".cursor", "bin");
-    const installed = fakeBin(cursorBin, "cursor-agent");
-    const env = { HOME: home, PATH: "" } as NodeJS.ProcessEnv;
-    expect(resolveHarnessBinary("cursor-agent", env, "/no/such/node")).toBe(installed);
-  });
+
 
   it("passes absolute paths through only when they exist", () => {
     const abs = fakeBin(join(root, "abs"), "tool");

@@ -1,3 +1,5 @@
+import { CODEX_PROGRAM } from "./program.js";
+export { CODEX_PROGRAM } from "./program.js";
 import {
   CODEX_MODEL_INVENTORY,
   codexProcessingMethods,
@@ -336,6 +338,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
   };
   return {
     id: "codex",
+    program: CODEX_PROGRAM,
     effortParameter: "model_reasoning_effort",
     capabilityProfile: CODEX_CAPABILITY_PROFILE,
     nativeAccess: (spec) => codexNativeAccess(spec, Boolean(runtime.runAppServer)),

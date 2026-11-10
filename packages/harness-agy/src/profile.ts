@@ -1,3 +1,4 @@
+import { AGY_PROGRAM } from "./program.js";
 import { join } from "node:path";
 import { canonicalIsolationLocator, providerScrubEnv } from "@claudexor/core";
 import type { CredentialProfile, CredentialProfileStatus, HarnessRunSpec } from "@claudexor/schema";
@@ -51,7 +52,7 @@ export function agyProfileRunEnv(profileHome: string, specEnv: EnvMap = {}): Env
     ...providerScrubEnv(),
     HOME: home,
     USERPROFILE: home,
-    AGY_CLI_DISABLE_AUTO_UPDATE: "true",
+    ...AGY_PROGRAM.childUpdateEnv,
   };
 }
 

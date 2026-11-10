@@ -1,10 +1,11 @@
+import { GROK_PROGRAM } from "./program.js";
 import { join } from "node:path";
 import { canonicalIsolationLocator, providerScrubEnv } from "@claudexor/core";
 import type { CredentialProfile } from "@claudexor/schema";
 
 type Env = Record<string, string | null | undefined>;
 const MANAGED_ENV: Env = {
-  GROK_DISABLE_AUTOUPDATER: "1",
+  ...GROK_PROGRAM.childUpdateEnv,
   GROK_CONFIG: null,
   GROK_CONFIG_PATH: null,
 };

@@ -1,3 +1,4 @@
+import { GROK_PROGRAM } from "./program.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { resolveHarnessBinary, runCapture } from "@claudexor/core";
@@ -24,7 +25,7 @@ export async function detectGrokVersion(): Promise<string | null> {
     // The vendor updater switch login and runs already set.
     const result = await runCapture(resolveGrokBin(), ["--version"], {
       timeoutMs: 10_000,
-      env: { GROK_DISABLE_AUTOUPDATER: "1" },
+      env: GROK_PROGRAM.childUpdateEnv,
     });
     return result.stdout.match(/\b\d+\.\d+\.\d+(?:[-+][\w.-]+)?\b/)?.[0] ?? null;
   } catch {

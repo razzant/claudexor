@@ -185,6 +185,7 @@ export interface LiveMessageResult {
  * logic. External adapters may implement this as an in-tree HarnessAdapter implementation (the out-of-tree JSON-RPC bridge package was removed in v0.9).
  */
 export interface HarnessAdapter {
+  readonly program?: import("@claudexor/schema").HarnessProgram;
   readonly id: string;
   /** Native effort carrier the adapter resolves at its final route: a separate
    * flag (`--effort`, `model_reasoning_effort`), or `--model` when the level is

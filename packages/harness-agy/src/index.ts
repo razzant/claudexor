@@ -1,3 +1,5 @@
+import { AGY_PROGRAM } from "./program.js";
+export { AGY_PROGRAM } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,
@@ -264,6 +266,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
       reason: "Agy native session storage has no proven independent pruning contract.",
     },
     id: "agy",
+    program: AGY_PROGRAM,
     childHome: agyChildHome,
     nativeAccess: (spec) => formatNativeArgs(accessArgs(spec.access)),
     // The level is a token of the model id: `prepareProcessing` selects the

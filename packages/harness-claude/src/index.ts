@@ -1,3 +1,5 @@
+import { CLAUDE_PROGRAM } from "./program.js";
+export { CLAUDE_PROGRAM } from "./program.js";
 import { randomUUID } from "node:crypto";
 import { claudeMcpArgs } from "./mcp-args.js";
 import {
@@ -256,6 +258,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
   const live = createClaudeLiveInput();
   return {
     id: "claude",
+    program: CLAUDE_PROGRAM,
     effortParameter: "--effort",
     nativeAccess: claudeNativeAccess,
     capabilityProfile: CLAUDE_CAPABILITY_PROFILE,

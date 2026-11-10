@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
+  HarnessProgram,
+  SelectedHarnessProgram,
   ExternalHostBinding,
   EffortResolution,
   ProcessingPreference,
@@ -264,6 +266,8 @@ const schemas = {
   ControlHarnessMaintenanceInventory,
   ControlHarnessMaintenanceCreateRequest,
   ControlHarnessMaintenanceOperation,
+  HarnessProgram,
+  SelectedHarnessProgram,
   ExternalHostBinding,
   EffortResolution,
   ProcessingPreference,

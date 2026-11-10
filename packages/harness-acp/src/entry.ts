@@ -1,8 +1,10 @@
+import { COPILOT_PROGRAM } from "./program.js";
 import type { PinnedVendorCliVersion } from "@claudexor/util";
 
 /** Agent identity stays vendor-specific; the transport is shared. */
 export interface AcpEntry {
   id: string;
+  program?: import("@claudexor/schema").HarnessProgram;
   displayName: string;
   binary: string;
   binaryEnv: string;
@@ -24,6 +26,7 @@ export interface AcpEntry {
 // deterministic_only. --no-remote disables remote control, not network access.
 export const copilot: AcpEntry = {
   id: "copilot",
+  program: COPILOT_PROGRAM,
   displayName: "GitHub Copilot",
   binary: "copilot",
   binaryEnv: "CLAUDEXOR_COPILOT_BIN",
@@ -32,7 +35,7 @@ export const copilot: AcpEntry = {
   flags: [
     "--acp",
     "--stdio",
-    "--no-auto-update",
+    ...(COPILOT_PROGRAM.childUpdateArgs ?? []),
     "--no-ask-user",
     "--no-color",
     "--no-bash-env",

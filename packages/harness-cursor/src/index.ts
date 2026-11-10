@@ -1,3 +1,5 @@
+import { CURSOR_PROGRAM } from "./program.js";
+export { CURSOR_PROGRAM } from "./program.js";
 import { cursorAccessArgs, cursorModeArgs, cursorNativeAccess } from "./profile.js";
 import { cursorSpawnPinFacts } from "./profile.js";
 import {
@@ -258,6 +260,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
       reason: "Cursor session/index storage has no proven independent pruning contract.",
     },
     id: "cursor",
+    program: CURSOR_PROGRAM,
     childHome: cursorChildHome,
     nativeAccess: cursorNativeAccess,
     // The level is a token of the compound model id: `prepareProcessing` selects the

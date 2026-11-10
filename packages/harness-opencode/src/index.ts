@@ -1,3 +1,5 @@
+import { OPENCODE_PROGRAM } from "./program.js";
+export { OPENCODE_PROGRAM } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,
@@ -174,6 +176,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         "OpenCode session database relationships have no proven independent pruning contract.",
     },
     id: "opencode",
+    program: OPENCODE_PROGRAM,
 
     async discover(): Promise<HarnessManifest> {
       const version = await detectVersion();
