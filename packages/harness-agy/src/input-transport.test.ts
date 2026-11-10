@@ -148,8 +148,8 @@ describe("AGY doctor readonly minimum (#653)", () => {
     expect(check).toMatchObject({ status: "fail" });
     expect(check?.detail).toContain("installed 1.1.13 stops readonly runs before the model");
     expect(report.reasons).toContain(check?.detail);
-    // The fixture pin stays its own check.
-    expect(report.checks.find((c) => c.id === "version_pin")).toMatchObject({ status: "pass" });
+    // Fixture stamps do not restrict installed vendor versions.
+    expect(report.checks.some((c) => c.id === "version_pin")).toBe(false);
   });
 });
 

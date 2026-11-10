@@ -341,12 +341,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
 
     async doctor(spec: DoctorSpec): Promise<ConformanceReport> {
       const version = await detectVersion();
-      const installedSemver =
-        version === null ? null : (/\d+\.\d+\.\d+/.exec(version)?.[0] ?? null);
-      const versionDrift =
-        version !== null && installedSemver !== AGY_VENDOR_CLI_VERSION
-          ? `installed agy "${version}" differs from the verified ${AGY_VENDOR_CLI_VERSION}; the platform credential transport and profile policy are re-proven per version (R-2')`
-          : null;
+      const installedSemver = version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
       // Л-24 + INV-067: Darwin's profile-local keychain plus vendor fallback
       // preserves the proven profile identity route. Linux retains the
       // config-file transport without a live multi-account proof. Windows has
@@ -416,9 +411,6 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
             status: "fail",
             detail: "agy has no engine-default credential by design; accounts are named profiles",
           },
-          ...(versionDrift
-            ? [{ id: "version_pin", status: "fail" as const, detail: versionDrift }]
-            : [{ id: "version_pin", status: "pass" as const, detail: AGY_VENDOR_CLI_VERSION }]),
           readonly,
           ...(platformProof
             ? [{ id: "platform_isolation", status: "skip" as const, detail: platformProof }]
@@ -428,7 +420,6 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
         disabled_intents: AGY_ENABLED_INTENTS,
         reasons: [
           "agy routes only through named accounts: add one (`claudexor profiles add agy <id>` + `claudexor profiles login agy <id>`) and pin it (--profile)",
-          ...(versionDrift ? [versionDrift] : []),
           ...(readonly.status === "fail" ? [readonly.detail] : []),
           ...(platformProof ? [platformProof] : []),
         ],

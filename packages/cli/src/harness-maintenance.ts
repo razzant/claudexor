@@ -1,421 +1,307 @@
-/**
- * `claudexor harness inspect|update` — the CLI-first maintenance primitive the
- * daemon's durable operation runs in a child process (so the blocking install
- * never runs on the daemon's event loop and its process tree stays cancellable).
- *
- * - inspect reads facts only: the program the harness actually selects (an
- *   explicit CLAUDEXOR_<HARNESS>_BIN override wins verbatim), its own
- *   `--version`, the managed npm copy, and the release-tested pin as a separate
- *   fact. It never logs in, provisions or installs; `--latest` adds one
- *   registry read of the newest published version.
- * - update performs exactly ONE step through the recipe's mechanism: an exact
- *   managed npm install (latest resolved once to an exact version first), or
- *   the vendor's own `update` on the canonical host-home launcher it rewrites.
- *   The vendor resolves latest itself, so an unchanged version afterwards is
- *   reported as no observed change, never as a new version.
- */
-import { realpathSync } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
-import { prepareHarnessCommand, resolveHarnessBinary } from "@claudexor/core";
-import { ControlProblem, type HarnessMaintenanceEntry } from "@claudexor/schema";
-import { flagBool, flagStr, type ParsedArgs } from "./args.js";
-import { print, printJson, printUsageError } from "./cli-io.js";
+import { programPlatform, resolveSelectedProgram } from "@claudexor/core";
+import {
+  ControlProblem,
+  HarnessVendorVersion,
+  type HarnessMaintenanceEntry,
+  type HarnessMaintenanceEvidence,
+  type HarnessProgram,
+  type SelectedHarnessProgram,
+} from "@claudexor/schema";
+import { redactSecrets } from "@claudexor/util";
 import {
   acquireHarnessInstallLease,
   HARNESS_INSTALL_LOCK_TIMEOUT_MS,
 } from "./harness-install-lease.js";
-import {
-  EXACT_VENDOR_VERSION,
-  exactSemverTokens,
-  managedNpmPackageVersion,
-  proveInstalledNpm,
-  proveInstalledScriptVendor,
-} from "./harness-install-proof.js";
-import {
-  HARNESS_BINARY_OVERRIDE_ENV,
-  harnessMaintenanceRecipe,
-  isInstallableHarness,
-  NPM_PINS,
-  selectedHarnessCommand,
-  TARGET_LAYOUTS,
-  type InstallableHarness,
-} from "./harness-install-recipes.js";
-import { installerRuntime, type InstallerRuntime } from "./harness-install-runtime.js";
-import { resolveLatestNpmVersion } from "./harness-latest.js";
-import { confirmOnTty, localPlatformRefusal, runHarnessInstaller } from "./harness-installer.js";
-import { INSTALLABLE_HARNESSES } from "./harness-command-specs.js";
+import { installerRuntime, type InstallerRuntimeOptions } from "./harness-install-runtime.js";
+import { harnessProgram } from "./harness-programs.js";
+import { newestSource, observeNewest, pickNewest } from "./harness-newest.js";
+import { productNpmCopy, retireProductNpmCopy } from "./harness-npm-conversion.js";
+import { prepareProgramCommand } from "./harness-program-command.js";
 
-export type HarnessInspection = Omit<HarnessMaintenanceEntry, "previous" | "operation">;
-type Selection = HarnessInspection["selection"];
-
-export interface MaintenanceOptions {
-  home?: string;
-  nodePath?: string;
-  platform?: NodeJS.Platform;
-  arch?: string;
-  sourceEnv?: NodeJS.ProcessEnv;
-  spawn?: InstallerRuntime["spawn"];
+export type HarnessInspection = Omit<HarnessMaintenanceEntry, "operation">;
+export interface MaintenanceOptions extends InstallerRuntimeOptions {
+  program?: HarnessProgram;
+  fetch?: typeof fetch;
   now?: () => Date;
   lock?: boolean;
-  json?: boolean;
+  /** Durable service acknowledges this evidence before any vendor mutation. */
+  beforeMutation?: (evidence: HarnessMaintenanceEvidence) => Promise<void>;
+  requester?: HarnessMaintenanceEvidence["requester"];
+  activeRunsAtStart?: number | null;
+  installOnly?: boolean;
+  dryRun?: boolean;
 }
-
-function runtimeFor(options: MaintenanceOptions): InstallerRuntime {
-  return installerRuntime({ ...options, target: "local" });
-}
-
-function contained(root: string, candidate: string): boolean {
-  try {
-    const rest = relative(realpathSync(root), realpathSync(candidate));
-    return rest !== "" && !rest.startsWith(`..${sep}`) && rest !== ".." && !isAbsolute(rest);
-  } catch {
-    return false;
-  }
-}
-
-/** The selected program's own version answer: its exact semver token when it
- * prints one, else its bounded first line; null when it does not answer. */
-function selectedVersion(binary: string | null, runtime: InstallerRuntime): string | null {
-  if (!binary) return null;
-  const probe = proveInstalledScriptVendor(binary, runtime);
-  if (!probe.ok) return null;
-  return exactSemverTokens(probe.proof.installedVersion)[0] ?? probe.proof.installedVersion;
-}
-
-function selection(harness: InstallableHarness, runtime: InstallerRuntime): Selection {
-  const overrideEnv = HARNESS_BINARY_OVERRIDE_ENV[harness];
-  const override = runtime.resolutionSource[overrideEnv]?.trim() || null;
-  const resolveOnPath = (bin: string) =>
-    resolveHarnessBinary(bin, runtime.resolutionSource, runtime.runnerNodePath, runtime.platform);
-  const binary = resolveOnPath(
-    selectedHarnessCommand(harness, runtime.resolutionSource, resolveOnPath),
-  );
-  const managed = binary !== null && contained(TARGET_LAYOUTS.local.root(runtime.home), binary);
-  return {
-    kind: override ? "override" : binary === null ? "missing" : managed ? "managed" : "path",
-    binary,
-    version: selectedVersion(binary, runtime),
-    overrideEnv: override ? overrideEnv : null,
-  };
-}
-
-export function inspectHarness(
-  harness: InstallableHarness,
+const action = (available: boolean, reason: string) => ({
+  available,
+  reason: available ? null : reason,
+});
+export async function inspectHarness(
+  harness: string,
   options: MaintenanceOptions & { latest?: boolean } = {},
-): HarnessInspection {
-  const runtime = runtimeFor(options);
-  const now = (options.now ?? (() => new Date()))().toISOString();
-  const recipe = harnessMaintenanceRecipe(harness, runtime.platform);
-  const pin = NPM_PINS[harness];
-  const selected = selection(harness, runtime);
-  const root = TARGET_LAYOUTS.local.root(runtime.home);
-  const declared = pin ? managedNpmPackageVersion(root, pin.npmPackage, runtime.platform) : null;
-  const proof =
-    pin && declared
-      ? proveInstalledNpm(
-          {
-            vendorRoot: root,
-            npmPackage: pin.npmPackage,
-            binaryNames: pin.binaryNames,
-            expectedVersion: declared,
-          },
-          runtime,
-        )
-      : null;
-  let remedy: string | null = null;
-  if (recipe.mechanism === "vendor_script") {
-    remedy = `${harness} has no engine-run updater on this platform; update it with the vendor's own installer or updater`;
-  } else if (recipe.mechanism === "managed_npm") {
-    const refusal = localPlatformRefusal(harness, runtime.platform, runtime.arch);
-    if (refusal) remedy = refusal.refusal ?? "unsupported platform";
-    else if (selected.kind === "override")
-      remedy = `${selected.overrideEnv} selects ${selected.binary ?? "an unresolvable program"}; update that program yourself or unset the override to use the managed copy`;
-    else if (selected.kind === "path")
-      remedy = `${selected.binary} is installed outside Claudexor's managed prefix; update it with the tool that installed it (a managed install would silently take over the selection)`;
-  } else if (!selected.binary || !recipe.launchers(runtime.home).includes(selected.binary)) {
-    // The vendor updater rewrites the launchers under the installation HOME the
-    // engine runs with (and passes on to it); a copied/pinned launcher elsewhere
-    // would stay unchanged while another one is updated.
-    remedy = selected.binary
-      ? `${selected.binary} is not the launcher ${harness}'s own updater maintains under ${runtime.home}/.local/bin; update it with the tool that installed it`
-      : `${harness} is not installed; install it with \`claudexor harness install ${harness}\``;
-  }
-  const canCheckLatest = recipe.mechanism === "managed_npm";
-  const latest = !options.latest
-    ? null
-    : canCheckLatest
-      ? resolveLatestNpmVersion(harness, runtime)
+): Promise<HarnessInspection> {
+  const program = options.program ?? harnessProgram(harness);
+  const runtime = installerRuntime(program, options);
+  const data = programPlatform(program, runtime.platform);
+  const selection = resolveSelectedProgram(program, runtime);
+  const converting = productNpmCopy(program, selection, runtime) !== null;
+  const update = converting ? data?.install : data?.update;
+  const now = (options.now ?? (() => new Date()))();
+  return {
+    harness,
+    selection,
+    observedAt: now.toISOString(),
+    newest: options.latest
+      ? await observeNewest(program, runtime.platform, runtime.arch, options.fetch, now)
       : {
-          problem: {
-            code: "latest_check_unsupported",
-            message: `${harness}'s ${recipe.mechanism} mechanism has no implemented newest-release check; Update still asks the vendor for its latest release`,
-          },
-        };
-  return {
-    harness,
-    mechanism: recipe.mechanism,
-    maintainable: remedy === null,
-    canCheckLatest,
-    targets: remedy === null ? [...recipe.targets] : [],
-    remedy,
-    selection: selected,
-    installed: {
-      version: declared,
-      binary: proof?.ok ? proof.proof.installedBinary : null,
-      proved: proof?.ok === true,
+          status: "not_read",
+          source: newestSource(program, runtime.platform, runtime.arch)?.url ?? null,
+        },
+    actions: {
+      install: action(
+        !selection.path && !!data?.install,
+        selection.path
+          ? "A program is already selected; use Update."
+          : (data?.reasons?.install ?? `${harness} has no installer for ${runtime.platform}.`),
+      ),
+      update: action(
+        !!selection.path && !!update,
+        !selection.path
+          ? "No program is selected; use Install."
+          : ((converting ? data?.reasons?.install : data?.reasons?.update) ??
+              `${harness} has no update command for ${runtime.platform}.`),
+      ),
+      exactVersion: action(
+        !!data?.exactVersion &&
+          (data.exactVersion.kind !== "exec" ||
+            data.exactVersion.command !== "{program}" ||
+            !!selection.path),
+        data?.reasons?.exactVersion ??
+          (selection.path
+            ? `${harness} has no exact-version command for ${runtime.platform}.`
+            : "Install the program before requesting an exact version."),
+      ),
     },
-    releaseTested: { version: pin?.version ?? null, verification: pin?.verification ?? null },
-    available: latest && "version" in latest ? { version: latest.version, observedAt: now } : null,
-    availableProblem:
-      latest && "problem" in latest
-        ? ControlProblem.parse({
-            ...latest.problem,
-            // Neither an unimplemented check nor a missing bundled npm heals on retry.
-            retryable: !["latest_check_unsupported", "embedded_npm_missing"].includes(
-              latest.problem.code,
-            ),
-          })
-        : null,
-    observedAt: now,
   };
 }
 
-export interface HarnessUpdateReceipt {
+export interface HarnessUpdateReceipt extends HarnessMaintenanceEvidence {
   ok: boolean;
-  harness: InstallableHarness;
-  mechanism: HarnessInspection["mechanism"];
-  exitCode: number;
-  code?: string;
-  refusal?: string;
-  requestedVersion: string | null;
-  resolvedVersion: string | null;
-  previousVersion: string | null;
-  before: {
-    version: string | null;
-    binary: string | null;
-    selection: Selection["kind"];
-    proved: boolean;
-  };
-  after: {
-    version: string | null;
-    binary: string | null;
-    selected: boolean;
-    proved: boolean;
-  } | null;
-  mutation: "none" | "applied" | "unknown";
-  limitations: string[];
+  harness: string;
+  dryRun: boolean;
 }
-
-/** Exactly one maintenance step. `requested` is an exact version, "latest", or
- * omitted (latest for either mechanism). */
-export function runHarnessUpdate(
-  harness: InstallableHarness,
-  requested: string | undefined,
-  options: MaintenanceOptions = {},
-): HarnessUpdateReceipt {
-  const before = inspectHarness(harness, options);
-  const runtime = runtimeFor(options);
-  const base = {
-    harness,
-    mechanism: before.mechanism,
-    requestedVersion: requested ?? null,
-    resolvedVersion: null as string | null,
-    previousVersion: null as string | null,
-    before: {
-      version:
-        before.mechanism === "managed_npm" ? before.installed.version : before.selection.version,
-      binary:
-        before.mechanism === "managed_npm" ? before.installed.binary : before.selection.binary,
-      selection: before.selection.kind,
-      proved:
-        before.mechanism === "managed_npm"
-          ? before.installed.proved
-          : before.selection.version !== null,
-    },
-    after: null,
-    limitations: ["in_place_replacement", "new_starts_may_fail"],
-  };
-  const refuse = (code: string, refusal: string): HarnessUpdateReceipt => ({
-    ...base,
-    ok: false,
-    exitCode: 1,
-    code,
-    refusal: `${refusal}; nothing was executed`,
-    mutation: "none",
-  });
-  if (!before.maintainable)
-    return refuse("harness_not_maintainable", before.remedy ?? "not maintainable");
-  if (before.mechanism === "vendor_updater") {
-    if (requested !== undefined && requested !== "latest")
-      return refuse(
-        "version_selection_unsupported",
-        `${harness}'s own updater installs only its latest release`,
-      );
-    return vendorUpdate(harness, runtime, base, options);
-  }
-  let exact = requested ?? "latest";
-  if (exact === "latest") {
-    const latest = resolveLatestNpmVersion(harness, runtime);
-    if ("problem" in latest) return refuse(latest.problem.code, latest.problem.message);
-    exact = latest.version;
-  }
-  if (!EXACT_VENDOR_VERSION.test(exact))
-    return refuse("invalid_vendor_version", `${exact} is not one exact version`);
-  const result = runHarnessInstaller(harness, {
-    ...options,
-    ...runtime,
-    target: "local",
-    version: exact,
-    json: options.json,
-  });
-  const attempted = "previousVersion" in result;
-  const after = selection(harness, runtime);
-  const ok = result.exitCode === 0 && result.refusal === undefined;
-  return {
-    ...base,
-    ok,
-    exitCode: ok ? 0 : result.exitCode || 1,
-    ...(result.code ? { code: result.code } : {}),
-    ...(result.refusal ? { refusal: result.refusal } : {}),
-    resolvedVersion: exact,
-    previousVersion: attempted ? (result.previousVersion ?? null) : base.before.version,
-    after: {
-      version: ok ? (result.installedVersion ?? null) : null,
-      binary: result.installedBinary ?? null,
-      selected: ok && after.kind === "managed",
-      proved: ok,
-    },
-    mutation: ok ? (attempted ? "applied" : "none") : attempted ? "unknown" : "none",
-  };
-}
-
-function vendorUpdate(
-  harness: InstallableHarness,
-  runtime: InstallerRuntime,
-  base: Omit<HarnessUpdateReceipt, "ok" | "exitCode" | "mutation">,
-  options: MaintenanceOptions,
-): HarnessUpdateReceipt {
-  const binary = base.before.binary!;
-  let lease: { release(): void } | null = null;
-  try {
-    if (options.lock !== false)
-      lease = acquireHarnessInstallLease(runtime.home, HARNESS_INSTALL_LOCK_TIMEOUT_MS);
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    return {
-      ...base,
-      ok: false,
-      exitCode: 1,
-      code: typeof code === "string" ? code : "install_lock_failed",
-      refusal: `${error instanceof Error ? error.message : String(error)}; nothing was executed`,
-      mutation: "none",
-    };
-  }
-  try {
-    const invocation = prepareHarnessCommand(
-      binary,
-      ["update"],
-      runtime.environment,
-      runtime.platform,
-    );
-    const result = runtime.spawn(invocation.binary, invocation.args, {
-      env: invocation.env,
-      stdio: options.json ? [0, 2, 2] : "inherit",
-    });
-    const after = selection(harness, runtime);
-    const changed = after.version !== null && after.version !== base.before.version;
-    const limitations = [
-      ...base.limitations,
-      "vendor_resolves_latest",
-      ...(result.status === 0 && !changed ? ["no_version_change_observed"] : []),
-    ];
-    return {
-      ...base,
-      ok: result.status === 0 && after.version !== null,
-      exitCode: result.status === 0 ? (after.version !== null ? 0 : 1) : (result.status ?? 1),
-      ...(result.status !== 0
-        ? { code: result.signal ? "installer_terminated" : "vendor_update_failed" }
-        : after.version === null
-          ? { code: "install_verification_failed" }
-          : {}),
-      resolvedVersion: changed ? after.version : null,
-      previousVersion: base.before.version,
-      after: {
-        version: after.version,
-        binary: after.binary,
-        selected: after.binary === binary,
-        proved: after.version !== null,
-      },
-      mutation:
-        result.status === 0 && after.version !== null ? (changed ? "applied" : "none") : "unknown",
-      limitations,
-    };
-  } finally {
-    lease?.release();
-  }
-}
-
-const INSPECT_USAGE = `usage: claudexor harness inspect [<${INSTALLABLE_HARNESSES.join("|")}>] [--latest]`;
-const UPDATE_USAGE = `usage: claudexor harness update <${INSTALLABLE_HARNESSES.join("|")}> [--vendor-version <exact|latest>] [--yes]`;
-
-export function harnessInspectCommand(
-  args: ParsedArgs,
-  json: boolean,
-  options: MaintenanceOptions = {},
-): number {
-  const only = args._[2];
-  if ((only !== undefined && !isInstallableHarness(only)) || args._.length > 3)
-    return printUsageError(json, INSPECT_USAGE);
-  const ids = only ? [only] : [...INSTALLABLE_HARNESSES];
-  const rows = ids.map((id) =>
-    inspectHarness(id, { ...options, latest: flagBool(args, "latest") }),
+function changed(before: SelectedHarnessProgram, after: SelectedHarnessProgram): boolean {
+  return (
+    before.path !== after.path ||
+    before.realPath !== after.realPath ||
+    before.version !== after.version
   );
-  if (json)
-    printJson({ observedAt: rows[0]?.observedAt ?? new Date().toISOString(), harnesses: rows });
-  else
-    for (const row of rows)
-      print(
-        `${row.harness}: ${row.selection.kind} ${row.selection.binary ?? "-"} ${row.selection.version ?? "version unknown"}` +
-          (row.maintainable ? ` (maintainable: ${row.targets.join(", ")})` : ` (${row.remedy})`),
-      );
-  return 0;
+}
+export function emptyMaintenanceEvidence(
+  target: HarnessMaintenanceEvidence["target"],
+  requester = { source: "cli", requestId: null as string | null },
+): HarnessMaintenanceEvidence {
+  return {
+    phase: "accepted",
+    target,
+    requester,
+    installationHome: null,
+    commands: [],
+    before: null,
+    after: null,
+    elsewhere: null,
+    activeRunsAtStart: null,
+    exitCode: null,
+    outcome: "unknown",
+    mutation: "none",
+    termination: "not_applicable",
+    limitations: [],
+    progress: [],
+    problem: null,
+  };
 }
 
-export function harnessUpdateCommand(
-  args: ParsedArgs,
-  json: boolean,
+/** One vendor operation under the installation HOME. Newest lookup is never
+ * an update prerequisite. Package metadata is consulted only for conversion. */
+export async function runHarnessUpdate(
+  harness: string,
+  requested?: string,
   options: MaintenanceOptions = {},
-): number {
-  const harness = args._[2] ?? "";
-  if (!isInstallableHarness(harness) || args._.length !== 3)
-    return printUsageError(json, UPDATE_USAGE);
-  const requested = flagStr(args, "vendor-version");
-  if (!flagBool(args, "yes")) {
-    if (json || !process.stdin.isTTY) {
-      if (json) printJson({ ok: false, exitCode: 1, code: "confirmation_required", harness });
-      else
-        print("Not updating: confirm with --yes, or run on an interactive terminal to be asked.");
-      return 1;
-    }
-    if (!confirmOnTty(`Update ${harness} to ${requested ?? "latest"}? [y/N] `)) return 1;
-  }
-  // A cancelled operation's TERM reaches this process and npm together: stay
-  // alive until npm is reaped so the lease is released and a receipt prints.
-  const onSignal = (): void => undefined;
-  process.on("SIGTERM", onSignal);
-  process.on("SIGINT", onSignal);
+): Promise<HarnessUpdateReceipt> {
+  const version = requested === "latest" || requested === undefined ? null : requested;
+  const evidence = emptyMaintenanceEvidence(
+    version ? { kind: "version", version } : { kind: "latest", version: null },
+    options.requester,
+  );
+  const receipt: HarnessUpdateReceipt = {
+    ...evidence,
+    ok: false,
+    harness,
+    dryRun: options.dryRun === true,
+  };
+  let lease: ReturnType<typeof acquireHarnessInstallLease> | undefined;
+  let prepared: Awaited<ReturnType<typeof prepareProgramCommand>> | undefined;
+  let started = false;
+  let program: HarnessProgram | undefined;
+  let runtime: ReturnType<typeof installerRuntime> | undefined;
+  let otherBefore: SelectedHarnessProgram | undefined;
+  const other = () => {
+    const sourceEnv = { ...runtime!.sourceEnv };
+    delete sourceEnv[program!.overrideEnv];
+    return resolveSelectedProgram(program!, {
+      ...runtime!,
+      sourceEnv,
+      maskedPaths: receipt.before?.path
+        ? [receipt.before.path, receipt.before.realPath!].filter(Boolean)
+        : [],
+    });
+  };
   try {
-    const receipt = runHarnessUpdate(harness, requested, { ...options, json });
-    if (json) printJson(receipt);
-    else
-      print(
-        receipt.ok
-          ? `${harness}: ${receipt.before.version ?? "none"} -> ${receipt.after?.version ?? "unknown"}${receipt.mutation === "none" ? " (no change)" : ""}`
-          : `${harness} update failed: ${receipt.refusal ?? receipt.code ?? `exit ${receipt.exitCode}`}`,
+    if (version && !HarnessVendorVersion.safeParse(version).success)
+      throw Object.assign(
+        new Error(
+          "Use --vendor-version with one exact version; previous and baseline are retired.",
+        ),
+        { code: "invalid_vendor_version" },
       );
-    return receipt.ok ? 0 : receipt.exitCode || 1;
+    program = options.program ?? harnessProgram(harness);
+    runtime = installerRuntime(program, options);
+    receipt.installationHome = runtime.home;
+    receipt.activeRunsAtStart = options.activeRunsAtStart ?? null;
+    if (options.lock !== false && !options.dryRun)
+      lease = acquireHarnessInstallLease(runtime.home, HARNESS_INSTALL_LOCK_TIMEOUT_MS);
+    receipt.phase = "preparing";
+    const before = resolveSelectedProgram(program, runtime);
+    receipt.before = before;
+    otherBefore = other();
+    const data = programPlatform(program, runtime.platform);
+    const copy = productNpmCopy(program, before, runtime);
+    if (version && program.majorVersion && Number(version.split(".")[0]) !== program.majorVersion)
+      throw new Error(`${harness} supports only ${program.majorVersion}.x (#668).`);
+    if (options.installOnly && before.path && !version) {
+      receipt.ok = true;
+      receipt.after = before;
+      receipt.outcome = "not_changed";
+      receipt.exitCode = 0;
+      return receipt;
+    }
+    const command = copy
+      ? data?.install
+      : version
+        ? data?.exactVersion
+        : before.path
+          ? data?.update
+          : data?.install;
+    if (!command)
+      throw Object.assign(
+        new Error(
+          (copy || !before.path
+            ? data?.reasons?.install
+            : version
+              ? data?.reasons?.exactVersion
+              : data?.reasons?.update) ??
+            `${harness} has no requested vendor command for ${runtime.platform}.`,
+        ),
+        { code: "program_action_unavailable" },
+      );
+    // A conversion's installer must honor an explicitly requested version too.
+    const selectedCommand = copy && version ? data?.exactVersion : command;
+    if (
+      !selectedCommand ||
+      (copy &&
+        selectedCommand.kind === "exec" &&
+        selectedCommand.command === "{program}" &&
+        version)
+    )
+      throw new Error("Convert this npm copy with Update before requesting an exact version.");
+    if (version && version === before.version && !copy) {
+      receipt.ok = true;
+      receipt.after = before;
+      receipt.outcome = "not_changed";
+      receipt.exitCode = 0;
+      return receipt;
+    }
+    prepared = await prepareProgramCommand(
+      selectedCommand,
+      runtime,
+      before.path,
+      version,
+      options.fetch,
+    );
+    receipt.commands = [prepared.evidence];
+    // An installer used as an updater must identify its own target from the
+    // same downloaded bytes. No stale observation can authorize rerunning it.
+    if (!copy && before.path && !version && selectedCommand.kind === "script") {
+      const source = newestSource(program, runtime.platform, runtime.arch);
+      if (!source || source.url !== selectedCommand.url || !prepared.scriptText)
+        throw new Error("The update installer does not declare its own target version.");
+      if (pickNewest(source, prepared.scriptText) === before.version) {
+        receipt.ok = true;
+        receipt.after = before;
+        receipt.outcome = "not_changed";
+        receipt.exitCode = 0;
+        return receipt;
+      }
+    }
+    if (options.dryRun) {
+      receipt.ok = true;
+      return receipt;
+    }
+    receipt.phase = "installing";
+    receipt.mutation = "unknown";
+    await options.beforeMutation?.(receipt);
+    started = true;
+    const result = prepared.run();
+    receipt.exitCode = result.exitCode;
+    receipt.progress = result.progress;
+    if (result.exitCode !== 0)
+      throw Object.assign(
+        new Error(result.progress.at(-1) ?? `Vendor command exited ${result.exitCode}`),
+        { code: "vendor_command_failed" },
+      );
+    if (copy) {
+      const converted = retireProductNpmCopy(program, copy, runtime);
+      receipt.limitations.push(...converted.limitations);
+    }
+    receipt.after = resolveSelectedProgram(program, runtime);
+    if (!receipt.after.path || !receipt.after.version)
+      throw Object.assign(
+        new Error("The selected program did not answer --version after the vendor command."),
+        { code: "program_verification_failed" },
+      );
+    receipt.ok = true;
+  } catch (error) {
+    receipt.problem = ControlProblem.parse({
+      code: (error as { code?: string }).code ?? "maintenance_failed",
+      message: redactSecrets(error instanceof Error ? error.message : String(error)),
+      retryable: true,
+    });
   } finally {
-    process.off("SIGTERM", onSignal);
-    process.off("SIGINT", onSignal);
+    if (runtime && program && receipt.before) {
+      receipt.after = resolveSelectedProgram(program, runtime);
+      const otherAfter = other();
+      if (otherBefore) receipt.elsewhere = { before: otherBefore, after: otherAfter };
+      const selectedChanged = changed(receipt.before, receipt.after);
+      const elsewhereChanged = !!otherBefore && changed(otherBefore, otherAfter);
+      receipt.outcome = selectedChanged
+        ? "changed"
+        : elsewhereChanged
+          ? "changed_elsewhere"
+          : receipt.after.version
+            ? "not_changed"
+            : "unknown";
+      receipt.mutation =
+        selectedChanged || elsewhereChanged
+          ? "applied"
+          : started && !receipt.ok
+            ? "unknown"
+            : "none";
+    }
+    receipt.phase = "settled";
+    try {
+      prepared?.dispose();
+    } finally {
+      lease?.release();
+    }
   }
+  return receipt;
 }

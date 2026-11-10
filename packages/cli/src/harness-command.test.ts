@@ -16,10 +16,7 @@ import { FAKE_KINDS } from "@claudexor/harness-fake";
 import { parseArgs } from "./args.js";
 import { harnessCommand } from "./harness-command.js";
 
-// `harness list` plus the RESTORED disclosed installer (issue #89): list
-// stays exactly as it was after the PR #82 cut, and install now routes to
-// harness-installer.ts (exact selected versions, disclosure-before-execution — its
-// own suite covers the details; here we pin the dispatch and the refusal).
+// Dispatch, flag scope and explicit retired-flag errors; vendor execution uses fixtures.
 describe("harnessCommand", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -59,39 +56,30 @@ describe("harnessCommand", () => {
     expect(mocks.printJson).not.toHaveBeenCalled();
   });
 
-  it("still accepts each subcommand's own flags after the ownership check", () => {
-    expect(harnessCommand(parseArgs(["harness", "list", "--all"]), true)).toBe(0);
-    expect(mocks.printUsageError).not.toHaveBeenCalled();
-    expect(
-      harnessCommand(
-        parseArgs(["harness", "install", "codex", "--release-tested", "--dry-run"]),
+  it.each(["--release-tested", "--target=local", "--target=remote"])(
+    "rejects the retired installer flag %s",
+    (flag) => {
+      expect(
+        harnessCommand(parseArgs(["harness", "install", "codex", flag, "--dry-run"]), true),
+      ).toBe(2);
+      expect(mocks.printUsageError).toHaveBeenLastCalledWith(
         true,
-      ),
-    ).toBe(0);
-    expect(mocks.printUsageError).not.toHaveBeenCalled();
-  });
+        expect.stringContaining("retired"),
+      );
+    },
+  );
 
-  it("rejects unknown verbs with the usage error, naming every installable harness", () => {
-    // Spelled out on purpose: the verb list is DERIVED from
-    // INSTALLABLE_HARNESSES in the source, so this literal is the independent
-    // oracle that catches a new installable harness missing from the usage.
+  it("rejects unknown verbs with the capability-based usage", () => {
     expect(harnessCommand(parseArgs(["harness", "bogus"]), false)).toBe(2);
     expect(mocks.printUsageError).toHaveBeenCalledWith(
       false,
-      "usage: claudexor harness list [--all] | install <agy|claude|codex|copilot|cursor|opencode> [--target <local|remote>] [--vendor-version <exact>] [--release-tested] [--dry-run] [--yes] | inspect [<id>] [--latest] | update <id> [--vendor-version <exact|latest>] [--yes]",
+      expect.stringContaining("install <id>"),
     );
+    expect(mocks.printUsageError.mock.calls[0]?.[1]).not.toMatch(/release-tested|--target/);
   });
 
-  it("routes install to the disclosed installer, which refuses without confirmation", () => {
-    // Non-TTY, no --yes: the tested-baseline disclosure prints, then a loud refusal —
-    // exit 1, and NEVER the usage path (the verb exists again).
-    expect(
-      harnessCommand(parseArgs(["harness", "install", "codex", "--release-tested"]), false),
-    ).toBe(1);
-    expect(mocks.printUsageError).not.toHaveBeenCalled();
-    const printed = mocks.print.mock.calls.map((call) => call[0] as string).join("\n");
-    expect(printed).toContain("@openai/codex@");
-    expect(printed).not.toContain("@latest");
-    expect(printed).toContain("Not installing");
+  it("routes install to the vendor operation's nonterminal consent check", async () => {
+    expect(await harnessCommand(parseArgs(["harness", "install", "codex"]), true)).toBe(2);
+    expect(mocks.printUsageError).toHaveBeenCalledWith(true, expect.stringContaining("--yes"));
   });
 });

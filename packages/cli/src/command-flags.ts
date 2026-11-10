@@ -384,12 +384,9 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag(
     "vendor-version",
     "<exact|latest>",
-    "harness install: approved exact version; update: exact version or resolve latest once",
+    "harness install/update: request an exact vendor version where supported",
   ),
-  booleanFlag(
-    "release-tested",
-    "harness install: select this release's tested vendor baseline instead of npm latest; a runnable managed copy at or above it is kept",
-  ),
+  booleanFlag("release-tested", null),
   booleanFlag("latest", "harness inspect: also read the newest published vendor version"),
   booleanFlag(
     "purge-trashed-threads",

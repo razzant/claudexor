@@ -17,149 +17,88 @@
               "harness": {
                 "type": "string"
               },
-              "mechanism": {
-                "type": "string",
-                "enum": [
-                  "managed_npm",
-                  "vendor_updater",
-                  "vendor_script"
-                ],
-                "description": "managed_npm installs one exact registry version in place; vendor_updater runs the vendor's own `update` on its canonical launcher (latest only); vendor_script has no engine-run update."
-              },
-              "maintainable": {
-                "type": "boolean",
-                "description": "Whether the engine can run an operation for it now."
-              },
-              "canCheckLatest": {
-                "type": "boolean",
-                "description": "Whether checkLatest can observe the newest release for this mechanism (npm registry); false for vendor updaters, whose Update still targets latest."
-              },
-              "targets": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "latest",
-                    "version",
-                    "previous",
-                    "baseline"
-                  ]
-                },
-                "description": "Targets an operation may name; empty when not maintainable."
-              },
-              "remedy": {
-                "type": [
-                  "string",
-                  "null"
-                ],
-                "description": "Manual remedy when not maintainable."
-              },
               "selection": {
                 "type": "object",
                 "properties": {
-                  "kind": {
-                    "type": "string",
-                    "enum": [
-                      "managed",
-                      "override",
-                      "path",
-                      "missing"
-                    ],
-                    "description": "managed = Claudexor's managed npm copy; override = the explicit CLAUDEXOR_<HARNESS>_BIN program; path = another copy found on the harness PATH; missing = nothing launchable."
-                  },
-                  "binary": {
+                  "path": {
                     "type": [
                       "string",
                       "null"
-                    ],
-                    "description": "The program the harness resolves and runs."
+                    ]
+                  },
+                  "realPath": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "version": {
                     "type": [
                       "string",
                       "null"
-                    ],
-                    "description": "That selected program's own --version answer; never the managed copy's."
+                    ]
+                  },
+                  "versionOutput": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "overrideEnv": {
                     "type": [
                       "string",
                       "null"
                     ]
+                  },
+                  "overrideValue": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
-                  "kind",
-                  "binary",
+                  "path",
+                  "realPath",
                   "version",
-                  "overrideEnv"
+                  "versionOutput",
+                  "overrideEnv",
+                  "overrideValue"
                 ],
                 "additionalProperties": false
               },
-              "installed": {
-                "type": "object",
-                "properties": {
-                  "version": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "description": "The managed npm copy's package version."
-                  },
-                  "binary": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "proved": {
-                    "type": "boolean",
-                    "description": "The managed launcher reported exactly that version."
-                  }
-                },
-                "required": [
-                  "version",
-                  "binary",
-                  "proved"
-                ],
-                "additionalProperties": false
-              },
-              "releaseTested": {
-                "type": "object",
-                "properties": {
-                  "version": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "verification": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "enum": [
-                          "release_verified",
-                          "deterministic_only"
-                        ]
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "version",
-                  "verification"
-                ],
-                "additionalProperties": false,
-                "description": "This release's tested pin: a separate fact, never the selected target."
-              },
-              "available": {
+              "newest": {
                 "anyOf": [
                   {
                     "type": "object",
                     "properties": {
+                      "status": {
+                        "type": "string",
+                        "const": "not_read"
+                      },
+                      "source": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "source"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "const": "available"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
                       "version": {
                         "type": "string"
                       },
@@ -168,120 +107,410 @@
                       }
                     },
                     "required": [
+                      "status",
+                      "source",
                       "version",
                       "observedAt"
                     ],
                     "additionalProperties": false
                   },
                   {
-                    "type": "null"
-                  }
-                ],
-                "description": "Last observed newest release; null = not checked (not 'up to date')."
-              },
-              "availableProblem": {
-                "anyOf": [
-                  {
                     "type": "object",
                     "properties": {
-                      "code": {
+                      "status": {
                         "type": "string",
-                        "minLength": 1
+                        "const": "unavailable"
                       },
-                      "message": {
-                        "type": "string"
+                      "source": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
-                      "retryable": {
-                        "type": "boolean"
+                      "observedAt": {
+                        "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/observedAt"
                       },
-                      "fieldErrors": {
+                      "problem": {
                         "type": "object",
-                        "additionalProperties": {
-                          "type": "array",
-                          "items": {
+                        "properties": {
+                          "code": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "message": {
                             "type": "string"
+                          },
+                          "retryable": {
+                            "type": "boolean"
+                          },
+                          "fieldErrors": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "default": {}
+                          },
+                          "requiredActions": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "default": []
+                          },
+                          "evidenceRefs": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "default": []
+                          },
+                          "context": {
+                            "type": "object",
+                            "additionalProperties": {},
+                            "default": {},
+                            "description": "Typed route-specific recovery context; never a duplicate error message."
                           }
                         },
-                        "default": {}
-                      },
-                      "requiredActions": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "default": []
-                      },
-                      "evidenceRefs": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "default": []
-                      },
-                      "context": {
-                        "type": "object",
-                        "additionalProperties": {},
-                        "default": {},
-                        "description": "Typed route-specific recovery context; never a duplicate error message."
+                        "required": [
+                          "code",
+                          "message",
+                          "retryable"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
-                      "code",
-                      "message",
-                      "retryable"
+                      "status",
+                      "source",
+                      "observedAt",
+                      "problem"
                     ],
                     "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
                   }
                 ]
               },
-              "previous": {
-                "anyOf": [
-                  {
+              "actions": {
+                "type": "object",
+                "properties": {
+                  "install": {
                     "type": "object",
                     "properties": {
-                      "version": {
-                        "type": "string"
+                      "available": {
+                        "type": "boolean"
                       },
-                      "operationId": {
-                        "type": "string"
+                      "reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
-                      "version",
-                      "operationId"
+                      "available",
+                      "reason"
                     ],
                     "additionalProperties": false
                   },
-                  {
-                    "type": "null"
+                  "update": {
+                    "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/harnesses/items/properties/actions/properties/install"
+                  },
+                  "exactVersion": {
+                    "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/harnesses/items/properties/actions/properties/install"
                   }
+                },
+                "required": [
+                  "install",
+                  "update",
+                  "exactVersion"
                 ],
-                "description": "Proved earlier version from retained operation evidence; null when unknown."
+                "additionalProperties": false
               },
               "operation": {
                 "anyOf": [
                   {
                     "type": "object",
                     "properties": {
-                      "id": {
-                        "type": "string"
-                      },
-                      "state": {
-                        "type": "string"
-                      },
                       "phase": {
-                        "type": "string"
+                        "type": "string",
+                        "enum": [
+                          "accepted",
+                          "preparing",
+                          "installing",
+                          "settled"
+                        ]
                       },
-                      "targetVersion": {
+                      "target": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "latest"
+                              },
+                              "version": {
+                                "type": "null"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "version"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "version"
+                              },
+                              "version": {
+                                "type": "string",
+                                "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+                                "description": "One exact vendor version, never a range or a release fixture stamp."
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "version"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "requester": {
+                        "type": "object",
+                        "properties": {
+                          "source": {
+                            "type": "string"
+                          },
+                          "requestId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "requestId"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "installationHome": {
                         "type": [
                           "string",
                           "null"
                         ]
+                      },
+                      "commands": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "binary": {
+                              "type": "string"
+                            },
+                            "args": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "env": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            },
+                            "script": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "url": {
+                                      "type": "string"
+                                    },
+                                    "size": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0
+                                    },
+                                    "sha256": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "url",
+                                    "size",
+                                    "sha256"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "binary",
+                            "args",
+                            "env",
+                            "script"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "before": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/harnesses/items/properties/selection"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "after": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/harnesses/items/properties/selection"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "elsewhere": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "before": {
+                                "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/harnesses/items/properties/selection"
+                              },
+                              "after": {
+                                "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/harnesses/items/properties/selection"
+                              }
+                            },
+                            "required": [
+                              "before",
+                              "after"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "activeRunsAtStart": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "A fact, never permission to proceed; null when the CLI has no daemon run census."
+                      },
+                      "exitCode": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "changed",
+                          "not_changed",
+                          "changed_elsewhere",
+                          "unknown"
+                        ]
+                      },
+                      "mutation": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "applied",
+                          "unknown"
+                        ]
+                      },
+                      "termination": {
+                        "type": "string",
+                        "enum": [
+                          "not_applicable",
+                          "confirmed",
+                          "unconfirmed"
+                        ]
+                      },
+                      "limitations": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "progress": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "maxItems": 40,
+                        "description": "Bounded, redacted vendor diagnostics, including advice when nothing changed."
+                      },
+                      "problem": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/harnesses/items/properties/newest/anyOf/2/properties/problem"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "harness": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "queued",
+                          "running",
+                          "succeeded",
+                          "failed",
+                          "cancelled",
+                          "interrupted"
+                        ]
+                      },
+                      "createdAt": {
+                        "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/observedAt"
+                      },
+                      "startedAt": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/observedAt"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "ISO-8601 timestamp string."
                       },
                       "finishedAt": {
                         "anyOf": [
@@ -296,18 +525,37 @@
                       }
                     },
                     "required": [
-                      "id",
-                      "state",
                       "phase",
-                      "targetVersion",
+                      "target",
+                      "requester",
+                      "installationHome",
+                      "commands",
+                      "before",
+                      "after",
+                      "elsewhere",
+                      "activeRunsAtStart",
+                      "exitCode",
+                      "outcome",
+                      "mutation",
+                      "termination",
+                      "limitations",
+                      "progress",
+                      "problem",
+                      "id",
+                      "harness",
+                      "state",
+                      "createdAt",
+                      "startedAt",
                       "finishedAt"
                     ],
-                    "additionalProperties": false
+                    "additionalProperties": false,
+                    "description": "A durable maintenance operation; acceptance is a handle, not completion."
                   },
                   {
                     "type": "null"
                   }
-                ]
+                ],
+                "description": "A durable maintenance operation; acceptance is a handle, not completion."
               },
               "observedAt": {
                 "$ref": "#/definitions/ControlHarnessMaintenanceInventory/properties/observedAt"
@@ -315,17 +563,9 @@
             },
             "required": [
               "harness",
-              "mechanism",
-              "maintainable",
-              "canCheckLatest",
-              "targets",
-              "remedy",
               "selection",
-              "installed",
-              "releaseTested",
-              "available",
-              "availableProblem",
-              "previous",
+              "newest",
+              "actions",
               "operation",
               "observedAt"
             ],
@@ -337,8 +577,7 @@
         "observedAt",
         "harnesses"
       ],
-      "additionalProperties": false,
-      "description": "Response for GET /v2/maintenance/harnesses."
+      "additionalProperties": false
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"
