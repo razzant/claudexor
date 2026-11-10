@@ -192,7 +192,7 @@ describe("thread delivery keeps credential-shaped bytes exact and gates only pub
     const { repo } = projectWithOrigin();
     writeFileSync(join(repo, ".gitignore"), "*.log\n");
     git(repo, "add", ".gitignore");
-    git(repo, "commit", "-m", "ignore logs");
+    git(repo, "-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "ignore logs");
     const storeRoot = realpathSync(mkdtempSync(join(tmpdir(), "cx-thread-raw-")));
     dirs.push(storeRoot);
     const sql = await sqlFixture(storeRoot);
