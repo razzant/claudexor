@@ -172,6 +172,40 @@ describe("composeBaseEnv managed-runner Node prepend rides every lane class (QA-
 });
 
 describe("pickAllowlistedEnv", () => {
+  it("keeps Windows machine and folder inputs in every clean spawn, never credentials or vendor homes", () => {
+    const defaults = {
+      OS: "Windows_NT",
+      Processor_Architecture: "AMD64",
+      PROCESSOR_ARCHITEW6432: "AMD64",
+      ProgramFiles: "C:\\Program Files",
+      ProgramData: "C:\\ProgramData",
+      PUBLIC: "C:\\Users\\Public",
+      USERDOMAIN: "runner",
+      PSModulePath: "C:\\Modules",
+    };
+    const source = {
+      ...defaults,
+      OPENAI_API_KEY: "secret",
+      CURSOR_API_KEY: "secret",
+      CODEX_HOME: "vendor-state",
+      CLAUDE_CONFIG_DIR: "vendor-state",
+      DYLD_LIBRARY_PATH: "bundle",
+    };
+    const clean = composeBaseEnv("clean", source, "C:\\node.exe", "win32");
+    for (const [key, value] of Object.entries(defaults))
+      expect(clean[key.toUpperCase()]).toBe(value);
+    for (const key of [
+      "OPENAI_API_KEY",
+      "CURSOR_API_KEY",
+      "CODEX_HOME",
+      "CLAUDE_CONFIG_DIR",
+      "DYLD_LIBRARY_PATH",
+    ])
+      expect(clean[key]).toBeUndefined();
+    const posix = composeBaseEnv("clean", source, "/usr/bin/node", "darwin");
+    expect(posix.OS).toBeUndefined();
+    expect(posix.DYLD_LIBRARY_PATH).toBeUndefined();
+  });
   it("matches Windows spellings case-insensitively and POSIX ones exactly", () => {
     // Windows stores `SystemRoot`/`ComSpec`; a plain copy of process.env loses
     // the live object's case-insensitive lookup, so the canonical uppercase

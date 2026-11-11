@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { composeBaseEnv, pickAllowlistedEnv, WINDOWS_RUNTIME_ENV_KEYS } from "@claudexor/core";
+import { composeBaseEnv, pickAllowlistedEnv } from "@claudexor/core";
 import type { HarnessProgram } from "@claudexor/schema";
 
 export interface InstallerRuntimeOptions {
@@ -20,9 +20,7 @@ export function installerRuntime(program: HarnessProgram, options: InstallerRunt
   const resolutionSource: NodeJS.ProcessEnv = { ...source, HOME: home };
   const environment: NodeJS.ProcessEnv = {
     ...composeBaseEnv("clean", resolutionSource, runnerNodePath, platform),
-    ...(platform === "win32"
-      ? pickAllowlistedEnv(resolutionSource, WINDOWS_RUNTIME_ENV_KEYS, platform)
-      : {}),
+    ...(platform === "win32" ? pickAllowlistedEnv(resolutionSource, platform) : {}),
     ...pickAllowlistedEnv(resolutionSource, program.installationEnv, platform),
     HOME: home,
     ...(platform === "win32" ? { USERPROFILE: home } : {}),

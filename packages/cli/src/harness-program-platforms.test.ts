@@ -113,6 +113,15 @@ describe("adapter vendor declarations", () => {
         LOCALAPPDATA: join(w.home, "Local"),
         PATH: join(w.home, "tools"),
         SystemRoot: join(w.home, "Windows"),
+        OS: "Windows_NT",
+        PROCESSOR_ARCHITECTURE: "AMD64",
+        PROCESSOR_ARCHITEW6432: "AMD64",
+        ProgramFiles: join(w.home, "Program Files"),
+        ProgramData: join(w.home, "ProgramData"),
+        PSModulePath: join(w.home, "Modules"),
+        OPENAI_API_KEY: "synthetic-secret",
+        CLAUDE_CONFIG_DIR: "unrelated-vendor-home",
+        DYLD_LIBRARY_PATH: "bundle-libraries",
       };
       image(join(w.home, "tools/powershell.exe"));
       image(join(w.home, "tools/winget.exe"));
@@ -157,7 +166,18 @@ describe("adapter vendor declarations", () => {
         HOME: w.home,
         USERPROFILE: w.home,
         LOCALAPPDATA: sourceEnv.LOCALAPPDATA,
+        OS: "Windows_NT",
+        PROCESSOR_ARCHITECTURE: "AMD64",
+        PROCESSOR_ARCHITEW6432: "AMD64",
+        PROGRAMFILES: sourceEnv.ProgramFiles,
+        PROGRAMDATA: sourceEnv.ProgramData,
+        PSMODULEPATH: sourceEnv.PSModulePath,
       });
+      expect(invocations[0]!.env.OPENAI_API_KEY).toBeUndefined();
+      expect(invocations[0]!.env.CLAUDE_CONFIG_DIR).toBe(
+        id === "claude" ? sourceEnv.CLAUDE_CONFIG_DIR : undefined,
+      );
+      expect(invocations[0]!.env.DYLD_LIBRARY_PATH).toBeUndefined();
       if (id === "copilot") {
         expect(invocations[0]!.args).toContain("GitHub.Copilot");
         expect(fetcher).not.toHaveBeenCalled();
