@@ -11,8 +11,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { harnessPrograms } from "../packages/cli/dist/harness-programs.js";
-import { prepareHarnessCommand, programUpdateAvailable } from "../packages/core/dist/index.js";
+import { programUpdateAvailable } from "../packages/core/dist/index.js";
 import { HarnessMaintenanceEvidence } from "../packages/schema/dist/index.js";
+import { runProofNpm } from "./lib/vendor-program-smoke.mjs";
 
 const platform = process.platform;
 const win = platform === "win32";
@@ -99,19 +100,7 @@ function cli(env, args, { refusal = false } = {}) {
 }
 
 function npm(env, args) {
-  const invocation = prepareHarnessCommand("npm", args, env, platform, root);
-  const result = spawnSync(invocation.binary, invocation.args, {
-    env: invocation.env,
-    cwd: root,
-    encoding: "utf8",
-    timeout: 15 * 60_000,
-    maxBuffer: 8 * 1024 * 1024,
-  });
-  if (result.status !== 0)
-    throw new Error(
-      `npm ${args.join(" ")} failed (exit ${result.status})\n${result.stdout}\n${result.stderr}`,
-    );
-  return result.stdout;
+  return runProofNpm(env, args, { cwd: root });
 }
 
 function attempt(route, harness, run) {
