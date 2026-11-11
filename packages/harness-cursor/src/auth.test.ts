@@ -1762,7 +1762,7 @@ describe("models() under a pinned credential profile (INV-135 x INV-104)", () =>
 });
 
 describe("API smoke observation identity", () => {
-  it("uses an opaque binding and invalidates on credential change without hashing secret bytes", async () => {
+  it("retains A, B, A per-credential entries without hashing secret bytes", async () => {
     const { smokeCursorApiKey } = await import("./smoke.js");
     const cache = new Map();
     const smoke = vi.fn(async (_key: string | null) => ({ ok: true, detail: "fixture" }));
@@ -1783,10 +1783,12 @@ describe("API smoke observation identity", () => {
     expect(smoke).toHaveBeenCalledTimes(1);
     await smokeCursorApiKey(deps, "synthetic-key-b");
     expect(smoke).toHaveBeenCalledTimes(2);
-    expect(cache.has(first)).toBe(false);
-    expect(cache.size).toBe(1);
+    await smokeCursorApiKey(deps, "synthetic-key-a");
+    expect(smoke).toHaveBeenCalledTimes(2);
+    expect(cache.has(first)).toBe(true);
+    expect(cache.size).toBe(2);
   });
-  it("a late smoke for a retired credential cannot repopulate its cache", async () => {
+  it("a late answer for A never lands under B", async () => {
     const { smokeCursorApiKey } = await import("./smoke.js");
     let release!: (result: { ok: boolean; detail: string }) => void;
     const smoke = vi.fn(async (_key: string | null) => ({ ok: true, detail: "new" }));
@@ -1809,8 +1811,38 @@ describe("API smoke observation identity", () => {
     await smokeCursorApiKey(deps, "synthetic-new");
     release({ ok: true, detail: "old" });
     await old;
-    expect(cache.size).toBe(1);
+    expect(cache.size).toBe(2);
     expect(await smokeCursorApiKey(deps, "synthetic-new")).toEqual({ ok: true, detail: "new" });
+    expect(await smokeCursorApiKey(deps, "synthetic-old")).toEqual({ ok: true, detail: "old" });
     expect(smoke).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("per-credential smoke expiry", () => {
+  it("expires only the failed key and leaves fresh reads outside retained entries", async () => {
+    const { smokeCursorApiKey } = await import("./smoke.js");
+    let now = 0;
+    const smoke = vi.fn(async (key: string | null) => ({ ok: key === "A", detail: key! }));
+    const deps = {
+      smokeIsolatedApiKey: smoke,
+      apiSmokeCache: new Map(),
+      apiSmokeCacheTtlMs: 3_600_000,
+      apiSmokeFailureCacheTtlMs: 30_000,
+      nowMs: () => now,
+    };
+    await smokeCursorApiKey(deps, "A");
+    await smokeCursorApiKey(deps, "B");
+    now = 29_999;
+    await smokeCursorApiKey(deps, "B");
+    await smokeCursorApiKey(deps, "A");
+    expect(smoke).toHaveBeenCalledTimes(2);
+    now = 30_001;
+    await smokeCursorApiKey(deps, "B");
+    await smokeCursorApiKey(deps, "A");
+    expect(smoke).toHaveBeenCalledTimes(3);
+    smoke.mockResolvedValueOnce({ ok: false, detail: "fresh refusal" });
+    expect((await smokeCursorApiKey(deps, "A", true)).ok).toBe(false);
+    expect((await smokeCursorApiKey(deps, "A")).ok).toBe(true);
+    expect(smoke).toHaveBeenCalledTimes(4);
   });
 });

@@ -168,20 +168,15 @@ export type CursorApiSmokeDeps = {
   nowMs: () => number;
 };
 
-// The credential remains transient private state, never a digest or cache key.
-// A changed credential retires this adapter's binding and all its observations.
-const smokeBindings = new WeakMap<
-  CursorApiSmokeDeps["apiSmokeCache"],
-  { credential: string; id: string }
->();
-function smokeBinding(cache: CursorApiSmokeDeps["apiSmokeCache"], credential: string) {
-  let binding = smokeBindings.get(cache);
-  if (!binding || binding.credential !== credential) {
-    cache.clear();
-    binding = { credential, id: randomUUID() };
-    smokeBindings.set(cache, binding);
-  }
-  return binding;
+// Credentials stay private in memory; cache keys contain independent random ids,
+// never a digest of secret bytes. Each credential retains its own TTL entry.
+const smokeBindings = new WeakMap<CursorApiSmokeDeps["apiSmokeCache"], Map<string, string>>();
+function smokeBinding(cache: CursorApiSmokeDeps["apiSmokeCache"], credential: string): string {
+  let bindings = smokeBindings.get(cache);
+  if (!bindings) smokeBindings.set(cache, (bindings = new Map()));
+  let id = bindings.get(credential);
+  if (!id) bindings.set(credential, (id = randomUUID()));
+  return id;
 }
 
 export async function smokeCursorApiKey(
@@ -191,15 +186,13 @@ export async function smokeCursorApiKey(
 ): Promise<CursorApiSmokeResult> {
   const binding = smokeBinding(deps.apiSmokeCache, key);
   const program = await observeHarnessProgram(CURSOR_PROGRAM);
-  const cacheKey = JSON.stringify([binding.id, program.key]);
+  const cacheKey = JSON.stringify([binding, program.key]);
   const now = deps.nowMs();
-  const current = () => smokeBindings.get(deps.apiSmokeCache) === binding;
-  const cached = fresh || !current() ? undefined : deps.apiSmokeCache.get(cacheKey);
+  const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
   if (cached && cached.expiresAtMs > now) return cached.result;
   if (cached) deps.apiSmokeCache.delete(cacheKey);
   const result = await deps.smokeIsolatedApiKey(key);
   const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
-  if (!fresh && current() && ttlMs > 0)
-    deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
+  if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
   return result;
 }
