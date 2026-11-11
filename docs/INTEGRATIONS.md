@@ -888,7 +888,12 @@ and archives a turn's outputs before replacing them. A turn the daemon's
 restart terminalized (`resumable.cause: host_restart`) has unknown process
 custody and is not such a proof. Use a stable `Idempotency-Key` per thread and
 per round; an exact replay returns the accepted thread or turn even after a
-restart or after the workspace moved away. A missing workspace makes the turn
+restart or after the workspace moved away. To learn what a create whose answer
+was lost did without risking a new turn, send its saved body and key to
+`POST /v2/threads/:id/turns/lookup` (one-shot runs: `POST /v2/runs/lookup`)
+once the operation catalog lists it: `found`, `turn_only` or `not_found` in
+the named store, as [ARCHITECTURE](ARCHITECTURE.md#7-control-api) defines.
+`not_found` never authorizes creating it again. A missing workspace makes the turn
 fail with a retryable `delegated_workspace_unavailable`; restore it and call
 `POST /v2/threads/:id/turns/:turnId/retry`.
 

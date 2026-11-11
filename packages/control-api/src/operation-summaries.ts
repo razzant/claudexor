@@ -46,6 +46,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs":
     "List a bounded, newest-first, keyset-paginated page of durable run summaries visible to the daemon.",
   "POST /v2/runs": "Start a run and return its durable handle.",
+  "POST /v2/runs/lookup":
+    "Read, without starting or waiting, the job a POST /v2/runs with this exact body and Idempotency-Key created: found or not_found in the answering store.",
   "POST /v2/runs/wait-many":
     "Wait once for unacknowledged lifecycle or pending-question attention across addressed runs.",
   "GET /v2/task-groups/:id/runs":
@@ -81,6 +83,8 @@ export const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/threads/:id/purge": "Permanently purge a trashed thread.",
   "POST /v2/threads/:id/apply": "Apply the thread's latest run work product.",
   "POST /v2/threads/:id/turns": "Enqueue a new turn on a thread.",
+  "POST /v2/threads/:id/turns/lookup":
+    "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
   "POST /v2/threads/:id/turns/:id/retry": "Retry a thread turn.",
   "GET /v2/trust": "List protected-path trust state.",
   "POST /v2/trust": "Update protected-path trust state.",

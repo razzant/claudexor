@@ -70,6 +70,7 @@ import { handleRunEventPartRoute } from "./run-event-part-routes.js";
 import { handleRunTimeLimitRoute } from "./run-time-limit-routes.js";
 import { handleRunWaitManyRoute } from "./run-wait-many-routes.js";
 import { handleTaskGroupRunsRoute } from "./task-group-routes.js";
+import { handleRunStartRoute } from "./run-start-routes.js";
 import type { TaskGroupRunsInput, TaskGroupRunsResult } from "@claudexor/schema";
 import type { RunWaitManyHost } from "./run-wait-many.js";
 import {
@@ -739,6 +740,8 @@ export class DaemonControlApiServer {
       taskGroupRuns: this.opts.taskGroupRuns,
       threadHistoryReads: this.opts.threadHistoryReads,
       pollMs: this.opts.pollMs,
+      storeId: this.opts.storeId,
+      waitForRunStart: (jobId: string) => this.waitForRunStart(jobId),
       stopping: this.stopSignal.signal,
       summarize: (record: DaemonRunRecord) => this.summarizeRunOrDiagnostic(record),
       bulk: this.bulk,
@@ -758,6 +761,7 @@ export class DaemonControlApiServer {
       handleModelRoute,
       handleMaintenanceRoute,
       handleDaemonStatusRoute,
+      handleRunStartRoute,
     ]) {
       if (await route(dataRoutes, method, path, req, res)) return;
     }
@@ -778,23 +782,6 @@ export class DaemonControlApiServer {
       )
     )
       return;
-
-    if (method === "POST" && path === "/runs") {
-      return runStart.handleRunCreate(
-        {
-          daemon: this.opts.daemon,
-          readBody: (request) => this.readBody(request),
-          requestError: (response, error, fallback) => this.requestError(response, error, fallback),
-          json: (response, status, body) => this.json(response, status, body),
-          waitForRunStart: (id) => this.waitForRunStart(id),
-          storeId: this.opts.storeId,
-          validateResources: this.opts.services?.validateResources,
-          preflightRunRequirements: this.opts.services?.preflightRunRequirements,
-        },
-        req,
-        res,
-      );
-    }
 
     if (method === "GET" && path === "/runs") {
       return serveRunList(
