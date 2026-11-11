@@ -14,13 +14,6 @@ struct RemoteNativeLoginReadiness: Equatable {
     }
 }
 
-/// The installable-harness allowlist — the ONE Swift copy, mirroring the
-/// CLI SSOT (`INSTALLABLE_HARNESSES` in packages/cli/src/harness-command-specs.ts;
-/// RemoteInstallAllowlistTests pins the mirror). The remote CLI re-enforces the
-/// allowlist itself (usage exit 2 for anything else); this constant only
-/// feeds the Settings install menu and the pre-flight guard.
-let installableRemoteHarnesses = ["agy", "claude", "codex", "copilot", "cursor", "opencode"]
-
 /// The step a remote install names when Harness Doctor finds the harness but
 /// it is not ready. A family without a native login flow (no `SetupHarness`
 /// case: opencode, copilot) can only get ready through stored credentials, so
@@ -215,11 +208,6 @@ extension AppModel {
         // Both refusals go to threadStatus, the connection-INDEPENDENT
         // surface: a message keyed to a vanished connection would render
         // under a ForEach row that no longer exists — silently.
-        guard installableRemoteHarnesses.contains(harness) else {
-            threadStatus =
-                "\(harness) is not an installable harness; nothing was installed."
-            return
-        }
         guard remoteConnections.contains(where: { $0.id == connectionID }) else {
             threadStatus = "That connection no longer exists; nothing was installed."
             return
@@ -285,8 +273,8 @@ extension AppModel {
     }
 
     /// Run the CONFIRMED install in the visible embedded PTY. `--yes` is
-    /// honest here: the user just approved the remote CLI's own disclosure,
-    /// and the CLI prints it again in the terminal before executing.
+    /// authorized here: the user approved the remote CLI's vendor-current or
+    /// exact-version operation. Its receipt prints in the terminal.
     func confirmRemoteHarnessInstall(_ prompt: RemoteHarnessInstallPrompt) async {
         guard remoteActionIsCurrent(prompt.lease) else { return }
         if remoteHarnessInstallPrompt?.lease == prompt.lease {
