@@ -117,7 +117,7 @@ export const NativeProgramEvidence = z
   .object({
     path: z.string().nullable(),
     version: z.string().nullable(),
-    versionSource: z.enum(["vendor_stream", "version_probe", "unknown"]),
+    versionSource: z.enum(["vendor_stream", "version_probe", "remembered", "unknown"]),
   })
   .strict();
 export type NativeProgramEvidence = z.infer<typeof NativeProgramEvidence>;

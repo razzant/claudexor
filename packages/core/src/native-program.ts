@@ -32,7 +32,7 @@ export async function prepareNativeProgram(
   let evidence: NativeProgramEvidence = {
     path: selected.path,
     version: selected.version,
-    versionSource: selected.version === null ? "unknown" : "version_probe",
+    versionSource: observed.versionSource,
   };
   return {
     bin: selected.path ?? bin,

@@ -15,6 +15,7 @@ export interface ProgramObservation {
   selection: SelectedHarnessProgram | null;
   program: HarnessProgramIdentity | null;
   key: string;
+  versionSource: "version_probe" | "remembered" | "unknown";
 }
 interface Remembered {
   identity: string;
@@ -51,11 +52,16 @@ function entryFor(program: HarnessProgram, options: ProgramResolutionOptions) {
   }
   return { key, entry, selected };
 }
-function observation(selection: SelectedHarnessProgram, identity: string): ProgramObservation {
+function observation(
+  selection: SelectedHarnessProgram,
+  identity: string,
+  source: "version_probe" | "remembered" = "remembered",
+): ProgramObservation {
   return {
     selection,
     program: selection.path ? { path: selection.path, version: selection.version } : null,
     key: JSON.stringify([identity, selection.version]),
+    versionSource: selection.version === null ? "unknown" : source,
   };
 }
 export function invalidateProgramObservations(harness?: string): void {
@@ -95,7 +101,8 @@ export async function observeHarnessProgram(
   bin?: string,
   options: { fresh?: boolean; probe?: boolean; environment?: NodeJS.ProcessEnv; cwd?: string } = {},
 ): Promise<ProgramObservation> {
-  if (!program) return { selection: null, program: null, key: "no-program" };
+  if (!program)
+    return { selection: null, program: null, key: "no-program", versionSource: "unknown" };
   const environment = options.environment ?? composeSpawnEnv("mirror_native", patch);
   const resolution = {
     sourceEnv: { ...environment, ...(bin ? { [program.overrideEnv]: bin } : {}) },
@@ -124,9 +131,13 @@ export async function observeHarnessProgram(
         entryFor(program, resolution).entry === entry
       ) {
         remember(entry, answer);
-        return observation(entry.selection, entry.identity);
+        return observation(
+          entry.selection,
+          entry.identity,
+          answer.version === null ? "remembered" : "version_probe",
+        );
       }
-      return observation(answer, entry.identity);
+      return observation(answer, entry.identity, "version_probe");
     })
     .finally(() => {
       if (entry.pending === pending) entry.pending = undefined;

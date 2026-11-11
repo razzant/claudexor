@@ -63,7 +63,14 @@ it.each([true, false])(
       evidence.version,
     );
     const { prepareNativeProgram } = await import("./native-program.js");
-    await prepareNativeProgram(program, bin, spec);
+    const remembered = await prepareNativeProgram(program, bin, spec);
+    expect(remembered.evidence()).toEqual({
+      path: bin,
+      version: evidence.version,
+      versionSource: "remembered",
+    });
+    remembered.observeVersion("3.0.0");
+    expect(remembered.evidence().versionSource).toBe("vendor_stream");
     expect(existsSync(count) ? readFileSync(count, "utf8").trim().split("\n").length : 0).toBe(
       streamVersion ? 0 : 1,
     );

@@ -31,6 +31,7 @@
                       "enum": [
                         "vendor_stream",
                         "version_probe",
+                        "remembered",
                         "unknown"
                       ]
                     }
