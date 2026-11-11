@@ -1760,3 +1760,57 @@ describe("models() under a pinned credential profile (INV-135 x INV-104)", () =>
     expect(models).toEqual([]);
   });
 });
+
+describe("API smoke observation identity", () => {
+  it("uses an opaque binding and invalidates on credential change without hashing secret bytes", async () => {
+    const { smokeCursorApiKey } = await import("./smoke.js");
+    const cache = new Map();
+    const smoke = vi.fn(async (_key: string | null) => ({ ok: true, detail: "fixture" }));
+    const deps = {
+      smokeIsolatedApiKey: smoke,
+      apiSmokeCache: cache,
+      apiSmokeCacheTtlMs: 1000,
+      apiSmokeFailureCacheTtlMs: 1000,
+      nowMs: () => 0,
+    };
+    await smokeCursorApiKey(deps, "synthetic-key-a");
+    const first = [...cache.keys()][0]!;
+    expect(JSON.parse(first)[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(first).not.toContain("synthetic-key");
+    await smokeCursorApiKey(deps, "synthetic-key-a");
+    expect(smoke).toHaveBeenCalledTimes(1);
+    await smokeCursorApiKey(deps, "synthetic-key-b");
+    expect(smoke).toHaveBeenCalledTimes(2);
+    expect(cache.has(first)).toBe(false);
+    expect(cache.size).toBe(1);
+  });
+  it("a late smoke for a retired credential cannot repopulate its cache", async () => {
+    const { smokeCursorApiKey } = await import("./smoke.js");
+    let release!: (result: { ok: boolean; detail: string }) => void;
+    const smoke = vi.fn(async (_key: string | null) => ({ ok: true, detail: "new" }));
+    smoke.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const cache = new Map();
+    const deps = {
+      smokeIsolatedApiKey: smoke,
+      apiSmokeCache: cache,
+      apiSmokeCacheTtlMs: 1000,
+      apiSmokeFailureCacheTtlMs: 1000,
+      nowMs: () => 0,
+    };
+    const old = smokeCursorApiKey(deps, "synthetic-old");
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await smokeCursorApiKey(deps, "synthetic-new");
+    release({ ok: true, detail: "old" });
+    await old;
+    expect(cache.size).toBe(1);
+    expect(await smokeCursorApiKey(deps, "synthetic-new")).toEqual({ ok: true, detail: "new" });
+    expect(smoke).toHaveBeenCalledTimes(2);
+  });
+});

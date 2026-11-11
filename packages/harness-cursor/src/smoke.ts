@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { CURSOR_PROGRAM } from "./program.js";
 /**
  * Isolated Cursor API-key smoke: prove a key actually serves a turn inside a
@@ -168,8 +168,20 @@ export type CursorApiSmokeDeps = {
   nowMs: () => number;
 };
 
-function cursorApiSmokeCacheKey(key: string): string {
-  return createHash("sha256").update(key).digest("hex");
+// The credential remains transient private state, never a digest or cache key.
+// A changed credential retires this adapter's binding and all its observations.
+const smokeBindings = new WeakMap<
+  CursorApiSmokeDeps["apiSmokeCache"],
+  { credential: string; id: string }
+>();
+function smokeBinding(cache: CursorApiSmokeDeps["apiSmokeCache"], credential: string) {
+  let binding = smokeBindings.get(cache);
+  if (!binding || binding.credential !== credential) {
+    cache.clear();
+    binding = { credential, id: randomUUID() };
+    smokeBindings.set(cache, binding);
+  }
+  return binding;
 }
 
 export async function smokeCursorApiKey(
@@ -177,14 +189,17 @@ export async function smokeCursorApiKey(
   key: string,
   fresh = false,
 ): Promise<CursorApiSmokeResult> {
+  const binding = smokeBinding(deps.apiSmokeCache, key);
   const program = await observeHarnessProgram(CURSOR_PROGRAM);
-  const cacheKey = JSON.stringify([cursorApiSmokeCacheKey(key), program.key]);
+  const cacheKey = JSON.stringify([binding.id, program.key]);
   const now = deps.nowMs();
-  const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
+  const current = () => smokeBindings.get(deps.apiSmokeCache) === binding;
+  const cached = fresh || !current() ? undefined : deps.apiSmokeCache.get(cacheKey);
   if (cached && cached.expiresAtMs > now) return cached.result;
   if (cached) deps.apiSmokeCache.delete(cacheKey);
   const result = await deps.smokeIsolatedApiKey(key);
   const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
-  if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
+  if (!fresh && current() && ttlMs > 0)
+    deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
   return result;
 }
