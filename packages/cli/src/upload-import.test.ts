@@ -1,6 +1,7 @@
-/** The one-call import over the REAL control API and SQL upload owner; only daemon discovery is faked. */
+/** One-call import over the real control API and SQL owner, with fake discovery
+ * and owned fixture mounts independent of the test storage's ancestry. */
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -13,7 +14,19 @@ import {
 } from "../../daemon/src/store/test-support/resource-fixture.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 
-const mocks = vi.hoisted(() => ({ connect: vi.fn(), opened: [] as string[] }));
+const mocks = vi.hoisted(() => ({
+  connect: vi.fn(),
+  opened: [] as string[],
+  roots: [] as string[],
+}));
+vi.mock("@claudexor/util", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@claudexor/util")>();
+  const { fixtureResourcePolicy } = await import("./test-support/fixture-resource-policy.js");
+  return {
+    ...actual,
+    sensitiveResourcePolicy: fixtureResourcePolicy(actual.SensitiveResourcePolicy, mocks.roots),
+  };
+});
 vi.mock("./daemon-run.js", () => ({ connectDaemonIfRunning: mocks.connect }));
 vi.mock("./local-document-source.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./local-document-source.js")>();
@@ -37,6 +50,7 @@ afterEachClosed(async () => {
     for (const remove of ownedRemovals) remove();
     vi.restoreAllMocks();
     mocks.opened.length = 0;
+    mocks.roots.length = 0;
   };
 });
 
@@ -69,7 +83,8 @@ async function daemon(root: string): Promise<Daemon> {
   return { f, base, storeId: f.store.storeId!, stop };
 }
 function workspace() {
-  const root = mkdtempSync(join(tmpdir(), "cx-upload-import-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-upload-import-")));
+  mocks.roots.push(root);
   removals.push(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }

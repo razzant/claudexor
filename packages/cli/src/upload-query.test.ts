@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { sensitiveResourcePolicy } from "@claudexor/util";
 import { uploadQuery } from "./upload-query.js";
@@ -30,16 +30,11 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@claudexor/util", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@claudexor/util")>();
-  class FixturePolicy extends actual.SensitiveResourcePolicy {
-    override classifyPath(path: string) {
-      // The test's storage location can itself be under .claude or another
-      // protected directory. Only owned roots are fixture mounts; real policy
-      // still classifies every component inside, including canonical targets.
-      const root = mocks.roots.find((root) => path === root || path.startsWith(root + sep));
-      return super.classifyPath(root ? join("fixture", relative(root, path)) : path);
-    }
-  }
-  return { ...actual, sensitiveResourcePolicy: new FixturePolicy() };
+  const { fixtureResourcePolicy } = await import("./test-support/fixture-resource-policy.js");
+  return {
+    ...actual,
+    sensitiveResourcePolicy: fixtureResourcePolicy(actual.SensitiveResourcePolicy, mocks.roots),
+  };
 });
 vi.mock("./daemon-run.js", () => ({ connectDaemonIfRunning: mocks.connect }));
 vi.mock("./live.js", () => ({ controlApiFetch: mocks.fetch }));
