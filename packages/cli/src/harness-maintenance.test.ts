@@ -108,6 +108,7 @@ describe("selected vendor operation", () => {
         args: readonly string[] = [],
         opts: SpawnSyncOptions = {},
       ) => {
+        if (args[0] === "query") return result("", 1);
         if (args[0] === "--version") return spawnSync(bin, args, opts);
         calls.push(bin);
         executable(w.installed, "2.0.0");
@@ -179,6 +180,7 @@ describe("selected vendor operation", () => {
       w.options.sourceEnv!.PATH = join(w.home, "tools");
       const commands: string[] = [];
       w.options.spawn = ((bin: string, args: readonly string[] = []) => {
+        if (args[0] === "query") return result("", 1);
         if (args[0] === "--version")
           return result(
             bin === entry ? "1.0.0" : verified ? "2.0.0" : "",
@@ -214,6 +216,7 @@ describe("selected vendor operation", () => {
         args: readonly string[] = [],
         opts: SpawnSyncOptions = {},
       ) => {
+        if (args[0] === "query") return result("", 1);
         if (args[0] === "--version") return spawnSync(bin, args, opts);
         if (failure !== "installer")
           executable(w.installed, failure === "missing-version" ? "" : "2.0.0");
@@ -225,7 +228,11 @@ describe("selected vendor operation", () => {
       const receipt = await runHarnessUpdate("fixture", undefined, w.options);
       expect(receipt.ok).toBe(false);
       expect(receipt.problem?.message).toMatch(
-        failure === "installer" ? /Download failed/ : /old copy is unchanged/,
+        failure === "installer"
+          ? /Download failed/
+          : failure === "explicit-old-override"
+            ? /override pins/
+            : /old copy is unchanged/,
       );
       expect(existsSync(old.pkg)).toBe(true);
       expect((await inspectHarness("fixture", w.options)).selection).toMatchObject({
@@ -249,6 +256,7 @@ describe("selected vendor operation", () => {
         args: readonly string[] = [],
         options: SpawnSyncOptions = {},
       ) => {
+        if (args[0] === "query") return result("", 1);
         if (args[0] === "--version") return spawnSync(bin, args, options);
         if (bin === "/bin/sh") {
           executable(w.installed, "2.0.0");
@@ -287,9 +295,28 @@ describe("selected vendor operation", () => {
       ),
     });
     expect(row.actions.exactVersion).toEqual(row.actions.update);
+    const fetcher = vi.fn(w.options.fetch);
+    w.options.fetch = fetcher;
+    for (const target of [undefined, "3.4.5"]) {
+      const receipt = await runHarnessUpdate("fixture", target, w.options);
+      expect(receipt).toMatchObject({
+        ok: false,
+        commands: [],
+        exitCode: null,
+        problem: { code: "program_action_unavailable", message: row.actions.update.reason },
+      });
+    }
+    expect(fetcher).not.toHaveBeenCalled();
     expect(existsSync(old.entry)).toBe(true);
     delete w.options.sourceEnv!.FIXTURE_BIN;
     expect((await inspectHarness("fixture", w.options)).actions.update.available).toBe(true);
+    w.options.spawn = ((bin, args = [], opts = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      executable(w.installed, "2.0.0");
+      return result();
+    }) as typeof spawnSync;
+    expect((await runHarnessUpdate("fixture", undefined, w.options)).ok).toBe(true);
+    expect(fetcher).toHaveBeenCalledOnce();
   });
   it.each([true, false])(
     "Install verifies the existing program without inventing a command exit (healthy: %s)",

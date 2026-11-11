@@ -145,6 +145,7 @@ describe("adapter vendor declarations", () => {
         sourceEnv,
         fetch: fetcher,
         spawn: ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+          if (args[0] === "query") return result("", 1);
           if (args[0] === "--version") return result("fixture 1.2.3\n");
           invocations.push({ bin, args: [...args], env: opts.env! });
           if (id !== "copilot")
@@ -187,6 +188,40 @@ describe("adapter vendor declarations", () => {
         );
     },
   );
+  it("refuses unavailable winget with the inventory sentence before invoking anything", async () => {
+    const w = vendorFixture();
+    roots.push(w.home);
+    const program = {
+      ...programs.find((p) => p.id === "copilot")!,
+      overrideEnv: "ABSENT_COPILOT",
+      launchers: [{ name: "missing-copilot-fixture" }],
+    };
+    const spawn = vi.fn(() => result("", 1)); // registry PATH unavailable, no winget present
+    const fetcher = vi.fn();
+    const options = {
+      ...w.options,
+      program,
+      platform: "win32" as const,
+      spawn: spawn as unknown as typeof spawnSync,
+      fetch: fetcher,
+    };
+    const row = await inspectHarness("copilot", options);
+    expect(row.actions.install).toMatchObject({
+      available: false,
+      reason: expect.stringContaining("winget is not available"),
+    });
+    const receipt = await runHarnessUpdate("copilot", undefined, options);
+    expect(receipt).toMatchObject({
+      ok: false,
+      commands: [],
+      exitCode: null,
+      problem: { message: row.actions.install.reason },
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(
+      spawn.mock.calls.every((call) => (call as unknown as [string, string[]])[1][0] === "query"),
+    ).toBe(true);
+  });
   it("honors the vendor's custom Codex installation directory in execution and subsequent resolution", async () => {
     const w = vendorFixture();
     roots.push(w.home);

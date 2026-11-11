@@ -4,6 +4,7 @@ import type { HarnessAdapter } from "@claudexor/core";
 import type { CredentialProfile } from "@claudexor/schema";
 import {
   programUpdateAvailable,
+  resolveHarnessCommandOnPath,
   programPlatform,
   resolveSelectedProgramAsync,
   resolveSelectedProgram,
@@ -52,21 +53,93 @@ const action = (available: boolean, reason: string, commands: HarnessProgramComm
   reason: available ? null : reason,
   commands: available ? commands : [],
 });
+function programActions(
+  program: HarnessProgram,
+  selection: SelectedHarnessProgram,
+  runtime: ReturnType<typeof installerRuntime>,
+): HarnessInspection["actions"] {
+  const harness = program.id;
+  const data = programPlatform(program, runtime.platform);
+  const converting = productNpmCopy(program, selection, runtime) !== null;
+  const pinnedCopy = converting && selection.overrideValue !== null;
+  const pinnedReason =
+    "An override pins the program to the old product-made npm copy; clearing the override lets Update replace it.";
+  const update = converting ? data?.install : data?.update;
+  const preview = (command: HarnessProgramCommand | undefined, path = selection.path) =>
+    command ? [previewProgramCommand(command, runtime, path)] : [];
+  const exactCommands =
+    converting && data?.exactVersion?.kind === "exec" && data.exactVersion.command === "{program}"
+      ? [...preview(data.install), ...preview(data.exactVersion, null)]
+      : preview(data?.exactVersion);
+  const actions = {
+    install: action(
+      !selection.path && !!data?.install,
+      selection.path
+        ? selection.version
+          ? "A program is already selected; use Update."
+          : "The selected program cannot answer --version; repair it or use Update before installing."
+        : (data?.reasons?.install ?? `${harness} has no installer for ${runtime.platform}.`),
+      preview(data?.install),
+    ),
+    update: action(
+      !!selection.path && !!update && !pinnedCopy,
+      pinnedCopy
+        ? pinnedReason
+        : !selection.path
+          ? "No program is selected; use Install."
+          : ((converting ? data?.reasons?.install : data?.reasons?.update) ??
+            `${harness} has no update command for ${runtime.platform}.`),
+      preview(update),
+    ),
+    exactVersion: action(
+      !pinnedCopy &&
+        !!data?.exactVersion &&
+        (!converting || !!data.install) &&
+        (data.exactVersion.kind !== "exec" ||
+          data.exactVersion.command !== "{program}" ||
+          !!selection.path),
+      pinnedCopy
+        ? pinnedReason
+        : converting && !data?.install
+          ? (data?.reasons?.install ??
+            `${harness} has no vendor installer for this conversion on ${runtime.platform}.`)
+          : (data?.reasons?.exactVersion ??
+            (selection.path
+              ? `${harness} has no exact-version command for ${runtime.platform}.`
+              : "Install the program before requesting an exact version.")),
+      exactCommands,
+    ),
+  };
+  for (const offered of Object.values(actions)) {
+    if (!offered.available) continue;
+    for (const command of offered.commands) {
+      if (command.kind !== "exec" || command.command.startsWith("{")) continue;
+      if (
+        !resolveHarnessCommandOnPath(
+          command.command,
+          runtime.environment.PATH ?? "",
+          runtime.platform,
+          runtime.environment,
+        ).command
+      ) {
+        offered.available = false;
+        offered.reason = `${command.command} is not available on this machine; install it before running this vendor command.`;
+        offered.commands = [];
+        break;
+      }
+    }
+  }
+  return actions;
+}
 export async function inspectHarness(
   harness: string,
   options: MaintenanceOptions & { latest?: boolean } = {},
 ): Promise<HarnessInspection> {
   const program = options.program ?? harnessProgram(harness);
   const runtime = installerRuntime(program, options);
-  const data = programPlatform(program, runtime.platform);
   const selection = options.spawn
     ? resolveSelectedProgram(program, runtime)
     : await resolveSelectedProgramAsync(program, runtime);
-  const converting = productNpmCopy(program, selection, runtime) !== null;
-  const pinnedCopy = converting && selection.overrideValue !== null;
-  const pinnedReason =
-    "An override pins the program to the old product-made npm copy; clearing the override lets Update replace it.";
-  const update = converting ? data?.install : data?.update;
   const now = (options.now ?? (() => new Date()))();
   const newest = options.latest
     ? await observeNewest(program, runtime.platform, runtime.arch, options.fetch, now)
@@ -74,12 +147,6 @@ export async function inspectHarness(
         status: "not_read" as const,
         source: newestSource(program, runtime.platform, runtime.arch)?.url ?? null,
       };
-  const preview = (command: HarnessProgramCommand | undefined, path = selection.path) =>
-    command ? [previewProgramCommand(command, runtime, path)] : [];
-  const exactCommands =
-    converting && data?.exactVersion?.kind === "exec" && data.exactVersion.command === "{program}"
-      ? [...preview(data.install), ...preview(data.exactVersion, null)]
-      : preview(data?.exactVersion);
   return {
     harness,
     selection,
@@ -91,43 +158,7 @@ export async function inspectHarness(
       newest.status === "available" ? newest.version : null,
     ),
     releaseNotesUrl: program.releaseNotesUrl ?? null,
-    actions: {
-      install: action(
-        !selection.path && !!data?.install,
-        selection.path
-          ? "A program is already selected; use Update."
-          : (data?.reasons?.install ?? `${harness} has no installer for ${runtime.platform}.`),
-        preview(data?.install),
-      ),
-      update: action(
-        !!selection.path && !!update && !pinnedCopy,
-        pinnedCopy
-          ? pinnedReason
-          : !selection.path
-            ? "No program is selected; use Install."
-            : ((converting ? data?.reasons?.install : data?.reasons?.update) ??
-              `${harness} has no update command for ${runtime.platform}.`),
-        preview(update),
-      ),
-      exactVersion: action(
-        !pinnedCopy &&
-          !!data?.exactVersion &&
-          (!converting || !!data.install) &&
-          (data.exactVersion.kind !== "exec" ||
-            data.exactVersion.command !== "{program}" ||
-            !!selection.path),
-        pinnedCopy
-          ? pinnedReason
-          : converting && !data?.install
-            ? (data?.reasons?.install ??
-              `${harness} has no vendor installer for this conversion on ${runtime.platform}.`)
-            : (data?.reasons?.exactVersion ??
-              (selection.path
-                ? `${harness} has no exact-version command for ${runtime.platform}.`
-                : "Install the program before requesting an exact version.")),
-        exactCommands,
-      ),
-    },
+    actions: programActions(program, selection, runtime),
   };
 }
 
@@ -228,42 +259,27 @@ export async function runHarnessUpdate(
       throw new Error(`${harness} supports only ${program.majorVersion}.x (#668).`);
     if (options.installOnly && before.path && !version) {
       if (!before.version)
-        throw Object.assign(
-          new Error(
-            "The selected program cannot answer --version; repair it or use Update before installing.",
-          ),
-          { code: "program_verification_failed" },
-        );
+        throw Object.assign(new Error(programActions(program, before, runtime).install.reason!), {
+          code: "program_verification_failed",
+        });
       receipt.ok = true;
       receipt.after = before;
       receipt.outcome = "not_changed";
       return receipt;
     }
+    const available = programActions(program, before, runtime)[
+      version ? "exactVersion" : before.path ? "update" : "install"
+    ];
+    if (!available.available)
+      throw Object.assign(new Error(available.reason!), { code: "program_action_unavailable" });
     const command = copy
-      ? data?.install
+      ? data!.install!
       : version
-        ? data?.exactVersion
+        ? data!.exactVersion!
         : before.path
-          ? data?.update
-          : data?.install;
-    if (!command)
-      throw Object.assign(
-        new Error(
-          (copy || !before.path
-            ? data?.reasons?.install
-            : version
-              ? data?.reasons?.exactVersion
-              : data?.reasons?.update) ??
-            `${harness} has no requested vendor command for ${runtime.platform}.`,
-        ),
-        { code: "program_action_unavailable" },
-      );
+          ? data!.update!
+          : data!.install!;
     const exact = version ? data?.exactVersion : undefined;
-    if (version && !exact)
-      throw Object.assign(
-        new Error(data?.reasons?.exactVersion ?? `${harness} has no exact-version command.`),
-        { code: "program_action_unavailable" },
-      );
     // An exact verb on a product npm copy first needs a native vendor program.
     // Keep the old package selected until both planned commands have succeeded.
     const exactAfterInstall =

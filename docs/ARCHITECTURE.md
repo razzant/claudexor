@@ -8402,7 +8402,8 @@ missing commands become unavailable actions with a sentence on the inventory row
 its own bounded `--version` answer and explicit-override provenance. Runs,
 doctor, inventory and program-derived probes use this owner. It resolves at
 call time, including declared vendor folders, so a newly installed copy is found
-without restarting the daemon. Overrides remain exact; arbitrary wrappers and
+without restarting the daemon. On Windows, a failed ordinary lookup reads the
+user and machine registry PATH to find a newly installed MSI. Overrides remain exact; arbitrary wrappers and
 programs outside conventional folders receive their own declared update verb.
 Cursor prefers `cursor-agent` over `agent`, which Grok also uses. On Windows,
 standard npm launchers may still resolve an existing user's native or Node
@@ -8417,7 +8418,10 @@ reads published versions on demand. A failed newest read does not block Update.
 Package-manager copies can answer with advice instead of
 changing anything; that vendor sentence is the result. The engine never chooses
 brew, winget or apt to update a copy whose own verb only advises. Copilot
-declares winget as its Windows installer.
+declares winget as its Windows installer; an absent winget is an unavailable
+action with the same sentence in inventory and execution. The same shared
+availability predicate refuses pinned product npm overrides before downloading
+or invoking the installer. Repeating Install on a healthy program is a no-op.
 
 The CLI discloses commands and asks for confirmation unless `--yes` supplies
 explicit authorization. Script installers are downloaded completely, hashed and
@@ -8487,7 +8491,7 @@ and explicit overrides/PATH may select a different copy.
 | Codex | `~/.local/bin/codex`; `$CODEX_HOME/packages/standalone` (default `~/.codex`) | `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`; vendor side-by-side releases |
 | Cursor | `~/.local/bin/cursor-agent` (also `~/.cursor/bin`); `~/.local/share/cursor-agent` | Unsupported (#667) |
 | Antigravity | `~/.local/bin/agy` | `%LOCALAPPDATA%\agy\bin` |
-| Copilot | `~/.local/bin/copilot` | WinGet links in `%LOCALAPPDATA%\Microsoft\WinGet\Links`; WinGet owns package storage |
+| Copilot | `~/.local/bin/copilot` | `%LOCALAPPDATA%\GitHubCopilotCLI\copilot.exe` for the MSI, discovered from registry PATH; WinGet may also provide links |
 | OpenCode | `~/.opencode/bin/opencode` (also `~/.local/bin`) | Unattended installation unsupported (#668) |
 | Grok | `~/.local/bin/grok` (also `~/.grok/bin`) | `%USERPROFILE%\.local\bin` / `%USERPROFILE%\.grok\bin` |
 
