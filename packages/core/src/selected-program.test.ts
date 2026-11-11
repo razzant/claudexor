@@ -45,6 +45,25 @@ function executable(path: string, text = "1.0.0") {
 }
 
 describe("selected program", () => {
+  it.each([
+    ["2.1.322 (Claude Code)", "2.1.322"],
+    ["codex-cli 0.167.1", "0.167.1"],
+    ["GitHub Copilot CLI 1.0.109.", "1.0.109"],
+    ["2026.11.10-731fb78", "2026.11.10-731fb78"],
+    ["1.5.5", "1.5.5"],
+    ["1.0.77", "1.0.77"],
+    ["1.19.5", "1.19.5"],
+    ["vendor 1.2.3.4", "vendor 1.2.3.4"],
+  ])("reads the real vendor answer %s without truncating dotted builds", (answer, version) => {
+    const home = root();
+    const path = join(home, "program");
+    executable(path, answer);
+    expect(
+      resolveSelectedProgram(fixture, {
+        sourceEnv: { HOME: home, PATH: "", FIXTURE_BIN: path },
+      }),
+    ).toMatchObject({ version, versionOutput: answer });
+  });
   it("finds a vendor launcher installed after an earlier resolution without changing PATH", () => {
     const home = root();
     const sourceEnv = { HOME: home, PATH: "" };

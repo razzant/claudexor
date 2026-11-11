@@ -85,7 +85,7 @@ function withVersion(observed: SelectedHarnessProgram, output: string): Selected
   const versionOutput = redactSecrets(output.trim()).split(/\r?\n/)[0]?.slice(0, 256) || null;
   const version =
     versionOutput?.match(
-      /(?:^|\s)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=\s|$)/,
+      /(?:^|\s)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=\s|$|[.,;:!?)](?![0-9A-Za-z]))/,
     )?.[1] ?? versionOutput;
   return { ...observed, versionOutput, version };
 }
