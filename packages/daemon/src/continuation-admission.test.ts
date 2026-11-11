@@ -14,7 +14,8 @@ afterAll(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-continue-admission-")));
+  // Leave room for daemon.sock beneath a long private TMPDIR on macOS.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ca-")));
   dirs.push(dir);
   return dir;
 }
