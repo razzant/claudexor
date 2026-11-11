@@ -82,9 +82,10 @@ let closers: Array<() => Promise<void> | void>;
 let captured = 0;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(realpathSync(tmpdir()), "cx-inspect-"));
+  // Leave room for daemon/claudexord.sock under a long private TMPDIR on macOS.
+  dir = mkdtempSync(join(realpathSync(tmpdir()), "il-"));
   home = join(dir, "home");
-  root = join(dir, "root");
+  root = join(dir, "r");
   cwd = join(dir, "work");
   mkdirSync(home);
   mkdirSync(cwd);
