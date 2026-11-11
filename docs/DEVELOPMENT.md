@@ -263,9 +263,12 @@ against the loop's virtual pauses plus measured elapsed time, and fails on
 GitHub Actions when pwsh is missing. The required `vendor-programs` Linux/macOS
 job and one Windows test runner execute `scripts/vendor-program-smoke.mjs`.
 The proof installs every declared vendor route, compares its receipt to the next
-selection, repeats Install as a no-op, runs the program's own updater, and converts
-a previous release installed by real npm in the product prefix. A vendor Update
-refusal is printed separately when the program still answers. A known older
+selection and native run preparation without login, repeats Install as a no-op,
+runs the program's own updater, and converts a previous release installed by real
+npm for each of the four declared product packages. A failed Update counts as a
+vendor refusal only when the program still answers and the identical command
+also fails directly under the runner environment; a direct success or launch
+error fails the route. A known older
 replacement must preserve npm and is reported as a guarded refusal. Every route
 is attempted before the script fails. Versions come only from the programs.
 Windows phases run in order against the ephemeral runner's actual profile and
@@ -284,8 +287,11 @@ commands are explicitly skipped, never passed. It never runs an installer.
 Use `--sources-only` on a shared machine to avoid even probing installed programs.
 The data's release-notes links are literal verified vendor addresses. Fixture
 version constants stamp recordings and snapshots only. Focused cache regressions
-must include 18-account passive reads, an unchanged wrapper refreshed by inventory
-or a native startup frame, and late-answer and credential-invalidation fences.
+must include 18-account passive reads for answered and permanently mute programs,
+a failed fresh ask preserving an earlier answer, an unchanged wrapper refreshed
+by inventory or a native startup frame, and late-answer and credential-invalidation
+fences. Conversion recovery tests kill a child with its package hidden and
+assert both retirement and restoration on the next explicit maintenance.
 
 The `publish` mode also carries `remote_runtime_manifest_b64`:
 the OWNER-SIGNED four-target SSH runtime manifest, transported the same way.

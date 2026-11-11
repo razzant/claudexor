@@ -8402,8 +8402,9 @@ missing commands become unavailable actions with a sentence on the inventory row
 its own bounded `--version` answer and explicit-override provenance. Runs,
 doctor, inventory and program-derived probes use this owner. It resolves at
 call time, including declared vendor folders, so a newly installed copy is found
-without restarting the daemon. On Windows, a failed ordinary lookup reads the
-user and machine registry PATH to find a newly installed MSI. Overrides remain exact; arbitrary wrappers and
+without restarting the daemon. Copilot declares the MSI folder
+`{localAppData}/GitHubCopilotCLI` on Windows; selection starts no registry process.
+Overrides remain exact; arbitrary wrappers and
 programs outside conventional folders receive their own declared update verb.
 Cursor prefers `cursor-agent` over `agent`, which Grok also uses. On Windows,
 standard npm launchers may still resolve an existing user's native or Node
@@ -8450,14 +8451,25 @@ A product-made npm copy is converted during Update only when its package's bin
 entry proves the launcher's relation inside the product prefix. The operation
 runs the vendor installer, resolves with old launchers masked and requires a
 replacement that answers `--version` and is not known to be older by the adapter's
-version ordering before retiring the old package and launcher. An unorderable
-version is acceptable. The installer's status and lines remain in the receipt;
+version ordering before retiring the old package and launcher. An adapter
+with a declared major requires that line, including before an exact-version
+command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
+version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
 a nonzero exit can complete conversion with a limitation when the resulting
 program passes the same proof. A vendor that already removed npm completes
 conversion when ordinary and masked resolution agree.
 An exact-version conversion verifies its second command before retirement too.
-A failed engine verification preserves any old copy the vendor left in place. Folder containment or stale sibling
-metadata never authorizes removal of a hand-placed wrapper or symlink.
+An older-copy refusal names the path and version found first, the selected
+version, the possibility that it shadows the installer's copy, and that nothing
+was removed. A failed engine verification preserves any old copy the vendor
+left in place. Only Claude, Codex, Copilot and OpenCode declare old product npm
+packages; a person's Grok npm copy is not eligible for conversion. Folder
+containment or stale sibling metadata never authorizes removal of a hand-placed
+wrapper or symlink. Retirement hides the package at the fixed sibling
+`<package>.claudexor-converted`, keeping the launchers in place until removal.
+The next explicit maintenance restores a leftover and applies the same
+version/major/ordering proof to retire it or leave it restored. Colliding or
+changed paths are preserved with a limitation; there is no journal or timer.
 
 The inventory exposes action command previews, newest observation time/failure,
 selected identity, last operation and optional release notes. The engine's
@@ -8469,8 +8481,15 @@ observation. The engine remembers each entry's last self-reported version by
 path, real path and stat identity. Passive account/status/catalog reads inspect
 that identity without spawning a version process; a first or changed identity
 asks once, concurrent askers share it, and inventory/fresh reads ask again.
-Native runs reuse remembered versions or learn from the vendor startup frame
-without a separate version process. A replacement behind an unchanged wrapper
+A failed ask never erases an earlier answer for the same file identity. An
+unanswered ask is remembered too: consumers may reuse observations under the
+same identity and the same answer, including no answer. Maintenance invalidates
+that memory; a fresh read or startup publication can replace it.
+Claude, Codex and Copilot report a version at startup (`vendor_stream`). Cursor,
+Antigravity, Grok and OpenCode do not; their native runs use `remembered` evidence
+when available, or ask once for an unknown entry (`version_probe`). No answer is
+labelled `unknown`. Reusing memory or receiving a startup frame adds no version
+process. A replacement behind an unchanged wrapper
 is seen at the next inventory read, fresh read or native startup frame of that
 harness, not at a passive poll. There is no version TTL; stale in-flight answers
 cannot overwrite newer observations. Fixture version constants stamp recorded evidence
@@ -8504,7 +8523,7 @@ and explicit overrides/PATH may select a different copy.
 | Codex | `~/.local/bin/codex`; `$CODEX_HOME/packages/standalone` (default `~/.codex`) | `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`; vendor side-by-side releases |
 | Cursor | `~/.local/bin/cursor-agent` (also `~/.cursor/bin`); `~/.local/share/cursor-agent` | Unsupported (#667) |
 | Antigravity | `~/.local/bin/agy` | `%LOCALAPPDATA%\agy\bin` |
-| Copilot | `~/.local/bin/copilot` | `%LOCALAPPDATA%\GitHubCopilotCLI\copilot.exe` for the MSI, discovered from registry PATH; WinGet may also provide links |
+| Copilot | `~/.local/bin/copilot` | `%LOCALAPPDATA%\GitHubCopilotCLI\copilot.exe` for the MSI, declared for runs, probes and inventory; WinGet may also provide links |
 | OpenCode | `~/.opencode/bin/opencode` (also `~/.local/bin`) | Unattended installation unsupported (#668) |
 | Grok | `~/.local/bin/grok` (also `~/.grok/bin`) | `%USERPROFILE%\.local\bin` / `%USERPROFILE%\.grok\bin` |
 
@@ -8551,8 +8570,12 @@ unreadable file or failed read is not proof. An incomplete header during an in-p
 update can be refused for that inspection; the next resolution rechecks it.
 POSIX executability rules are unchanged. The required cross-platform proof
 `scripts/vendor-program-smoke.mjs` installs, reads back, repeats Install as a
-no-op, invokes each updater, and converts previous releases made by real npm.
-It attempts all routes and reports healthy vendor refusals separately. Windows
+no-op, invokes each updater, and converts previous releases made by real npm
+for the four declared product packages. Each installed route prepares a native
+run without login and checks that it selects the receipt's file. A failed Update
+is reported as a vendor refusal only while the program still answers and the
+same command also fails directly under the runner environment. A direct success
+or launch error fails the route. Every route is attempted before the proof fails. Windows
 phases share the actual ephemeral runner profile because winget/MSI ignore a
 fictitious LOCALAPPDATA; POSIX uses disposable homes. Native Windows login and
 Agent execution are separate acceptance claims.

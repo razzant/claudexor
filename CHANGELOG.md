@@ -11,11 +11,16 @@ on GitHub Releases.
   verified release-note links. Installed-ahead builds are not updates. Durable
   operations retain requester, actual commands/script hashes, before/after
   versions, active-run count and partial effects, with dead-owner lease recovery.
-  Product-made npm copies convert only after a verified vendor replacement;
-  hand-placed wrappers remain intact. Program-derived catalogs identify their
-  source path/version and refresh after external changes, including changes
-  behind unchanged wrappers; late old answers cannot replace newer observations.
-  Native attempts record the program that ran, and pool exhaustion retains the
+  Product-made npm copies convert only after a version-answering replacement
+  that is not known older and matches any declared major; interrupted package
+  hides recover on the next explicit maintenance. Hand-placed wrappers remain
+  intact. Program-derived catalogs identify their source path/version. Passive
+  reads reuse the same file identity and remembered answer, including no answer;
+  a failed ask preserves an earlier answer. A change behind an unchanged wrapper
+  appears at the next inventory read, fresh read or native startup frame, not a
+  passive poll; late answers cannot replace newer observations. Claude, Codex
+  and Copilot supply startup versions; other adapters use remembered evidence
+  or one first version ask. Native attempts label that provenance. Pool exhaustion retains the
   last bounded/redacted vendor diagnostic. Cursor children disable self-update;
   explicit maintenance cleans only enumerated unused profile copies.
   **Breaking:** hosts must consume the new selection/newest/actions inventory
@@ -23,10 +28,12 @@ on GitHub Releases.
   baseline/previous targets hard-error; use install/update and optional
   `--vendor-version <exact>`. Host-supplied npm is no longer required. The SSH
   app consumes the same adapter capabilities and receipt. Windows smoke covers
-  Claude, Codex, Antigravity, Grok and Copilot vendor routes. Cursor Windows
+  Claude, Codex, Antigravity, Grok and Copilot vendor routes, including native
+  run selection. Copilot's declared MSI folder is found without restart. Cursor Windows
   (#667), OpenCode's second line and unattended Windows install (#668) remain
   unsupported; OpenCode stays on 1.x. Package-manager updaters may only advise,
-  and vendor pruning remains vendor-owned. There is no update timer, automatic
+  and vendor pruning remains vendor-owned. Copilot Update can return GitHub's
+  unauthenticated rate-limit refusal; the vendor's sentence is the result. There is no update timer, automatic
   update/retry, model-to-version table or active-run gate. Release checks fetch
   each declared source and report missing program help checks as skipped.
 

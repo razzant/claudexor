@@ -200,17 +200,25 @@ Package-manager copies whose own verb only advises retain that sentence in the
 result; the host must not invent a package-manager action. Windows routes cover
 Claude, Codex, Antigravity, Grok and Copilot. Cursor Windows (#667), OpenCode's
 second line and unattended Windows installation (#668) remain unsupported.
-OpenCode commands stay on 1.x. Vendor programs live in vendor directories and
+OpenCode commands and conversion replacements stay on 1.x. Copilot's Windows MSI
+folder is declared for runs, probes and inventory, so it is found without
+restarting the engine. Copilot Update can return GitHub's unauthenticated
+rate-limit refusal; that vendor sentence is the result. Vendor programs live in vendor directories and
 are pruned by the vendor; see [program maintenance](ARCHITECTURE.md).
 
 Program-derived model lists, including per-account catalogs, carry
 `sourceProgram: {path, version} | null`. Use that field alone to attribute the
 list; null means no program supplied it, and a null version means it could not
 answer. Fixture stamps, maintenance inventory and HTTP `clientVersion` are
-separate facts. Every program observation includes its self-reported version;
-changed programs invalidate the observation on the next read, and stale
-in-flight answers are discarded. Native attempt evidence records path/version
-for every invocation, preferring the vendor's own startup version. Exhausted
+separate facts. Passive reads reuse the answer for the same path, real path and
+stat identity, including no answer. A failed ask preserves an earlier answer
+from that identity. A changed file asks again; a replacement behind an unchanged
+wrapper is seen at the next inventory read, fresh read or native startup frame,
+not a passive poll. There is no version TTL, and stale in-flight answers are
+discarded. Native attempt evidence labels reused versions `remembered`, actual
+version asks `version_probe`, absent answers `unknown`, and startup versions
+`vendor_stream`. Claude, Codex and Copilot supply startup versions; Cursor,
+Antigravity, Grok and OpenCode do not. Exhausted
 credential pools retain a bounded/redacted last vendor error sentence.
 
 The public [Ouroboros runtime pin](https://github.com/razzant/ouroboros/blob/ouroboros/ouroboros/claudexor_runtime_pin.json)
