@@ -467,6 +467,28 @@
                           "additionalProperties": false
                         }
                       },
+                      "profileCleanup": {
+                        "type": "object",
+                        "properties": {
+                          "plannedPaths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "removedPaths": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "plannedPaths",
+                          "removedPaths"
+                        ],
+                        "additionalProperties": false
+                      },
                       "before": {
                         "anyOf": [
                           {

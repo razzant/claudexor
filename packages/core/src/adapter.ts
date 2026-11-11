@@ -186,6 +186,18 @@ export interface LiveMessageResult {
  */
 export interface HarnessAdapter {
   readonly program?: import("@claudexor/schema").HarnessProgram;
+  /** Explicit maintenance only. The adapter enumerates obsolete profile program files, never credentials. */
+  planProfileProgramCleanup?(
+    profiles: readonly import("@claudexor/schema").CredentialProfile[],
+    selected: import("@claudexor/schema").SelectedHarnessProgram,
+  ): {
+    paths: string[];
+    limitations: string[];
+    execute(current: import("@claudexor/schema").SelectedHarnessProgram): {
+      removed: string[];
+      limitations: string[];
+    };
+  };
   readonly id: string;
   /** Native effort carrier the adapter resolves at its final route: a separate
    * flag (`--effort`, `model_reasoning_effort`), or `--model` when the level is

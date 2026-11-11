@@ -1,3 +1,4 @@
+import { CURSOR_PROGRAM } from "./program.js";
 /**
  * Isolated Cursor API-key smoke: prove a key actually serves a turn inside a
  * scrubbed throwaway HOME before the route ladder may prefer it. Split from
@@ -126,7 +127,16 @@ export async function smokeIsolatedApiKey(
     };
     const r = await (options.runCapture ?? runCapture)(
       resolveCursorBin(),
-      ["-p", "--output-format", "stream-json", "--mode", "plan", "--trust", "Reply exactly OK"],
+      [
+        ...(CURSOR_PROGRAM.childUpdateArgs ?? []),
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--mode",
+        "plan",
+        "--trust",
+        "Reply exactly OK",
+      ],
       {
         env,
         timeoutMs: 45_000,

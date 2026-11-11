@@ -76,6 +76,10 @@ export const HarnessMaintenanceEvidence = z
     requester: Requester,
     installationHome: z.string().nullable(),
     commands: z.array(HarnessMaintenanceCommand),
+    profileCleanup: z
+      .object({ plannedPaths: z.array(z.string()), removedPaths: z.array(z.string()) })
+      .strict()
+      .optional(),
     before: SelectedHarnessProgram.nullable(),
     after: SelectedHarnessProgram.nullable(),
     elsewhere: z

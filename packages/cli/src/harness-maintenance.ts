@@ -1,3 +1,7 @@
+import { loadConfig } from "@claudexor/config";
+import { noProjectRepoRoot } from "@claudexor/util";
+import type { HarnessAdapter } from "@claudexor/core";
+import type { CredentialProfile } from "@claudexor/schema";
 import { programUpdateAvailable, programPlatform, resolveSelectedProgram } from "@claudexor/core";
 import {
   ControlProblem,
@@ -14,7 +18,7 @@ import {
   HARNESS_INSTALL_LOCK_TIMEOUT_MS,
 } from "./harness-install-lease.js";
 import { installerRuntime, type InstallerRuntimeOptions } from "./harness-install-runtime.js";
-import { harnessProgram } from "./harness-programs.js";
+import { harnessProgram, harnessProgramAdapter } from "./harness-programs.js";
 import { newestSource, observeNewest, pickNewest } from "./harness-newest.js";
 import {
   productNpmCopy,
@@ -35,6 +39,8 @@ export interface MaintenanceOptions extends InstallerRuntimeOptions {
   activeRunsAtStart?: number | null;
   installOnly?: boolean;
   dryRun?: boolean;
+  planProfileProgramCleanup?: HarnessAdapter["planProfileProgramCleanup"];
+  credentialProfiles?: readonly CredentialProfile[];
 }
 const action = (available: boolean, reason: string, commands: HarnessProgramCommand[]) => ({
   available,
@@ -168,6 +174,7 @@ export async function runHarnessUpdate(
   let prepared: Awaited<ReturnType<typeof prepareProgramCommand>> | undefined;
   const preparedCommands: Array<Awaited<ReturnType<typeof prepareProgramCommand>>> = [];
   let started = false;
+  let cleaned = false;
   let program: HarnessProgram | undefined;
   let runtime: ReturnType<typeof installerRuntime> | undefined;
   let otherBefore: SelectedHarnessProgram | undefined;
@@ -334,6 +341,29 @@ export async function runHarnessUpdate(
         { code: "program_verification_failed" },
       );
     receipt.ok = true;
+    const cleanup =
+      options.planProfileProgramCleanup ??
+      (!options.program ? harnessProgramAdapter(harness)?.planProfileProgramCleanup : undefined);
+    if (cleanup) {
+      try {
+        const profiles =
+          options.credentialProfiles ?? loadConfig(noProjectRepoRoot()).global.credential_profiles;
+        const plan = cleanup(profiles, receipt.after);
+        receipt.limitations.push(...plan.limitations.map(redactSecrets));
+        if (plan.paths.length) {
+          receipt.profileCleanup = { plannedPaths: plan.paths, removedPaths: [] };
+          await options.beforeMutation?.(receipt);
+          const result = plan.execute(resolveSelectedProgram(program, runtime));
+          receipt.profileCleanup.removedPaths = result.removed;
+          receipt.limitations.push(...result.limitations.map(redactSecrets));
+          cleaned = result.removed.length > 0;
+        }
+      } catch (error) {
+        receipt.limitations.push(
+          `Profile program cleanup did not finish: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+        );
+      }
+    }
   } catch (error) {
     receipt.problem = ControlProblem.parse({
       code: (error as { code?: string }).code ?? "maintenance_failed",
@@ -355,7 +385,7 @@ export async function runHarnessUpdate(
             ? "not_changed"
             : "unknown";
       receipt.mutation =
-        selectedChanged || elsewhereChanged
+        selectedChanged || elsewhereChanged || cleaned
           ? "applied"
           : started && !receipt.ok
             ? "unknown"

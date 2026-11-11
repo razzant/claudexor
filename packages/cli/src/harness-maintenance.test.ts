@@ -204,6 +204,37 @@ describe("selected vendor operation", () => {
     expect((await runHarnessUpdate("fixture", "2.0.0", w.options)).ok).toBe(false);
     expect(existsSync(old.pkg)).toBe(true);
   });
+  it("acknowledges profile cleanup paths before removal and records effects even when the program stays unchanged", async () => {
+    const w = world();
+    executable(w.installed);
+    const removedPath = join(w.home, "obsolete-profile-program");
+    writeFileSync(removedPath, "fixture");
+    const acknowledgments: unknown[] = [];
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      credentialProfiles: [],
+      planProfileProgramCleanup: () => ({
+        paths: [removedPath],
+        limitations: [],
+        execute: () => {
+          expect(acknowledgments).toHaveLength(2);
+          rmSync(removedPath);
+          return { removed: [removedPath], limitations: [] };
+        },
+      }),
+      beforeMutation: async (evidence) => {
+        acknowledgments.push(JSON.parse(JSON.stringify(evidence)));
+        expect(existsSync(removedPath)).toBe(true);
+      },
+    });
+    expect(receipt).toMatchObject({
+      ok: true,
+      outcome: "not_changed",
+      mutation: "applied",
+      profileCleanup: { plannedPaths: [removedPath], removedPaths: [removedPath] },
+    });
+    expect((acknowledgments[1] as typeof receipt).profileCleanup?.removedPaths).toEqual([]);
+  });
   it("a newest read failure cannot block Update", async () => {
     const w = world();
     executable(w.installed);

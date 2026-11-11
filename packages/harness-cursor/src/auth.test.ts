@@ -142,7 +142,7 @@ describe("cursor auth status parsing", () => {
         capture as never,
       ),
     ).resolves.toEqual({ kind: "authenticated", email: "profile@example.com" });
-    expect(calls).toEqual([["status", "--format", "json"]]);
+    expect(calls).toEqual([["--disable-auto-update", "status", "--format", "json"]]);
 
     await expect(
       probeCursorNativeAuth(
@@ -171,7 +171,10 @@ describe("cursor auth status parsing", () => {
       }) as never,
     );
     expect(result).toEqual({ kind: "authenticated", email: "fallback@example.com" });
-    expect(calls).toEqual([["status", "--format", "json"], ["status"]]);
+    expect(calls).toEqual([
+      ["--disable-auto-update", "status", "--format", "json"],
+      ["--disable-auto-update", "status"],
+    ]);
   });
 
   it("does not turn a signalled JSON probe into authenticated text fallback", async () => {
@@ -187,7 +190,7 @@ describe("cursor auth status parsing", () => {
       }) as never,
     );
     expect(result).toEqual({ kind: "unknown", error: "cursor-agent status failed (SIGTERM)" });
-    expect(calls).toEqual([["status", "--format", "json"]]);
+    expect(calls).toEqual([["--disable-auto-update", "status", "--format", "json"]]);
   });
 
   it("reports a probe killed by its OWN budget timer as an unanswered, unknown login state (#363)", async () => {
@@ -254,7 +257,10 @@ describe("cursor auth status parsing", () => {
         }) as never,
         20,
       );
-      expect(calls).toEqual([["status", "--format", "json"], ["status"]]);
+      expect(calls).toEqual([
+        ["--disable-auto-update", "status", "--format", "json"],
+        ["--disable-auto-update", "status"],
+      ]);
       return result;
     };
     expect(await run("budget")).toEqual({
@@ -368,7 +374,7 @@ describe("cursor auth status parsing", () => {
       }) as never,
     );
     expect(result).toEqual({ kind: "unknown", error: "cursor-agent status failed (2)" });
-    expect(calls).toEqual([["status", "--format", "json"]]);
+    expect(calls).toEqual([["--disable-auto-update", "status", "--format", "json"]]);
   });
 
   it("keeps successful unrecognized profile JSON and diagnostics unknown", async () => {

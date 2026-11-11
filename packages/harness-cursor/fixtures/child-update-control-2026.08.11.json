@@ -1,0 +1,29 @@
+{
+  "recordedAt": "2026-11-11",
+  "archive": "https://downloads.cursor.com/lab/2026.08.11-e8db854/darwin/arm64/agent-cli-package.tar.gz",
+  "sha256": "46044d6d7bcbd7b49a0cf1cd01aa4ca79aaa2ea5f2c7a32965fc0ebe29841790",
+  "scope": "Disposable HOME; file credential store; version/help only; no login, model call, installer or updater executed.",
+  "runs": [
+    {
+      "command": [
+        "<archive>/dist-package/cursor-agent",
+        "--disable-auto-update",
+        "--version"
+      ],
+      "exitCode": 0,
+      "stdout": "2026.08.11-e8db854\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "<archive>/dist-package/cursor-agent",
+        "--disable-auto-update",
+        "update",
+        "--help"
+      ],
+      "exitCode": 0,
+      "stdout": "Usage: agent update [options]\n\nUpdate Cursor Agent to the latest version\n\nOptions:\n  -h, --help  Display help for command\n",
+      "stderr": ""
+    }
+  ]
+}

@@ -40,6 +40,8 @@ export const CURSOR_PROGRAM = defineHarnessProgram({
     },
   ],
   versionScheme: "date-hash",
+  // Accepted by the oldest recorded adapter build, 2026.08.11-e8db854.
+  childUpdateArgs: ["--disable-auto-update"],
   overrideEnv: "CLAUDEXOR_CURSOR_BIN",
   installationEnv: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"],
   platforms: {

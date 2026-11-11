@@ -1,3 +1,4 @@
+import { planCursorProfileProgramCleanup } from "./profile-program-cleanup.js";
 import { observeHarnessProgram } from "@claudexor/core";
 import { CURSOR_PROGRAM } from "./program.js";
 export { CURSOR_PROGRAM } from "./program.js";
@@ -263,6 +264,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     },
     id: "cursor",
     program: CURSOR_PROGRAM,
+    planProfileProgramCleanup: planCursorProfileProgramCleanup,
     childHome: cursorChildHome,
     nativeAccess: cursorNativeAccess,
     // The level is a token of the compound model id: `prepareProcessing` selects the
@@ -375,7 +377,13 @@ async function* runCursor(
   deps: CursorRuntimeDeps,
 ): AsyncIterable<HarnessEvent> {
   // Access argv then Ask mode, exactly as `cursorNativeAccess` discloses them.
-  const args = ["-p", "--output-format", "stream-json", ...cursorAccessArgs(spec)];
+  const args = [
+    ...(CURSOR_PROGRAM.childUpdateArgs ?? []),
+    "-p",
+    "--output-format",
+    "stream-json",
+    ...cursorAccessArgs(spec),
+  ];
   args.push(...cursorModeArgs(spec));
   // W-C4 live deltas (engine-gated; the parser applies the documented taxonomy).
   if (spec.stream_deltas) args.push("--stream-partial-output");

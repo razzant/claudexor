@@ -15,3 +15,7 @@ export function harnessProgram(id: string): HarnessProgram {
     });
   return program;
 }
+
+export function harnessProgramAdapter(id: string) {
+  return buildRegistry({ includeFakes: false }).get(id);
+}
