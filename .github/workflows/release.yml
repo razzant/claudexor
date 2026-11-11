@@ -370,7 +370,6 @@ jobs:
         timeout-minutes: 100
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          RELEASE_SOURCE_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           pnpm build
@@ -392,8 +391,6 @@ jobs:
           pnpm knip
           node scripts/complexity-ratchet.mjs
           node scripts/model-hints-freshness.mjs --strict
-          # The token reaches this one read of public release sources, never the test suite.
-          GITHUB_TOKEN="$RELEASE_SOURCE_TOKEN" node scripts/harness-program-freshness.mjs
           node scripts/mcp-cli-parity-check.mjs
           node scripts/artifact-text-parity-check.mjs
           node scripts/fixture-freshness-check.mjs
@@ -402,6 +399,11 @@ jobs:
           pnpm canary
           pnpm release:verify:swift
           node scripts/verify-version-parity.mjs "$VERSION"
+
+      - name: Check vendor program freshness
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/harness-program-freshness.mjs
 
       - name: List processes left after the release gates failed or timed out
         if: failure() && steps.gates.outcome == 'failure'

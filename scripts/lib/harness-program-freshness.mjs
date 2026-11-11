@@ -1,6 +1,5 @@
 /** Release-only authentication; product reads keep their anonymous fetcher. */
-function fetchReleaseSource(url, init) {
-  const token = process.env.GITHUB_TOKEN;
+function fetchReleaseSource(url, init, token) {
   if (!token || new URL(url).origin !== "https://api.github.com") return fetch(url, init);
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);
@@ -9,6 +8,8 @@ function fetchReleaseSource(url, init) {
 
 /** Release checks consume the same declarations and pick rules as maintenance. */
 export async function checkHarnessPrograms(programs, deps, options = {}) {
+  const { GITHUB_TOKEN: token, ...childEnv } = process.env;
+  const fetcher = (url, init) => fetchReleaseSource(url, init, token);
   const checks = [];
   const sources = new Map();
   for (const program of programs) {
@@ -22,7 +23,7 @@ export async function checkHarnessPrograms(programs, deps, options = {}) {
         try {
           const version = deps.pickNewest(
             source,
-            (await deps.readVendorBytes(source.url, fetchReleaseSource)).toString("utf8"),
+            (await deps.readVendorBytes(source.url, fetcher)).toString("utf8"),
           );
           if (program.majorVersion && Number(version.split(".")[0]) !== program.majorVersion)
             throw new Error(`source no longer describes supported ${program.majorVersion}.x`);
@@ -54,7 +55,7 @@ export async function checkHarnessPrograms(programs, deps, options = {}) {
       });
       continue;
     }
-    const selection = await deps.resolveSelectedProgramAsync(program);
+    const selection = await deps.resolveSelectedProgramAsync(program, { sourceEnv: childEnv });
     const verbs = new Set();
     for (const [action, command] of Object.entries(data ?? {})) {
       if (!["install", "update", "exactVersion"].includes(action)) continue;
@@ -71,7 +72,7 @@ export async function checkHarnessPrograms(programs, deps, options = {}) {
       const binary =
         command.command === "{program}"
           ? selection.path
-          : deps.resolveHarnessBinary(command.command);
+          : deps.resolveHarnessBinary(command.command, childEnv);
       // A verb's help never receives installation operands or exact-version input.
       const verb = command.args[0];
       const key = JSON.stringify([binary, command.command, verb]);
@@ -94,7 +95,8 @@ export async function checkHarnessPrograms(programs, deps, options = {}) {
           "--help",
         ];
         const result = await deps.runCapture(binary, args, {
-          env: program.childUpdateEnv,
+          inheritEnv: "clean",
+          env: { ...childEnv, ...program.childUpdateEnv },
           timeoutMs: 30_000,
         });
         if (result.code !== 0 || !(result.stdout + result.stderr).trim())

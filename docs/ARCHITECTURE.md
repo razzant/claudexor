@@ -8434,11 +8434,15 @@ HOME and the clean runtime environment, preserving declared installation inputs
 such as CODEX_HOME and XDG roots. A credential-profile HOME never chooses the
 installation. Successful execution re-resolves the entry and requires its own
 version answer. A missing answer gets one immediate second read before a
-verification decision, including conversion, cleanup and exact-version checks.
+verification decision, including the initial selection, conversion, cleanup and
+exact-version checks. Ordinary profile cleanup runs only after the result answers;
+its acknowledgment includes that observation. Interrupted-hide recovery still runs
+when the program does not answer.
 If the second read answers, the receipt records one limitation. The final
 observation after all mutations determines verification; no vendor command is
-repeated, no wait is added and each read retains its ten-second limit. A zero
-child exit alone proves no runnable installation.
+repeated and no sleep is added; a second read can take its own ten-second limit.
+A zero child exit alone proves no runnable installation. A dry-run Install of an
+existing program requires the same version answer as a real Install.
 
 `harness-maintenance-service.ts` uses existing command admission, queue,
 idempotency, cancellation and retention. A repeated key/body rejoins the same

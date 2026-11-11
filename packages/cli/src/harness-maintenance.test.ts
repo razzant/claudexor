@@ -742,19 +742,33 @@ echo 1.18.0
     expect((await runHarnessUpdate("fixture", undefined, w.options)).ok).toBe(true);
     expect(fetcher).toHaveBeenCalledOnce();
   });
-  it.each([true, false])(
-    "Install verifies the existing program without inventing a command exit (healthy: %s)",
-    async (healthy) => {
+  it.each(
+    [false, true].flatMap((dryRun) =>
+      ["answers", "second", "never"].map((answer) => ({ dryRun, answer })),
+    ),
+  )(
+    "Install verifies its before and final state, including a dry run: %j",
+    async ({ dryRun, answer }) => {
       const w = world();
-      executable(w.installed, healthy ? "1.0.0" : "");
-      if (!healthy)
-        writeFileSync(w.installed, "#!/bin/sh\necho 'missing runtime library' >&2\nexit 1\n");
+      const healthy = answer !== "never";
+      executable(w.installed);
+      const marker = join(w.home, "first-version-ask");
+      writeFileSync(
+        w.installed,
+        `#!/bin/sh
+if [ '${answer}' = never ]; then exit 1; fi
+if [ '${answer}' = second ] && [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+echo 1.0.0
+`,
+      );
       const receipt = await runHarnessUpdate("fixture", undefined, {
         ...w.options,
         installOnly: true,
+        dryRun,
       });
       expect(receipt).toMatchObject({
         ok: healthy,
+        outcome: healthy ? "not_changed" : "unknown",
         commands: [],
         exitCode: null,
         mutation: "none",
@@ -762,7 +776,53 @@ echo 1.18.0
       expect(receipt.problem).toEqual(
         healthy ? null : expect.objectContaining({ code: "program_verification_failed" }),
       );
+      expect(receipt.before?.version).toBe(healthy ? "1.0.0" : null);
       expect(receipt.after?.version).toBe(healthy ? "1.0.0" : null);
+      expect(
+        receipt.limitations.filter((line) => line.includes("next check answered")),
+      ).toHaveLength(answer === "second" ? 1 : 0);
+    },
+  );
+  it.each([false, true])(
+    "uses the verified npm version for the downgrade guard (answers on second ask: %s)",
+    async (answers) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      const marker = join(w.home, "npm-version-asked");
+      writeFileSync(
+        old.entry,
+        `#!/bin/sh
+if [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+${answers ? "echo 1.5.0" : "exit 1"}
+`,
+      );
+      let commands = 0;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands++;
+        executable(w.installed, "1.0.0");
+        return result("Installed 1.0.0");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(commands).toBe(1);
+      expect(receipt).toMatchObject({
+        ok: !answers,
+        before: { version: answers ? "1.5.0" : null },
+        after: { path: answers ? old.launcher : w.installed, version: answers ? "1.5.0" : "1.0.0" },
+        outcome: answers ? "changed_elsewhere" : "changed",
+        mutation: "applied",
+        problem: answers ? { code: "conversion_older_program" } : null,
+      });
+      expect(existsSync(old.pkg)).toBe(answers);
+      expect(existsSync(old.launcher)).toBe(answers);
+      expect(
+        receipt.limitations.filter((line) => line.includes("next check answered")),
+      ).toHaveLength(answers ? 1 : 0);
     },
   );
   it("states the missing vendor installer when a platform cannot convert its old npm copy", async () => {
@@ -812,6 +872,100 @@ echo 1.18.0
       profileCleanup: { plannedPaths: [removedPath], removedPaths: [removedPath] },
     });
     expect((acknowledgments[1] as typeof receipt).profileCleanup?.removedPaths).toEqual([]);
+    expect((acknowledgments[1] as typeof receipt).after).toMatchObject({
+      path: w.installed,
+      version: "1.0.0",
+    });
+  });
+  it.each([
+    { answer: "answers", copies: 2 },
+    { answer: "second", copies: 2 },
+    { answer: "never", copies: 0 },
+    { answer: "never", copies: 18 },
+  ])("plans ordinary cleanup only after a verified result: %j", async ({ answer, copies }) => {
+    const w = world();
+    vi.stubEnv("CLAUDEXOR_CONFIG_DIR", w.home);
+    executable(w.installed);
+    const profiles = Array.from({ length: copies }, (_, index) => {
+      const home = join(w.home, `profiles/cursor-${index}`);
+      executable(join(home, ".local/share/cursor-agent/versions/current/cursor-agent"));
+      return {
+        profile_id: String(index),
+        harness_id: "cursor",
+        display_name: String(index),
+        credential_kind: "config_dir_login" as const,
+        isolation_locator: home,
+        enabled: true,
+        secret_ref: null,
+        created_at: null,
+      };
+    });
+    const plan = vi.fn(planCursorProfileProgramCleanup);
+    const acknowledgments: Array<{ after: unknown; cleanup: unknown }> = [];
+    let commands = 0,
+      asksAfterCommand = 0;
+    const marker = join(w.home, "first-result-ask");
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") {
+        if (commands) asksAfterCommand++;
+        return spawnSync(bin, args, opts);
+      }
+      commands++;
+      writeFileSync(
+        w.installed,
+        `#!/bin/sh
+if [ '${answer}' = never ]; then exit 1; fi
+if [ '${answer}' = second ] && [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+echo 2.0.0
+`,
+      );
+      return result("Updated");
+    }) as typeof spawnSync;
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      credentialProfiles: profiles,
+      planProfileProgramCleanup: plan,
+      beforeMutation: async (evidence) => {
+        acknowledgments.push(
+          JSON.parse(
+            JSON.stringify({ after: evidence.after, cleanup: evidence.profileCleanup ?? null }),
+          ),
+        );
+      },
+    });
+    const healthy = answer !== "never";
+    expect(commands).toBe(1);
+    expect(plan.mock.calls.filter(([, , mode]) => mode?.recoverOnly)).toHaveLength(1);
+    expect(plan.mock.calls.filter(([, , mode]) => !mode?.recoverOnly)).toHaveLength(
+      healthy ? 1 : 0,
+    );
+    expect(acknowledgments).toHaveLength(healthy ? 2 : 1);
+    if (healthy)
+      expect(acknowledgments[1]?.after).toMatchObject({ path: w.installed, version: "2.0.0" });
+    else {
+      // Two post-command asks and two final asks, independent of profile count.
+      expect(asksAfterCommand).toBe(4);
+      expect(receipt.profileCleanup).toBeUndefined();
+    }
+    for (const profile of profiles) {
+      expect(existsSync(join(profile.isolation_locator, ".local/share/cursor-agent"))).toBe(
+        !healthy,
+      );
+      expect(
+        existsSync(join(profile.isolation_locator, ".local/share/.cursor-agent.claudexor-hidden")),
+      ).toBe(false);
+    }
+    expect(receipt).toMatchObject({
+      ok: healthy,
+      after: { version: healthy ? "2.0.0" : null },
+      outcome: "changed",
+      mutation: "applied",
+      problem: healthy ? null : { code: "program_verification_failed" },
+    });
+    expect(receipt.limitations.some((line) => line.includes("in use"))).toBe(false);
+    expect(receipt.limitations.filter((line) => line.includes("next check answered"))).toHaveLength(
+      answer === "second" ? 1 : 0,
+    );
   });
   it.each([false, true])(
     "verifies the selected program after cleanup (cleanup breaks selection: %s)",

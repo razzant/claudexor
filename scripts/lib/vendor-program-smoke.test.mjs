@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import {
   runProofNpm,
+  inspectProgramSelection,
   assertNativeRunSelection,
   verifyVendorUpdateRefusal,
 } from "./vendor-program-smoke.mjs";
@@ -26,6 +27,53 @@ function fixture() {
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0);
+
+test.each([
+  {
+    first: { path: "/vendor/program", version: "1.2.3" },
+    secondVersion: "2.0.0",
+    asks: 1,
+    agrees: true,
+  },
+  {
+    first: { path: "/vendor/program", version: null },
+    secondVersion: "1.2.3",
+    asks: 2,
+    agrees: true,
+  },
+  {
+    first: { path: "/vendor/program", version: null },
+    secondVersion: null,
+    asks: 2,
+    agrees: false,
+  },
+  {
+    first: { path: "/vendor/program", version: "2.0.0" },
+    secondVersion: "1.2.3",
+    asks: 1,
+    agrees: false,
+  },
+  {
+    first: { path: "/another/program", version: "1.2.3" },
+    secondVersion: "1.2.3",
+    asks: 1,
+    agrees: false,
+  },
+])(
+  "inspection repeats only a missing answer and keeps receipt comparison exact: $first",
+  ({ first, secondVersion, asks, agrees }) => {
+    const receipt = { path: "/vendor/program", version: "1.2.3" };
+    const inspect = vi
+      .fn()
+      .mockReturnValueOnce({ selection: first })
+      .mockReturnValue({ selection: { path: receipt.path, version: secondVersion } });
+    const row = inspectProgramSelection(inspect);
+    expect(inspect).toHaveBeenCalledTimes(asks);
+    expect(row.selection.path === receipt.path && row.selection.version === receipt.version).toBe(
+      agrees,
+    );
+  },
+);
 
 test("maintenance proof reselects changed programs and compares the final receipt without running a session", async () => {
   const cwd = fixture(),

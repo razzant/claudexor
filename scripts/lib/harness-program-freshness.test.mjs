@@ -1,13 +1,24 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { checkHarnessPrograms } from "./harness-program-freshness.mjs";
+import {
+  defineHarnessProgram,
+  resolveHarnessBinary,
+  resolveSelectedProgramAsync,
+  runCapture,
+} from "../../packages/core/dist/index.js";
 import {
   newestSource,
   pickNewest,
   readVendorBytes,
 } from "../../packages/cli/src/harness-newest.js";
+const roots = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const program = {
   id: "fixture",
@@ -104,6 +115,67 @@ it("keeps an authenticated HTTP refusal as a failed source without retrying or e
   });
   expect(JSON.stringify(checks).includes(token)).toBe(false);
 });
+it.each([true, false])(
+  "keeps the release token out of real version and help children (token present: %s)",
+  async (present) => {
+    const root = mkdtempSync(join(tmpdir(), "freshness-"));
+    roots.push(root);
+    const binary = join(root, "vendor.cjs"),
+      log = join(root, "children.jsonl");
+    writeFileSync(
+      binary,
+      `#!/usr/bin/env node
+require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify({
+  args: process.argv.slice(2),
+  hasToken: Object.hasOwn(process.env, 'GITHUB_TOKEN'),
+  input: process.env.FRESHNESS_FIXTURE_INPUT,
+  updateInput: process.env.FRESHNESS_FIXTURE_UPDATE ?? null
+}) + '\\n');
+console.log(process.argv.includes('--version') ? '1.2.3' : 'Usage: upgrade');
+`,
+      { mode: 0o755 },
+    );
+    const token = "fixture-only-token";
+    vi.stubEnv("GITHUB_TOKEN", present ? token : undefined);
+    vi.stubEnv("FRESHNESS_FIXTURE_BIN", binary);
+    vi.stubEnv("FRESHNESS_FIXTURE_INPUT", "preserved");
+    vi.stubEnv("FRESHNESS_FIXTURE_UPDATE", undefined);
+    const installed = defineHarnessProgram({
+      ...program,
+      overrideEnv: "FRESHNESS_FIXTURE_BIN",
+      launchers: [{ name: "freshness-fixture" }],
+      installationEnv: [],
+      childUpdateEnv: { FRESHNESS_FIXTURE_UPDATE: "declared" },
+      platforms: {
+        [process.platform]: {
+          launcherDirs: [],
+          newest: program.platforms.linux.newest,
+          update: program.platforms.linux.update,
+        },
+      },
+    });
+    const checks = await checkHarnessPrograms([installed], {
+      ...deps(),
+      platform: process.platform,
+      resolveSelectedProgramAsync,
+      resolveHarnessBinary,
+      runCapture,
+    });
+    expect(checks.filter((check) => check.status === "passed")).toHaveLength(2);
+    expect(
+      readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([
+      { args: ["--version"], hasToken: false, input: "preserved", updateInput: null },
+      { args: ["upgrade", "--help"], hasToken: false, input: "preserved", updateInput: "declared" },
+    ]);
+    // The parent's token is retained for source fetches, never printed or passed to programs.
+    expect(Boolean(process.env.GITHUB_TOKEN)).toBe(present);
+    expect(JSON.stringify(checks).includes(token)).toBe(false);
+  },
+);
 it("checks declared source and each distinct verb without running installation operands", async () => {
   const d = deps(),
     checks = await checkHarnessPrograms([program], d);

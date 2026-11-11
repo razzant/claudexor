@@ -15,6 +15,7 @@ import { programUpdateAvailable } from "../packages/core/dist/index.js";
 import { HarnessMaintenanceEvidence } from "../packages/schema/dist/index.js";
 import {
   runProofNpm,
+  inspectProgramSelection,
   assertNativeRunSelection,
   verifyVendorUpdateRefusal,
 } from "./lib/vendor-program-smoke.mjs";
@@ -143,7 +144,9 @@ async function installRoute(program, env) {
     receipt.commands.length === 0
   )
     throw new Error(`installation did not prove a runnable program: ${JSON.stringify(body)}`);
-  const row = cli(env, ["harness", "inspect", program.id]).harnesses[0];
+  const row = inspectProgramSelection(
+    () => cli(env, ["harness", "inspect", program.id]).harnesses[0],
+  );
   if (row.selection.path !== receipt.after.path || row.selection.version !== receipt.after.version)
     throw new Error(`receipt and next selection disagree: ${JSON.stringify(row.selection)}`);
   const runPath = await assertNativeRunSelection(program, receipt.after, env, root);
@@ -241,7 +244,9 @@ async function conversionRoute(program) {
   if (!before.actions.update.available)
     throw new Error(`Conversion unavailable: ${before.actions.update.reason}`);
   const receipt = cli(env, ["harness", "update", program.id, "--yes"], { refusal: true });
-  const after = cli(env, ["harness", "inspect", program.id]).harnesses[0];
+  const after = inspectProgramSelection(
+    () => cli(env, ["harness", "inspect", program.id]).harnesses[0],
+  );
   if (
     after.selection.path !== receipt.after?.path ||
     after.selection.version !== receipt.after?.version

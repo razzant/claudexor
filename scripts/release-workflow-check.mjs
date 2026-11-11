@@ -50,6 +50,56 @@ const win32ConptyBuild = readFileSync(
 const publishMcp = readFileSync(".github/workflows/publish-mcp.yml", "utf8");
 const prepareJob = jobBody(release, "prepare");
 const packageMacosJob = jobBody(release, "package-macos");
+const releaseGates = stepBody(packageMacosJob, "Deterministic release gates");
+const freshnessStepName = "Check vendor program freshness";
+const freshnessStep = stepBody(packageMacosJob, freshnessStepName);
+errors.push(...programFreshnessFindings(release));
+for (const [label, mutated] of [
+  ["a dropped freshness step", release.replace(freshnessStep, "")],
+  [
+    "a no-op freshness step",
+    release.replace("run: node scripts/harness-program-freshness.mjs", "run: true"),
+  ],
+  [
+    "a candidate-only freshness step",
+    release.replace(
+      freshnessStep,
+      freshnessStep.replace(
+        "        env:\n",
+        "        if: needs.prepare.outputs.mode == 'candidate'\n        env:\n",
+      ),
+    ),
+  ],
+  [
+    "a missing source token",
+    release.replace(
+      freshnessStep,
+      freshnessStep.replace("          GITHUB_TOKEN: ${{ github.token }}\n", ""),
+    ),
+  ],
+  [
+    "a token under another name in the gates",
+    release.replace(
+      releaseGates,
+      releaseGates.replace(
+        "        env:\n",
+        "        env:\n          SOURCE_TOKEN: ${{ github.token }}\n",
+      ),
+    ),
+  ],
+  [
+    "a freshness step before the gates",
+    release
+      .replace(freshnessStep, "")
+      .replace(
+        "      - name: Deterministic release gates\n",
+        `${freshnessStep}      - name: Deterministic release gates\n`,
+      ),
+  ],
+]) {
+  if (mutated === release || programFreshnessFindings(mutated).length === 0)
+    errors.push(`release-workflow-check self-test: failed to reject ${label}`);
+}
 const publishNpmJob = jobBody(release, "publish-npm");
 const publishReleaseJob = jobBody(release, "publish-release");
 errors.push(...windowsPrLegFindings(ci));
@@ -1484,6 +1534,32 @@ function remoteSmokeGateFindings(workflow) {
   return findings;
 }
 
+function programFreshnessFindings(workflow) {
+  const section = jobSection(workflow, "package-macos");
+  const gates = stepBody(section, "Deterministic release gates");
+  const freshness = stepBody(section, freshnessStepName);
+  const findings = [];
+  if (
+    /GITHUB_TOKEN|RELEASE_SOURCE_TOKEN|\$\{\{\s*github\.token\s*\}\}|harness-program-freshness\.mjs/.test(
+      gates,
+    )
+  )
+    findings.push(
+      "release.yml: deterministic gates must contain neither the source token nor the freshness command",
+    );
+  if (
+    !freshness ||
+    section.indexOf(freshness) !== section.indexOf(gates) + gates.length ||
+    !/^ {8}run: node scripts\/harness-program-freshness\.mjs\s*$/m.test(freshness) ||
+    !/^ {8}env:\n {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}\s*$/m.test(freshness) ||
+    /^ {8}(?:if|continue-on-error):/m.test(freshness)
+  )
+    findings.push(
+      "release.yml: authenticated vendor freshness must run in its own step immediately after the gates, for both candidate and publish, and fail closed",
+    );
+  return findings;
+}
+
 function hangBoundFindings(ciWorkflow, releaseWorkflow) {
   const findings = [];
   const minutes = (text, indent) =>
@@ -1521,14 +1597,17 @@ function hangBoundFindings(ciWorkflow, releaseWorkflow) {
     } else if (jobBound > 0 && stepBound >= jobBound) {
       findings.push(`${file}: the ${step} step bound must end before the ${job} job bound`);
     }
-    const after = suite ? section.slice(section.indexOf(suite) + suite.length) : "";
+    let after = suite ? section.slice(section.indexOf(suite) + suite.length) : "";
+    // Source authentication is confined to the intervening freshness step.
+    const freshness = file === "release.yml" ? stepBody(section, freshnessStepName) : "";
+    if (freshness && after.startsWith(freshness)) after = after.slice(freshness.length);
     const next = /^ {6}- [\s\S]*?(?=^ {6}- |(?![\s\S]))/m.exec(after)?.[0] ?? "";
     if (
       !next.includes(`        if: failure() && steps.${id}.outcome == 'failure'\n`) ||
       !/^ {8}run: ps axww -o [^\n]*\bcommand\b/m.test(next)
     ) {
       findings.push(
-        `${file}: the step after ${step} must list the processes left when that step failed or timed out`,
+        `${file}: a process listing must follow ${step} (and release freshness) when that step failed or timed out`,
       );
     }
   }

@@ -8,6 +8,13 @@ import {
 } from "../../packages/core/dist/index.js";
 import { HarnessRunSpec } from "../../packages/schema/dist/index.js";
 
+/** Match maintenance's second ask after a missing version; callers still
+ * require exact agreement with the receipt's path and version. */
+export function inspectProgramSelection(inspect) {
+  const row = inspect();
+  return row.selection.version === null ? inspect() : row;
+}
+
 /** Exercise the native run's selector without login, a session or a version child. */
 export async function assertNativeRunSelection(program, selected, env, cwd) {
   const native = await prepareNativeProgram(

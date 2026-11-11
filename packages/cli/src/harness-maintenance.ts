@@ -230,8 +230,11 @@ export async function runHarnessUpdate(
   const preparedCommands: Array<Awaited<ReturnType<typeof prepareProgramCommand>>> = [];
   let started = false;
   let cleaned = false;
+  let verifyFinalSelection = !receipt.dryRun;
   let program: HarnessProgram | undefined;
   let runtime: ReturnType<typeof installerRuntime> | undefined;
+  const observe = () =>
+    verifyProgramSelection(() => resolveSelectedProgram(program!, runtime!), receipt.limitations);
   let otherBefore: SelectedHarnessProgram | undefined;
   const other = () => {
     const sourceEnv = { ...runtime!.sourceEnv };
@@ -259,18 +262,18 @@ export async function runHarnessUpdate(
     if (options.lock !== false && !options.dryRun)
       lease = acquireHarnessInstallLease(runtime.home, HARNESS_INSTALL_LOCK_TIMEOUT_MS);
     receipt.phase = "preparing";
-    let before = resolveSelectedProgram(program, runtime);
+    let before = observe();
     receipt.before = before;
     otherBefore = other();
     const cleanup =
       options.planProfileProgramCleanup ??
       (!options.program ? harnessProgramAdapter(harness)?.planProfileProgramCleanup : undefined);
-    const cleanupProfiles = async (recoverOnly: boolean) => {
+    const cleanupProfiles = async (recoverOnly: boolean, selected: SelectedHarnessProgram) => {
       if (!cleanup || options.dryRun) return;
       try {
         const profiles =
           options.credentialProfiles ?? loadConfig(noProjectRepoRoot()).global.credential_profiles;
-        const plan = cleanup(profiles, resolveSelectedProgram(program!, runtime!), { recoverOnly });
+        const plan = cleanup(profiles, selected, { recoverOnly });
         receipt.limitations.push(...plan.limitations.map(redactSecrets));
         if (!plan.paths.length) return;
         receipt.profileCleanup ??= { plannedPaths: [], removedPaths: [] };
@@ -302,17 +305,18 @@ export async function runHarnessUpdate(
       });
       receipt.limitations.push(...recovered.limitations);
       cleaned ||= recovered.changed;
-      if (recovered.changed) before = resolveSelectedProgram(program, runtime);
+      if (recovered.changed) before = observe();
     }
-    await cleanupProfiles(true);
-    if (cleanup) before = resolveSelectedProgram(program, runtime);
+    await cleanupProfiles(true, before);
+    if (cleanup) before = observe();
     const data = programPlatform(program, runtime.platform);
     const copy = productNpmCopy(program, before, runtime);
     if (version && program.majorVersion && Number(version.split(".")[0]) !== program.majorVersion)
       throw new Error(`${harness} supports only ${program.majorVersion}.x (#668).`);
     if (options.installOnly && before.path && !version) {
       // The final observation below determines health, including a first launch
-      // that did not answer. No command ran, so no exit code is invented.
+      // that did not answer, for dry runs too. No command ran or exit is invented.
+      verifyFinalSelection = true;
       receipt.ok = true;
       receipt.after = before;
       receipt.outcome = "not_changed";
@@ -424,7 +428,10 @@ export async function runHarnessUpdate(
       throw installerFailure ?? error;
     }
     receipt.ok = true;
-    await cleanupProfiles(false);
+    if (cleanup) {
+      receipt.after = observe();
+      if (receipt.after.path && receipt.after.version) await cleanupProfiles(false, receipt.after);
+    }
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
     receipt.problem = ControlProblem.parse({
@@ -436,13 +443,8 @@ export async function runHarnessUpdate(
     if (runtime && program && receipt.before) {
       // Settle against the last observation, after every mutation. An earlier
       // missed answer cannot leave a verification error beside a healthy after.
-      receipt.after = receipt.dryRun
-        ? resolveSelectedProgram(program, runtime)
-        : verifyProgramSelection(
-            () => resolveSelectedProgram(program!, runtime!),
-            receipt.limitations,
-          );
-      if (receipt.ok && !receipt.dryRun && (!receipt.after.path || !receipt.after.version)) {
+      receipt.after = verifyFinalSelection ? observe() : resolveSelectedProgram(program, runtime);
+      if (receipt.ok && verifyFinalSelection && (!receipt.after.path || !receipt.after.version)) {
         receipt.ok = false;
         receipt.problem = ControlProblem.parse({
           code: "program_verification_failed",
