@@ -9,7 +9,7 @@ import {
   type LiveMessageResult,
   type spawnProcess,
 } from "@claudexor/core";
-import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
+import { HarnessRunSpec, type HarnessEvent, type InteractionRequest } from "@claudexor/schema";
 import {
   CodexAppServerController,
   codexAppServerEvents,
@@ -182,36 +182,57 @@ describe("codex adapter conformance fixtures", () => {
  */
 function appServerReplay(lines: string[]): {
   spawn: typeof spawnProcess;
-  writes: Array<{ id?: number; method: string; params?: Record<string, unknown> }>;
+  writes: Array<{ id?: number; method?: string; params?: Record<string, unknown> }>;
 } {
   const written = new Set<number>();
-  const writes: Array<{ id?: number; method: string; params?: Record<string, unknown> }> = [];
+  const answered = new Set<unknown>();
+  const writes: Array<{ id?: number; method?: string; params?: Record<string, unknown> }> = [];
   let wake: (() => void) | undefined;
   let ended = false;
+  // The replayed process closes when the adapter ends it, so its interaction
+  // owners stay open for questions the recording answers.
+  let close!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    close = resolve;
+  });
   const spawn: typeof spawnProcess = async function* (_bin, _args, options = {}) {
     options.onSpawn?.({
       write(data) {
         const request = JSON.parse(data) as (typeof writes)[number];
         writes.push(request);
         if (typeof request.id === "number") written.add(request.id);
+        if (request.method === undefined) answered.add(request.id);
         wake?.();
         wake = undefined;
       },
       end() {
         ended = true;
+        close();
         wake?.();
         wake = undefined;
       },
-      closed: Promise.resolve(),
+      closed,
     });
     for (const line of lines) {
-      const id = (JSON.parse(line) as { id?: number }).id;
+      const frame = JSON.parse(line) as { id?: number; method?: string };
+      // A response waits for its request. A server request (it has a method) is
+      // sent at once, and the recording resumes after the client answered it.
+      const id = frame.method === undefined ? frame.id : undefined;
       while (typeof id === "number" && !written.has(id) && !ended)
         await new Promise<void>((resolve) => {
           wake = resolve;
         });
       if (ended) return;
       yield { type: "stdout", line };
+      while (
+        frame.method !== undefined &&
+        frame.id !== undefined &&
+        !answered.has(frame.id) &&
+        !ended
+      )
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
     }
     while (!ended)
       await new Promise<void>((resolve) => {
@@ -539,6 +560,96 @@ describe("codex Browser MCP fixture (claudexor#215)", () => {
     expect(stats.statuslessToolResults).toBe(0);
     expect(events.at(-1)?.type).toBe("completed");
     expect(events.at(-1)?.payload).not.toHaveProperty("harness_reported_error");
+  });
+});
+
+describe("codex recorded MCP access forms (#669)", () => {
+  async function replay(name: string, label: string) {
+    const lines = readFileSync(join(FIXTURES, name), "utf8").split("\n").filter(Boolean);
+    const { spawn, writes } = appServerReplay(lines);
+    const asked: InteractionRequest[] = [];
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-mcp-recorded",
+      intent: "implement",
+      prompt: 'Call the probe MCP tool exactly once with text "probe-note".',
+      cwd: process.cwd(),
+      access: "workspace_write",
+    });
+    spec.extra["interactionChannel"] = {
+      async request(request: InteractionRequest) {
+        asked.push(request);
+        const answer = { question_id: "approval", selected_labels: [label], free_text: null };
+        return { interaction_id: request.interaction_id, answers: [answer] };
+      },
+    };
+    const events: HarnessEvent[] = [];
+    for await (const event of runCodexAppServer({
+      bin: "codex",
+      args: [],
+      spec,
+      env: {},
+      spawn,
+      pollIntervalMs: 0,
+    }))
+      events.push(event);
+    const agentTexts = lines
+      .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, any> })
+      .filter((f) => f.method === "item/completed" && f.params?.["item"]?.type === "agentMessage")
+      .map((f) => f.params?.["item"]?.text);
+    expect(events.filter((event) => event.final).map((event) => event.text)).toEqual(agentTexts);
+    expect(events.at(-1)?.type).toBe("completed");
+    expect(events.at(-1)?.payload).not.toHaveProperty("harness_reported_error");
+    expect(writes.find((write) => write.method === "turn/start")?.params).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+    return { events, writes, asked };
+  }
+  const results = (events: HarnessEvent[]) =>
+    events
+      .filter((event) => event.type === "tool_result")
+      .map((event) => [event.tool?.use_id, event.tool?.status]);
+
+  it("offers a recorded Guardian MCP denial with its started call; Decline sends nothing", async () => {
+    const { events, writes, asked } = await replay(
+      "app-server/recorded-mcp-guardian-denial-0.162.1.jsonl",
+      "Decline",
+    );
+    expect(asked.map((request) => request.source_tool)).toEqual([
+      "item/autoApprovalReview/completed",
+    ]);
+    const question = asked[0]!.questions[0]!.question;
+    expect(question).toContain('"tool_name": "write_note"');
+    expect(question).toContain('"text": "probe-note"');
+    expect(question).toContain("not bound to these arguments or limited to one call");
+    expect(writes.map((write) => write.method)).toEqual([
+      "initialize",
+      "initialized",
+      "thread/start",
+      "turn/start",
+      "thread/read",
+      "thread/goal/get",
+      "thread/backgroundTerminals/list",
+    ]);
+    expect(results(events)).toEqual([["probe-call-1", "error"]]);
+    expect(
+      events.filter((event) => event.payload?.["code"] === "codex_auto_review").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("answers a recorded MCP elicitation on its native request id", async () => {
+    const { events, writes, asked } = await replay(
+      "app-server/recorded-mcp-elicitation-0.162.1.jsonl",
+      "Accept request",
+    );
+    expect(asked.map((request) => request.source_tool)).toEqual(["mcpServer/elicitation/request"]);
+    expect(asked[0]!.questions[0]!.question).toContain(
+      "not verified as a native tool-call approval",
+    );
+    expect(writes.filter((write) => write.method === undefined)).toEqual([
+      { id: 0, result: { action: "accept", content: {}, _meta: null } },
+    ]);
+    expect(results(events)).toEqual([["probe-call-1", "ok"]]);
   });
 });
 

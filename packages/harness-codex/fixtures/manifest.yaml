@@ -113,6 +113,27 @@ fixtures:
     cli_version: "0.162.1"
     recorded_at: "2026-11-03"
     sanitized: "thread, turn and item ids; installation id; run root paths; host name; clock fields; emittedAtMs omitted; snapshot file name"
+  # MCP ACCESS FORMS (#669): two workspace_write runs of the genuine codex-cli
+  # 0.162.1 binary, driven by runCodexAppServer through a transparent stdio tee,
+  # with no account: a local scripted Responses provider stands in for the model
+  # AND the automatic reviewer (so the Guardian denial and the model's words are
+  # scripted), a synthetic stdio MCP server `probe` serves the tools, and
+  # non-loopback egress was refused. Every codex->client frame is kept in order.
+  # Guardian denial: `item/started` mcpToolCall, `item/autoApprovalReview/*`
+  # for that call, the failed item; the controller declined, so no
+  # authorization or retry turn follows. Elicitation: the server's empty-form
+  # `mcpServer/elicitation/request` (native request id 0), answered accept, then
+  # `serverRequest/resolved`. Ids 1..6 are the adapter's own.
+  app-server/recorded-mcp-guardian-denial-0.162.1.jsonl:
+    source: recorded
+    cli_version: "0.162.1"
+    recorded_at: "2026-11-11"
+    sanitized: "thread, turn, user-message item and review ids; installation id; run root paths; host name; second clocks zeroed; startedAtMs/completedAtMs rebased; emittedAtMs omitted"
+  app-server/recorded-mcp-elicitation-0.162.1.jsonl:
+    source: recorded
+    cli_version: "0.162.1"
+    recorded_at: "2026-11-11"
+    sanitized: "thread, turn and user-message item ids; installation id; run root paths; host name; second clocks zeroed; startedAtMs/completedAtMs rebased; emittedAtMs omitted"
   # NATIVE WARNINGS stream, synthetic (claudexor#337): one readonly text-only
   # run. Frame layouts follow a real codex-cli 0.162.1 macOS loopback capture
   # (ids, paths, host and timestamps neutralized, emittedAtMs omitted). Warning

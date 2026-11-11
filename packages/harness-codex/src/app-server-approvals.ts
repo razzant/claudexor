@@ -23,6 +23,7 @@ import {
 
 const FILE_APPROVAL = "item/fileChange/requestApproval";
 const COMMAND_APPROVAL = "item/commandExecution/requestApproval";
+const MCP_ELICITATION = "mcpServer/elicitation/request";
 const MAX_REVIEW_CHARS = 32_000;
 
 interface ApprovalDependencies {
@@ -57,6 +58,87 @@ export class CodexApprovals {
     const method = frame["method"];
     const id = frame["id"];
     const params = asObject(frame["params"]);
+    if (method === MCP_ELICITATION && (typeof id === "number" || typeof id === "string")) {
+      if (this.seen.has(id))
+        throw new CodexServerRequestRefusal(
+          "codex_request_unsupported",
+          "Codex reused a server request id",
+        );
+      this.seen.add(id);
+      const schema = asObject(params?.["requestedSchema"]);
+      const properties = asObject(schema?.["properties"]);
+      const review = JSON.stringify(params, null, 2);
+      if (
+        !this.channel ||
+        this.deps.spec.access !== "workspace_write" ||
+        !this.live() ||
+        !this.deps.turnId() ||
+        params?.["threadId"] !== this.deps.threadId() ||
+        params["turnId"] !== this.deps.turnId() ||
+        typeof params["serverName"] !== "string" ||
+        !params["serverName"] ||
+        params["mode"] !== "form" ||
+        typeof params["message"] !== "string" ||
+        schema?.["type"] !== "object" ||
+        !properties ||
+        Object.keys(properties).length !== 0 ||
+        (schema["required"] != null &&
+          (!Array.isArray(schema["required"]) || schema["required"].length !== 0)) ||
+        Object.keys(schema).some(
+          (key) => !["type", "properties", "required", "$schema"].includes(key),
+        ) ||
+        review.length > MAX_REVIEW_CHARS
+      ) {
+        this.deps
+          .io()
+          .write(
+            `${JSON.stringify({ id, result: { action: "decline", content: null, _meta: null } })}\n`,
+          );
+        const notification = {
+          method: "claudexor/interaction",
+          params: { threadId: this.deps.threadId() },
+        };
+        this.eventRecords.set(notification, {
+          type: "status",
+          session_id: this.deps.spec.session_id,
+          ts: nowIso(),
+          text: "MCP request declined: no authorized controller channel or unsupported request details.",
+          payload: { code: "codex_mcp_elicitation_not_offered" },
+        });
+        this.deps.enqueue(notification);
+        return true;
+      }
+      const request: InteractionRequest = {
+        interaction_id: randomUUID(),
+        source_tool: MCP_ELICITATION,
+        delivery: "blocking",
+        questions: [
+          {
+            id: "approval",
+            header: "MCP request",
+            question: `Codex reported this MCP request for the named server. Its origin, purpose and metadata are untrusted, and it is not verified as a native tool-call approval. The server may already be executing a tool; local policy does not control what the server does. Accept only if this exact request is authorized.\n\n${review}`,
+            options: [
+              { label: "Accept request", description: "Answer this one MCP request." },
+              { label: "Decline", description: "Decline the MCP request." },
+            ],
+            multi_select: false,
+          },
+        ],
+      };
+      const abort = new AbortController();
+      this.pending.set(id, abort);
+      void this.answer(id, request, abort, "decline", true).catch((error: unknown) => {
+        if (this.live() && !abort.signal.aborted)
+          this.deps.failed(error instanceof Error ? error : new Error(String(error)));
+      });
+      const notification = {
+        method: "claudexor/interaction",
+        params: { threadId: this.deps.threadId() },
+      };
+      this.eventRequests.set(notification, request);
+      this.deps.enqueue(notification);
+      return true;
+    }
     if (typeof method === "string" && (typeof id === "number" || typeof id === "string")) {
       if (!this.channel || (method !== FILE_APPROVAL && method !== COMMAND_APPROVAL))
         refuseCodexServerRequest(frame, this.deps.io());
@@ -257,6 +339,7 @@ export class CodexApprovals {
     request: InteractionRequest,
     abort: AbortController,
     denial: "decline" | "cancel",
+    elicitation = false,
   ): Promise<void> {
     const threadId = this.deps.threadId();
     const turnId = this.deps.turnId();
@@ -288,10 +371,12 @@ export class CodexApprovals {
         choice?.question_id === "approval" &&
         choice.free_text === null &&
         choice.selected_labels.length === 1 &&
-        choice.selected_labels[0] === "Approve once";
+        choice.selected_labels[0] === (elicitation ? "Accept request" : "Approve once");
       this.deps
         .io()
-        .write(`${JSON.stringify({ id, result: { decision: accepted ? "accept" : denial } })}\n`);
+        .write(
+          `${JSON.stringify({ id, result: elicitation ? { action: accepted ? "accept" : "decline", content: accepted ? {} : null, _meta: null } : { decision: accepted ? "accept" : denial } })}\n`,
+        );
     } finally {
       this.pending.delete(id);
     }
