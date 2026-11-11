@@ -199,6 +199,47 @@ describe("selected vendor operation", () => {
         expect(receipt.progress).toEqual(["Native installed", "Exact release unavailable"]);
     },
   );
+  it("offers conversion only when an override does not pin the old product copy", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    expect((await inspectHarness("fixture", w.options)).actions.update.available).toBe(true);
+    w.options.sourceEnv!.FIXTURE_BIN = old.launcher;
+    const row = await inspectHarness("fixture", w.options);
+    expect(row.actions.update).toEqual({
+      available: false,
+      commands: [],
+      reason: expect.stringMatching(
+        /override pins.*old product-made.*clearing the override.*Update/,
+      ),
+    });
+    expect(row.actions.exactVersion).toEqual(row.actions.update);
+    expect(existsSync(old.entry)).toBe(true);
+    delete w.options.sourceEnv!.FIXTURE_BIN;
+    expect((await inspectHarness("fixture", w.options)).actions.update.available).toBe(true);
+  });
+  it.each([true, false])(
+    "Install verifies the existing program without inventing a command exit (healthy: %s)",
+    async (healthy) => {
+      const w = world();
+      executable(w.installed, healthy ? "1.0.0" : "");
+      if (!healthy)
+        writeFileSync(w.installed, "#!/bin/sh\necho 'missing runtime library' >&2\nexit 1\n");
+      const receipt = await runHarnessUpdate("fixture", undefined, {
+        ...w.options,
+        installOnly: true,
+      });
+      expect(receipt).toMatchObject({
+        ok: healthy,
+        commands: [],
+        exitCode: null,
+        mutation: "none",
+      });
+      expect(receipt.problem).toEqual(
+        healthy ? null : expect.objectContaining({ code: "program_verification_failed" }),
+      );
+      expect(receipt.after?.version).toBe(healthy ? "1.0.0" : null);
+    },
+  );
   it("states the missing vendor installer when a platform cannot convert its old npm copy", async () => {
     const w = world();
     const old = oldCopy(w);
