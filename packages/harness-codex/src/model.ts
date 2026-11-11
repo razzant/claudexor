@@ -422,11 +422,12 @@ export function createCodexModelAdapter(deps: CodexModelAdapterDeps = {}): Model
             // Request Timeout is the peer saying it did not receive a complete
             // request, so no generation began. An intermediary that answered 408
             // after the origin accepted the whole body would make this false.
+            // The refusal's own facts (request id, vendor code, retry hint) stay.
             result.problem = new CodexModelError(
               "transport_not_delivered",
               "The provider did not receive the complete Codex request; generation did not start.",
               {
-                httpStatus: 408,
+                ...providerProblem(408, error, response.headers).context,
                 generationStarted: false,
                 requestDelivery: {
                   state: "not_delivered",

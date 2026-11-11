@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { getGlobalDispatcher, setGlobalDispatcher, type Dispatcher } from "undici";
 import { CredentialProfile, ImageCallRequest, ImageCallResult } from "@claudexor/schema";
 import {
   CODEX_IMAGE_CAPABILITY,
@@ -384,6 +385,90 @@ describe("codex image facet over the real adapter path", () => {
       cost: { knowledge: "unknown" },
       problem: { code: "transport_unknown" },
     });
+  });
+
+  /** Runs `body` with a dispatcher that answers each dispatch with `reply`. */
+  async function withDispatcher<T>(
+    reply: (options: Record<string, unknown>, handler: Dispatcher.DispatchHandler) => void,
+    body: () => Promise<T>,
+  ): Promise<T> {
+    const original = getGlobalDispatcher();
+    setGlobalDispatcher(
+      new Proxy(original, {
+        get(target, key) {
+          if (key === "dispatch")
+            return (options: Record<string, unknown>, handler: Dispatcher.DispatchHandler) => {
+              reply(options, handler);
+              return true;
+            };
+          return Reflect.get(target, key, target);
+        },
+      }),
+    );
+    try {
+      return await body();
+    } finally {
+      setGlobalDispatcher(original);
+    }
+  }
+  const dispatchOnce = (init: RequestInit | undefined) =>
+    (init!.dispatcher as unknown as Dispatcher).dispatch(
+      { origin: "http://localhost", path: "/", method: "POST" },
+      { onConnect() {}, onError() {} },
+    );
+
+  it("leaves the image request's timeouts to the dispatcher", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    await withDispatcher(
+      (options) => seen.push(options),
+      async () => {
+        const f = setup((_url, init) => {
+          dispatchOnce(init);
+          return Response.json(upstreamResponse());
+        });
+        await f.facet.invoke(request(), f.context);
+      },
+    );
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toHaveProperty("headersTimeout");
+    expect(seen[0]).not.toHaveProperty("bodyTimeout");
+  });
+
+  it.each([
+    [
+      "before the request began to be written: not delivered, whatever the error's code",
+      false,
+      {
+        outcome: "failed",
+        problem: {
+          code: "transport_not_delivered",
+          context: {
+            generationStarted: false,
+            requestDelivery: { basis: "connect_failure", errorCodes: ["EHOSTUNREACH"] },
+          },
+        },
+      },
+    ],
+    [
+      "after the request began to be written: unknown",
+      true,
+      { outcome: "unknown", problem: { code: "transport_unknown" } },
+    ],
+  ] as const)("reads a dispatcher error %s", async (_when, started, expected) => {
+    const result = await withDispatcher(
+      (_options, handler) => {
+        if (started) handler.onConnect?.(() => {});
+        handler.onError?.(Object.assign(new Error("fixture"), { code: "EHOSTUNREACH" }));
+      },
+      async () => {
+        const f = setup((_url, init) => {
+          dispatchOnce(init);
+          throw new TypeError("fetch failed");
+        });
+        return f.facet.invoke(request(), f.context);
+      },
+    );
+    expect(result).toMatchObject(expected);
   });
 
   it("refuses a route/profile mismatch without dispatch", async () => {

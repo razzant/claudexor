@@ -1,13 +1,15 @@
 import { promisify } from "node:util";
 import { constants, zstdCompress } from "node:zlib";
 
-/** `off` sends the inference request body as plain JSON. An operator's switch
- * for a provider that stops accepting compressed requests; anything else, and
- * no value, keeps compression on. */
+/** `off` (or `0`, `false`, `no`) sends the inference request body as plain
+ * JSON. An operator's switch for a provider that stops accepting compressed
+ * requests, typed in an outage; anything else, and no value, keeps compression
+ * on. */
 export const CODEX_REQUEST_COMPRESSION_ENV = "CLAUDEXOR_CODEX_REQUEST_COMPRESSION";
+const OFF = new Set(["off", "0", "false", "no"]);
 
 export function codexRequestCompression(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[CODEX_REQUEST_COMPRESSION_ENV]?.trim().toLowerCase() !== "off";
+  return !OFF.has(env[CODEX_REQUEST_COMPRESSION_ENV]?.trim().toLowerCase() ?? "");
 }
 
 const compress = promisify(zstdCompress);

@@ -3,9 +3,9 @@ import { existingDispatcher } from "./dispatcher-accessor.cjs";
 
 /** The bounds one inference dispatch sets on its own request (see `request`). */
 export interface ResponseBounds {
-  /** From the last request byte handed to the socket to the response head. */
+  /** The library's response-head timeout. */
   headMs: number;
-  /** Between two reads of the response body. */
+  /** The library's response-body timeout. */
   silenceMs: number;
 }
 
@@ -35,9 +35,14 @@ export class RequestDelivery {
   }
 
   /** `bounds` replace the dispatcher's own head and body timeouts for this
-   * request only. They are the HTTP library's clocks on an HTTP/1.1 connection,
-   * not a wall-clock deadline: the head clock starts when the last request byte
-   * is handed to the socket and does not run while a body trickles. */
+   * request only. They are the HTTP library's clocks, counted in its own ticks,
+   * which stop while this process's event loop is blocked: not wall-clock
+   * deadlines. On HTTP/1.1 the head clock starts with the request, restarts
+   * whenever the socket pushes back and when the last body byte is handed off;
+   * while the body is being written it ends the request only if the socket
+   * still holds undrained bytes. The body clock restarts on every chunk of the
+   * response. On HTTP/2 the body value is the stream's idle timeout and the
+   * head value is unused. */
   request(bounds?: ResponseBounds): {
     body: ReadableStream<Uint8Array>;
     duplex: "half";
@@ -103,11 +108,10 @@ export class RequestDelivery {
                     )
                       observation.response = true;
                     if (method === "onError" || method === "onResponseError") {
-                      const error = args.find(
-                        (arg) =>
-                          arg instanceof Error ||
-                          typeof (arg as { code?: unknown })?.code === "string",
-                      ) as { code?: unknown } | undefined;
+                      // The older callback takes the error alone, the newer one
+                      // after its controller.
+                      const error = args[method === "onError" ? 0 : args.length - 1] as
+                        { code?: unknown } | undefined;
                       observation.errored = true;
                       observation.errorCode = typeof error?.code === "string" ? error.code : null;
                     }
@@ -149,14 +153,17 @@ export class RequestDelivery {
     // The send failed before request writing began: the dispatcher reported an
     // error and had not called onConnect, which it calls when it starts to write
     // a request. Any error qualifies; its place in the callback order is the
-    // proof, not its code. A thrown fetch error alone proves nothing, and a
-    // dispatcher that wrote before onConnect would make this claim false.
+    // proof, not its code. A thrown fetch error alone proves nothing. A
+    // dispatcher that wrote before onConnect, or an interceptor that withheld
+    // onConnect from this handler, would make this claim false.
     const connectFailure = (send: SendObservation) =>
       send.supported && send.errored && !send.connected && send.chunks === 0;
     if (!this.sends.length || facts.responseReceived) return null;
     const allConnect = this.sends.every(connectFailure);
-    // Include EVERY send, including any dispatcher-internal retry. A prior
-    // full/unknown handoff cannot be erased by a later connect failure.
+    // Every dispatch this wrapper observed counts: a prior full or unknown
+    // handoff cannot be erased by a later connect failure. A retry inside the
+    // dispatcher, below this wrapper, shares one observation, whose callbacks
+    // accumulate.
     const partial = this.sends.every(
       (send) =>
         connectFailure(send) ||

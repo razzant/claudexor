@@ -8,20 +8,23 @@ export const CODEX_RESPONSE_BOUNDS: ResponseBounds = {
   silenceMs: 300_000,
 };
 
-/** What the two library timeouts mean, for a reader. The code stays the fact. */
+/** Which library timeout an error code is, and what the engine asks for. The
+ * text says what the library reported, never what the provider did, and no
+ * elapsed time: the library counts its own ticks, which stop while the
+ * daemon's event loop is blocked. The code stays the fact. */
 const BOUND_REACHED: Record<string, string> = {
-  UND_ERR_HEADERS_TIMEOUT: `no response head arrived within ${CODEX_RESPONSE_BOUNDS.headMs / 1_000} s of the request`,
-  UND_ERR_BODY_TIMEOUT: `the response stream sent nothing for ${CODEX_RESPONSE_BOUNDS.silenceMs / 1_000} s`,
+  UND_ERR_HEADERS_TIMEOUT: `a response-head timeout; the engine asks for ${CODEX_RESPONSE_BOUNDS.headMs / 1_000} s on this request`,
+  UND_ERR_BODY_TIMEOUT: `a response-body timeout; the engine asks for ${CODEX_RESPONSE_BOUNDS.silenceMs / 1_000} s on this request`,
 };
 
-/** A sentence naming the bound an error's cause chain reports, or nothing. */
+/** A sentence naming the library timeout an error's cause chain reports, or nothing. */
 export function boundReached(error: unknown): string {
   const seen = new Set<unknown>();
   for (let current = error; current && typeof current === "object" && !seen.has(current);) {
     seen.add(current);
     const code = (current as { code?: unknown }).code;
     if (typeof code === "string" && Object.hasOwn(BOUND_REACHED, code))
-      return ` The engine stopped waiting: ${BOUND_REACHED[code]}.`;
+      return ` The HTTP library reported ${BOUND_REACHED[code]}.`;
     current = (current as { cause?: unknown }).cause;
   }
   return "";

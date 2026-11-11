@@ -1,6 +1,8 @@
 import { join } from "node:path";
+import * as zlib from "node:zlib";
 import { zstdDecompressSync } from "node:zlib";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getGlobalDispatcher, setGlobalDispatcher, type Dispatcher } from "undici";
 import {
   CredentialProfile,
   ModelCallRequest,
@@ -16,6 +18,12 @@ import {
 import { CODEX_MODEL_INVENTORY } from "./processing-session.js";
 import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 import { requestBodyText } from "./test-support/request-body.js";
+
+// The request compressor, observable: a test can act while it is in flight.
+vi.mock("node:zlib", async (original) => {
+  const actual = await original<typeof import("node:zlib")>();
+  return { ...actual, zstdCompress: vi.fn(actual.zstdCompress) };
+});
 
 const catalog = {
   models: [
@@ -1026,7 +1034,10 @@ describe("single-generation Codex adapter", () => {
   });
   it("reads the provider's 408 as a request it did not receive: not delivered, retryable, one POST", async () => {
     const fixture = setup(() =>
-      Response.json({ error: { message: "DO_NOT_EXPOSE_BODY" } }, { status: 408 }),
+      Response.json(
+        { error: { message: "DO_NOT_EXPOSE_BODY", code: "request_timeout" } },
+        { status: 408, headers: { "x-request-id": "req-408", "retry-after": "2" } },
+      ),
     );
     const result = await fixture.adapter.invoke(fixture.request, fixture.context);
     expect(result.outcome).toBe("failed");
@@ -1035,6 +1046,10 @@ describe("single-generation Codex adapter", () => {
       retryable: true,
       context: {
         httpStatus: 408,
+        // The refusal's own facts stay beside the delivery fact.
+        requestId: "req-408",
+        vendorCode: "request_timeout",
+        retryAfterMs: 2_000,
         generationStarted: false,
         requestDelivery: {
           state: "not_delivered",
@@ -1059,7 +1074,39 @@ describe("single-generation Codex adapter", () => {
       expect(result.problem?.context.httpStatus).toBe(status);
     },
   );
-  it("names the response-head bound in words and keeps the library's code as the fact", async () => {
+  it("asks the dispatcher for its own two bounds on the inference request", async () => {
+    const original = getGlobalDispatcher();
+    const seen: Array<Record<string, unknown>> = [];
+    setGlobalDispatcher(
+      new Proxy(original, {
+        get(target, key) {
+          if (key === "dispatch")
+            return (options: Record<string, unknown>) => {
+              seen.push(options);
+              return true;
+            };
+          return Reflect.get(target, key, target);
+        },
+      }),
+    );
+    try {
+      const fixture = setup((init) => {
+        // What the adapter's own dispatcher hands on is what the library would get.
+        (init!.dispatcher as unknown as Dispatcher).dispatch(
+          { origin: "http://localhost", path: "/", method: "POST" },
+          {},
+        );
+        return terminal();
+      });
+      await fixture.adapter.invoke(fixture.request, fixture.context);
+    } finally {
+      setGlobalDispatcher(original);
+    }
+    expect(seen).toEqual([
+      expect.objectContaining({ headersTimeout: 300_000, bodyTimeout: 300_000 }),
+    ]);
+  });
+  it("names the library's response-head timeout in words and keeps its code as the fact", async () => {
     const fixture = setup(() => {
       throw Object.assign(new TypeError("fetch failed"), {
         cause: Object.assign(new Error("library timeout"), { code: "UND_ERR_HEADERS_TIMEOUT" }),
@@ -1070,14 +1117,14 @@ describe("single-generation Codex adapter", () => {
     expect(result.problem).toMatchObject({
       code: "transport_unknown",
       message:
-        "The Codex generation outcome is unknown; it was not retried. The engine stopped waiting: no response head arrived within 300 s of the request.",
+        "The Codex generation outcome is unknown; it was not retried. The HTTP library reported a response-head timeout; the engine asks for 300 s on this request.",
       context: { errorCode: "UND_ERR_HEADERS_TIMEOUT" },
     });
   });
   it.each([
     [
       "UND_ERR_BODY_TIMEOUT",
-      "Codex response stream was interrupted or malformed. The engine stopped waiting: the response stream sent nothing for 300 s.",
+      "Codex response stream was interrupted or malformed. The HTTP library reported a response-body timeout; the engine asks for 300 s on this request.",
     ],
     // Any other break of the stream claims no bound.
     ["ECONNRESET", "Codex response stream was interrupted or malformed."],
@@ -1287,6 +1334,10 @@ describe("declared input modalities", () => {
 });
 
 describe("the inference request body on the wire", () => {
+  // The switch in the environment of whoever runs the tests must not decide them.
+  beforeEach(() => void vi.stubEnv(CODEX_REQUEST_COMPRESSION_ENV, ""));
+  afterEach(() => void vi.unstubAllEnvs());
+
   /** The POST exactly as the adapter hands it to fetch: headers and raw body bytes. */
   async function wire(requestCompression?: () => boolean) {
     const sent: Array<{ headers: Headers; bytes: Buffer }> = [];
@@ -1331,10 +1382,14 @@ describe("the inference request body on the wire", () => {
   it.each([
     ["off", false],
     [" OFF ", false],
+    // What an operator types from memory in an outage.
+    ["0", false],
+    ["false", false],
+    ["No", false],
     [undefined, true],
     ["", true],
     ["on", true],
-    ["0", true],
+    ["1", true],
   ] as const)("reads the switch %j from the environment as compression %s", (value, expected) => {
     expect(
       codexRequestCompression(
@@ -1357,17 +1412,31 @@ describe("the inference request body on the wire", () => {
     expect(result.problem?.context.requestDelivery).toMatchObject({ bodyBytes: lengths[0] });
   });
 
-  it("sends nothing when the call is cancelled while the body is being encoded", async () => {
+  it.each([
+    ["just before the body is encoded", false],
+    ["while the compressor is running", true],
+  ] as const)("sends nothing when the call is cancelled %s", async (_when, inFlight) => {
     const controller = new AbortController();
-    // The switch is read immediately before encoding: cancel at that point.
+    const compressor = vi.mocked(zlib.zstdCompress);
+    compressor.mockClear();
+    if (inFlight) {
+      const actual = await vi.importActual<typeof import("node:zlib")>("node:zlib");
+      // The work is handed to the compressor first; the cancellation arrives under it.
+      compressor.mockImplementationOnce(((...args: Parameters<typeof actual.zstdCompress>) => {
+        actual.zstdCompress(...args);
+        controller.abort();
+      }) as typeof zlib.zstdCompress);
+    }
+    // The switch is read immediately before encoding.
     const fixture = setup(undefined, undefined, undefined, () => {
-      controller.abort();
+      if (!inFlight) controller.abort();
       return true;
     });
     const result = await fixture.adapter.invoke(fixture.request, {
       ...fixture.context,
       signal: controller.signal,
     });
+    expect(compressor).toHaveBeenCalledTimes(1);
     expect(result.outcome).toBe("failed");
     expect(result.problem?.code).toBe("cancelled");
     expect(fixture.onDispatch).not.toHaveBeenCalled();

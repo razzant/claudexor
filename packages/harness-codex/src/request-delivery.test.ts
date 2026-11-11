@@ -1,9 +1,11 @@
 import { createServer, type RequestListener } from "node:http";
 import { connect } from "node:net";
 import type { Duplex } from "node:stream";
+import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 import { getGlobalDispatcher, setGlobalDispatcher, ProxyAgent, type Dispatcher } from "undici";
 import { RequestDelivery, type ResponseBounds } from "./request-delivery.js";
+import { boundReached } from "./response-bounds.js";
 
 const originalDispatcher = getGlobalDispatcher();
 afterEach(() => setGlobalDispatcher(originalDispatcher));
@@ -31,6 +33,19 @@ const send = (url: string, delivery: RequestDelivery, bounds?: ResponseBounds) =
     redirect: "error",
     signal: AbortSignal.timeout(15_000),
   });
+/** A peer in another thread: it answers at once and keeps writing a chunk
+ * every 100 ms, whatever the thread of the test does. Posts its port. */
+const SENDING_PEER = `
+  const { createServer } = require("node:http");
+  const { parentPort } = require("node:worker_threads");
+  const server = createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const tick = setInterval(() => res.write(": keep-alive\\n\\n"), 100);
+    res.on("close", () => clearInterval(tick));
+  });
+  server.listen(0, "127.0.0.1", () => parentPort.postMessage(server.address().port));
+`;
 /** The code of the first error in a cause chain that has one. */
 const causeCode = (error: unknown): unknown => {
   for (let current = error; current && typeof current === "object";)
@@ -184,12 +199,35 @@ describe("request delivery proof on the existing dispatcher", () => {
       basis: "connect_failure",
       errorCodes: [code ?? null],
     });
-    const unobserved = bodyOf("body");
-    // An injected fetch can throw the same code without using our dispatcher.
+  });
+
+  it("proves nothing for a dispatch that reported no error, such as a caller giving up before any callback", async () => {
+    const cancel = new AbortController();
+    // The dispatcher holds the request and calls nothing back, as while a
+    // connection is still being set up; then the caller cancels.
+    setGlobalDispatcher(
+      new Proxy(originalDispatcher, {
+        get(target, key) {
+          if (key === "dispatch")
+            return () => {
+              setImmediate(() => cancel.abort());
+              return true;
+            };
+          return Reflect.get(target, key, target);
+        },
+      }),
+    );
+    const delivery = bodyOf("body");
     await expect(
-      Promise.reject(Object.assign(new Error("custom fetch"), { code })),
+      fetch("http://localhost/", {
+        method: "POST",
+        ...delivery.request(),
+        signal: cancel.signal,
+      }),
     ).rejects.toThrow();
-    expect(unobserved.notDelivered()).toBeNull();
+    // The send was observed; what is missing is an error from the dispatcher.
+    expect(delivery.facts().dispatches).toBe(1);
+    expect(delivery.notDelivered()).toBeNull();
   });
 
   it("does not erase a prior response or handoff when a later same-fetch request cannot connect", async () => {
@@ -293,6 +331,53 @@ describe("request delivery proof on the existing dispatcher", () => {
     },
   );
 
+  it("observes the newer handler generation through the real dispatcher", async () => {
+    const server = await endpoint((req, res) => {
+      req.on("error", () => {});
+      req.resume();
+      req.on("end", () => {
+        if (req.url === "/reset") req.socket.destroy();
+        else res.end("ok");
+      });
+    });
+    const closed = await endpoint((_req, res) => res.end("unused"));
+    await closed.close();
+    const run = (origin: string, path: string) =>
+      new Promise<RequestDelivery>((resolve) => {
+        const delivery = bodyOf("body");
+        delivery.request().dispatcher.dispatch(
+          {
+            origin,
+            path,
+            method: "POST",
+            headers: { "content-length": "4" },
+            body: delivery.bytes,
+          },
+          {
+            onRequestStart() {},
+            onResponseStart() {},
+            onResponseData() {},
+            onResponseEnd: () => resolve(delivery),
+            onResponseError: () => resolve(delivery),
+          } as never,
+        );
+      });
+    try {
+      // Refused before the request began; the error follows the callback's controller.
+      expect((await run(closed.url, "/")).notDelivered()).toMatchObject({
+        basis: "connect_failure",
+        errorCodes: ["ECONNREFUSED"],
+      });
+      // Reset after the request began: unknown.
+      const reset = await run(server.url, "/reset");
+      expect(reset.notDelivered()).toBeNull();
+      expect(reset.facts().responseReceived).toBe(false);
+      expect((await run(server.url, "/fine")).facts().responseReceived).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("sets its bounds on its own request and leaves a request without bounds as the dispatcher has it", () => {
     const seen: Array<Record<string, unknown>> = [];
     setGlobalDispatcher(
@@ -345,8 +430,36 @@ describe("request delivery proof on the existing dispatcher", () => {
       );
       expect(causeCode(bodyError)).toBe("UND_ERR_BODY_TIMEOUT");
       expect(body.facts().responseReceived).toBe(true);
+      // The words name the library's report and the engine's setting, nothing else.
+      expect(boundReached(headError)).toBe(
+        " The HTTP library reported a response-head timeout; the engine asks for 300 s on this request.",
+      );
+      expect(boundReached(bodyError)).toBe(
+        " The HTTP library reported a response-body timeout; the engine asks for 300 s on this request.",
+      );
     } finally {
       await server.close();
     }
   });
+
+  it("does not end a stream whose reader stalled for longer than the body bound while the peer kept sending", async () => {
+    const peer = new Worker(SENDING_PEER, { eval: true });
+    try {
+      const port = await new Promise<number>((resolve) => peer.once("message", resolve));
+      const response = await send(`http://127.0.0.1:${port}/`, bodyOf("body"), {
+        headMs: 60_000,
+        silenceMs: 3_000,
+      });
+      const reader = response.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      // This thread does nothing for longer than the bound. The bound is the
+      // library's clock, counted in ticks that stop with this thread: it is not
+      // a wall-clock deadline, and the bytes that arrived meanwhile are read.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4_500);
+      for (let i = 0; i < 5; i += 1) expect((await reader.read()).done).toBe(false);
+      await reader.cancel();
+    } finally {
+      await peer.terminate();
+    }
+  }, 30_000);
 });

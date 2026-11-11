@@ -3279,23 +3279,32 @@ not compressed. The bytes as sent stream with their Content-Length and are what
 the delivery facts count, so a smaller body is fully handed off sooner and more
 of the remaining upload failures read as unknown. `request-delivery.ts` observes
 public callbacks on the existing dispatcher; its lazy `dispatcher-accessor.cts`
-preserves native cold initialization, proxy, TLS and pool ownership. It sets two
-bounds on this request only, whatever the dispatcher's own values: 300 s from the
-last request byte handed to the socket to the response head, and 300 s between
-reads of the response body. They are the HTTP library's clocks on an HTTP/1.1
-connection, not wall-clock deadlines and not proof of provider silence while the
-daemon's own event loop is busy; the head clock does not run while a body
-trickles, and HTTP/2 or an unknown dispatcher keeps its documented limits. A call
-they end stays `transport_unknown`: `errorCode` in the problem's context carries
-the library's code and the message names the bound in words that clients must
-not parse.
+preserves native cold initialization, proxy, TLS and pool ownership. It asks the
+dispatcher for two timeouts on this request only, whatever the dispatcher's own
+values: 300 s for the response head and 300 s for the response body. They are
+the HTTP library's clocks, counted in its own ticks, which stop while the
+daemon's event loop is blocked: not wall-clock deadlines, and an expiry is the
+library's report, not a measurement of what the provider sent. On HTTP/1.1 the
+head clock starts with the request and restarts whenever the socket pushes back
+and when the last body byte is handed off; while the body is still being written
+it ends the request only if the socket holds undrained bytes, an upload that
+made no progress for that long, which reads as an incomplete upload. The body
+clock restarts on every chunk of the response. On HTTP/2 the body value is the
+stream's idle timeout in both directions, the head value is unused and an expiry
+carries another code; an unknown dispatcher keeps its own limits. A call that
+the head timeout ends after the whole body was handed off, or that the body
+timeout ends, stays `transport_unknown`: `errorCode` in the problem's context
+carries the library's code and the message names the library's timeout and the
+engine's setting in words that clients must not parse.
 Proof of non-delivery yields `transport_not_delivered` with one of three bases:
 `connect_failure` (the dispatcher reported an error before it began writing the
 request, whatever the error's code; a dispatcher that wrote before its
-`onConnect` would make this false), `incomplete_upload` (the upload broke before
+`onConnect`, or an interceptor that withheld that callback, would make this
+false), `incomplete_upload` (the upload broke before
 the whole body was handed off) and `http_408` (the peer's statement that it did
-not receive a complete request; an intermediary answering 408 after the origin
-accepted the whole body would make this false). `ModelOperations` refines the
+not receive a complete request, with the refusal's own request id, vendor code
+and retry hint kept; an intermediary answering 408 after the origin accepted the
+whole body would make this false). `ModelOperations` refines the
 terminal to `not_started` only after publishing that proof, keeping the
 attempted-send stamp and route; an error after writing began with no chunk
 observed, full handoff, unobserved transport, crash and publication failure stay
