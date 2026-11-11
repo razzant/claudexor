@@ -72,8 +72,9 @@ What Claudexor already does, so you can calibrate reports:
   `oauth/usage` and Cursor's internal dashboard `usage-summary`. Cursor sends
   only the named file store's bound token as a `WorkosCursorSessionToken` cookie
   to cursor.com: no OAuth refresh/credential write. Dashboard money is display-only,
-  never execution quota/admission. Public GitHub/npm name/update/statistics reads
-  are user-invoked except foreground app update checks (no update timer).
+  never execution quota/admission. Public name/version/statistics reads are invoked by a person or an
+  authorized caller, including opening the view that shows versions. Foreground
+  app update checks follow that user action; there is no engine update timer.
   Local `telemetry` files are on-device evidence, never transmitted analytics.
 - Harness processes run as the signed-in OS user under each vendor CLI's
   native access mode. Claudexor does not add an outer Seatbelt, container, or

@@ -31,7 +31,7 @@ with a vendor quota source (Antigravity, Claude, and Codex). Cursor's internal
 dashboard supplies dated monetary resources, not an execution-quota verdict.
 Everything runs on your machine, files are the source of truth, and there is no telemetry.
 
-Current status: **v5.1.0**. See "Stability at 2.0" below for what is a stable
+Current status: **v6.0.0**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
 with the new spelling instead of silently aliasing.
 
@@ -138,26 +138,24 @@ separate capabilities checked before a run starts. (The v1.0.0 DMG was unsigned
 — if you kept it, either upgrade or approve it via System Settings → Privacy &
 Security → Open Anyway.)
 
-Host integrations may install one vendor CLI into Claudexor's managed local
-toolchain with
-`claudexor harness install <harness> --target local --yes --json`; a host may
-bind that explicit unattended authorization to the user's Connect action.
-Npm recipes install exact selected versions under `~/.claudexor/node`;
-Codex resolves latest once by default; `--release-tested` explicitly selects
-the separately tested baseline instead of that lookup (a runnable managed copy
-at or above it is kept; installing it still needs the npm registry), and an
-unavailable registry refuses instead of falling back. Cursor remains unpinned, so its JSON
-receipt records the downloaded installer's SHA-256 and byte length.
-Every successful executed receipt also records the absolute installed launcher
-and its verified version; a zero-exit installer without that postcondition is a
-typed failure. On Windows, Codex and Claude use the npm package's declared
-native or Node entrypoint. Doctor, login and runs share that selection, including
-ordinary user npm prefixes on PATH. The receipt identifies the vendor entrypoint;
-launch it through Claudexor so Node entrypoints retain their interpreter and
-arguments. Custom batch programs are not treated as standard npm wrappers.
-Omitting `--target` preserves the disclosed remote-host flow, its prefix and
-its exit-code contract; the install lease and the post-install proof are part
-of the unattended local contract and do not apply there.
+Install a missing vendor program with
+`claudexor harness install <harness> --yes --json`; a host may bind that explicit
+authorization to the user's Connect action. Update the selected program with
+`claudexor harness update <harness> --yes --json`. Both use the adapter's vendor
+command under the installation HOME, and accept `--vendor-version <exact>` only
+where supported. `claudexor harness inspect --latest --json` shows the selected
+path/version, published version, action commands and available release notes.
+The engine decides whether an update exists; an unknown comparison is shown as
+unknown. Version reads happen when requested, including opening a version view,
+with no engine update timer.
+
+Receipts record actual commands, script URL/size/hash, before/after identity and
+vendor diagnostics. A successful install requires the program to answer its own
+version probe. Windows has vendor routes for Claude, Codex, Antigravity, Grok and
+Copilot; Cursor Windows (#667) and OpenCode's unattended Windows installation and
+second line (#668) remain unsupported. OpenCode stays on 1.x. A package-manager
+copy's updater may only advise; that sentence is the result. Vendor programs
+live in [vendor directories](docs/ARCHITECTURE.md) and are pruned by the vendor.
 
 ## Remote SSH
 
@@ -175,16 +173,12 @@ connection the app verifies and installs a signed, no-`sudo` runtime under
 `~/.claudexor/remote/`, then reaches its loopback-only control API through an
 SSH local forward. Vendor CLIs and their credentials remain on the server and
 with the vendors. Claudexor can install a harness CLI on the host for you
-through a disclosed, exact-version flow — `claudexor harness install`, or
-Settings → Harnesses for a connected host: Claude, Codex, GitHub Copilot and
-OpenCode install one exact npm version that the host's runtime selects and
-shows before confirmation (a current runtime resolves Codex's npm latest once;
-the others use their release baseline), while the Cursor and Antigravity vendor
-scripts are downloaded in full and run in the visible terminal where you watch
-them; nothing is installed before the exact package/version/destination install
-recipe is disclosed and confirmed. An embedding host may instead pass
-`--target local --yes`, which installs into the managed toolchain root and
-must prove the launcher it installed before reporting success.
+through `claudexor harness install`, or Settings → Harnesses for a connected
+host. The menu reads the host engine's inventory; confirmation shows its vendor
+command, installation HOME and script evidence. Preview and execution use the
+same immutable remote runtime. A current install uses the vendor's current copy;
+the terminal receipt records the actual version and script bytes. The app
+refreshes Harness Doctor afterwards.
 (Installing them on the host yourself works too.) Then sign in from the app,
 which runs each vendor's own login in an embedded SSH terminal (Codex uses
 device auth). Remote threads include an embedded SSH terminal and an
@@ -228,7 +222,7 @@ client verifiers themselves stay fail-closed for the waived versions too).
   may be exact-pinned by a host that owns its Claudexor daemon lifecycle. The
   archive contains only ordinary directories/files (internal package links are
   materialized), so its format needs no POSIX symlink support. The host supplies
-  the exact full Node toolchain proven by its reviewed pin, launches
+  the exact Node runtime proven by its reviewed pin, launches
   `claudexord.bundle.cjs`, invokes operational commands through the adjacent
   `claudexor.bundle.cjs`, verifies `--probe` against the pinned
   `{version,buildSha}`, and uses
@@ -245,13 +239,9 @@ client verifiers themselves stay fail-closed for the waived versions too).
   `CLAUDEXOR_DAEMON_SOCK`, or the lifecycle command may address another daemon.
   A Windows consumer still owns a native
   extract/`--probe`/handshake/`--stop` smoke before claiming Windows support.
-  npm-backed local installation additionally requires the toolchain's own
-  npm entrypoint — `<node-root>/lib/node_modules/npm/bin/npm-cli.js` beside
-  `bin/node` on POSIX, `node_modules\npm\bin\npm-cli.js` beside `node.exe`
-  on Windows; Claudexor never falls back to a `npm` found on ambient `PATH`.
-  Local Windows installation supports Codex and Claude through their declared
-  native or Node npm entrypoints; other installer recipes retain their typed
-  platform restrictions.
+  Vendor maintenance uses the same adapter-declared commands and installation
+  HOME as the CLI; the host needs no npm for that operation. Available actions
+  and platform limits come from the engine inventory.
 - **npm** — CLI/daemon installs update the ordinary way:
   `npm install -g claudexor@latest`. `claudexor release check` reports whether a
   newer engine runtime is published, verifying the same signed manifest

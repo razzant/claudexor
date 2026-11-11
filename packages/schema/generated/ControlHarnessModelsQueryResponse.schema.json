@@ -10,6 +10,33 @@
               "type": "string",
               "description": "Harness the models belong to."
             },
+            "sourceProgram": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "models": {
               "type": "array",
               "items": {
@@ -335,6 +362,9 @@
                         "properties": {
                           "harnessId": {
                             "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/harnessId"
+                          },
+                          "sourceProgram": {
+                            "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/sourceProgram"
                           },
                           "models": {
                             "$ref": "#/definitions/ControlHarnessModelsQueryResponse/anyOf/0/properties/models"

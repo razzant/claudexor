@@ -1,3 +1,4 @@
+import { HarnessProgramIdentity } from "./harness-program.js";
 import { EffortResolution } from "./effort.js";
 import { HarnessCapabilities } from "./harness.js";
 import { z } from "zod/v3";
@@ -353,6 +354,7 @@ export type ControlModelSourcesQueryResponse = z.infer<typeof ControlModelSource
 
 export const ControlModelCatalogResponse = z
   .object({
+    sourceProgram: HarnessProgramIdentity.nullable().default(null),
     source: Id,
     credentialProfileId: Id,
     accountFingerprint: z.string().nullable(),

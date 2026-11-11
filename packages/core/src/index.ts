@@ -41,3 +41,13 @@ export * from "./credential-mutation-window.js";
 export * from "./credential-execution.js";
 
 export type * from "./native-home-lifetime.js";
+
+export * from "./program-registry.js";
+export * from "./selected-program.js";
+export * from "./hidden-program-paths.js";
+
+export { programUpdateAvailable } from "./program-version.js";
+
+export * from "./program-observation.js";
+
+export * from "./native-program.js";

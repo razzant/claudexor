@@ -1,3 +1,4 @@
+import { GROK_PROGRAM } from "./program.js";
 import type { HarnessAdapter, DoctorSpec, HarnessModelSpec } from "@claudexor/core";
 import {
   HarnessUnavailableError,
@@ -187,6 +188,7 @@ export function createGrokAdapter(deps: Partial<Runtime> = {}): HarnessAdapter {
   }
   return {
     id: "grok",
+    program: GROK_PROGRAM,
     effortParameter: "--reasoning-effort",
     capabilityProfile: GROK_CAPABILITY_PROFILE,
     nativeHomeLifetime: {
@@ -336,6 +338,7 @@ async function* runGrok(
   const parser = createGrokParser();
   const startup = createGrokStartupCheck(spec);
   for await (const event of runtime.runCli({
+    program: GROK_PROGRAM,
     bin: resolveGrokBin(),
     args,
     spec,

@@ -1,3 +1,4 @@
+import { CLAUDE_PROGRAM } from "./program.js";
 import { randomUUID } from "node:crypto";
 import { claudeMcpArgs } from "./mcp-args.js";
 import {
@@ -70,7 +71,7 @@ export {
 export type { ClaudeAuthStatusProbe } from "./auth-status.js";
 import { smokeIsolatedApiKey, smokeIsolatedOAuthToken } from "./smoke.js";
 import {
-  BIN,
+  resolveClaudeBin,
   CLAUDE_EFFORT_SNAPSHOT,
   CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
   claudeRunEffortResolution,
@@ -80,13 +81,12 @@ import {
   probeClaudeEffortLevels,
   probeClaudeHelp,
 } from "./effort-probe.js";
-export { BIN, CLAUDE_EFFORT_SNAPSHOT, detectClaudeVersion } from "./effort-probe.js";
+export { resolveClaudeBin, CLAUDE_EFFORT_SNAPSHOT, detectClaudeVersion } from "./effort-probe.js";
 export {
   CLAUDE_AUTH_REFRESH_TERMINATION_UNCONFIRMED,
   claudeOauthAccessTokenIsFresh,
   refreshClaudeNativeAuth,
 } from "./auth-refresh.js";
-export { CLAUDE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 import {
   claudeAttachmentBlocks,
   handleControlRequestFrame,
@@ -169,7 +169,7 @@ export interface ClaudeAuthStatusProbeOptions {
 }
 
 export async function probeAuthStatus(
-  bin: string = BIN,
+  bin: string = resolveClaudeBin(),
   options: ClaudeAuthStatusProbeOptions = {},
 ): Promise<ClaudeAuthStatusProbe> {
   try {
@@ -256,6 +256,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
   const live = createClaudeLiveInput();
   return {
     id: "claude",
+    program: CLAUDE_PROGRAM,
     effortParameter: "--effort",
     nativeAccess: claudeNativeAccess,
     capabilityProfile: CLAUDE_CAPABILITY_PROFILE,
@@ -268,7 +269,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       if (version === null) {
         throw new HarnessUnavailableError(
           claudeMissingDetail(
-            runtime.installation(BIN),
+            runtime.installation(resolveClaudeBin()),
             "claude CLI not found on PATH (set CLAUDEXOR_CLAUDE_BIN to override)",
           ),
         );
@@ -278,7 +279,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       // The ladder belongs to the INSTALLED CLI, so read it from that binary
       // rather than declaring one version's list for every version.
       const efforts = await runtime.probeEffortLevels();
-      const native = await runtime.probeAuthStatus(BIN, { env: claudeNativeEnv() });
+      const native = await runtime.probeAuthStatus(resolveClaudeBin(), { env: claudeNativeEnv() });
       // A stale result is only bounded last-known-good evidence for an
       // already selected profile.  Discovery must not advertise it as a
       // currently authenticated default route.
@@ -502,7 +503,7 @@ async function* runClaude(
     const native: ClaudeAuthStatusProbe =
       authPreference === "api_key"
         ? { loggedIn: false, authed: false, authMethod: null, probeError: null }
-        : await runtime.probeAuthStatus(BIN, {
+        : await runtime.probeAuthStatus(resolveClaudeBin(), {
             env: nativeEnv,
             abortSignal,
           });
@@ -606,12 +607,21 @@ async function* runClaude(
         .map((server) => server.name),
       questionInput: () => (!interactive ? "none" : inputOpen ? "open" : "closed"),
     }),
-    resolveHarnessCommandOnPath(BIN, composeSpawnEnv(spec.env_inheritance, env).PATH ?? "").command
-      ?.entrypoint ?? null,
+    resolveHarnessCommandOnPath(
+      resolveClaudeBin(),
+      composeSpawnEnv(spec.env_inheritance, env).PATH ?? "",
+    ).command?.entrypoint ?? null,
   );
   const events = withClaudeInstructionsFile(spec.instructions, (instructionsPath) =>
     runtime.runCliHarness({
-      bin: BIN,
+      program: CLAUDE_PROGRAM,
+      programVersion: (raw) => {
+        const frame = raw as { type?: string; subtype?: string; claude_code_version?: unknown };
+        return frame?.type === "system" && frame.subtype === "init"
+          ? frame.claude_code_version
+          : null;
+      },
+      bin: resolveClaudeBin(),
       args: claudeArgsForSpec(
         spec,
         interactive,

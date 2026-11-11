@@ -156,12 +156,14 @@ export const CLEAN_ENV_ALLOWLIST: readonly string[] = [
 ];
 
 /**
- * Windows process-environment keys a spawned native CLI needs to start at all:
- * the system root and shell that Windows itself resolves against, the temp and
- * profile roots every vendor CLI writes to, and PATHEXT. Read case-insensitively
- * on Windows, so the canonical uppercase spelling here matches any casing the OS
- * used. Kept as one named set so every scrubbed spawn env forwards the same
- * keys instead of each caller guessing.
+ * Windows' default process environment: machine identity, standard folders and
+ * shell/runtime discovery. One owner for every scrubbed Windows spawn, including
+ * vendor installers. These are OS inputs, not provider secrets or vendor homes.
+ * Standard variables: https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-doenvironmentsubsta
+ * Architecture/folders: https://learn.microsoft.com/windows/win32/winprog64/wow64-implementation-details
+ * PSModulePath is intentionally absent: each PowerShell edition must compute
+ * its own defaults rather than inherit incompatible modules from another edition.
+ * Match case-insensitively; Windows does not impose a spelling on inherited keys.
  */
 export const WINDOWS_RUNTIME_ENV_KEYS: readonly string[] = [
   "SYSTEMROOT",
@@ -171,11 +173,31 @@ export const WINDOWS_RUNTIME_ENV_KEYS: readonly string[] = [
   "PATHEXT",
   "TEMP",
   "TMP",
+  "OS",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+  "PROCESSOR_ARCHITEW6432",
+  "PROCESSOR_IDENTIFIER",
+  "PROCESSOR_LEVEL",
+  "PROCESSOR_REVISION",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "PROGRAMW6432",
+  "COMMONPROGRAMFILES",
+  "COMMONPROGRAMFILES(X86)",
+  "COMMONPROGRAMW6432",
+  "PROGRAMDATA",
+  "ALLUSERSPROFILE",
+  "PUBLIC",
   "USERPROFILE",
   "HOMEDRIVE",
   "HOMEPATH",
   "APPDATA",
   "LOCALAPPDATA",
+  "COMPUTERNAME",
+  "LOGONSERVER",
+  "USERDOMAIN",
+  "USERNAME",
 ];
 
 /**
@@ -224,6 +246,9 @@ export function composeBaseEnv(
   if (inheritance !== "clean") return normalizedSource;
   return {
     ...pickAllowlistedEnv(normalizedSource, CLEAN_ENV_ALLOWLIST, platform),
+    ...(platform === "win32"
+      ? pickAllowlistedEnv(normalizedSource, WINDOWS_RUNTIME_ENV_KEYS, platform)
+      : {}),
     ...inheritedScopeMarkers(normalizedSource),
   };
 }

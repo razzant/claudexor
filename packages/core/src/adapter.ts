@@ -185,6 +185,20 @@ export interface LiveMessageResult {
  * logic. External adapters may implement this as an in-tree HarnessAdapter implementation (the out-of-tree JSON-RPC bridge package was removed in v0.9).
  */
 export interface HarnessAdapter {
+  readonly program?: import("@claudexor/schema").HarnessProgram;
+  /** Explicit maintenance only. The adapter enumerates obsolete profile program files, never credentials. */
+  planProfileProgramCleanup?(
+    profiles: readonly import("@claudexor/schema").CredentialProfile[],
+    selected: import("@claudexor/schema").SelectedHarnessProgram,
+    options?: { recoverOnly?: boolean },
+  ): {
+    paths: string[];
+    limitations: string[];
+    execute(observe: () => import("@claudexor/schema").SelectedHarnessProgram): {
+      removed: string[];
+      limitations: string[];
+    };
+  };
   readonly id: string;
   /** Native effort carrier the adapter resolves at its final route: a separate
    * flag (`--effort`, `model_reasoning_effort`), or `--model` when the level is

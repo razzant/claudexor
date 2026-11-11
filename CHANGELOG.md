@@ -4,6 +4,155 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **v6.0.0** (2026-11-11): **Vendor program maintenance.** People and authorized
+  hosts can inspect, install and update all seven local harness programs through
+  their adapter-declared vendor commands, under the installation HOME. Use
+  `claudexor harness inspect --latest --json` to read selected paths, the programs'
+  own versions and published versions; `claudexor harness install <id> --yes`
+  installs a missing program, and `claudexor harness update <id> --yes` runs the
+  selected program's updater or installs when missing. Add
+  `--vendor-version <exact>` where the adapter offers an exact-version command;
+  omit it for the vendor's current update. The inventory supplies action command
+  previews, release-note links where declared, and `updateAvailable` as `yes`,
+  `no` or `cannot_tell`. The engine applies the adapter's version scheme; hosts
+  do not compare version strings, and an installed build ahead of the published
+  pointer is not an available update. Public version lookups run on request,
+  including opening the view that shows versions; there is no lookup timer.
+
+  **Breaking CLI and host contract.** Installation `--target` and
+  `--release-tested`, maintenance `baseline`/`previous` targets and
+  `--vendor-version latest` are refused with the supported spelling. Hosts use
+  the `selection`/`newest`/`actions` inventory and shared maintenance receipts;
+  old verification classes and pinned-version disclosure fields are absent.
+  `harness install --dry-run --json` returns that maintenance disclosure.
+  Hosts supply no npm installer. The maintenance API retains durable operation
+  handles, idempotency, cancellation and one active operation per harness.
+  Receipts retain the requester, actual command and script hash, installation
+  HOME, before/after program evidence, exit status, bounded redacted vendor
+  lines, partial effects and active-run count. Final verification determines the
+  result: a missing version answer gets one immediate second read, with a
+  limitation if it succeeds; no vendor command is repeated. Active runs do not
+  gate an update.
+  The SSH app reads the same capabilities and receipts. **Application floor:**
+  local and SSH runtime manifests require Claudexor.app 6.0.0. An older app
+  reports that an application update is required and keeps its working engine;
+  the floor is not an embedding-host compatibility promise. The control
+  protocol major is 3 and the engine store schema is 7. An older engine refuses
+  a data root served by this release; replacing its executable is not rollback.
+
+  **Program identity and conversion.** Runs, probes and inventory share one
+  selection, including Copilot's Windows MSI folder without an engine restart.
+  Program-derived model catalogs carry `sourceProgram` path/version. Passive
+  reads reuse the same file identity and remembered answer, including no answer;
+  a failed ask preserves an earlier answer for that identity. A program replaced
+  behind an unchanged wrapper is detected when an inventory read, fresh read or
+  native start-up frame obtains a different version; passive polls and continued
+  missing answers do not reveal the replacement. Claude, Codex and Copilot report
+  start-up versions; Cursor, Antigravity, Grok and OpenCode use remembered
+  evidence or one first version ask. Native attempt records label that source,
+  and credential-pool exhaustion retains the last bounded redacted vendor error.
+  Product-made npm copies of Claude, Codex, Copilot and OpenCode convert on
+  Update only after a replacement answers its version, is not known older and
+  belongs to any declared major line. Receipts retain installer failures even
+  when an acceptable replacement completes conversion. A stale PATH shadow is
+  named, and interrupted package hides recover on the next explicit maintenance.
+  Arbitrary wrappers and personal npm installations are not claimed for removal.
+  Cursor children disable self-update; explicit maintenance removes enumerated
+  profile copies only when the selected program answers with the copy hidden,
+  restoring it when needed and recovering interrupted hides on the next request.
+
+  **Maintenance limits.** Windows has vendor installation routes for Claude,
+  Codex, Antigravity, Grok and Copilot. Cursor on Windows (#667), OpenCode's
+  second major line and unattended Windows installation (#668) are unsupported;
+  OpenCode stays on 1.x. A package-manager copy's own update command may only
+  advise: the engine returns that advice and does not choose a package manager
+  to execute it. Copilot's declared Windows installer is `winget`. Vendors own
+  their program storage and pruning; there is no offline rollback guarantee.
+  `copilot update` can receive GitHub's unauthenticated rate-limit refusal, and
+  the vendor's sentence is the result. Claudexor starts program maintenance only
+  on a person’s or authorized caller’s request, with no automatic update/retry
+  chain or model-to-version table. Real-vendor CI checks installation, native
+  selection, own updates and real npm conversion; a failed update counts as a
+  vendor refusal only if the same command also fails directly. Release freshness
+  checks fetch declared sources and report absent program help checks as skipped.
+
+  **Questions and live input (#628, #536, #622, #651).** Questions declare
+  `delivery: blocking | async`; an omitted field means blocking. Async questions
+  keep the agent working, set `waitingOnUser`, wake `claudexor_run_wait`, accept
+  answers through the ordinary routes and leave live messaging and the inactivity
+  watchdog running. `asyncQuestionsOnly` distinguishes runs with only async
+  questions. CLI follow, ACP and the app present that distinction, prioritize
+  blocking questions and send nothing for silence or expiry. ACP answer prompts
+  do not hold cancellation or the turn's terminal, and close when answered
+  elsewhere, expired or outlived by the run; a failed prompt fails the turn.
+  The app removes question controls at termination, counts down deadlines and
+  explains refused late answers. A failed question read remains a typed problem;
+  a failed answer channel records `interaction_answer_unavailable`, not a user's
+  decline. Codex async questions retain native question ids and options, and a
+  committed answer steers the asking turn once with an `interaction_answer_steer`
+  receipt. Turn end and Stop withdraw open questions without sending; sub-agent
+  questions are not answerable. This mapping is source-based, not qualified by a
+  live Codex turn. Claude tracks an identified prompt through its own result or
+  lifecycle, preserving live input across foreign results from a resumed session;
+  foreign failures and answers are evidence, not this prompt's outcome. Builds
+  and results without command identity retain the documented first-result limits.
+  Claude question failures retain the vendor detail, native input and answer
+  transport cause; real declines and expiry remain benign. Interaction text is
+  complete, bounded previews end visibly in an ellipsis without splitting a
+  character, oversized approval refusals name the measured limit, an oversized
+  question wakes `claudexor_run_wait` with `wakeReason: interactions`, and ACP
+  multi-select rounds show every option and its description.
+
+  **Failure evidence and model calls (#633, #635, #648, #649, #604).** A failed
+  attempt's message quotes its own vendor record, including Codex app-server
+  errors when the rollout has none. That cause leads the selected candidate's
+  failure, a non-converged repair's summary and the `summary.md` Failure line;
+  losing or earlier attempts supply no substitute cause. Typed remedies, retry
+  policy and account routing remain evidence-driven. A delegated attempt that
+  fails before home preparation ends with its own cause while a healthy sibling
+  can win; missing evidence from an adapter that actually ran remains a refusal.
+  Failed, interrupted and queued-cancelled model operations expose
+  `problem.context.requestedModel`; `route.model` names only a provider-reported
+  model. Execution uses parsed request bytes; a pre-read failure uses the command's
+  saved parameter, which a raw enqueue caller can supply without verification.
+  A queued cancel reports `model_operation_cancelled`, `not_started`, and no
+  response, usage or cost. `claudexor_run_continue` accepts `effort` and a
+  harness-keyed `efforts` map: a lane uses its map entry, then scalar effort,
+  then Settings. Continuation inherits no effort implicitly; invalid levels
+  refuse before sending, and host skills list the controls to restate.
+
+  **Retention and work products (#637, #638, #594).** Model-operation receipts
+  and idempotency bindings last 30 days after termination, without the Agent
+  history count cap; active operations, unacknowledged result pickup and unsettled
+  resources remain protected. An expired receipt can be absent, which proves
+  neither non-dispatch nor zero cost, and new bytes under an expired key make a
+  new request. Retention inventories scan bounded windows of relevant command
+  rows without a schema or index migration or blanket pruning of history,
+  resources or native profiles. Files written by accepted Raw API patches remain
+  in candidate trees, subsequent rounds, continuations, recovery, thread turns,
+  Apply and Revert even when ignored by Git. Exact-path records in the envelope's
+  repository bind that inclusion; unrelated ignored files, native/gate output
+  and ignored nested repositories stay out. Failed record writes or reads refuse
+  the operation; Git before 2.43 cannot distinguish a failed lookup from absence.
+  Rejected and losing candidates do not alter the thread's files or record.
+
+  **Antigravity and quota handling (#653, #318, #558).** Antigravity read-only
+  runs require agy 1.4.10 or newer and use session settings that deny commands
+  and file writes while preserving the profile's allow/deny/ask rules. A denied
+  call returns a tool error so the model can continue reading and answering;
+  unreadable profile settings refuse before the model starts. Inputs over
+  128 KiB, including summary inputs, are saved unchanged in the run context and
+  referenced by a bounded bootstrap; missing storage or read access refuses
+  before sending. Failed tool calls retain error results. Antigravity inference
+  quota refusals carry typed unknown-reopening evidence and the vendor's words,
+  without a transport retry or an inferred reset time. A Codex usage refusal
+  without a reopening time lasts until its own five-minute recheck; quota reads
+  neither clear nor extend it, and only the next requested run tries afterward.
+  Claude's exact `oauth_not_allowed_for_organization` code maps to
+  `oauth_org_not_allowed`, preserving the vendor cause and setting that account
+  aside for its existing refusal period, up to an hour or until sign-in or a
+  later success. A pinned run does not rotate or fall back to an API key.
+
 - **v5.1.0** (2026-11-07): Adds managed lifetimes for new uploaded run data,
   explicit scanner preparation for npm installs, exact thread export and
   conditional retirement, and a typed `turn_limit_reached` outcome for runs

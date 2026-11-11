@@ -24,7 +24,7 @@ vi.mock("node:fs", async (importOriginal) => ({
 }));
 
 const BASE = join(tmpdir(), "cx-unit-fixture");
-const LEASE_PATH = join(BASE, "config", "daemon", "claudexord.sock.writer", "active.writer");
+const LEASE_PATH = join(BASE, "c", "daemon", "claudexord.sock.writer", "active.writer");
 const ABSENT = { status: "absent", path: LEASE_PATH };
 const ACTIVE = {
   status: "owned",
@@ -76,7 +76,7 @@ describe("canary candidate and endpoint ownership", () => {
     const sb = makeSandbox();
     expect(sb.env.CLAUDEXOR_DAEMON_ENTRY).toBe(CLI.replace(/cli\.js$/, "claudexord.js"));
     expect(sb.env).not.toHaveProperty("CLAUDEXOR_DAEMON_SOCK");
-    expect(sb.env.CLAUDEXOR_CONFIG_DIR).toBe(join(BASE, "config"));
+    expect(sb.env.CLAUDEXOR_CONFIG_DIR).toBe(join(BASE, "c"));
     expect(sb.env.CLAUDEXOR_MAX_CONCURRENT).toBe("2");
     expect(sb.env.CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS).toBe("600000");
     cli(sb, ["agent", "fixture"], { env: { CLAUDEXOR_MAX_CONCURRENT: "3" } });

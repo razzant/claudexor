@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -41,7 +42,7 @@ function processIsAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 
@@ -53,11 +54,11 @@ function installLockError(path: string, stale: boolean): Error {
   return Object.assign(new Error(message), { code });
 }
 
-/** One user-scoped, cross-process lease covers every shared install prefix.
- * Waiters never unlink or rename a stale observation: doing so cannot be made
- * compare-and-swap safe with Node's portable filesystem API and could delete a
- * replacement owner's live lease. A dead or old owner-less lock fails closed
- * with an exact manual remedy; ordinary live owners retain the bounded wait. */
+/** One installation lease. A kernel-held SQLite write lock serializes directory
+ * owner inspection/reclamation across processes and releases automatically on
+ * process death. The stable lock file is never unlinked: a replacement inode
+ * would permit two owners. Existing directory owners from older engines still
+ * bind this lease; only a proved dead recorded PID is reclaimed. */
 export function acquireHarnessInstallLease(home: string, timeoutMs: number): HarnessInstallLease {
   const lockRoot = join(home, ".claudexor");
   const path = join(lockRoot, "harness-install.lock");
@@ -67,42 +68,76 @@ export function acquireHarnessInstallLease(home: string, timeoutMs: number): Har
   const deadline = Date.now() + Math.max(0, timeoutMs);
   mkdirSync(lockRoot, { recursive: true, mode: 0o700 });
 
-  for (;;) {
+  const mutex = new DatabaseSync(join(lockRoot, "harness-install-lease.sqlite"));
+  let locked = false;
+  const releaseMutex = () => {
     try {
-      mkdirSync(path, { mode: 0o700 });
-      try {
-        writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600, flag: "wx" });
-      } catch (error) {
-        rmSync(path, { recursive: true, force: true });
-        throw error;
-      }
-      let released = false;
-      return {
-        release: () => {
-          if (released) return;
-          released = true;
-          const current = readInstallLeaseOwner(ownerPath);
-          if (current?.pid === process.pid && current.token === token) {
-            rmSync(path, { recursive: true, force: true });
-          }
-        },
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (locked) mutex.exec("ROLLBACK");
+    } finally {
+      mutex.close();
     }
+  };
+  try {
+    for (;;) {
+      if (!locked) {
+        try {
+          mutex.exec("BEGIN IMMEDIATE");
+          locked = true;
+        } catch (error) {
+          if ((error as { errcode?: number }).errcode !== 5) throw error;
+          if (Date.now() >= deadline) throw installLockError(path, false);
+          Atomics.wait(sleepCell, 0, 0, Math.min(INSTALL_LOCK_POLL_MS, deadline - Date.now()));
+          continue;
+        }
+      }
+      try {
+        mkdirSync(path, { mode: 0o700 });
+        try {
+          writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600, flag: "wx" });
+        } catch (error) {
+          rmSync(path, { recursive: true, force: true });
+          throw error;
+        }
+        let released = false;
+        return {
+          release: () => {
+            if (released) return;
+            released = true;
+            const current = readInstallLeaseOwner(ownerPath);
+            try {
+              if (current?.pid === process.pid && current.token === token)
+                rmSync(path, { recursive: true, force: true });
+            } finally {
+              releaseMutex();
+            }
+          },
+        };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      }
 
-    const existing = readInstallLeaseOwner(ownerPath);
-    let stale = existing !== null && !processIsAlive(existing.pid);
-    if (existing === null) {
-      try {
-        stale = Date.now() - statSync(path).mtimeMs >= INSTALL_LOCK_OWNER_GRACE_MS;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
+      const existing = readInstallLeaseOwner(ownerPath);
+      let stale = existing !== null && !processIsAlive(existing.pid);
+      if (existing === null) {
+        try {
+          stale = Date.now() - statSync(path).mtimeMs >= INSTALL_LOCK_OWNER_GRACE_MS;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
       }
+      if (stale && existing !== null) {
+        // All participating reclaimers hold this same kernel lock. A new owner
+        // cannot appear between this observation and removal.
+        rmSync(path, { recursive: true, force: true });
+        continue;
+      }
+      if (stale) throw installLockError(path, true);
+      if (Date.now() >= deadline) throw installLockError(path, false);
+      Atomics.wait(sleepCell, 0, 0, Math.min(INSTALL_LOCK_POLL_MS, deadline - Date.now()));
     }
-    if (stale) throw installLockError(path, true);
-    if (Date.now() >= deadline) throw installLockError(path, false);
-    Atomics.wait(sleepCell, 0, 0, Math.min(INSTALL_LOCK_POLL_MS, deadline - Date.now()));
+  } catch (error) {
+    releaseMutex();
+    throw error;
   }
 }

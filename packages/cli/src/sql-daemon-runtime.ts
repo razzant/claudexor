@@ -133,6 +133,7 @@ export function createSqlDaemonExecutors(
   const harnessMaintenance = createHarnessMaintenance({
     commands: graph.commands,
     maintenanceQueries: graph.commands.queries,
+    bus: options.bus,
     client: options.client,
     readiness: options.authReadiness,
   });
@@ -164,6 +165,7 @@ export function createSqlDaemonExecutors(
     close() {
       unbindLaterScopes();
       models.close();
+      harnessMaintenance.close();
     },
     deferredStart: createDeferredStartPreparation({
       resources: graph.resources,

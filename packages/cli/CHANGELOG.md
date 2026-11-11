@@ -1,5 +1,166 @@
 # @claudexor/cli
 
+## 6.0.0
+
+### Major Changes
+
+- 163b570: Vendor programs are installed and maintained through adapter-declared vendor
+  commands under the installation HOME. Selected paths and self-reported versions
+  are shared by runs, probes and maintenance. Passive reads reuse the remembered
+  answer for the same file identity, including no answer; a failed ask preserves
+  an earlier answer. A replacement behind an unchanged wrapper is detected when
+  an inventory read, fresh read or native startup frame obtains a different
+  version; passive polls and continued missing answers do not reveal it.
+  Claude, Codex and Copilot supply startup versions; the other adapters use
+  remembered evidence or one first version ask. Model lists identify their source
+  program. Native attempts retain program evidence and exhausted credential
+  pools retain the last bounded, redacted vendor diagnostic.
+
+  Breaking: maintenance inventory and receipts use selection/newest/actions,
+  tri-state update availability, command previews and before/after evidence.
+  Hosts must update their consumers and use explicit exact versions instead of
+  baseline/previous targets. Install --target and --release-tested hard-error;
+  use harness install/update with optional --vendor-version <exact>. The host npm
+  contract is removed. Product-made npm copies convert during Update only after
+  a version-answering replacement that is not known older and belongs to the
+  adapter's declared major, where present. Interrupted package hides recover on
+  the next explicit maintenance; arbitrary wrappers remain untouched.
+
+  The SSH app consumes the same inventory and receipt contract. Windows executes
+  five vendor installation routes. Copilot's MSI folder is declared for inventory,
+  probes and native runs without restarting the engine. Cursor Windows (#667), OpenCode's second line
+  and unattended Windows installation (#668) remain unsupported. OpenCode stays
+  on 1.x; vendor pruning and package-manager advice remain vendor responsibilities.
+  Copilot Update can return GitHub's unauthenticated rate-limit refusal; the
+  vendor's sentence is the result. No engine timer, update/retry chain, model-to-version table or active-run gate
+  is added. Release checks fetch declared sources and report absent verb checks
+  as skipped.
+
+### Patch Changes
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- f4f8caf: An ACP prompt for a blocking question no longer holds the turn. `session/cancel`
+  now reaches a run that is parked on a question, and a prompt whose question was
+  answered elsewhere, expired or outlived its run closes without the editor
+  replying. The agent stays parked until its question is settled, a turn that was
+  cancelled no longer reports a run still paused, and a prompt that fails still
+  fails the turn.
+- b9e88de: Interaction text reaches callers exactly (#651). The Codex access question
+  now quotes the worker's complete final output instead of silently cutting it
+  at 32,000 characters. A Codex approval refused for details over the
+  32,000-character review limit now says so, with the measured size, instead of
+  the generic "cannot grant" reason; readonly and workspace_write command refusals
+  keep their priority. The bounded display labels (a harness event's timeline
+  `title` and a Claude question's preview text) end in a visible "…" and never
+  split a character; the complete text still rides beside them.
+  `claudexor_run_wait` reports `wakeReason: "interactions"` when the next event is
+  a question too large for any page. Each ACP multi-select include/skip round
+  shows every option of the question with its description.
+- a20492c: A file a Raw API patch created is no longer lost when a Git ignore rule matches
+  it (#594). The paths an accepted raw patch wrote stay in the candidate: the next
+  round's tree, the run's result, Apply and Revert carry them by exact path while
+  each is still a file, also after a fresh workspace manager, a `continueFrom`
+  successor that adopts the kept envelope, or orphan recovery. Other ignored files,
+  a gate's output or a native round's, stay out as before, also when a later patch
+  makes the ignore rules match them, and so does a file inside an ignored nested
+  repository. The record lives in per-worktree refs of the envelope's own
+  repository and is written before the patch's first byte lands; a record that
+  cannot be written or read refuses the patch, or the capture, instead of dropping
+  the file. Git before 2.43 cannot tell a failed record lookup from a missing one
+  and reads it as no record. A persistent thread's Raw API turns keep such files
+  between turns, before any Apply; a candidate that was rejected or did not win
+  changes neither the thread's files nor its record.
+- f4f8caf: `claudexor_run_continue` accepts `effort` and a harness-keyed `efforts` map, so
+  an MCP caller can restate the reasoning effort a successor must keep (#604).
+  Both reach `POST /v2/runs` exactly as stated, as the REST continuation already
+  allowed. Each lane uses its `efforts` entry, else `effort`, else its Settings
+  default. A successor still inherits no effort from its predecessor: omitting
+  both keeps the ordinary new-run default. An invalid level is refused before the
+  request is sent, and an unregistered harness id is refused by the engine as
+  before. The generated host skills and the portable skill now list effort among
+  the controls to restate. `claudexor_run` now describes its `effort` as the
+  engine applies it, to every harness the run executes and not its reviewers,
+  instead of only the primary harness.
+- Updated dependencies [a0a5b1a]
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [860bc04]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [2241f40]
+- Updated dependencies [a20492c]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/harness-agy@6.0.0
+  - @claudexor/orchestrator@6.0.0
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/daemon@6.0.0
+  - @claudexor/control-api@6.0.0
+  - @claudexor/mcp-server@6.0.0
+  - @claudexor/acp-server@6.0.0
+  - @claudexor/harness-codex@6.0.0
+  - @claudexor/harness-claude@6.0.0
+  - @claudexor/harness-fake@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/workspace@6.0.0
+  - @claudexor/delivery@6.0.0
+  - @claudexor/config@6.0.0
+  - @claudexor/gateway@6.0.0
+  - @claudexor/harness-acp@6.0.0
+  - @claudexor/harness-cursor@6.0.0
+  - @claudexor/harness-grok@6.0.0
+  - @claudexor/harness-opencode@6.0.0
+  - @claudexor/harness-raw-api@6.0.0
+  - @claudexor/review@6.0.0
+  - @claudexor/artifact-store@6.0.0
+  - @claudexor/secrets@6.0.0
+
 ## 5.1.0
 
 ### Minor Changes

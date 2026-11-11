@@ -1,3 +1,5 @@
+import { composeBaseEnv, resolveSelectedProgramAsync } from "@claudexor/core";
+import { AGY_PROGRAM } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,
@@ -21,7 +23,6 @@ import {
   harnessPlatform,
   needsPrivatePerProfileKeychain,
   promptWithInstructions,
-  runCapture,
   runCliHarness,
 } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
@@ -89,15 +90,12 @@ function accessArgs(access: AccessProfile): string[] {
 const AGY_WINDOWS_CONSOLE = "none";
 
 async function detectVersion(): Promise<string | null> {
-  try {
-    const r = await runCapture(AGY_BIN(), ["--version"], {
-      timeoutMs: 10_000,
+  return (
+    await resolveSelectedProgramAsync(AGY_PROGRAM, {
+      environment: { ...composeBaseEnv("mirror_native"), ...AGY_PROGRAM.childUpdateEnv },
       windowsConsole: AGY_WINDOWS_CONSOLE,
-    });
-    return r.stdout.trim() || `${AGY_BIN()} (version unknown)`;
-  } catch {
-    return null;
-  }
+    })
+  ).versionOutput;
 }
 
 /** Historical menu hints; account-specific presence comes from `models()`.
@@ -264,6 +262,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
       reason: "Agy native session storage has no proven independent pruning contract.",
     },
     id: "agy",
+    program: AGY_PROGRAM,
     childHome: agyChildHome,
     nativeAccess: (spec) => formatNativeArgs(accessArgs(spec.access)),
     // The level is a token of the model id: `prepareProcessing` selects the
@@ -338,12 +337,7 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
 
     async doctor(spec: DoctorSpec): Promise<ConformanceReport> {
       const version = await detectVersion();
-      const installedSemver =
-        version === null ? null : (/\d+\.\d+\.\d+/.exec(version)?.[0] ?? null);
-      const versionDrift =
-        version !== null && installedSemver !== AGY_VENDOR_CLI_VERSION
-          ? `installed agy "${version}" differs from the verified ${AGY_VENDOR_CLI_VERSION}; the platform credential transport and profile policy are re-proven per version (R-2')`
-          : null;
+      const installedSemver = version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
       // Л-24 + INV-067: Darwin's profile-local keychain plus vendor fallback
       // preserves the proven profile identity route. Linux retains the
       // config-file transport without a live multi-account proof. Windows has
@@ -413,9 +407,6 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
             status: "fail",
             detail: "agy has no engine-default credential by design; accounts are named profiles",
           },
-          ...(versionDrift
-            ? [{ id: "version_pin", status: "fail" as const, detail: versionDrift }]
-            : [{ id: "version_pin", status: "pass" as const, detail: AGY_VENDOR_CLI_VERSION }]),
           readonly,
           ...(platformProof
             ? [{ id: "platform_isolation", status: "skip" as const, detail: platformProof }]
@@ -425,7 +416,6 @@ export function createAgyAdapter(options: AgyAdapterOptions = {}): HarnessAdapte
         disabled_intents: AGY_ENABLED_INTENTS,
         reasons: [
           "agy routes only through named accounts: add one (`claudexor profiles add agy <id>` + `claudexor profiles login agy <id>`) and pin it (--profile)",
-          ...(versionDrift ? [versionDrift] : []),
           ...(readonly.status === "fail" ? [readonly.detail] : []),
           ...(platformProof ? [platformProof] : []),
         ],
@@ -544,6 +534,7 @@ async function* runAgy(
   const completion = createAgyNativeCompletion();
   const run = (settingsArgs: string[]) =>
     runCliHarness({
+      program: AGY_PROGRAM,
       bin: AGY_BIN(),
       args: [...settingsArgs, ...args],
       input,

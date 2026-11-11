@@ -55,6 +55,17 @@ __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
+// These cache tests inject the model/list transport; give the synthetic program
+// a known identity too. Real program changes are covered by program-observation tests.
+vi.mock("@claudexor/core", async (original) => ({
+  ...(await original<typeof import("@claudexor/core")>()),
+  observeHarnessProgram: vi.fn(async (_program, _env, bin) => ({
+    selection: null,
+    program: { path: bin ?? "/fixture/codex", version: "1.0.0" },
+    key: `${bin ?? "codex"}:1.0.0`,
+  })),
+}));
+
 const base = {
   access: "workspace_write" as const,
   model_hint: null,
@@ -440,7 +451,7 @@ describe("the effort cache is keyed by the codex IDENTITY, not just the binary",
     // A FROZEN clock: nothing can expire, so only the entry cap can bound this.
     // Without it the map would hold all 500 keys.
     for (let run = 0; run < 500; run += 1) {
-      await codexEffortCapability(probe, () => 0, "codex", {
+      await codexEffortCapability(probe, () => 0, "/fixture/codex", {
         CODEX_HOME: `/tmp/claudexor-ephemeral-${run}`,
       });
     }
@@ -460,15 +471,15 @@ describe("the effort cache is keyed by the codex IDENTITY, not just the binary",
       };
     };
     const stable = { CODEX_HOME: "/tmp/claudexor-native-home" };
-    await codexEffortCapability(probe, () => 0, "codex", stable);
+    await codexEffortCapability(probe, () => 0, "/fixture/codex", stable);
     expect(calls).toBe(1);
     // Well inside the cap: the stable entry must survive ordinary churn.
     for (let run = 0; run < 10; run += 1) {
-      await codexEffortCapability(probe, () => 0, "codex", {
+      await codexEffortCapability(probe, () => 0, "/fixture/codex", {
         CODEX_HOME: `/tmp/claudexor-ephemeral-churn-${run}`,
       });
     }
-    await codexEffortCapability(probe, () => 0, "codex", stable);
+    await codexEffortCapability(probe, () => 0, "/fixture/codex", stable);
     expect(calls).toBe(11); // 1 stable + 10 ephemeral; the stable read was cached.
     clearCodexEffortCache();
   });

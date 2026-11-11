@@ -18,7 +18,7 @@ import {
   RawContextShortfall,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
-import { poolFailure, redactVendorFailure } from "./pool-attempt-evidence.js";
+import { poolFailure, redactVendorFailure, lastVendorSentence } from "./pool-attempt-evidence.js";
 import { vendorFailureAction } from "./harnessFailure.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import { resumableTerminal, type ContinuityTerminalFacts } from "./continuity-terminal.js";
@@ -75,6 +75,9 @@ export function writeFailure(
     harnessId: failure.harnessId ?? null,
     attemptId: failure.attemptId ?? null,
     safeMessage: redactSecrets(failure.safeMessage),
+    lastVendorError:
+      failure.poolAttempts?.at(-1)?.lastVendorError ??
+      (vendor?.message ? lastVendorSentence(vendor.message) : null),
     rawDetailRef: failure.rawDetailRef ?? null,
     logRefs: failure.logRefs ?? [],
     eventRefs: failure.eventRefs ?? [],
@@ -116,7 +119,7 @@ export function writeFailure(
           : failure.code === "vendor_cli_too_old"
             ? [
                 `Update the Claude Code CLI${installation ? ` at ${installation}` : ""}`,
-                "Use the update method for that installation, then retry the requested model",
+                "Use harness maintenance Update for claude (CLI: claudexor harness update claude --yes), then decide whether to retry the requested model",
                 "Open diagnostics",
               ]
             : failure.code === "credential_source_unconfirmed"

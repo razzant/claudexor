@@ -153,6 +153,11 @@ export type WorkspaceCaptureFailure = z.infer<typeof WorkspaceCaptureFailure>;
  * and a selected successor that never started has no row. */
 export const PoolAttemptFailure = z
   .object({
+    lastVendorError: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe("Last vendor diagnostic line, bounded and redacted; never classified."),
     harnessId: z.string().min(1).describe("Harness the try ran on."),
     profileId: z
       .string()
@@ -231,6 +236,7 @@ export type RunFailureCategory = z.infer<typeof RunFailureCategory>;
 
 export const RunFailure = z
   .object({
+    lastVendorError: z.string().max(1000).nullable().optional(),
     requestRefusal: HarnessRequestRefusal.optional(),
     rawContextShortfall: RawContextShortfall.optional().describe(
       "Typed sizes behind code raw_context_exceeds_window: the window, the request's parts and every mandatory file, so surfaces never read them from safeMessage.",

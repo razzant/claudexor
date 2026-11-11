@@ -235,6 +235,7 @@ async function catalogFor(
     capabilityFingerprint: auth.capabilityFingerprint,
     observedAt: new Date(now()).toISOString(),
     provenance: "provider_http",
+    sourceProgram: declared.program ?? null,
     clientVersion: declared.version,
     clientVersionSource: declared.source,
     models,

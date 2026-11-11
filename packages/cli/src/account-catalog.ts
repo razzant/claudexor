@@ -163,6 +163,8 @@ export async function enumerateAccountCatalogs<T>(input: {
           input.observationKey,
           profile,
           () => input.read(profile, canReadCatalog),
+          false,
+          input.adapter?.program,
         );
         return catalog === null && facts.problem === null
           ? {

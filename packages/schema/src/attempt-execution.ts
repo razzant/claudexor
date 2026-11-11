@@ -1,3 +1,4 @@
+import { NativeProgramEvidence } from "./harness-program.js";
 import { z } from "zod/v3";
 import { Id } from "./primitives.js";
 import { ProcessingReceipt, ProcessingCostBasis } from "./processing.js";
@@ -5,6 +6,7 @@ import { UsageCostSummary } from "./budget.js";
 
 export const AttemptExecutionEvidence = z
   .object({
+    programs: z.array(NativeProgramEvidence).optional(),
     attemptId: Id,
     harnessId: Id,
     processing: ProcessingReceipt.optional(),

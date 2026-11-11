@@ -1,5 +1,156 @@
 # @claudexor/orchestrator
 
+## 6.0.0
+
+### Patch Changes
+
+- a0a5b1a: AGY inference-quota refusals are now emitted as typed unknown-reopening quota
+  evidence. Claudexor preserves the vendor's original error and does not mistake
+  the refusal for a transport interruption that should retry the same native
+  session. No reset time is inferred; genuine transport failures keep their
+  existing continuation behavior.
+- 80ca9ee: Antigravity read-only runs no longer end at their first shell command, and
+  large Antigravity inputs reach the model whole (#653).
+
+  A read-only run now passes session-only settings that deny every command and
+  file write, including commands the profile allows. agy returns a denied call to
+  the model as a tool error, so the run keeps reading files and delivers its
+  answer; before, plan mode's unanswerable permission prompt ended the whole turn.
+  The profile's own allow, deny and ask rules stay in force: agy replaces each
+  list a session object names, so all three are copied from the profile. If the
+  profile settings cannot be read, the read-only run is refused before it starts;
+  if only saving the read grant fails, the session settings carry the grant.
+  Read-only runs therefore need agy 1.4.10 or newer, the first release that
+  accepts session-only settings: on an older CLI a read-only run stops before any
+  model call with a message asking to update agy, and `doctor` states the
+  minimum. Full-access and workspace-write runs are unaffected, and nothing
+  updates agy automatically. Every tool step agy
+  reports as ERROR, refused or otherwise failed, now records that call's error
+  result.
+
+  In the recorded runs agy kept only the first 192,000 bytes of each larger piped
+  prompt. Input over Claudexor's conservative 128 KiB limit is now saved unchanged
+  in the run's context directory and named by a short bootstrap whose size does
+  not grow with the input. This also covers inputs between 128 KiB and 192,000
+  bytes, which agy would have received whole, and a thread's summary pass, which
+  uses its enclosing run's directory. A lane without a run directory, an
+  unavailable profile read grant or a failed write refuses such input before
+  anything is sent.
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- 860bc04: A failed run's message now names the cause the vendor recorded for the try it
+  describes (#633, #635). When that record is known, the message quotes its
+  source, code and words beside the error, so a Codex run that ended as "settled in
+  systemError" also shows, for example, `server_overloaded` and the vendor's own
+  words. An untyped harness failure's first next action points to that record. The
+  code stays evidence only: retries, account choice, cooldowns and the record's
+  category are unchanged, and a typed refusal keeps its own remedy. Codex also
+  keeps the root turn's own error record from the app-server wire when its session
+  rollout holds none.
+
+  When the winning candidate changed files and then failed, its own cause now
+  leads the failure message and the returned summary, before the ranking line,
+  and the run summary (`summary.md`) names it as a `- Failure:` line. A repair
+  loop (`--attempts`) that ends not converged on such an attempt leads with that
+  attempt's own cause and keeps its vendor record. No earlier or losing attempt's
+  cause is ever used, and the failure phases stay `arbitration` and `convergence`.
+
+  In a delegated write run, an attempt that failed while it was being prepared,
+  before its home directory was decided, now ends with its own failure instead of
+  `delegated_evidence_incomplete` (#648), and a healthy sibling candidate can still
+  win. Only an attempt the engine itself saw fail at that point is exempt, never a
+  record that merely lacks the fields; an attempt whose adapter ran without
+  stating what it ran under is still refused.
+
+- b9e88de: Interaction text reaches callers exactly (#651). The Codex access question
+  now quotes the worker's complete final output instead of silently cutting it
+  at 32,000 characters. A Codex approval refused for details over the
+  32,000-character review limit now says so, with the measured size, instead of
+  the generic "cannot grant" reason; readonly and workspace_write command refusals
+  keep their priority. The bounded display labels (a harness event's timeline
+  `title` and a Claude question's preview text) end in a visible "…" and never
+  split a character; the complete text still rides beside them.
+  `claudexor_run_wait` reports `wakeReason: "interactions"` when the next event is
+  a question too large for any page. Each ACP multi-select include/skip round
+  shows every option of the question with its description.
+- a20492c: A file a Raw API patch created is no longer lost when a Git ignore rule matches
+  it (#594). The paths an accepted raw patch wrote stay in the candidate: the next
+  round's tree, the run's result, Apply and Revert carry them by exact path while
+  each is still a file, also after a fresh workspace manager, a `continueFrom`
+  successor that adopts the kept envelope, or orphan recovery. Other ignored files,
+  a gate's output or a native round's, stay out as before, also when a later patch
+  makes the ignore rules match them, and so does a file inside an ignored nested
+  repository. The record lives in per-worktree refs of the envelope's own
+  repository and is written before the patch's first byte lands; a record that
+  cannot be written or read refuses the patch, or the capture, instead of dropping
+  the file. Git before 2.43 cannot tell a failed record lookup from a missing one
+  and reads it as no record. A persistent thread's Raw API turns keep such files
+  between turns, before any Apply; a candidate that was rejected or did not win
+  changes neither the thread's files nor its record.
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [a20492c]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/workspace@6.0.0
+  - @claudexor/delivery@6.0.0
+  - @claudexor/arbitration@6.0.0
+  - @claudexor/budget@6.0.0
+  - @claudexor/config@6.0.0
+  - @claudexor/context@6.0.0
+  - @claudexor/event-log@6.0.0
+  - @claudexor/gateway@6.0.0
+  - @claudexor/policy@6.0.0
+  - @claudexor/review@6.0.0
+  - @claudexor/artifact-store@6.0.0
+  - @claudexor/synthesis@6.0.0
+
 ## 5.1.0
 
 ### Patch Changes

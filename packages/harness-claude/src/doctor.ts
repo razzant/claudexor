@@ -13,7 +13,7 @@ import {
   type ClaudeAuthStatusProbe,
 } from "./auth-status.js";
 import { claudeMissingDetail, claudeNativeLoginRemedy } from "./doctor-remedy.js";
-import { BIN, claudeRunPatchPath } from "./effort-probe.js";
+import { resolveClaudeBin, claudeRunPatchPath } from "./effort-probe.js";
 
 /** Installation, native-session and API-key evidence keep independent causes. */
 export async function claudeDoctor(
@@ -25,7 +25,7 @@ export async function claudeDoctor(
 ): Promise<ConformanceReport> {
   const patchPath = claudeRunPatchPath(_spec);
   const version = await runtime.detectVersion(_spec.abortSignal, patchPath);
-  const installation = runtime.installation(BIN, patchPath);
+  const installation = runtime.installation(resolveClaudeBin(), patchPath);
   if (version === null) {
     return ConformanceReportSchema.parse({
       harness_id: "claude",
@@ -52,7 +52,7 @@ export async function claudeDoctor(
   const probeApi = requestedSource === undefined || requestedSource === "api_key_env";
   const nativeEnv = probeNative ? nativeEnvironment(_spec.env) : _spec.env;
   const login: ClaudeAuthStatusProbe = probeNative
-    ? await runtime.probeAuthStatus(BIN, {
+    ? await runtime.probeAuthStatus(resolveClaudeBin(), {
         env: nativeEnv,
         abortSignal: _spec.abortSignal,
       })

@@ -10,9 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { embeddedNpmCli } from "@claudexor/core";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   reconcileNpmPublications,
@@ -877,7 +876,12 @@ describe.skipIf(process.platform === "win32")("npm release reconciliation CLI", 
 // (where setup-node and the official distributions put it) answers from an
 // empty cache only, so its error names the registry it would have asked and
 // no request leaves the machine. Toolchains without that npm skip this suite.
-const realNpmCli = embeddedNpmCli(process.execPath, process.platform);
+// This release-packaging integration fixture uses the toolchain's npm, never a
+// harness installation path or a production engine capability.
+const realNpmCli =
+  process.platform === "win32"
+    ? join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")
+    : resolve(dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
 
 describe.skipIf(process.platform === "win32" || !existsSync(realNpmCli))(
   "npm release reconciliation with the real npm CLI, offline",

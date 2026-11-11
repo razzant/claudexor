@@ -86,23 +86,23 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlHarnessMaintenanceInventory",
     responseKind: "json",
     summary:
-      "Inspect installed vendor CLIs: selected program and version, managed copy, tested pin and maintainability; never logs in or installs.",
+      "Read the selected vendor program, newest observation, available actions and last operation; never logs in or installs.",
     parameters: [
       queryParam({
         name: "harness",
         repeatable: true,
-        description: "Restrict to these installable harness ids (repeat to select several).",
+        description: "Restrict to these adapter program ids (repeat to select several).",
       }),
       queryParam({
         name: "fresh",
         enum: ["true", "false"],
-        description: "Re-inspect instead of returning the cached installation facts.",
+        description: "Selected programs are inspected on every read, including when this is false.",
       }),
       queryParam({
         name: "checkLatest",
         enum: ["true", "false"],
         description:
-          "Also read the newest published version where the mechanism supports it; omitted keeps the last observation (null = not checked).",
+          "Also perform the adapter's HTTPS newest-version read; omitted keeps the last typed observation (not_read, available or unavailable).",
       }),
     ],
   },
@@ -114,7 +114,7 @@ export const MAINTENANCE_OPERATION_DRAFTS: OperationDraft[] = [
     responseSchema: "ControlHarnessMaintenanceOperation",
     responseKind: "json",
     summary:
-      "Accept one durable update/return of an installed vendor CLI; the 202 handle is not success.",
+      "Accept one durable vendor Update, Install when missing, or exact-version operation; the 202 handle is not completion.",
     idempotency: "key_required",
     completion: "durable_handle",
   },

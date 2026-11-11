@@ -7,11 +7,11 @@ run-owned background terminals keep that run active; Stop pauses the goal,
 interrupts the exact active turn, and terminates only terminals observed in
 that run.
 
-The release-tested native evidence baseline is codex-cli 0.162.1, not a ceiling
-on installed versions: ordinary managed CLI installation resolves a new exact
-npm latest once, retaining the baseline as an explicit `--release-tested` choice
-that skips only the latest lookup (a runnable managed copy at or above it is
-kept; installing it still needs the npm registry).
+The native fixture stamp is codex-cli 0.162.1. Installation and maintenance use
+the vendor's standalone installer and the selected program's `update` verb;
+fixture stamps do not select install versions. Exact versions use the adapter's
+declared installer input. Each native run records the selected path and the
+server's own startup version.
 Its selected-account `model/list`
 capture is `fixtures/models-0.162.1.json`; the fallback keeps historical model
 ladders but takes the captured default (`gpt-6.1-sol`) from that version. The

@@ -53,3 +53,16 @@ describe("persisted processing observations", () => {
     expect(attemptTelemetryRecord("a", "cursor", t).processing?.observed).toBe("unknown");
   });
 });
+
+it("keeps each native invocation's program and the authoritative startup version", () => {
+  const t = createAttemptTelemetry("auto", false);
+  const probe = { path: "/vendor/tool", version: "1.0.0", versionSource: "version_probe" as const };
+  const stream = { ...probe, version: "2.0.0", versionSource: "vendor_stream" as const };
+  observeAttemptTelemetry(t, { ...event("started"), program: probe });
+  observeAttemptTelemetry(t, { ...event("status"), program: stream });
+  observeAttemptTelemetry(t, { ...event("completed"), program: stream });
+  const next = { ...probe, path: "/vendor/new", version: "3.0.0" };
+  observeAttemptTelemetry(t, { ...event("started"), program: next });
+  observeAttemptTelemetry(t, { ...event("completed"), program: next });
+  expect(attemptTelemetryRecord("a", "codex", t).programs).toEqual([stream, next]);
+});

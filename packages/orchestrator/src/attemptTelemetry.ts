@@ -640,6 +640,7 @@ export function attemptTelemetryRecord(
 ): AttemptTelemetryRecord {
   const warnings = toolWarnings(t);
   return {
+    programs: t.programs,
     usage_cost: attemptUsageCostSummary(t.usageCost),
     effort_resolution: t.effortResolution,
     request_refusal: t.requestRefusal,

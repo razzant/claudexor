@@ -611,7 +611,7 @@ describe("cache", () => {
     const cancelled = new AbortController();
     const first = probeClaudeModels({ cwd: "/repo", abortSignal: cancelled.signal }, deps);
     const second = probeClaudeModels({ cwd: "/repo" }, deps);
-    expect(calls).toHaveLength(1);
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
     cancelled.abort();
     // The abandoned caller reads the hints at once...
     expect(await first).toEqual(claudeModelRows(null));
@@ -646,10 +646,11 @@ describe("cache", () => {
       rows.filter((r) => r.origin === "live").map((r) => r.id);
 
     const before = probeClaudeModels({ cwd: "/repo" }, deps);
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
     // The credential changes while that child runs; the next caller probes anew.
     clearClaudeModelProbeCache();
     const after = probeClaudeModels({ cwd: "/repo" }, deps);
-    expect(releases).toHaveLength(2);
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
     releases[0]?.();
     // The caller that asked before the change still gets that answer...
     expect(live(await before)).toEqual(["old-account"]);
@@ -716,7 +717,7 @@ describe("binary identity on disk", () => {
   function installStub(values: string[]): void {
     writeFileSync(
       bin,
-      `#!/bin/sh\necho spawn >> "${counter}"\ncat <<'CLAUDE_STUB_EOF'\n${pickerLine(values)}\nCLAUDE_STUB_EOF\n`,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.0.0; exit 0; fi\necho spawn >> "${counter}"\ncat <<'CLAUDE_STUB_EOF'\n${pickerLine(values)}\nCLAUDE_STUB_EOF\n`,
     );
     chmodSync(bin, 0o755);
   }

@@ -1,8 +1,8 @@
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso } from "@claudexor/util";
 import { codexAppServerInput } from "./attachments.js";
-import { asObject, type JsonObject } from "./app-server-protocol.js";
-import { codexTurnParams } from "./app-server-session.js";
+import { asObject, type JsonObject, type CodexAppServerRunInput } from "./app-server-protocol.js";
+import { codexAppServerThreadRequest, codexTurnParams } from "./app-server-session.js";
 import { ownsNotification } from "./app-server-threads.js";
 
 /** Start under the run's policy and bind the receipt to the root turn, not a child. */
@@ -55,4 +55,25 @@ export async function startCodexTurn(input: {
         : {}),
     },
   };
+}
+
+/** Initialize the server and record its own version before starting or resuming a thread. */
+export async function startCodexThread(
+  input: Pick<CodexAppServerRunInput, "spec" | "effort">,
+  request: (method: string, params: JsonObject) => Promise<JsonObject>,
+  notify: (method: string, params: JsonObject | null) => Promise<void>,
+  observeVersion: (version: unknown) => void,
+): Promise<{ threadResult: JsonObject; threadId: string }> {
+  const initialized = await request("initialize", {
+    clientInfo: { name: "claudexor", version: CLAUDEXOR_VERSION },
+    capabilities: { experimentalApi: true },
+  });
+  // The leading server-built token is authoritative; the parenthesized client version is ours.
+  const userAgent = initialized["userAgent"];
+  if (typeof userAgent === "string") observeVersion(/^[^/\s]+\/([^\s]+)/.exec(userAgent)?.[1]);
+  await notify("initialized", null);
+  const threadResult = await request(...codexAppServerThreadRequest(input.spec, input.effort));
+  const threadId = asObject(threadResult["thread"])?.["id"];
+  if (typeof threadId !== "string") throw new Error("Codex app-server omitted thread id");
+  return { threadResult, threadId };
 }

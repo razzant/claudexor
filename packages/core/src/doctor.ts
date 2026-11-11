@@ -1,3 +1,4 @@
+import { observeHarnessProgram, assertSameProgram } from "./program-observation.js";
 import { createHash } from "node:crypto";
 import type { ConformanceReport } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
@@ -122,7 +123,10 @@ export async function runDoctor(
     // auth/settings change while it is in flight, its result may still be
     // returned to the original caller but must never repopulate shared cache.
     const generation = cacheGeneration(adapter.id, cwd);
-    const key = doctorCacheKey(adapter.id, spec);
+    const program = await observeHarnessProgram(adapter.program, spec.env, undefined, {
+      fresh: spec.fresh,
+    });
+    const key = `${doctorCacheKey(adapter.id, spec)}::${program.key}`;
     if (cacheable) {
       const hit = doctorCache.get(key);
       const ttl = hit?.report.status === "ok" ? DOCTOR_TTL_MS : DOCTOR_NON_OK_TTL_MS;
@@ -134,6 +138,8 @@ export async function runDoctor(
     let report: ConformanceReport;
     try {
       report = await adapter.doctor(spec);
+      assertSameProgram(program, await observeHarnessProgram(adapter.program, spec.env));
+      report = { ...report, sourceProgram: program.program };
     } catch (err) {
       // Adapter errors are projected into successful doctor/readiness DTOs, so
       // they bypass the control-api problem redactor. Sanitize at this producer

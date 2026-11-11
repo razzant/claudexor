@@ -1,3 +1,4 @@
+import { CURSOR_PROGRAM } from "./program.js";
 import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
 import type { AuthPreference } from "@claudexor/schema";
 import { runCapture, type CaptureResult } from "@claudexor/core";
@@ -144,7 +145,7 @@ async function ownedStatusChild(
     budget.abort();
   }, budgetMs);
   try {
-    const result = await capture(bin, args, {
+    const result = await capture(bin, [...(CURSOR_PROGRAM.childUpdateArgs ?? []), ...args], {
       env,
       abortSignal: abortSignal ? AbortSignal.any([abortSignal, budget.signal]) : budget.signal,
       cancelSignal: "SIGTERM",

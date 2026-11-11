@@ -107,6 +107,7 @@ describe("raw-api typed catalog read (#393)", () => {
       status: "listed",
       models: [],
       failSoft: false,
+      sourceProgram: null,
       ...sentWith("sk-env"),
     });
   });

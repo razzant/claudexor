@@ -56,17 +56,10 @@ export type MaintenanceCommandSummary = Pick<
   "id" | "state" | "createdAt" | "startedAt" | "finishedAt"
 > & {
   harness: string;
-  evidence:
-    | (Pick<HarnessMaintenanceEvidence, "phase" | "target" | "mutation"> & {
-        before: Pick<
-          NonNullable<HarnessMaintenanceEvidence["before"]>,
-          "version" | "proved"
-        > | null;
-      })
-    | null;
+  evidence: Pick<HarnessMaintenanceEvidence, "phase" | "target" | "mutation"> | null;
 };
 
-/** Inventory and previous-version selection need only these receipt facts.
+/** Inventory identifies the addressed receipt from these compact facts.
  * Full detail keeps the original body; partial evidence is never parsed as a
  * complete HarnessMaintenanceEvidence. The legacy read adapter can reuse this. */
 export function maintenanceCommandSummary(record: JobRecord): MaintenanceCommandSummary | null {
@@ -87,9 +80,6 @@ export function maintenanceCommandSummary(record: JobRecord): MaintenanceCommand
           phase: evidence.phase,
           target: evidence.target,
           mutation: evidence.mutation,
-          before: evidence.before
-            ? { version: evidence.before.version, proved: evidence.before.proved }
-            : null,
         }
       : null,
   };

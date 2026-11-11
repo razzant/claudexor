@@ -1,3 +1,5 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CURSOR_PROGRAM } from "./program.js";
 import { uptime } from "node:os";
 import { performance } from "node:perf_hooks";
 import {
@@ -141,6 +143,7 @@ interface SharedProbe {
  */
 export function createCursorStatusCoordinator(options: {
   probe: StatusChild;
+  programKey?: (env?: EnvMap) => Promise<string>;
   monotonicMs?: () => number;
   wallMs?: () => number;
   mutating?: () => boolean;
@@ -255,10 +258,17 @@ export function createCursorStatusCoordinator(options: {
     async status(env, abortSignal, probeOptions) {
       const waitMs =
         probeOptions?.pinned === true ? CURSOR_PINNED_STATUS_WAIT_MS : CURSOR_STATUS_TIMEOUT_MS;
-      const key = statusStoreKey(env);
+      const startedGeneration = generation;
+      const initiallyFenced = mutating();
+      const storeKey = statusStoreKey(env);
+      const key =
+        storeKey === null
+          ? null
+          : JSON.stringify([storeKey, options.programKey ? await options.programKey(env) : null]);
+      if (startedGeneration !== generation) return supersededProbe();
       if (env === undefined || key === null) return options.probe(env, abortSignal, waitMs);
       if (abortSignal?.aborted) return abortedProbe();
-      const fenced = mutating();
+      const fenced = initiallyFenced || mutating();
       const fresh = fenced ? null : livePositive(key, reuseMs);
       if (fresh) return fresh.entry.observation;
       return wait(key, pending.get(key) ?? share(key, env, fenced), abortSignal, waitMs);
@@ -277,6 +287,7 @@ export function createCursorStatusCoordinator(options: {
 }
 
 const processCoordinator = createCursorStatusCoordinator({
+  programKey: async (env) => (await observeHarnessProgram(CURSOR_PROGRAM, env)).key,
   probe: (env, abortSignal, budgetMs) =>
     probeCursorNativeAuth(env, abortSignal, undefined, budgetMs),
 });

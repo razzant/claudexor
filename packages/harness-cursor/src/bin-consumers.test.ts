@@ -78,6 +78,7 @@ function stage(layout: "cursorFirst" | "unrelatedFirst"): Host {
   const cursor = script(
     join(install, "1.0", "cursor-agent"),
     [
+      'if [ "$1" = "--disable-auto-update" ]; then shift; fi',
       'case "$1" in',
       '  --version) echo "fixture-cursor 1.0" ;;',
       '  --list-models) echo "fixture-model - Fixture Model" ;;',

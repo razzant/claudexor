@@ -3174,15 +3174,15 @@ the official CLI for an expired-token refresh and the raw account's model
 catalog. Discovery varies with the declared client version, so a missing row
 proves no minimum-version or entitlement refusal. The transport declares ITS OWN
 verified level, `CODEX_HTTP_CLIENT_VERSION` (`http-client-version.ts`), raised to
-a newer selected Codex CLI and never below the constant. The release-tested
-native baseline is a different fact from this HTTP minimum and from the
-managed install target. Installing a newer selected CLI CAN raise the HTTP
+a newer selected Codex CLI and never below the constant. The native fixture stamp is a different fact from this HTTP minimum and from
+the selected vendor program version. Installing a newer selected CLI CAN raise the HTTP
 catalog's declared client version and change which model rows the same account
 sees; that visibility is not proof of entitlement or generation. The account
-view carries each catalog's declared `clientVersion` and source. Selected-account discovery can negotiate `includeAdmission=true` with
+view carries each catalog's declared `clientVersion` and source, plus
+`sourceProgram` for the program path/version that supplied the observation. Selected-account discovery can negotiate `includeAdmission=true` with
 `requestedModel` for those facts and `admission: {requestedModel,
 inventoryAbsence}`, which permits an attempt without a synthetic model row or
-generation claim; the legacy query keeps its exact shape. The
+generation claim; the basic query omits admission metadata. The
 constant moves with a recorded catalog fixture pair (`fixtures/models-http-*.json`)
 whose shared rows must stay identical. Refresh work is serialized per canonical
 managed home; a cancelled caller cannot release another past a still-live
@@ -8390,128 +8390,169 @@ Once that exact commit succeeds, a later final-probe mismatch is treated as a
 newer external pointer transition and fails the reconnect without rolling it
 back through the settled lease.
 
-Vendor harness CLIs land on a host only through the disclosed installer
-(`claudexor harness install`, reachable from Settings → Harnesses for a
-connected host). Claude, Copilot and OpenCode ensure their exact release
-baselines while preserving an already runnable newer managed copy; explicit
-maintenance installs the selected exact version. Codex's
-ordinary CLI install preserves an already runnable managed copy at or above its
-tested baseline; otherwise it resolves npm latest once into an exact semver
-before disclosure and installation (`cli/src/harness-install-version-selection.ts`
-owns that non-mutating choice before the install/proof owner mutates anything; it
-never installs or takes the lease, but proves an existing local managed copy
-with its bounded `--version`, and Codex's lookup is one bounded registry read,
-so a dry-run runs both). An unavailable/malformed registry answer
-refuses without silently substituting the baseline; the refusal names the two
-explicit choices and, in JSON mode, is repeated on stderr because an SSH caller
-of a failed dry-run receives only stderr. A missing bundled npm is refused as the
-local `embedded_npm_missing` before any lookup, with no registry-retry remedy.
-`--release-tested` selects that baseline explicitly instead of the latest
-lookup and also keeps a runnable managed copy at or above it; installing the
-baseline still needs the npm registry. `--vendor-version <exact>`
-selects an exact npm version for either target. A refusal before the default
-Codex selection discloses its harness, target and install location but no
-command, version or evidence class rather than the baseline. Every npm recipe installs an
-exact version, never a floating `@latest`; npm checks its integrity checksum.
-The vendor-version constant remains the release-tested EVIDENCE stamp, not the
-Codex install-default ceiling: model-hints and effort snapshots read it only
-as a statement of what was measured. For claude it is
-the effort-snapshot stamp, while the Claude known-model hint list keeps the
-literal version it was last actually re-verified against (a pin bump never
-restamps unrechecked ids). The pin records this release's verified baseline,
-not a verification claim about a newer selected CLI (a recording that needs a paid live run
-keeps the version it was captured from, as its fixture manifest states); the
-opencode pin is a deterministic install target, not a verification claim —
-no recorded fixture covers it yet, as its `vendor-cli-version.ts` discloses.
-Cursor ships no npm artifact and cannot be pinned:
-its vendor script is downloaded in full (`curl --fail`, never piped to a
-shell), its size and SHA-256 are printed, and it executes in the visible
-embedded PTY where the operator watches it — the human is the verifier, the
-same principle as interactive SSH auth. The POSIX Cursor and Antigravity scripts
-are Bash programs, so they run as `/bin/bash <file>` (never `/bin/sh`, which is
-dash on Debian and Ubuntu); a host without `/bin/bash` is refused with
-`installer_interpreter_missing` before anything is downloaded, and Antigravity's
-Windows script keeps its PowerShell runner. Nothing installs without disclosure:
-the CLI prints the exact selected package/version/destination install recipe
-(`~/.claudexor/remote/vendor/bin`, which the remote wrapper puts first on
-PATH) and requires a TTY confirmation or an explicit `--yes`, and the macOS
-confirmation dialog shows the remote CLI's own `--dry-run --json` disclosure
-before opening the terminal sheet. The app first reads the `current` pointer's
-immutable `versions/<id>` target (the runtime installer's validated owner),
-runs the dry-run through that closure's CLI and confirms through the SAME
-closure, so a runtime switch while the dialog is open cannot change which CLI
-executes. An npm dry-run of a current CLI carries
-`versionBinding: "vendor-version"` (dry-run only; executed receipts keep their
-keys), and the app then confirms with `--vendor-version` and the disclosed
-version rather than resolving latest again. An older runtime omits the field and
-rejects that flag, so it receives the legacy `--yes` confirmation and installs
-exactly the fixed release version it disclosed; an unknown or contradictory binding yields no
-prompt. A refused dry-run (for example `latest_unavailable`) is shown from the
-CLI's stderr, unclipped and selectable; a `current` that exists but is not the
-runtime symlink exits 73 with its own stderr reason rather than a blank refusal. An older app confirming against a current runtime cannot pin the
-looked-up version: that runtime resolves latest again at execution and prints
-its final disclosure in the terminal before running.
-The typed evidence class
-(`release_verified`, `deterministic_only`, or `human_observed`) that selects the
-same honest version wording as the CLI: `release_verified` applies only when
-the selected target equals the measured baseline; a newer latest is
-`deterministic_only` even when its package installation succeeds. A remote
-operator-watched npm exit does not prove installed version or native app-server
-compatibility. Failures are typed and loud — a
-failed or unreadable download refuses without executing, a non-zero installer
-exit never reads as success, and Harness Doctor verifies the result
-afterward. Every npm, curl, and vendor-script child receives the shared minimal
-runtime environment, including proxy and trust settings but no provider
-credential variables.
+Vendor program maintenance is declared beside each local adapter in its
+program declaration: launchers and folders, install/update/exact-version commands,
+installation inputs, one HTTPS newest-version source and pick rule, version
+scheme, optional release-notes address and observed child-updater controls.
+`cli/src/harness-programs.ts` derives the inventory from the adapter registry.
+Claude, Codex, Cursor, Antigravity, Copilot, OpenCode and Grok share this contract;
+missing commands become unavailable actions with a sentence on the inventory row.
 
-The installer recipe producer also accepts the explicit `local` target used by
-host integrations. Npm harnesses then install under the existing managed Node
-root (`~/.claudexor/node`, launchers in its `bin` on POSIX), which is already
-shared by local resolution and
-native harness PATH resolution; Cursor keeps its vendor-selected destination,
-and normalized harness discovery covers both `~/.local/bin` and
-`~/.cursor/bin`. An explicit `--target local --yes` is suitable for an
-unattended Connect action that already carries the user's authorization. Cursor
-is still unpinned in that flow: the typed evidence class is
-`unattended_unpinned`, and the execute receipt records the exact downloaded
-script's SHA-256 and byte length rather than claiming human observation. Local
-installs take a user-scoped cross-process lease and recheck both the selected
-exact npm target and its target-contained, non-empty launcher under that lease before
-mutating the shared prefix; a partial package without its shim is repaired.
-Every automatic selection (neither `--vendor-version` nor `--release-tested`)
-also keeps a runnable managed copy at or above the release-tested baseline that
-appeared after its selection read — for example from a concurrent Maintenance
-update — the same rule the selection applied; a selected copy that broke or fell
-below the baseline is reinstalled at its disclosed version. `--release-tested`
-keeps such a copy through the ensure rule and otherwise installs the baseline,
-and explicit versions still install exactly. Once npm ran, the executed receipt
-names the version it installed; a copy kept under the lease is reported as
-`installedVersion`.
-Before any success receipt, the absolute launcher must execute `--version` and
-prove the exact npm version. Cursor similarly rechecks the supported `cursor-agent`
-name through the target-aware normalized harness PATH, permits the vendor's
-official launcher symlink layout, and records its bounded non-empty version
-line. Child exit zero without this proof is the typed
-`install_verification_failed` outcome. A live owner gets a bounded wait. A dead
-or old owner-less lock fails closed as `install_lock_stale` with the exact lock
-path and a verify/remove/retry remedy; waiters never rename an observed stale
-pathname because a new owner could have replaced it between observation and
-mutation. An unexpected filesystem or child-process exception is normalized by
-the canonical CLI projector as `harness_install_failed`; JSON mode still emits
-one object containing every disclosure field already decided (before Codex's
-default selection: harness, target and install location only).
-On Windows the installer and harness resolver use the package's declared entrypoint:
-a native program runs directly and a standard npm Node entrypoint runs through
-its selected interpreter. Managed Codex and Claude installs and user npm prefixes
-on the effective PATH share this owner. The logical vendor entrypoint remains
-the identity shown by doctor and used by version/help/model probes; a Node
-runtime alone is not a vendor identity. Script bytes remain part of login
-executable evidence, with the selected invocation carried through the existing
-manifest and permit. Ordinary missing PATH candidates are silent; a present
-broken preferred entry remains diagnostic even when a usable fallback is found.
-Explicit executable overrides never select a different installation implicitly.
-Installer success still requires the declared version to execute, so a placeholder
-file left by an incomplete package install cannot certify success.
+`core/src/selected-program.ts` selects the entry that would run, its real path,
+its own bounded `--version` answer and explicit-override provenance. Runs,
+doctor, inventory and program-derived probes use this owner. It resolves at
+call time, including declared vendor folders, so a newly installed copy is found
+without restarting the daemon. Copilot declares the MSI folder
+`{localAppData}/GitHubCopilotCLI` on Windows; selection starts no registry process.
+Overrides remain exact; arbitrary wrappers and
+programs outside conventional folders receive their own declared update verb.
+Cursor prefers `cursor-agent` over `agent`, which Grok also uses. On Windows,
+standard npm launchers may still resolve an existing user's native or Node
+entrypoint; the logical vendor entry remains the identity, with its interpreter
+and arguments carried to execution. Custom batch files are not npm launchers.
+
+`claudexor harness install <id> --yes --json` installs a missing program at the
+vendor's current version. `harness update <id> --yes --json` runs the selected
+program's updater, or installs when missing. `--vendor-version <exact>` uses
+only an adapter-declared exact-version command. `harness inspect --latest --json`
+reads published versions on demand. A failed newest read does not block Update.
+Package-manager copies can answer with advice instead of
+changing anything; that vendor sentence is the result. The engine never chooses
+brew, winget or apt to update a copy whose own verb only advises. Copilot
+declares winget as its Windows installer. Windows decides whether external
+installer commands, including app execution aliases, can launch; an actual
+command-not-found launch reports that the command is unavailable. The shared
+availability predicate refuses pinned product npm overrides before downloading
+or invoking the installer. Repeating Install on a healthy program is a no-op.
+
+The CLI discloses commands and asks for confirmation unless `--yes` supplies
+explicit authorization. Script installers are downloaded completely, hashed and
+executed from a temporary file by their declared interpreter. A CLI dry-run
+prepares that disclosure without the install lease or mutation; it can probe the
+selected version and fetch the script. Maintenance uses the real installation
+HOME and the clean runtime environment, preserving declared installation inputs
+such as CODEX_HOME and XDG roots. A credential-profile HOME never chooses the
+installation. Successful execution re-resolves the entry and requires its own
+version answer. A missing answer gets one immediate second read before a
+verification decision, including the initial selection, conversion, cleanup and
+exact-version checks. Ordinary profile cleanup runs only after the result answers;
+its acknowledgment includes that observation. Interrupted-hide recovery still runs
+when the program does not answer.
+If the second read answers, the receipt records one limitation. The final
+observation after all mutations determines verification; no vendor command is
+repeated and no sleep is added; a second read can take its own ten-second limit.
+A zero child exit alone proves no runnable installation. A dry-run Install of an
+existing program requires the same version answer as a real Install.
+
+`harness-maintenance-service.ts` uses existing command admission, queue,
+idempotency, cancellation and retention. A repeated key/body rejoins the same
+operation; another body conflicts, and one operation per harness may be active.
+Work runs in a custodied CLI child. Before each mutation the durable command
+acknowledges requester, prepared command and before-evidence. The cross-process
+install lease serializes mutations; a SQLite write lock protects lease ownership
+and dead-owner reclamation from concurrent claimants. Active runs are counted at
+start as a fact, never an update gate. Before/after path and version, actual
+commands, script URL/size/hash, bounded redacted vendor lines, exit, effects and
+termination remain in the receipt even after cancellation. Outcomes distinguish
+changed, unchanged, an unselected copy changed, and unknown; none implies rollback.
+
+A product-made npm copy is converted during Update only when its package's bin
+entry proves the launcher's relation inside the product prefix. The operation
+runs the vendor installer, resolves with old launchers masked and requires a
+replacement that answers `--version` and is not known to be older by the adapter's
+version ordering before retiring the old package and launcher. An adapter
+with a declared major requires that line, including before an exact-version
+command; OpenCode 2.x cannot replace its product-made 1.x copy. An unorderable
+version is acceptable only when no declared major excludes it. The installer's status and lines remain in the receipt;
+a nonzero exit can complete conversion with a limitation when the resulting
+program passes the same proof. A vendor that already removed npm completes
+conversion when ordinary and masked resolution agree.
+An exact-version conversion verifies its second command before retirement too.
+An older-copy refusal names the path and version found first, the selected
+version, the possibility that it shadows the installer's copy, and that nothing
+was removed. A failed engine verification preserves any old copy the vendor
+left in place. Only Claude, Codex, Copilot and OpenCode declare old product npm
+packages; a person's Grok npm copy is not eligible for conversion. Folder
+containment or stale sibling metadata never authorizes removal of a hand-placed
+wrapper or symlink. Retirement hides the package at the fixed sibling
+`<package>.claudexor-converted`, keeping the launchers in place until removal.
+The next explicit maintenance restores a leftover and applies the same
+version/major/ordering proof to retire it or leave it restored. A linked HOME is
+accepted when the real package parent stays inside the real product prefix. Colliding or
+changed paths are preserved with a limitation; there is no journal or timer.
+
+The inventory exposes action command previews, newest observation time/failure,
+selected identity, last operation and optional release notes. The engine's
+adapter-declared scheme answers `updateAvailable` as yes, no or cannot_tell.
+An installed version ahead of the published pointer is not an available update;
+same-day unequal Cursor hashes cannot be ordered. Hosts never compare strings.
+Program-derived model lists carry `sourceProgram: {path, version}` from the same
+observation. The engine remembers each entry's last self-reported version by
+path, real path and stat identity. Passive account/status/catalog reads inspect
+that identity without spawning a version process; a first or changed identity
+asks once, concurrent askers share it, and inventory/fresh reads ask again.
+A failed ask never erases an earlier answer for the same file identity. An
+unanswered ask is remembered too: consumers may reuse observations under the
+same identity and the same answer, including no answer. Maintenance invalidates
+that memory; a fresh read or startup publication can replace it.
+Claude, Codex and Copilot report a version at startup (`vendor_stream`). Cursor,
+Antigravity, Grok and OpenCode do not; their native runs use `remembered` evidence
+when available, or ask once for an unknown entry (`version_probe`). No answer is
+labelled `unknown`. Reusing memory or receiving a startup frame adds no version
+process. A replacement behind an unchanged wrapper is detected when an
+inventory read, fresh read or native startup frame obtains a different version;
+passive polls and continued missing answers do not reveal the replacement. There is no version TTL; stale in-flight answers
+cannot overwrite newer observations. Fixture version constants stamp recorded evidence
+only. Native attempt records retain each invoked path/version, using the vendor
+startup frame where available, and exhausted credential pools retain the last
+bounded, redacted vendor error sentence alongside each try's original refusal.
+
+Engine-spawned Cursor children receive `--disable-auto-update`; Antigravity,
+Copilot and Grok keep their declared controls. Claude, Codex and OpenCode receive
+no added update switch. An unsupported Cursor switch returns its vendor error
+without a retry. Explicit Cursor maintenance enumerates registered profile homes
+and reversibly hides each `.local/share/cursor-agent` copy in the fixed sibling
+`.cursor-agent.claudexor-hidden`. The selected program is asked for its version
+through the resolver while the copy is hidden. An answering independent program
+authorizes retirement of that tree and its proven launcher links; otherwise the
+copy is restored and reported in use. Redirected, replaced or directly selected
+paths are preserved. The next explicit maintenance resolves a leftover hidden
+copy by the same observation before invoking the updater. The final selected
+program must still answer after cleanup. There is no journal or startup sweeper.
+There is no update timer, automatic failure/update/retry chain,
+model-to-version table or interpretation of a required version from vendor prose.
+
+Vendor installers own their storage and prune their versions according to vendor
+rules. Claudexor keeps no vendor version store and promises no offline rollback.
+The principal default paths are below; declared environment inputs can move them,
+and explicit overrides/PATH may select a different copy.
+
+| Program | POSIX launcher / vendor storage | Windows launcher / vendor storage |
+| --- | --- | --- |
+| Claude | `~/.local/bin/claude`; `~/.local/share/claude/versions` | `%USERPROFILE%\.local\bin\claude.exe`; `%USERPROFILE%\.local\share\claude` |
+| Codex | `~/.local/bin/codex`; `$CODEX_HOME/packages/standalone` (default `~/.codex`) | `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`; vendor side-by-side releases |
+| Cursor | `~/.local/bin/cursor-agent` (also `~/.cursor/bin`); `~/.local/share/cursor-agent` | Unsupported (#667) |
+| Antigravity | `~/.local/bin/agy` | `%LOCALAPPDATA%\agy\bin` |
+| Copilot | `~/.local/bin/copilot` | `%LOCALAPPDATA%\GitHubCopilotCLI\copilot.exe` for the MSI, declared for runs, probes and inventory; WinGet may also provide links |
+| OpenCode | `~/.opencode/bin/opencode` (also `~/.local/bin`) | Unattended installation unsupported (#668) |
+| Grok | `~/.local/bin/grok` (also `~/.grok/bin`) | `%USERPROFILE%\.local\bin` / `%USERPROFILE%\.grok\bin` |
+
+OpenCode stays on its 1.x installer/update line; its second line is outside this
+adapter (#668). The five Windows installation routes are Claude, Codex,
+Antigravity, Copilot and Grok. Their version proof does not establish login,
+model execution or app-server compatibility. Vendor pruning or OS file locks
+can affect running programs; Claudexor records the vendor's result rather than
+blocking maintenance on the run count. Copilot Update can be refused by GitHub's
+unauthenticated rate limit; that vendor sentence is the result.
+
+For a connected SSH host, the macOS install menu reads that host's inventory.
+Its confirmation dialog shows the prepared commands, script evidence and
+installation HOME. The app resolves `current` to an immutable runtime directory
+and uses that same closure for preview and confirmation. Current installation
+remains vendor-current at execution; scripts may change after preview, and the
+terminal's final receipt records the bytes actually run. Exact targets use
+`--vendor-version`. The app refreshes Harness Doctor after success.
+
 A `.exe`/`.com` the resolver would start (a PATH candidate, a standard launcher's
 declared native target, or a Node interpreter) must have the PE minimum shape: `MZ`,
 then `PE\0\0` at the header's offset, read through the descriptor that supplied
@@ -8537,42 +8578,17 @@ relative override resolves from the child's cwd. The shape is not loader validit
 an image for another architecture or with damaged headers still reaches the OS, an
 unreadable file or failed read is not proof. An incomplete header during an in-place
 update can be refused for that inspection; the next resolution rechecks it.
-POSIX executability rules are unchanged. The Windows
-smoke is `scripts/windows-local-install-smoke.mjs`; native Windows login and Agent
-execution are separate acceptance claims, not consequences of package resolution.
-The omitted target remains `remote`; the SSH installer's destination and PATH
-precedence are unchanged. With a current app and runtime, its approval binds the
-disclosed exact version, including when the CLI resolved npm latest for the
-initial dry-run. After any
-successful local install, the embedding host
-must request the existing fresh doctor/status projection before retrying login;
-it must not trust a pre-install readiness cache, and this needs no new setup-job
-or daemon API.
-
-Local CLI maintenance uses `harness inspect` and `harness update --vendor-version`
-(`cli/src/harness-maintenance.ts`), the same recipe/proof/lease as Ensure. Codex,
-Claude, Copilot and OpenCode support exact npm targets; latest is resolved once
-before installation by the shared bounded resolver in `cli/src/harness-latest.ts`,
-also used by an initial Codex CLI install. Cursor and Antigravity on supported POSIX installations run
-their native foreground updater at the selected canonical launcher under the
-installation HOME. They expose latest only: the vendor resolves the target, and
-unchanged version evidence never means "updated" or proves newest. External
-overrides are identified, not silently replaced by a managed copy. Existing
-Windows recipe limits remain.
-
-`harness-maintenance-service.ts` exposes `/v2/maintenance/harnesses` and the
-maintenance operation routes through existing command admission, queue,
-idempotency, cancellation and retention. Blocking work runs in a custodied CLI
-child. Before-version and target evidence precede mutation; failures, interruption
-and unconfirmed termination retain their real effects without automatic replay or
-rollback. Previous-version return uses retained proved before-evidence and
-reinstalls it, so it depends on package availability. Inspection separates selected
-version, managed copy, release baseline, available observation and supported
-targets; `canCheckLatest` prevents a native update-only recipe advertising an
-unimplemented check. Effects invalidate affected observations for on-demand reads.
-Active maintenance is visible in readiness; it neither restarts the daemon nor
-starts account probes, login or model generation. Operations use ordinary queue
-slots and may wait behind active work.
+POSIX executability rules are unchanged. The required cross-platform proof
+`scripts/vendor-program-smoke.mjs` installs, reads back, repeats Install as a
+no-op, invokes each updater, and converts previous releases made by real npm
+for the four declared product packages. Each installed route prepares a native
+run without login and checks that it selects the receipt's file. A failed Update
+is reported as a vendor refusal only while the program still answers and the
+same command also fails directly under the runner environment. A direct success
+or launch error fails the route. Every route is attempted before the proof fails. Windows
+phases share the actual ephemeral runner profile because winget/MSI ignore a
+fictitious LOCALAPPDATA; POSIX uses disposable homes. Native Windows login and
+Agent execution are separate acceptance claims.
 
 `claudexor remote bootstrap --json` starts or discovers the remote daemon and
 returns its loopback endpoint. The daemon remains bound to `127.0.0.1`; the app
@@ -8638,9 +8654,12 @@ resources the release gates smoke-tested while the archive itself needs no
 POSIX symlink semantics.
 `release/runtime-min-app-version.json` is the tracked `minAppVersion` floor
 (validated `<=` the release version by `scripts/verify-version-parity.mjs`), the
-app-vs-engine skew guard. Engine 4.0 requires application 4.0. An older app
-reports `appUpdateRequired` and keeps its current working engine; updating the
-app supplies the compatible decoder and Node before engine activation.
+app-vs-engine skew guard. The application must understand the vendor-program
+inventory and maintenance receipts used by remote harness setup. An older app
+reports `appUpdateRequired` and keeps its current working engine until the
+application is updated. The SSH runtime manifest uses the release version as
+its application floor; both manifests require application 6.0.0 for engine
+6.0.0. This floor does not establish compatibility for embedding hosts.
 
 **Host-owned embedding.** A non-app host reuses this SAME release archive; the
 existing signed manifest remains its upstream publication authority. There is
@@ -8655,12 +8674,8 @@ Node runtime. A host on another platform has no bundled scanner for `pr`: it
 sets `CLAUDEXOR_BETTERLEAKS_PATH` to the pinned build or provisions it under
 its config root, otherwise `pr` refuses `publication_scan_unavailable`.
 A host owns the install directory, config root, process, rollback, and exact
-reviewed pin. Its full Node toolchain is the exact version proven by that pin's
-closure smoke; POSIX consumers using local harness install must provide both
-`<node-root>/bin/node` and
-`<node-root>/lib/node_modules/npm/bin/npm-cli.js` (Windows: `node.exe` and its
-adjacent `node_modules\npm\bin\npm-cli.js`), with no ambient-PATH npm
-fallback. The root package's
+reviewed pin. Its Node runtime is the exact version proven by that pin's
+closure smoke; vendor maintenance requires no adjacent npm. The root package's
 supported runtime floor is Node 24.15.0, and the store checks bundled SQLite
 3.51.3 or newer before opening data. A supported version declaration alone is
 not proof of a release-built closure; embedders retain exact-toolchain smoke evidence. The pin also

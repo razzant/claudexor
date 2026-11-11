@@ -3,6 +3,7 @@ import {
   fstatSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -11,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { sensitiveResourcePolicy } from "@claudexor/util";
 import { uploadQuery } from "./upload-query.js";
 import { openDocumentSource } from "./local-document-source.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
@@ -24,7 +26,16 @@ const mocks = vi.hoisted(() => ({
   opened: vi.fn(),
   /** Runs before the real open, after the opener's pre-open snapshot. */
   beforeOpen: vi.fn(),
+  roots: [] as string[],
 }));
+vi.mock("@claudexor/util", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@claudexor/util")>();
+  const { fixtureResourcePolicy } = await import("./test-support/fixture-resource-policy.js");
+  return {
+    ...actual,
+    sensitiveResourcePolicy: fixtureResourcePolicy(actual.SensitiveResourcePolicy, mocks.roots),
+  };
+});
 vi.mock("./daemon-run.js", () => ({ connectDaemonIfRunning: mocks.connect }));
 vi.mock("./live.js", () => ({ controlApiFetch: mocks.fetch }));
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -51,9 +62,9 @@ vi.mock("./local-document-source.js", async (importOriginal) => {
     },
   };
 });
-const roots: string[] = [];
+const roots = mocks.roots;
 function file(name = "note.txt", bytes = "document") {
-  const root = mkdtempSync(join(tmpdir(), "ingress-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ingress-")));
   roots.push(root);
   const path = join(root, name);
   writeFileSync(path, bytes);
@@ -383,14 +394,17 @@ describe("explicit local document descriptor", () => {
     await expect(openDocumentSource(sensitive, 8)).rejects.toMatchObject({
       code: "sensitive_resource_rejected",
     });
-    const store = join(root, ".aws");
-    mkdirSync(store);
-    writeFileSync(join(store, "data.txt"), "document");
-    const alias = join(root, "ordinary");
-    symlinkSync(store, alias);
-    await expect(openDocumentSource(join(alias, "data.txt"), 8)).rejects.toMatchObject({
-      code: "sensitive_resource_rejected",
-    });
+    for (const name of [".aws", ".claude"]) {
+      const store = join(root, name);
+      mkdirSync(store);
+      writeFileSync(join(store, "data.txt"), "document");
+      const alias = join(root, `ordinary-${name.slice(1)}`);
+      symlinkSync(store, alias);
+      await expect(openDocumentSource(join(alias, "data.txt"), 8)).rejects.toMatchObject({
+        code: "sensitive_resource_rejected",
+      });
+    }
+    expect(sensitiveResourcePolicy.classifyPath("/outside/.claude/file.txt").sensitive).toBe(true);
   });
   it("detects same-size replacement and in-place mutation, and closes its descriptor", async () => {
     for (const replace of [false, true]) {

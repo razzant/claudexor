@@ -209,7 +209,7 @@ jobs:
   # matrix fails or is cancelled, and a skipped required check never reports.
   build-test-gate:
     name: build-test
-    needs: [build-test, windows-test, swift]
+    needs: [build-test, windows-test, swift, vendor-programs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -221,6 +221,7 @@ jobs:
           MATRIX_RESULT: ${{ needs.build-test.result }}
           WINDOWS_RESULT: ${{ needs.windows-test.result }}
           MACOS_RESULT: ${{ needs.swift.result }}
+          VENDOR_RESULT: ${{ needs.vendor-programs.result }}
         shell: bash
         run: |
           set -euo pipefail
@@ -236,11 +237,15 @@ jobs:
             echo "::error::macOS lane result is '$MACOS_RESULT' (expected 'success')."
             exit 1
           fi
+          if [ "$VENDOR_RESULT" != "success" ]; then
+            echo "::error::Vendor program result is '$VENDOR_RESULT' (expected 'success')."
+            exit 1
+          fi
 
   windows-test:
     name: Windows ${{ matrix.runner }} (Node ${{ matrix.node-version }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -437,43 +442,45 @@ jobs:
           node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
           if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
 
-      # The Windows smoke installs the REAL selected Codex npm latest as one
-      # exact version, beside Claude's release baseline. The embedded Node
-      # toolchain is exact (official zip `node.exe` + its npm-cli.js, SHA-256
-      # pinned below for `.node-version`); no ambient node/npm is used. The
-      # isolated profile and npm-declared vendor entrypoints are proved through
-      # shared harness PATH, receipt, version and doctor. Auth and native Agent
-      # behavior are separate lanes: a newer CLI's --version is no app-server
-      # compatibility verdict. `scripts/windows-local-install-smoke.mjs` owns it.
-      - name: Stage the exact embedded Node toolchain (node.exe + its own npm-cli.js)
+      # The same real-vendor proof as the `vendor-programs` job, here because
+      # the Windows build needs this job's MSVC environment. One runner is enough.
+      # All phases share its actual Windows profile: winget/MSI do not honor a fake HOME.
+      - name: Vendor installation, update and npm-copy replacement routes
+        if: matrix.runner == 'windows-latest'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = (Get-Content .node-version -Raw).Trim()
-          $expected = "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"
-          $archive = "node-v$version-win-x64.zip"
-          $stage = Join-Path $env:RUNNER_TEMP "claudexor-embedded-node"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $zip = Join-Path $stage $archive
-          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$version/$archive" -OutFile $zip
-          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "$archive SHA-256 $actual does not match the pinned $expected (nodejs.org SHASUMS256.txt for v$version)"
-          }
-          Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
-          $node = Join-Path $stage "node-v$version-win-x64\node.exe"
-          $npm = Join-Path (Split-Path -Parent $node) "node_modules\npm\bin\npm-cli.js"
-          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw "embedded node.exe missing at $node" }
-          if (-not (Test-Path -LiteralPath $npm -PathType Leaf)) { throw "embedded npm-cli.js missing at $npm" }
-          & $node --version
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "CLAUDEXOR_EMBEDDED_NODE=$node" -Encoding utf8
+          node scripts/vendor-program-smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw "vendor program smoke exited $LASTEXITCODE" }
 
-      - name: Local Codex/Claude install proof (exact selected npm version, embedded npm, isolated profile)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & $env:CLAUDEXOR_EMBEDDED_NODE scripts/windows-local-install-smoke.mjs
-          if ($LASTEXITCODE -ne 0) { throw "windows-local-install-smoke exited $LASTEXITCODE" }
+  # Real vendor installers and updaters in a disposable HOME on each platform:
+  # every adapter-declared installation route, the installed program's own
+  # update, and replacement of a product-made npm copy. Receipts and the next
+  # resolver read must agree on the program path and its own version;
+  # auth/model compatibility is separate.
+  vendor-programs:
+    name: Vendor programs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Vendor installation, update and npm-copy replacement routes
+        run: node scripts/vendor-program-smoke.mjs
 
   swift:
     runs-on: macos-26
