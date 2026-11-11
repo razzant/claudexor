@@ -437,15 +437,34 @@ jobs:
           node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
           if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
 
-      # Execute all five adapter-declared Windows vendor installers in a
-      # disposable HOME. Receipts and the next resolver read must agree on the
-      # program path and its own version; auth/model compatibility is separate.
-      - name: Windows vendor installation routes (Claude, Codex, Antigravity, Grok, Copilot)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          node scripts/windows-local-install-smoke.mjs
-          if ($LASTEXITCODE -ne 0) { throw "windows-local-install-smoke exited $LASTEXITCODE" }
+  # Real vendor installers and updaters in a disposable HOME on each platform:
+  # every adapter-declared installation route, the installed program's own
+  # update, and replacement of a product-made npm copy. Receipts and the next
+  # resolver read must agree on the program path and its own version;
+  # auth/model compatibility is separate.
+  vendor-programs:
+    name: Vendor programs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Vendor installation, update and npm-copy replacement routes
+        run: node scripts/windows-local-install-smoke.mjs
 
   swift:
     runs-on: macos-26
