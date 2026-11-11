@@ -1,10 +1,11 @@
-import { programPlatform, resolveSelectedProgram } from "@claudexor/core";
+import { programUpdateAvailable, programPlatform, resolveSelectedProgram } from "@claudexor/core";
 import {
   ControlProblem,
   HarnessVendorVersion,
   type HarnessMaintenanceEntry,
   type HarnessMaintenanceEvidence,
   type HarnessProgram,
+  type HarnessProgramCommand,
   type SelectedHarnessProgram,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
@@ -20,7 +21,7 @@ import {
   replacementProgram,
   retireProductNpmCopy,
 } from "./harness-npm-conversion.js";
-import { prepareProgramCommand } from "./harness-program-command.js";
+import { prepareProgramCommand, previewProgramCommand } from "./harness-program-command.js";
 
 export type HarnessInspection = Omit<HarnessMaintenanceEntry, "operation">;
 export interface MaintenanceOptions extends InstallerRuntimeOptions {
@@ -35,9 +36,10 @@ export interface MaintenanceOptions extends InstallerRuntimeOptions {
   installOnly?: boolean;
   dryRun?: boolean;
 }
-const action = (available: boolean, reason: string) => ({
+const action = (available: boolean, reason: string, commands: HarnessProgramCommand[]) => ({
   available,
   reason: available ? null : reason,
+  commands: available ? commands : [],
 });
 export async function inspectHarness(
   harness: string,
@@ -50,22 +52,36 @@ export async function inspectHarness(
   const converting = productNpmCopy(program, selection, runtime) !== null;
   const update = converting ? data?.install : data?.update;
   const now = (options.now ?? (() => new Date()))();
+  const newest = options.latest
+    ? await observeNewest(program, runtime.platform, runtime.arch, options.fetch, now)
+    : {
+        status: "not_read" as const,
+        source: newestSource(program, runtime.platform, runtime.arch)?.url ?? null,
+      };
+  const preview = (command: HarnessProgramCommand | undefined, path = selection.path) =>
+    command ? [previewProgramCommand(command, runtime, path)] : [];
+  const exactCommands =
+    converting && data?.exactVersion?.kind === "exec" && data.exactVersion.command === "{program}"
+      ? [...preview(data.install), ...preview(data.exactVersion, null)]
+      : preview(data?.exactVersion);
   return {
     harness,
     selection,
     observedAt: now.toISOString(),
-    newest: options.latest
-      ? await observeNewest(program, runtime.platform, runtime.arch, options.fetch, now)
-      : {
-          status: "not_read",
-          source: newestSource(program, runtime.platform, runtime.arch)?.url ?? null,
-        },
+    newest,
+    updateAvailable: programUpdateAvailable(
+      program.versionScheme,
+      selection.version,
+      newest.status === "available" ? newest.version : null,
+    ),
+    releaseNotesUrl: program.releaseNotesUrl ?? null,
     actions: {
       install: action(
         !selection.path && !!data?.install,
         selection.path
           ? "A program is already selected; use Update."
           : (data?.reasons?.install ?? `${harness} has no installer for ${runtime.platform}.`),
+        preview(data?.install),
       ),
       update: action(
         !!selection.path && !!update,
@@ -73,6 +89,7 @@ export async function inspectHarness(
           ? "No program is selected; use Install."
           : ((converting ? data?.reasons?.install : data?.reasons?.update) ??
               `${harness} has no update command for ${runtime.platform}.`),
+        preview(update),
       ),
       exactVersion: action(
         !!data?.exactVersion &&
@@ -87,6 +104,7 @@ export async function inspectHarness(
               (selection.path
                 ? `${harness} has no exact-version command for ${runtime.platform}.`
                 : "Install the program before requesting an exact version.")),
+        exactCommands,
       ),
     },
   };

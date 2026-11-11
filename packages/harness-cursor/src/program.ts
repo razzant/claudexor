@@ -39,6 +39,7 @@ export const CURSOR_PROGRAM = defineHarnessProgram({
       realPathPattern: "[/\\\\]cursor-agent[/\\\\]versions[/\\\\][^/\\\\]+[/\\\\]cursor-agent$",
     },
   ],
+  versionScheme: "date-hash",
   overrideEnv: "CLAUDEXOR_CURSOR_BIN",
   installationEnv: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"],
   platforms: {

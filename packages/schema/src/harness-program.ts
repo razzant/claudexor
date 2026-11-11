@@ -69,6 +69,9 @@ export const HarnessProgram = z
       .array(z.object({ name: z.string(), realPathPattern: z.string().optional() }).strict())
       .min(1),
     overrideEnv: z.string(),
+    /** Unrecognized formats are never ordered heuristically. */
+    versionScheme: z.enum(["semver", "date-hash", "opaque"]).optional(),
+    releaseNotesUrl: HttpsUrl.optional(),
     platforms: z
       .object({
         darwin: HarnessProgramPlatform.optional(),

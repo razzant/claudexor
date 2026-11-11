@@ -1,3 +1,4 @@
+import { programUpdateAvailable } from "@claudexor/core";
 /** Vendor work stays in a custodied CLI child. The existing command store owns
  * idempotency, cancellation, retention and rejoin; there is no update scheduler. */
 import { existsSync } from "node:fs";
@@ -163,6 +164,11 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
       }
       if (parsed.data.newest.status !== "not_read") latestSeen.set(id, parsed.data.newest);
       else if (latestSeen.has(id)) parsed.data.newest = latestSeen.get(id)!;
+      parsed.data.updateAvailable = programUpdateAvailable(
+        harnessProgram(id).versionScheme,
+        parsed.data.selection.version,
+        parsed.data.newest.status === "available" ? parsed.data.newest.version : null,
+      );
       result.push(parsed.data);
     }
     return result;

@@ -47,6 +47,7 @@ export const CODEX_PROGRAM = defineHarnessProgram({
       name: "codex",
     },
   ],
+  versionScheme: "semver",
   overrideEnv: "CLAUDEXOR_CODEX_BIN",
   installationEnv: [
     "XDG_CONFIG_HOME",

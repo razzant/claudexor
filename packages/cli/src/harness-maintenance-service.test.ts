@@ -30,10 +30,16 @@ const ROW = {
   harness: "codex",
   selection: selection(),
   newest: { status: "not_read", source: "https://example.invalid/latest" },
+  updateAvailable: "cannot_tell",
+  releaseNotesUrl: null,
   actions: {
-    install: { available: false, reason: "Already selected; use Update." },
-    update: { available: true, reason: null },
-    exactVersion: { available: true, reason: null },
+    install: { available: false, reason: "Already selected; use Update.", commands: [] },
+    update: {
+      available: true,
+      reason: null,
+      commands: [{ kind: "exec", command: "/fixture/codex", args: ["update"] }],
+    },
+    exactVersion: { available: true, reason: null, commands: [] },
   },
 };
 const EVIDENCE = {

@@ -194,6 +194,25 @@
                   }
                 ]
               },
+              "updateAvailable": {
+                "type": "string",
+                "enum": [
+                  "yes",
+                  "no",
+                  "cannot_tell"
+                ]
+              },
+              "releaseNotesUrl": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "actions": {
                 "type": "object",
                 "properties": {
@@ -208,11 +227,92 @@
                           "string",
                           "null"
                         ]
+                      },
+                      "commands": {
+                        "type": "array",
+                        "items": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "exec"
+                                },
+                                "command": {
+                                  "type": "string"
+                                },
+                                "args": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "env": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "command",
+                                "args"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "script"
+                                },
+                                "url": {
+                                  "type": "string",
+                                  "format": "uri",
+                                  "pattern": "^https\\:\\/\\/"
+                                },
+                                "interpreter": {
+                                  "type": "string"
+                                },
+                                "interpreterArgs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "args": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "env": {
+                                  "type": "object",
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "url",
+                                "interpreter",
+                                "interpreterArgs",
+                                "args"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
                       }
                     },
                     "required": [
                       "available",
-                      "reason"
+                      "reason",
+                      "commands"
                     ],
                     "additionalProperties": false
                   },
@@ -565,6 +665,8 @@
               "harness",
               "selection",
               "newest",
+              "updateAvailable",
+              "releaseNotesUrl",
               "actions",
               "operation",
               "observedAt"

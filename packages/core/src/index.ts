@@ -44,3 +44,5 @@ export type * from "./native-home-lifetime.js";
 
 export * from "./program-registry.js";
 export * from "./selected-program.js";
+
+export { programUpdateAvailable } from "./program-version.js";

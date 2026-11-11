@@ -198,6 +198,7 @@ describe("selected vendor operation", () => {
     expect(row.actions.update).toEqual({
       available: false,
       reason: "No unattended vendor installer on this platform (#fixture).",
+      commands: [],
     });
     expect(row.actions.exactVersion).toEqual(row.actions.update);
     expect((await runHarnessUpdate("fixture", "2.0.0", w.options)).ok).toBe(false);

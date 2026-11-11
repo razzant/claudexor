@@ -1,7 +1,7 @@
 import { z } from "zod/v3";
 import { ControlProblem } from "./problem.js";
 import { IsoTimestamp } from "./primitives.js";
-import { SelectedHarnessProgram } from "./harness-program.js";
+import { HarnessProgramCommand, SelectedHarnessProgram } from "./harness-program.js";
 
 export const HarnessVendorVersion = z
   .string()
@@ -114,12 +114,21 @@ export const ControlHarnessMaintenanceOperation = HarnessMaintenanceEvidence.ext
   .describe("A durable maintenance operation; acceptance is a handle, not completion.");
 export type ControlHarnessMaintenanceOperation = z.infer<typeof ControlHarnessMaintenanceOperation>;
 
-const Action = z.object({ available: z.boolean(), reason: z.string().nullable() }).strict();
+const Action = z
+  .object({
+    available: z.boolean(),
+    reason: z.string().nullable(),
+    /** Display only. {version} is user input; {installedProgram} is resolved after installation. */
+    commands: z.array(HarnessProgramCommand),
+  })
+  .strict();
 export const HarnessMaintenanceEntry = z
   .object({
     harness: z.string(),
     selection: SelectedHarnessProgram,
     newest: HarnessNewestObservation,
+    updateAvailable: z.enum(["yes", "no", "cannot_tell"]),
+    releaseNotesUrl: z.string().url().nullable(),
     actions: z.object({ install: Action, update: Action, exactVersion: Action }).strict(),
     operation: ControlHarnessMaintenanceOperation.nullable(),
     observedAt: IsoTimestamp,

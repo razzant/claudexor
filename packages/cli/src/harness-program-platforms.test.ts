@@ -52,6 +52,31 @@ describe("adapter vendor declarations", () => {
         );
       }
   });
+  it("previews available commands without fetching installers and compares the declared version scheme", async () => {
+    const w = vendorFixture();
+    roots.push(w.home);
+    const fetcher = vi.fn(async () => new Response("1.0.0"));
+    const program = { ...w.program, versionScheme: "semver" as const };
+    const options = { ...w.options, program, fetch: fetcher };
+    const absent = await inspectHarness(program.id, options);
+    expect(absent.actions.install.commands).toEqual([program.platforms.darwin!.install]);
+    expect(absent.actions.update.commands).toEqual([]);
+    expect(fetcher).not.toHaveBeenCalled();
+    const path = join(w.home, ".vendor/bin/fixture-harness");
+    executable(path, "2.0.0");
+    const installed = await inspectHarness(program.id, {
+      ...options,
+      sourceEnv: { ...options.sourceEnv, FIXTURE_BIN: path },
+      latest: true,
+    });
+    expect(installed.updateAvailable).toBe("no");
+    expect(installed.actions.update.commands).toEqual([
+      { kind: "exec", command: path, args: ["update"] },
+    ]);
+    expect(installed.actions.exactVersion.commands).toEqual([
+      { kind: "exec", command: path, args: ["update", "--version", "{version}"] },
+    ]);
+  });
   it.each(["claude", "codex", "agy", "grok", "copilot"])(
     "executes the Windows %s vendor route and finds its installed launcher without restart",
     async (id) => {

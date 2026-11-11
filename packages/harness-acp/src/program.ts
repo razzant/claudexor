@@ -42,6 +42,7 @@ export const COPILOT_PROGRAM = defineHarnessProgram({
       name: "copilot",
     },
   ],
+  versionScheme: "semver",
   overrideEnv: "CLAUDEXOR_COPILOT_BIN",
   installationEnv: [
     "XDG_CONFIG_HOME",

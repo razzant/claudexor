@@ -37,6 +37,7 @@ export const OPENCODE_PROGRAM = defineHarnessProgram({
       name: "opencode",
     },
   ],
+  versionScheme: "semver",
   overrideEnv: "CLAUDEXOR_OPENCODE_BIN",
   installationEnv: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"],
   legacyNpmPackage: "opencode-ai",

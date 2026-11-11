@@ -29,6 +29,19 @@
         "overrideEnv": {
           "type": "string"
         },
+        "versionScheme": {
+          "type": "string",
+          "enum": [
+            "semver",
+            "date-hash",
+            "opaque"
+          ]
+        },
+        "releaseNotesUrl": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https\\:\\/\\/"
+        },
         "platforms": {
           "type": "object",
           "properties": {
@@ -81,9 +94,7 @@
                           "const": "script"
                         },
                         "url": {
-                          "type": "string",
-                          "format": "uri",
-                          "pattern": "^https\\:\\/\\/"
+                          "$ref": "#/definitions/HarnessProgram/properties/releaseNotesUrl"
                         },
                         "interpreter": {
                           "type": "string"
@@ -128,7 +139,7 @@
                   "type": "object",
                   "properties": {
                     "url": {
-                      "$ref": "#/definitions/HarnessProgram/properties/platforms/properties/darwin/properties/install/anyOf/1/properties/url"
+                      "$ref": "#/definitions/HarnessProgram/properties/releaseNotesUrl"
                     },
                     "pick": {
                       "anyOf": [

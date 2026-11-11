@@ -36,6 +36,7 @@ export const CLAUDE_PROGRAM = defineHarnessProgram({
       name: "claude",
     },
   ],
+  versionScheme: "semver",
   overrideEnv: "CLAUDEXOR_CLAUDE_BIN",
   installationEnv: [
     "XDG_CONFIG_HOME",

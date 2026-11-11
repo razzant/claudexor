@@ -8,6 +8,28 @@ import { redactSecrets } from "@claudexor/util";
 import type { InstallerRuntime } from "./harness-install-runtime.js";
 import { readVendorBytes } from "./harness-newest.js";
 
+/** Resolve display arguments without fetching scripts or executing anything. */
+export function previewProgramCommand(
+  command: HarnessProgramCommand,
+  runtime: InstallerRuntime,
+  selectedPath: string | null,
+  version = "{version}",
+): HarnessProgramCommand {
+  const replace = (value: string) =>
+    programPath(value, runtime.sourceEnv)
+      .replaceAll("{program}", selectedPath ?? "{installedProgram}")
+      .replaceAll("{version}", version)
+      .replaceAll("{arch}", runtime.arch);
+  return {
+    ...command,
+    ...(command.kind === "exec" ? { command: replace(command.command) } : {}),
+    args: command.args.map(replace),
+    ...(command.env
+      ? { env: Object.fromEntries(Object.entries(command.env).map(([k, v]) => [k, replace(v)])) }
+      : {}),
+  };
+}
+
 export async function prepareProgramCommand(
   command: HarnessProgramCommand,
   runtime: InstallerRuntime,
