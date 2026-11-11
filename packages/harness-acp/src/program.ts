@@ -62,6 +62,7 @@ export const COPILOT_PROGRAM = defineHarnessProgram({
     win32: {
       launcherDirs: [
         "{home}/.local/bin",
+        "{localAppData}/GitHubCopilotCLI",
         "{localAppData}/Microsoft/WinGet/Links",
         "{localAppData}/Microsoft/WindowsApps",
       ],

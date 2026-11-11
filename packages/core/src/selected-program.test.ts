@@ -1,5 +1,4 @@
-import { spawnSync } from "node:child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   chmodSync,
   mkdirSync,
@@ -170,61 +169,6 @@ describe("selected program", () => {
       "/vendor/custom",
     );
   });
-  it.each(["HKCU", "HKLM"])(
-    "finds an MSI on the new registry PATH (%s) without restarting or displacing a selected entry",
-    (hive) => {
-      const home = root();
-      const folder = join(home, "GitHubCopilotCLI");
-      const installed = join(folder, "fixture-program.exe");
-      mkdirSync(folder, { recursive: true });
-      const bytes = Buffer.alloc(512);
-      bytes.write("MZ");
-      bytes.writeUInt32LE(128, 60);
-      bytes.write("PE\0\0", 128);
-      writeFileSync(installed, bytes);
-      const spawn = vi.fn((bin: string, args: readonly string[] = []) => ({
-        status: 0,
-        stdout:
-          args[0] === "--version"
-            ? "GitHub Copilot CLI 1.0.109."
-            : args[1]?.startsWith(hive)
-              ? `    Path    REG_EXPAND_SZ    %INSTALL_ROOT%\n`
-              : "",
-        stderr: "",
-      }));
-      const sourceEnv = { HOME: home, PATH: "", INSTALL_ROOT: folder };
-      const options = {
-        sourceEnv,
-        platform: "win32" as const,
-        nodePath: "/absent/node",
-        spawn: spawn as unknown as typeof spawnSync,
-      };
-      expect(resolveSelectedProgram(fixture, { ...options, environment: sourceEnv })).toMatchObject(
-        {
-          path: installed,
-          version: "1.0.109",
-        },
-      );
-      expect(sourceEnv.PATH).toBe(""); // Registry discovery must not edit the caller's environment.
-      expect(spawn).toHaveBeenCalledTimes(3);
-      spawn.mockClear();
-      expect(
-        resolveSelectedProgram(fixture, { ...options, sourceEnv: { ...sourceEnv, PATH: folder } })
-          .path,
-      ).toBe(installed);
-      expect(spawn).toHaveBeenCalledTimes(1); // no registry lookup when PATH already works
-      spawn.mockClear();
-      expect(
-        resolveSelectedProgram(fixture, {
-          ...options,
-          sourceEnv: { ...sourceEnv, FIXTURE_BIN: join(home, "missing.exe") },
-        }).path,
-      ).toBeNull();
-      expect(spawn).not.toHaveBeenCalled(); // never work around an override
-      spawn.mockReturnValue({ status: 1, stdout: "", stderr: "unavailable" });
-      expect(resolveSelectedProgram(fixture, options).path).toBeNull();
-    },
-  );
   it("adds the declared Windows installer folder from LOCALAPPDATA", () => {
     const home = root();
     const local = join(home, "Local");

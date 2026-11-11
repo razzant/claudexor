@@ -1,8 +1,19 @@
-import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import childProcess, { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { defineHarnessProgram, programPath, programPlatform } from "@claudexor/core";
+import {
+  defineHarnessProgram,
+  programPath,
+  programPlatform,
+  normalizedHarnessPath,
+  selectProgramEntry,
+  selectProgramLauncher,
+  prepareNativeProgram,
+  observeHarnessProgram,
+  invalidateProgramObservations,
+} from "@claudexor/core";
+import { HarnessRunSpec } from "@claudexor/schema";
 import { harnessPrograms } from "./harness-programs.js";
 import { inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
 import { newestSource, observeNewest } from "./harness-newest.js";
@@ -145,10 +156,6 @@ describe("adapter vendor declarations", () => {
         sourceEnv,
         fetch: fetcher,
         spawn: ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
-          if (args[0] === "query")
-            return id === "copilot" && existsSync(installed)
-              ? result(`    Path    REG_SZ    ${dirname(installed)}\n`)
-              : result("", 1);
           if (args[0] === "--version") return result("fixture 1.2.3\n");
           invocations.push({ bin, args: [...args], env: opts.env! });
           if (id !== "copilot")
@@ -192,6 +199,59 @@ describe("adapter vendor declarations", () => {
         );
     },
   );
+  it("selects the Copilot MSI folder for inventory and native runs without discovery children", async () => {
+    const w = vendorFixture();
+    roots.push(w.home);
+    const program = programs.find((p) => p.id === "copilot")!;
+    const installed = join(w.home, "Local/GitHubCopilotCLI/copilot.exe");
+    const source = { HOME: w.home, LOCALAPPDATA: join(w.home, "Local"), PATH: "" };
+    const environment = { ...source, PATH: normalizedHarnessPath(source, "/absent/node", "win32") };
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const sync = vi.spyOn(childProcess, "spawnSync").mockImplementation(() => {
+      throw new Error("Discovery must not start a child");
+    });
+    const asyncSpawn = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      throw new Error("Discovery must not start a child");
+    });
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      const spec = HarnessRunSpec.parse({
+        session_id: "s",
+        intent: "explain",
+        prompt: "fixture",
+        cwd: w.home,
+      });
+      const readRun = () =>
+        prepareNativeProgram(
+          program,
+          selectProgramLauncher(program, source),
+          spec,
+          environment,
+          true,
+        );
+      expect(selectProgramEntry(program, { sourceEnv: source }).observed.path).toBeNull();
+      expect((await readRun()).evidence().path).toBeNull();
+      image(installed);
+      const row = selectProgramEntry(program, { sourceEnv: source }).observed;
+      const run = await readRun();
+      expect(row.path).toBe(installed);
+      expect(run.bin).toBe(row.path);
+      expect(run.evidence().path).toBe(row.path);
+      run.observeVersion("1.0.109");
+      for (let i = 0; i < 18; i++)
+        expect(
+          (await observeHarnessProgram(program, undefined, undefined, { environment })).program
+            ?.path,
+        ).toBe(installed);
+      expect(sync).not.toHaveBeenCalled();
+      expect(asyncSpawn).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", descriptor);
+      sync.mockRestore();
+      asyncSpawn.mockRestore();
+      invalidateProgramObservations(program.id);
+    }
+  });
   it.each([null, "ENOENT", "EACCES"])(
     "lets Windows launch an unclassified installer and reports its actual result (%s)",
     async (errorCode) => {

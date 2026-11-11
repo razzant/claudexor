@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { delimiter, join } from "node:path";
 import type { HarnessProgram, SelectedHarnessProgram } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { interpretedCommand } from "./npm-launch.js";
@@ -45,47 +44,6 @@ export interface ProgramResolutionOptions {
   spawn?: typeof spawnSync;
 }
 
-// Installers can update the registry PATH after this process started. Read only
-// the two PATH values, only after ordinary discovery fails; never refresh the
-// process environment or override an explicit binary selection.
-function installedWindowsPath(env: NodeJS.ProcessEnv, spawn = spawnSync): string {
-  const values = new Map(Object.entries(env).map(([key, value]) => [key.toUpperCase(), value]));
-  const reg = join(values.get("SYSTEMROOT") ?? "C:\\Windows", "System32", "reg.exe");
-  return [
-    "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-    "HKCU\\Environment",
-  ]
-    .flatMap((key) => {
-      try {
-        const out = spawn(reg, ["query", key, "/v", "Path"], {
-          env,
-          encoding: "utf8",
-          windowsHide: true,
-          timeout: 5_000,
-          stdio: ["ignore", "pipe", "pipe"],
-          maxBuffer: 64 * 1024,
-        });
-        if (out.status !== 0) return [];
-        const path = String(out.stdout).match(/^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.+)$/im)?.[1];
-        return path
-          ? [
-              path
-                .replace(
-                  /%([^%]+)%/g,
-                  (token, name: string) => values.get(name.toUpperCase()) ?? token,
-                )
-                .trim()
-                .split(";")
-                .join(delimiter),
-            ]
-          : [];
-      } catch {
-        return [];
-      }
-    })
-    .join(delimiter);
-}
-
 export function selectProgramEntry(
   program: HarnessProgram,
   options: ProgramResolutionOptions = {},
@@ -108,16 +66,7 @@ export function selectProgramEntry(
       options.maskedPaths,
     ).command;
   const bin = selectProgramLauncher(program, source, (name) => resolve(name)?.entrypoint ?? null);
-  let command = resolve(bin);
-  if (!command && platform === "win32" && !source[program.overrideEnv]) {
-    const added = installedWindowsPath(env, options.spawn);
-    if (added) {
-      env.PATH = [env.PATH, added].filter(Boolean).join(delimiter);
-      command = resolve(
-        selectProgramLauncher(program, source, (name) => resolve(name)?.entrypoint ?? null),
-      );
-    }
-  }
+  const command = resolve(bin);
   const path = command?.entrypoint ?? null;
   let realPath: string | null = null;
   try {
