@@ -3,10 +3,11 @@ import { connect } from "node:net";
 import type { Duplex } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { getGlobalDispatcher, setGlobalDispatcher, ProxyAgent, type Dispatcher } from "undici";
-import { RequestDelivery } from "./request-delivery.js";
+import { RequestDelivery, type ResponseBounds } from "./request-delivery.js";
 
 const originalDispatcher = getGlobalDispatcher();
 afterEach(() => setGlobalDispatcher(originalDispatcher));
+const bodyOf = (text: string) => new RequestDelivery(Buffer.from(text, "utf8"));
 
 async function endpoint(handle: RequestListener) {
   const server = createServer(handle);
@@ -22,14 +23,21 @@ async function endpoint(handle: RequestListener) {
   };
 }
 
-const send = (url: string, delivery: RequestDelivery) =>
+const send = (url: string, delivery: RequestDelivery, bounds?: ResponseBounds) =>
   fetch(url, {
     method: "POST",
     headers: { "content-length": String(delivery.bytes.length) },
-    ...delivery.request(),
+    ...delivery.request(bounds),
     redirect: "error",
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(15_000),
   });
+/** The code of the first error in a cause chain that has one. */
+const causeCode = (error: unknown): unknown => {
+  for (let current = error; current && typeof current === "object";)
+    if ("code" in current && typeof current.code === "string") return current.code;
+    else current = (current as { cause?: unknown }).cause;
+  return undefined;
+};
 
 describe("request delivery proof on the existing dispatcher", () => {
   it("keeps an existing proxy dispatcher and its connection ownership", async () => {
@@ -57,7 +65,7 @@ describe("request delivery proof on the existing dispatcher", () => {
     const owner = new ProxyAgent(`http://127.0.0.1:${address.port}`);
     setGlobalDispatcher(owner);
     try {
-      const delivery = new RequestDelivery("x".repeat(200_000));
+      const delivery = bodyOf("x".repeat(200_000));
       const response = await send(destination.url, delivery);
       expect(await response.text()).toBe("through proxy");
       expect(tunnels).toBe(1);
@@ -82,9 +90,8 @@ describe("request delivery proof on the existing dispatcher", () => {
         res.end("ok");
       });
     });
-    const requests = Array.from(
-      { length: 5 },
-      (_, i) => new RequestDelivery(JSON.stringify({ text: "Я🦉".repeat(20_000 + i) })),
+    const requests = Array.from({ length: 5 }, (_, i) =>
+      bodyOf(JSON.stringify({ text: "Я🦉".repeat(20_000 + i) })),
     );
     try {
       await Promise.all(
@@ -120,14 +127,14 @@ describe("request delivery proof on the existing dispatcher", () => {
       });
     });
     try {
-      const early = new RequestDelivery("x".repeat(8 * 1024 * 1024));
+      const early = bodyOf("x".repeat(8 * 1024 * 1024));
       await expect(send(server.url + "/early", early)).rejects.toThrow();
       expect(early.notDelivered()).toMatchObject({
         basis: "incomplete_upload",
         state: "not_delivered",
       });
       expect(early.facts().handedOffBytes).toBeLessThan(early.bytes.length);
-      const late = new RequestDelivery("x".repeat(200_000));
+      const late = bodyOf("x".repeat(200_000));
       await expect(send(server.url + "/late", late)).rejects.toThrow();
       expect(late.facts().handedOffBytes).toBe(late.bytes.length);
       expect(late.notDelivered()).toBeNull();
@@ -139,7 +146,7 @@ describe("request delivery proof on the existing dispatcher", () => {
   it("proves a refused connection through the dispatch callback, preserving an unobserved byte count", async () => {
     const server = await endpoint((_req, res) => res.end("unused"));
     await server.close();
-    const delivery = new RequestDelivery("complete body");
+    const delivery = bodyOf("complete body");
     await expect(send(server.url, delivery)).rejects.toThrow();
     expect(delivery.notDelivered()).toMatchObject({
       basis: "connect_failure",
@@ -152,9 +159,12 @@ describe("request delivery proof on the existing dispatcher", () => {
   it.each([
     "UND_ERR_CONNECT_TIMEOUT",
     "ENOTFOUND",
-    "EAI_AGAIN",
     "CERT_HAS_EXPIRED",
-    "DEPTH_ZERO_SELF_SIGNED_CERT",
+    // Not on any list: the place in the callback order is the proof, not the code.
+    "EADDRNOTAVAIL",
+    "EHOSTUNREACH",
+    "ENETDOWN",
+    undefined,
   ])("requires the pre-connect callback provenance for %s", async (code) => {
     setGlobalDispatcher(
       new Proxy(originalDispatcher, {
@@ -168,10 +178,13 @@ describe("request delivery proof on the existing dispatcher", () => {
         },
       }),
     );
-    const delivery = new RequestDelivery("body");
+    const delivery = bodyOf("body");
     await expect(send("http://localhost/", delivery)).rejects.toThrow();
-    expect(delivery.notDelivered()).toMatchObject({ basis: "connect_failure", errorCodes: [code] });
-    const unobserved = new RequestDelivery("body");
+    expect(delivery.notDelivered()).toMatchObject({
+      basis: "connect_failure",
+      errorCodes: [code ?? null],
+    });
+    const unobserved = bodyOf("body");
     // An injected fetch can throw the same code without using our dispatcher.
     await expect(
       Promise.reject(Object.assign(new Error("custom fetch"), { code })),
@@ -180,7 +193,7 @@ describe("request delivery proof on the existing dispatcher", () => {
   });
 
   it("does not erase a prior response or handoff when a later same-fetch request cannot connect", async () => {
-    const delivery = new RequestDelivery("body");
+    const delivery = bodyOf("body");
     const observer = delivery.request().dispatcher;
     let attempt = 0;
     setGlobalDispatcher(
@@ -234,7 +247,7 @@ describe("request delivery proof on the existing dispatcher", () => {
         },
       }),
     );
-    const delivery = new RequestDelivery("body");
+    const delivery = bodyOf("body");
     const returned = delivery.request().dispatcher.dispatch(
       { origin: "http://localhost", path: "/", method: "POST" },
       {
@@ -248,5 +261,92 @@ describe("request delivery proof on the existing dispatcher", () => {
     expect(observed).toEqual([[2, 2]]);
     expect(delivery.facts().handedOffBytes).toBeNull();
     expect(delivery.notDelivered()).toBeNull();
+  });
+
+  it.each(["onConnect", "onRequestStart"] as const)(
+    "keeps an error after %s unknown even though no body chunk was handed off",
+    (began) => {
+      setGlobalDispatcher(
+        new Proxy(originalDispatcher, {
+          get(target, key) {
+            if (key === "dispatch")
+              return (_opts: unknown, handler: Record<string, (...args: unknown[]) => void>) => {
+                // The library began to write this request, then the socket failed.
+                handler[began]?.(() => {});
+                handler.onError?.(Object.assign(new Error("reset"), { code: "ECONNRESET" }));
+                return true;
+              };
+            return Reflect.get(target, key, target);
+          },
+        }),
+      );
+      const delivery = bodyOf("body");
+      delivery
+        .request()
+        .dispatcher.dispatch({ origin: "http://localhost", path: "/", method: "POST" }, {
+          onConnect() {},
+          onRequestStart() {},
+          onError() {},
+        } as never);
+      expect(delivery.facts()).toMatchObject({ dispatches: 1, observedChunks: 0 });
+      expect(delivery.notDelivered()).toBeNull();
+    },
+  );
+
+  it("sets its bounds on its own request and leaves a request without bounds as the dispatcher has it", () => {
+    const seen: Array<Record<string, unknown>> = [];
+    setGlobalDispatcher(
+      new Proxy(originalDispatcher, {
+        get(target, key) {
+          if (key === "dispatch")
+            return (options: Record<string, unknown>) => {
+              seen.push(options);
+              return true;
+            };
+          return Reflect.get(target, key, target);
+        },
+      }),
+    );
+    const options = { origin: "http://localhost", path: "/", method: "POST" as const };
+    bodyOf("body").request({ headMs: 1_000, silenceMs: 2_000 }).dispatcher.dispatch(options, {});
+    bodyOf("body").request().dispatcher.dispatch(options, {});
+    expect(seen[0]).toEqual({ ...options, headersTimeout: 1_000, bodyTimeout: 2_000 });
+    expect(seen[1]).toBe(options);
+  });
+
+  it("stops waiting for a response head at its bound, and for a silent body at its bound", async () => {
+    const server = await endpoint((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        if (req.url === "/silent-body") res.write("first chunk");
+        // Neither request is ever answered further.
+      });
+    });
+    try {
+      const head = bodyOf("body");
+      const headError = await send(server.url + "/no-head", head, {
+        headMs: 300,
+        silenceMs: 60_000,
+      }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(causeCode(headError)).toBe("UND_ERR_HEADERS_TIMEOUT");
+      // The whole body was handed off: the outcome is unknown, not undelivered.
+      expect(head.notDelivered()).toBeNull();
+      const body = bodyOf("body");
+      const response = await send(server.url + "/silent-body", body, {
+        headMs: 60_000,
+        silenceMs: 300,
+      });
+      const bodyError = await response.text().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(causeCode(bodyError)).toBe("UND_ERR_BODY_TIMEOUT");
+      expect(body.facts().responseReceived).toBe(true);
+    } finally {
+      await server.close();
+    }
   });
 });

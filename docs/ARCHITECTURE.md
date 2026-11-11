@@ -3272,13 +3272,34 @@ Its single inference POST follows a committed dispatch receipt and a completed
 `flushed()` barrier. A barrier failure or cancellation while the adapter still
 waits inside that callback sends nothing and keeps `not_started` with the attempt
 stamp and route; once the callback returns, an uncertain outcome stays unknown.
-Exact JSON bytes stream with Content-Length. `request-delivery.ts` observes public
-callbacks on the existing dispatcher; its lazy `dispatcher-accessor.cts` preserves
-native cold initialization, proxy, TLS and pool ownership. Positive connector or
-incomplete-upload proof yields `transport_not_delivered`, and `ModelOperations`
-refines the terminal to `not_started` only after publishing that proof, keeping
-the attempted-send stamp and route; full handoff, unobserved transport, crash and
-publication failure stay unknown, and no adapter retry is added.
+The JSON body is compressed before that receipt (zstd level 3,
+`Content-Encoding: zstd`), as the vendor's own client does on this endpoint,
+unless `CLAUDEXOR_CODEX_REQUEST_COMPRESSION=off`; catalog and image requests are
+not compressed. The bytes as sent stream with their Content-Length and are what
+the delivery facts count, so a smaller body is fully handed off sooner and more
+of the remaining upload failures read as unknown. `request-delivery.ts` observes
+public callbacks on the existing dispatcher; its lazy `dispatcher-accessor.cts`
+preserves native cold initialization, proxy, TLS and pool ownership. It sets two
+bounds on this request only, whatever the dispatcher's own values: 300 s from the
+last request byte handed to the socket to the response head, and 300 s between
+reads of the response body. They are the HTTP library's clocks on an HTTP/1.1
+connection, not wall-clock deadlines and not proof of provider silence while the
+daemon's own event loop is busy; the head clock does not run while a body
+trickles, and HTTP/2 or an unknown dispatcher keeps its documented limits. A call
+they end stays `transport_unknown`: `errorCode` in the problem's context carries
+the library's code and the message names the bound in words that clients must
+not parse.
+Proof of non-delivery yields `transport_not_delivered` with one of three bases:
+`connect_failure` (the dispatcher reported an error before it began writing the
+request, whatever the error's code; a dispatcher that wrote before its
+`onConnect` would make this false), `incomplete_upload` (the upload broke before
+the whole body was handed off) and `http_408` (the peer's statement that it did
+not receive a complete request; an intermediary answering 408 after the origin
+accepted the whole body would make this false). `ModelOperations` refines the
+terminal to `not_started` only after publishing that proof, keeping the
+attempted-send stamp and route; an error after writing began with no chunk
+observed, full handoff, unobserved transport, crash and publication failure stay
+unknown, and no adapter retry is added.
 Canonical instruction messages keep their roles and ordered text parts in
 Ouroboros history. Because this subscription backend rejects `system` messages in
 `input`, Codex's wire projection maps each canonical `system` message to the

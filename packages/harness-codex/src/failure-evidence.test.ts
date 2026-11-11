@@ -4,6 +4,7 @@ import { CredentialProfile, ModelCallRequest, ModelCallResult } from "@claudexor
 import { createCodexModelAdapter } from "./model.js";
 import { emptyModelResult, readResponsesStream } from "./responses.js";
 import { ResponseFailureCapture } from "./failure-evidence.js";
+import { requestBodyText } from "./test-support/request-body.js";
 
 const route = {
   source: "codex",
@@ -389,7 +390,7 @@ function adapterFixture(respond: () => Response | Promise<Response>) {
     fetch: async (_url, init) => {
       if (init?.method === "POST") {
         posts(init);
-        expect(await new Response(init.body).text()).not.toContain("captureFailureEvidence");
+        expect(await requestBodyText(init)).not.toContain("captureFailureEvidence");
         return respond();
       }
       return Response.json({ models: [{ slug: "one", service_tiers: [{ id: "flex" }] }] });

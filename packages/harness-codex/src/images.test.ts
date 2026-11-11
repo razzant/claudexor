@@ -210,6 +210,8 @@ describe("codex image facet over the real adapter path", () => {
     expect(f.posts[0]!.headers.get("authorization")).toMatch(/^Bearer fixture\./);
     expect(f.posts[0]!.headers.get("chatgpt-account-id")).toBe("account-one");
     expect(f.posts[0]!.headers.get("x-codex-image-turn-id")).toBe("turn-fixture");
+    // The image request is not compressed; only the inference body is.
+    expect(f.posts[0]!.headers.has("content-encoding")).toBe(false);
     expect(f.posts[0]!.headers.get("content-length")).toBe(
       String(Buffer.byteLength(f.posts[0]!.body)),
     );
