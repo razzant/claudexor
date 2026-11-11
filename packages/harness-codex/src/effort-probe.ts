@@ -420,20 +420,25 @@ export async function codexEffortCapability(
   bin: string,
   env?: NodeJS.ProcessEnv,
 ): Promise<{ catalog: CodexEffortCatalog; live: boolean }> {
+  const generation = codexEffortCacheGeneration;
   const now = nowMs();
   const program = await observeHarnessProgram(CODEX_PROGRAM, env, bin);
   const key = JSON.stringify([codexEffortCacheKey(bin, env), program.key]);
   const cached = codexEffortCache.get(key);
-  if (cached && cached.expiresAtMs > now) {
+  if (
+    generation === codexEffortCacheGeneration &&
+    program.program?.version != null &&
+    cached &&
+    cached.expiresAtMs > now
+  ) {
     return { catalog: cached.catalog, live: cached.live };
   }
-  const generation = codexEffortCacheGeneration;
   const probed = await probe(bin, env);
   const live = probed !== null;
   const catalog = probed ?? CODEX_EFFORT_SNAPSHOT;
   // A clear during the probe means this answer, or this failure, may describe the
   // earlier account: its caller keeps it, and no later reader is handed it.
-  if (generation === codexEffortCacheGeneration) {
+  if (generation === codexEffortCacheGeneration && program.program?.version != null) {
     storeCodexEfforts(
       key,
       {

@@ -55,6 +55,17 @@ __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
+// These cache tests inject the model/list transport; give the synthetic program
+// a known identity too. Real program changes are covered by program-observation tests.
+vi.mock("@claudexor/core", async (original) => ({
+  ...(await original<typeof import("@claudexor/core")>()),
+  observeHarnessProgram: vi.fn(async (_program, _env, bin) => ({
+    selection: null,
+    program: { path: bin ?? "/fixture/codex", version: "1.0.0" },
+    key: `${bin ?? "codex"}:1.0.0`,
+  })),
+}));
+
 const base = {
   access: "workspace_write" as const,
   model_hint: null,
