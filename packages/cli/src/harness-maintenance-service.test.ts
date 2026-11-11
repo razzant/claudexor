@@ -457,6 +457,8 @@ describe("durable vendor operation", () => {
         })
       ).harnesses[0]!;
     expect((await read()).newest).toMatchObject(unavailable);
+    newest = { ...unavailable, observedAt: "2026-11-11T00:00:00.000Z" };
+    expect((await read()).newest).toMatchObject(newest); // No success yet: keep the current failure.
     newest = success;
     expect((await read()).newest).toEqual(success);
     newest = { ...unavailable, observedAt: "2026-11-11T00:00:00.000Z" };

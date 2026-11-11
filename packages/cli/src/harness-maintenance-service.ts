@@ -165,7 +165,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
       publish(parsed.data.selection);
       if (
         parsed.data.newest.status === "available" ||
-        (parsed.data.newest.status !== "not_read" && !latestSeen.has(id))
+        (parsed.data.newest.status !== "not_read" && latestSeen.get(id)?.status !== "available")
       )
         latestSeen.set(id, parsed.data.newest);
       else if (latestSeen.has(id)) parsed.data.newest = latestSeen.get(id)!;
