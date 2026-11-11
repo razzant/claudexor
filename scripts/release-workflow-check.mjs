@@ -670,9 +670,18 @@ for (const [label, mutated] of [
     ci.replace("          packages/cli/src/claudexord-writer-birth.test.ts\n", ""),
   ],
   ["Windows agy acceptance ordered before native fixture build", delayedWindowsFixtureCi],
+  ["vendor proof removed from required aggregate", ci.replace(", vendor-programs]", "]")],
+  [
+    "vendor proof status ignored",
+    ci.replace('[ "$VENDOR_RESULT" != "success" ]', '[ "success" != "success" ]'),
+  ],
+  [
+    "real vendor proof replaced with a no-op",
+    ci.replaceAll("node scripts/vendor-program-smoke.mjs", "node --version"),
+  ],
   [
     "Windows matrix removed from required aggregate",
-    ci.replace("    needs: [build-test, windows-test, swift]", "    needs: [build-test, swift]"),
+    ci.replace("needs: [build-test, windows-test,", "needs: [build-test,"),
   ],
 ]) {
   if (mutated === ci || windowsPrLegFindings(mutated).length === 0) {
@@ -1229,8 +1238,23 @@ function windowsPrLegFindings(workflow) {
   }
   requirePattern(
     "required build-test aggregate must depend on and reject a failed Windows matrix",
-    /needs:\s*\[build-test, windows-test, swift\][\s\S]*?WINDOWS_RESULT:[\s\S]*?\[ "\$WINDOWS_RESULT" != "success" \]/,
+    /needs:\s*\[[^\]]*\bwindows-test\b[^\]]*\][\s\S]*?WINDOWS_RESULT:[\s\S]*?\[ "\$WINDOWS_RESULT" != "success" \]/,
     gate,
+  );
+  requirePattern(
+    "required aggregate must depend on and reject failed vendor proof",
+    /needs:\s*\[[^\]]*\bvendor-programs\b[^\]]*\][\s\S]*?VENDOR_RESULT:[\s\S]*?\[ "\$VENDOR_RESULT" != "success" \]/,
+    gate,
+  );
+  requirePattern(
+    "Windows must execute real vendor proof",
+    /node scripts\/vendor-program-smoke\.mjs/,
+    windows,
+  );
+  requirePattern(
+    "vendor-programs must execute real vendor proof",
+    /node scripts\/vendor-program-smoke\.mjs/,
+    jobSection(workflow, "vendor-programs"),
   );
   return findings;
 }
