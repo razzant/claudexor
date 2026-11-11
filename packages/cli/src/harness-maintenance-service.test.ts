@@ -80,6 +80,7 @@ if (verb === "inspect") {
   if (rest.includes("--latest")) row.newest = { status: "unavailable", source: "https://example.invalid/latest", observedAt: row.observedAt, problem: { code: "newest_unavailable", message: "offline", retryable: true } };
   process.stdout.write(JSON.stringify({ harnesses: [row] }));
 } else if (verb === "update") {
+  if (cfg.holdPreparation) await new Promise(() => setInterval(() => {}, 1000));
   await new Promise((resolve) => setTimeout(resolve, cfg.prepareDelay ?? 0));
   if (process.env.CLAUDEXOR_MAINTENANCE_PROTOCOL !== "1") throw new Error("missing custody protocol");
   const input = createInterface({ input: process.stdin });
@@ -87,6 +88,7 @@ if (verb === "inspect") {
   for await (const line of input) { if (line !== "ack") throw new Error("not acknowledged"); break; }
   input.close();
   writeFileSync(cfg.state, "2.0.0"); log("mutated");
+  if (cfg.holdCompletion) await new Promise(() => setInterval(() => {}, 1000));
   await new Promise((resolve) => setTimeout(resolve, cfg.finishDelay ?? 0));
   if (cfg.receipt) process.stdout.write(JSON.stringify(cfg.receipt));
   process.exitCode = cfg.receipt?.ok ? 0 : 1;
@@ -241,6 +243,27 @@ function nativeEvent(
 }
 
 describe("durable vendor operation", () => {
+  it.each([20, "vendor_launch_failed"])(
+    "settles an abort-shaped failure with code %s without throwing in the handler",
+    async (code) => {
+      const error = Object.assign(new Error("The operation was aborted"), {
+        name: "AbortError",
+        code,
+      });
+      const w = await harnessWorld({}, async function* () {
+        throw error;
+      });
+      const op = await w.maintenance.routes.createMaintenanceOperation(latest, `abort-${code}`);
+      expect(await w.run(op.id)).toMatchObject({
+        state: "failed",
+        phase: "settled",
+        problem: {
+          code: typeof code === "string" ? code : "maintenance_failed",
+          message: "The operation was aborted",
+        },
+      });
+    },
+  );
   it("publishes the inspection child's answer without erasing known versions or retrying mute identities", async () => {
     let answer: string | null = "2.0.0";
     let bin: string;
@@ -367,7 +390,7 @@ describe("durable vendor operation", () => {
     expect(w.readiness.invalidate).toHaveBeenCalledWith("codex");
   });
   it("cancel after mutation stops the child, re-observes effects and retains the command", async () => {
-    const w = await harnessWorld({ finishDelay: 10_000 });
+    const w = await harnessWorld({ holdCompletion: true });
     const op = await w.maintenance.routes.createMaintenanceOperation(latest, "cancel");
     const pending = w.run(op.id);
     await vi.waitFor(() => expect(w.calls().some((c) => c.phase === "mutated")).toBe(true));
@@ -388,7 +411,7 @@ describe("durable vendor operation", () => {
       expect(() => process.kill(pid, 0)).toThrow();
   });
   it("cancel before preparation does not authorize mutation", async () => {
-    const w = await harnessWorld({ prepareDelay: 10_000 });
+    const w = await harnessWorld({ holdPreparation: true });
     const op = await w.maintenance.routes.createMaintenanceOperation(latest, "cancel-prepare");
     const pending = w.run(op.id);
     await vi.waitFor(() => expect(w.calls()).toHaveLength(1));

@@ -315,8 +315,9 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
         );
     } catch (error) {
       lifecycle = ctx.signal.aborted ? "cancelled" : "failed";
+      const code = (error as { code?: unknown } | null)?.code;
       evidence.problem = problem(
-        (error as { code?: string }).code ?? "maintenance_failed",
+        typeof code === "string" ? code : "maintenance_failed",
         error instanceof Error ? error.message : String(error),
       );
     } finally {
