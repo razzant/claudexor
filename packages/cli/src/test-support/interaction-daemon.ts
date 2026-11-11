@@ -62,7 +62,7 @@ export async function startInteractionDaemon(options: {
 }) {
   const { cleanups } = options;
   const waitMs = options.waitMs ?? 5_000;
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-interaction-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-i-")));
   options.removals.push(() => rmSync(root, { recursive: true, force: true }));
   const workspace = join(root, "workspace");
   mkdirSync(workspace);
