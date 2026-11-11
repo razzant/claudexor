@@ -600,7 +600,7 @@ for (const [label, mutated, expectedFinding] of [
     "authority Node floor drift",
     release.replace(
       "          node-version: 24.15.0\n\n      - name: Initialize pinned x64 MSVC environment",
-      "          node-version: 24.16.0\n\n      - name: Initialize pinned x64 MSVC environment",
+      "          node-version: 24.22.3\n\n      - name: Initialize pinned x64 MSVC environment",
     ),
   ],
   [
@@ -620,8 +620,8 @@ for (const [label, mutated, expectedFinding] of [
   [
     "assembled-byte smoke moved off Windows latest",
     release.replace(
-      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.16)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-latest",
-      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.16)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-2022",
+      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.22)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-latest",
+      "  windows-conpty-candidate-smoke:\n    name: Execute assembled Windows ConPTY bytes (Node 24.22)\n    needs: [prepare, windows-conpty-authority, package-macos]\n    runs-on: windows-2022",
     ),
   ],
   [
@@ -680,15 +680,15 @@ for (const [label, mutated] of [
   [
     "extra Windows PR matrix leg",
     ci.replace(
-      "          - runner: windows-latest\n            node-version: 24.16.0",
-      "          - runner: windows-latest\n            node-version: 24.16.0\n          - runner: windows-2022\n            node-version: 24.16.0",
+      "          - runner: windows-latest\n            node-version: 24.22.3",
+      "          - runner: windows-latest\n            node-version: 24.22.3\n          - runner: windows-2022\n            node-version: 24.22.3",
     ),
   ],
   [
     "Windows 2022 Node compatibility floor drift",
     ci.replace(
       "          - runner: windows-2022\n            node-version: 24.15.0",
-      "          - runner: windows-2022\n            node-version: 24.16.0",
+      "          - runner: windows-2022\n            node-version: 24.22.3",
     ),
   ],
   [
@@ -1231,8 +1231,8 @@ function windowsPrLegFindings(workflow) {
     );
   }
   requirePattern(
-    "windows-2022 must run Node 24.15.0 and windows-latest must run Node 24.16.0",
-    /- runner: windows-2022\n\s*node-version: 24\.15\.0\n\s*- runner: windows-latest\n\s*node-version: 24\.16\.0/,
+    "windows-2022 must run Node 24.15.0 and windows-latest must run Node 24.22.3",
+    /- runner: windows-2022\n\s*node-version: 24\.15\.0\n\s*- runner: windows-latest\n\s*node-version: 24\.22\.3/,
   );
   requirePattern(
     "Windows PR legs must initialize the x64 MSVC environment",
@@ -1375,8 +1375,8 @@ function windowsConptyCustodyFindings(workflow) {
     packageMacos,
   );
   requirePattern(
-    "assembled Windows smoke must run on windows-latest with Node 24.16",
-    /^\s{4}runs-on:\s*windows-latest\s*$[\s\S]*?node-version:\s*24\.16\.0/m,
+    "assembled Windows smoke must run on windows-latest with Node 24.22.3",
+    /^\s{4}runs-on:\s*windows-latest\s*$[\s\S]*?node-version:\s*24\.22\.3/m,
     assembledSmoke,
   );
   requirePattern(

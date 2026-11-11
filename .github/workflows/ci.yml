@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [24.15.0, 24.16.0]
+        node-version: [24.15.0, 24.22.3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,7 +67,7 @@ jobs:
         run: pnpm build
 
       - name: Build Linux engine resources without platform helper substitutes
-        if: matrix.node-version == '24.16.0'
+        if: matrix.node-version == '24.22.3'
         shell: bash
         env:
           CLAUDEXOR_BUILD_SHA: ${{ github.sha }}
@@ -203,7 +203,7 @@ jobs:
   # Branch protection on main requires a check context literally named
   # `build-test`. The job above never publishes one: a matrix job's check runs
   # are named from its `name:` template, so it reports as "Node 24.15.0" and
-  # "Node 24.16.0" and the required context stays pending forever (every PR
+  # "Node 24.22.3" and the required context stays pending forever (every PR
   # sits at BLOCKED). This aggregate exists only to publish that name.
   # `if: always()` is load-bearing — without it the job is skipped when the
   # matrix fails or is cancelled, and a skipped required check never reports.
@@ -253,7 +253,7 @@ jobs:
           - runner: windows-2022
             node-version: 24.15.0
           - runner: windows-latest
-            node-version: 24.16.0
+            node-version: 24.22.3
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
