@@ -336,7 +336,7 @@ async function helpProbeIdentity(
     patchPath === undefined ? undefined : { PATH: patchPath },
   );
   return {
-    cacheable: program.program?.version != null,
+    cacheable: program.selection?.path != null,
     key: JSON.stringify([
       program.key,
       id

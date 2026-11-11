@@ -25,6 +25,11 @@ interface Remembered {
 }
 const remembered = new Map<string, Remembered>();
 let sequence = 0;
+function remember(entry: Remembered, selection: SelectedHarnessProgram): void {
+  // A failed ask is still an observation, but never erases this identity's answer.
+  if (selection.version !== null || entry.selection.version === null) entry.selection = selection;
+  entry.known = true;
+}
 function entryFor(program: HarnessProgram, options: ProgramResolutionOptions) {
   const selected = selectProgramEntry(program, options);
   const identity = JSON.stringify([
@@ -75,16 +80,15 @@ export function programObservationPublisher(
       selected.realPath !== entry.selection.realPath
     )
       return false;
-    entry.selection = selected;
-    entry.known = true;
+    remember(entry, selected);
     entry.pending = undefined;
     return true;
   };
 }
 
 /** Passive reads inspect file identity only. The first read of an entry and
- * explicit fresh reads share one version process. Unknown versions still never
- * authorize a completed version-dependent consumer cache hit. */
+ * explicit fresh reads share one version process. An unanswered ask is remembered
+ * by file identity too; consumers may reuse evidence under that same null answer. */
 export async function observeHarnessProgram(
   program: HarnessProgram | undefined,
   patch?: Record<string, string | null | undefined>,
@@ -119,8 +123,8 @@ export async function observeHarnessProgram(
         entry.sequence === revision &&
         entryFor(program, resolution).entry === entry
       ) {
-        entry.selection = answer;
-        entry.known = true;
+        remember(entry, answer);
+        return observation(entry.selection, entry.identity);
       }
       return observation(answer, entry.identity);
     })

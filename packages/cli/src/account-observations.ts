@@ -113,11 +113,7 @@ class AccountObservations {
         });
       return current.promise as Promise<Observation<T>>;
     }
-    if (
-      current?.fingerprint === fingerprint &&
-      (!program || observed.program?.version != null) &&
-      (!fresh || current.pending)
-    )
+    if (current?.fingerprint === fingerprint && (!fresh || current.pending))
       return current.promise as Promise<Observation<T>>;
     const entry: Entry = {
       sequence,

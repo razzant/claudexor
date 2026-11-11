@@ -10,12 +10,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { spawnProcess } from "@claudexor/core";
+import {
+  spawnProcess,
+  observeHarnessProgram,
+  invalidateProgramObservations,
+} from "@claudexor/core";
 import { RunEventBus } from "@claudexor/daemon";
 import type { RunEvent } from "@claudexor/schema";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { createHarnessMaintenance } from "./harness-maintenance-service.js";
 import { emptyMaintenanceEvidence } from "./harness-maintenance.js";
+import { harnessProgram } from "./harness-programs.js";
 import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const selection = (version = "1.0.0") => ({
@@ -95,6 +100,8 @@ const worlds: Array<{
 afterEachClosed(async () => {
   const owned = worlds.splice(0);
   for (const w of owned) await w.close();
+  vi.unstubAllEnvs();
+  invalidateProgramObservations();
   return () => {
     for (const w of owned) rmSync(w.root, { recursive: true, force: true });
   };
@@ -201,6 +208,7 @@ async function harnessWorld(config: Record<string, unknown> = {}, spawn = spawnP
     },
   });
   return {
+    root,
     maintenance,
     store,
     client,
@@ -233,6 +241,55 @@ function nativeEvent(
 }
 
 describe("durable vendor operation", () => {
+  it("publishes the inspection child's answer without erasing known versions or retrying mute identities", async () => {
+    let answer: string | null = "2.0.0";
+    let bin: string;
+    const w = await harnessWorld({}, async function* () {
+      yield {
+        type: "stdout",
+        line: JSON.stringify({
+          harnesses: [
+            {
+              ...ROW,
+              observedAt: new Date().toISOString(),
+              selection: {
+                ...selection(),
+                path: bin,
+                realPath: bin,
+                version: answer,
+                versionOutput: answer,
+              },
+            },
+          ],
+        }),
+      };
+    });
+    bin = join(w.root, "codex");
+    const calls = join(w.root, "version-asks");
+    writeFileSync(bin, `#!/bin/sh\necho ask >> '${calls}'\necho 1.0.0\n`, { mode: 0o755 });
+    vi.stubEnv("CLAUDEXOR_CODEX_BIN", bin);
+    const program = harnessProgram("codex");
+    expect((await observeHarnessProgram(program)).program?.version).toBe("1.0.0");
+    const inspect = () => w.maintenance.routes.maintenanceInventory({ harnessIds: ["codex"] });
+    const passive = async (version: string | null) => {
+      const results = await Promise.all(
+        Array.from({ length: 18 }, () => observeHarnessProgram(program)),
+      );
+      expect(results.every((result) => result.program?.version === version)).toBe(true);
+      expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+    };
+    await inspect();
+    await passive("2.0.0");
+    answer = null;
+    expect((await inspect()).harnesses[0]!.selection.version).toBeNull();
+    await passive("2.0.0");
+    writeFileSync(bin, readFileSync(bin, "utf8") + "\n# replaced identity\n");
+    await inspect();
+    await passive(null);
+    answer = "3.0.0";
+    await inspect();
+    await passive("3.0.0");
+  });
   it("rejoins duplicate idempotent requests, rejects changed bodies, and allows only one active harness operation", async () => {
     const w = await harnessWorld();
     const route = w.maintenance.routes;

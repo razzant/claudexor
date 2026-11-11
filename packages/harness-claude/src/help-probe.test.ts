@@ -318,7 +318,7 @@ describe("the --help memo and its consumers follow a run's PATH patch", () => {
 });
 
 it.each([true, false])(
-  "retains completed help only for a known program version (known: %s)",
+  "retains completed help for the same file and remembered answer (known: %s)",
   async (known) => {
     const help = join(dir, "help"),
       calls = join(dir, "calls");
@@ -337,8 +337,14 @@ it.each([true, false])(
     const second = await probeClaudeHelp();
     expect(second).toMatchObject({
       ok: true,
-      help: expect.stringContaining(known ? "high, max" : "high, xhigh, max"),
+      help: expect.stringContaining("high, max"),
     });
-    expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(known ? 1 : 2);
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+    writeFileSync(bin, readFileSync(bin, "utf8") + "\n# changed file identity\n");
+    expect(await probeClaudeHelp()).toMatchObject({
+      ok: true,
+      help: expect.stringContaining("high, xhigh, max"),
+    });
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(2);
   },
 );

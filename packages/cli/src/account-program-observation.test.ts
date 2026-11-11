@@ -257,6 +257,53 @@ it("18 accounts share one first version process, zero on a cached listing, and o
   expect(f.calls()).toBe(2);
   expect(f.models).toHaveBeenCalledTimes(36);
 });
+it("18 accounts keep their answer and acquisitions after a failed fresh ask or inventory publication", async () => {
+  const f = fixture(18);
+  await f.catalog();
+  rmSync(f.versionFile);
+  expect((await f.refresh()).program?.version).toBe("1.0.0");
+  expect(f.calls()).toBe(2);
+  expect((await f.catalog()).every((r) => r.catalog?.sourceProgram?.version === "1.0.0")).toBe(
+    true,
+  );
+  expect(f.calls()).toBe(2);
+  expect(f.models).toHaveBeenCalledTimes(18);
+  expect((await f.inspect()).selection.version).toBeNull(); // this actual ask failed
+  await f.catalog();
+  expect(f.calls()).toBe(3);
+  expect(f.models).toHaveBeenCalledTimes(18);
+  f.setVersion("2.0.0");
+  await f.refresh();
+  expect((await f.catalog()).every((r) => r.catalog?.sourceProgram?.version === "2.0.0")).toBe(
+    true,
+  );
+  expect(f.models).toHaveBeenCalledTimes(36);
+});
+it("18 accounts reuse a mute program until fresh observation or a changed file identity", async () => {
+  const f = fixture(18);
+  rmSync(f.versionFile);
+  expect((await f.catalog()).every((r) => r.catalog?.sourceProgram?.version === null)).toBe(true);
+  expect(f.calls()).toBe(1);
+  expect(f.models).toHaveBeenCalledTimes(18);
+  await f.catalog();
+  expect(f.calls()).toBe(1);
+  expect(f.models).toHaveBeenCalledTimes(18);
+  expect((await f.refresh()).program?.version).toBeNull();
+  await f.catalog();
+  expect(f.calls()).toBe(2);
+  expect(f.models).toHaveBeenCalledTimes(18);
+  appendFileSync(f.bin, "\n# replaced mute entry\n");
+  await f.catalog();
+  expect(f.calls()).toBe(3);
+  expect(f.models).toHaveBeenCalledTimes(36);
+  f.setVersion("2.0.0");
+  await f.refresh();
+  expect((await f.catalog()).every((r) => r.catalog?.sourceProgram?.version === "2.0.0")).toBe(
+    true,
+  );
+  expect(f.calls()).toBe(4);
+  expect(f.models).toHaveBeenCalledTimes(54);
+});
 it("a native startup frame refreshes unchanged wrappers for all 18 accounts without a version process", async () => {
   const f = fixture(18);
   await f.catalog();
