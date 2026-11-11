@@ -167,11 +167,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "<local_session|api_key>",
     "Credential route filter for route-annotated model lists (models command)",
   ),
-  valueFlag(
-    "target",
-    "<local|remote>",
-    "Harness install destination: local managed toolchain or remote runtime prefix (default: remote)",
-  ),
+  { ...valueFlag("target", "<retired>", null), retired: true },
   valueFlag(
     "mode",
     "<mode>",
@@ -383,10 +379,10 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("feedback", '"<text>"', null),
   valueFlag(
     "vendor-version",
-    "<exact|latest>",
+    "<exact>",
     "harness install/update: request an exact vendor version where supported",
   ),
-  booleanFlag("release-tested", null),
+  { ...booleanFlag("release-tested", null), retired: true },
   booleanFlag("latest", "harness inspect: also read the newest published vendor version"),
   booleanFlag(
     "purge-trashed-threads",

@@ -152,6 +152,57 @@ describe("selected vendor operation", () => {
       });
     },
   );
+  it.each([false, true])(
+    "converts before an exact native verb and retains the old copy if that verb fails (%s)",
+    async (failExact) => {
+      const w = world();
+      const old = oldCopy(w);
+      const prepared: unknown[] = [];
+      w.options.beforeMutation = async (receipt) => {
+        prepared.push(structuredClone(receipt.commands));
+        expect(existsSync(old.pkg)).toBe(true);
+      };
+      w.options.spawn = ((bin, args, options) => {
+        if (args[0] === "--version") return spawnSync(bin, args, options);
+        if (bin === "/bin/sh") {
+          executable(w.installed, "2.0.0");
+          return result("Native installed");
+        }
+        expect(bin).toBe(w.installed);
+        expect(args).toEqual(["update", "--version", "3.4.5"]);
+        if (failExact) return result("Exact release unavailable", 7);
+        executable(w.installed, "3.4.5");
+        return result("Exact installed");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", "3.4.5", w.options);
+      expect(prepared).toHaveLength(2);
+      expect(receipt.commands).toHaveLength(2);
+      expect(receipt.ok).toBe(!failExact);
+      expect(existsSync(old.pkg)).toBe(failExact);
+      expect(receipt.after).toMatchObject({
+        path: failExact ? old.launcher : w.installed,
+        version: failExact ? "1.0.0" : "3.4.5",
+      });
+      if (failExact)
+        expect(receipt.progress).toEqual(["Native installed", "Exact release unavailable"]);
+    },
+  );
+  it("states the missing vendor installer when a platform cannot convert its old npm copy", async () => {
+    const w = world();
+    const old = oldCopy(w);
+    delete w.program.platforms.darwin!.install;
+    w.program.platforms.darwin!.reasons = {
+      install: "No unattended vendor installer on this platform (#fixture).",
+    };
+    const row = await inspectHarness("fixture", w.options);
+    expect(row.actions.update).toEqual({
+      available: false,
+      reason: "No unattended vendor installer on this platform (#fixture).",
+    });
+    expect(row.actions.exactVersion).toEqual(row.actions.update);
+    expect((await runHarnessUpdate("fixture", "2.0.0", w.options)).ok).toBe(false);
+    expect(existsSync(old.pkg)).toBe(true);
+  });
   it("a newest read failure cannot block Update", async () => {
     const w = world();
     executable(w.installed);

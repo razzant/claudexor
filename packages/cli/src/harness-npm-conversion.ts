@@ -117,7 +117,11 @@ export function retireProductNpmCopy(
       moved.push([path, backup]);
     }
     selection = resolveSelectedProgram(program, runtime);
-    if (selection.path !== expected.path || selection.version !== expected.version)
+    if (
+      selection.path !== expected.path ||
+      selection.realPath !== expected.realPath ||
+      selection.version !== expected.version
+    )
       throw new Error("Selection changed before conversion committed");
   } catch (error) {
     for (const [path, backup] of moved.reverse()) renameSync(backup, path);

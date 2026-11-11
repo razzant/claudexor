@@ -15,7 +15,11 @@ import {
 import { installerRuntime, type InstallerRuntimeOptions } from "./harness-install-runtime.js";
 import { harnessProgram } from "./harness-programs.js";
 import { newestSource, observeNewest, pickNewest } from "./harness-newest.js";
-import { productNpmCopy, retireProductNpmCopy } from "./harness-npm-conversion.js";
+import {
+  productNpmCopy,
+  replacementProgram,
+  retireProductNpmCopy,
+} from "./harness-npm-conversion.js";
 import { prepareProgramCommand } from "./harness-program-command.js";
 
 export type HarnessInspection = Omit<HarnessMaintenanceEntry, "operation">;
@@ -72,13 +76,17 @@ export async function inspectHarness(
       ),
       exactVersion: action(
         !!data?.exactVersion &&
+          (!converting || !!data.install) &&
           (data.exactVersion.kind !== "exec" ||
             data.exactVersion.command !== "{program}" ||
             !!selection.path),
-        data?.reasons?.exactVersion ??
-          (selection.path
-            ? `${harness} has no exact-version command for ${runtime.platform}.`
-            : "Install the program before requesting an exact version."),
+        converting && !data?.install
+          ? (data?.reasons?.install ??
+              `${harness} has no vendor installer for this conversion on ${runtime.platform}.`)
+          : (data?.reasons?.exactVersion ??
+              (selection.path
+                ? `${harness} has no exact-version command for ${runtime.platform}.`
+                : "Install the program before requesting an exact version.")),
       ),
     },
   };
@@ -140,6 +148,7 @@ export async function runHarnessUpdate(
   };
   let lease: ReturnType<typeof acquireHarnessInstallLease> | undefined;
   let prepared: Awaited<ReturnType<typeof prepareProgramCommand>> | undefined;
+  const preparedCommands: Array<Awaited<ReturnType<typeof prepareProgramCommand>>> = [];
   let started = false;
   let program: HarnessProgram | undefined;
   let runtime: ReturnType<typeof installerRuntime> | undefined;
@@ -203,16 +212,17 @@ export async function runHarnessUpdate(
         ),
         { code: "program_action_unavailable" },
       );
-    // A conversion's installer must honor an explicitly requested version too.
-    const selectedCommand = copy && version ? data?.exactVersion : command;
-    if (
-      !selectedCommand ||
-      (copy &&
-        selectedCommand.kind === "exec" &&
-        selectedCommand.command === "{program}" &&
-        version)
-    )
-      throw new Error("Convert this npm copy with Update before requesting an exact version.");
+    const exact = version ? data?.exactVersion : undefined;
+    if (version && !exact)
+      throw Object.assign(
+        new Error(data?.reasons?.exactVersion ?? `${harness} has no exact-version command.`),
+        { code: "program_action_unavailable" },
+      );
+    // An exact verb on a product npm copy first needs a native vendor program.
+    // Keep the old package selected until both planned commands have succeeded.
+    const exactAfterInstall =
+      !!copy && !!exact && exact.kind === "exec" && exact.command === "{program}";
+    const selectedCommand = copy && exact && !exactAfterInstall ? exact : command;
     if (version && version === before.version && !copy) {
       receipt.ok = true;
       receipt.after = before;
@@ -227,6 +237,7 @@ export async function runHarnessUpdate(
       version,
       options.fetch,
     );
+    preparedCommands.push(prepared);
     receipt.commands = [prepared.evidence];
     // An installer used as an updater must identify its own target from the
     // same downloaded bytes. No stale observation can authorize rerunning it.
@@ -243,21 +254,57 @@ export async function runHarnessUpdate(
       }
     }
     if (options.dryRun) {
+      if (exactAfterInstall)
+        receipt.limitations.push(
+          "The exact version will be requested from the new vendor program before retiring the old npm copy.",
+        );
       receipt.ok = true;
       return receipt;
     }
-    receipt.phase = "installing";
-    receipt.mutation = "unknown";
-    await options.beforeMutation?.(receipt);
-    started = true;
-    const result = prepared.run();
-    receipt.exitCode = result.exitCode;
-    receipt.progress = result.progress;
-    if (result.exitCode !== 0)
-      throw Object.assign(
-        new Error(result.progress.at(-1) ?? `Vendor command exited ${result.exitCode}`),
-        { code: "vendor_command_failed" },
-      );
+    const execute = async (invocation: Awaited<ReturnType<typeof prepareProgramCommand>>) => {
+      receipt.phase = "installing";
+      receipt.mutation = "unknown";
+      await options.beforeMutation?.(receipt);
+      started = true;
+      const result = invocation.run();
+      receipt.exitCode = result.exitCode;
+      receipt.progress = [...receipt.progress, ...result.progress].slice(-40);
+      if (result.exitCode !== 0)
+        throw Object.assign(
+          new Error(result.progress.at(-1) ?? `Vendor command exited ${result.exitCode}`),
+          { code: "vendor_command_failed" },
+        );
+    };
+    await execute(prepared);
+    if (copy && exactAfterInstall) {
+      const native = replacementProgram(program, copy, runtime);
+      if (!native.path || !native.version)
+        throw Object.assign(
+          new Error(
+            "The vendor installer did not produce a versioned replacement; the old npm copy is unchanged.",
+          ),
+          { code: "conversion_verification_failed" },
+        );
+      if (native.version !== version) {
+        const requested = await prepareProgramCommand(
+          exact!,
+          runtime,
+          native.path,
+          version,
+          options.fetch,
+        );
+        preparedCommands.push(requested);
+        receipt.commands.push(requested.evidence);
+        await execute(requested);
+      }
+      if (replacementProgram(program, copy, runtime).version !== version)
+        throw Object.assign(
+          new Error(
+            "The new vendor program did not report the requested exact version; the old npm copy is unchanged.",
+          ),
+          { code: "conversion_verification_failed" },
+        );
+    }
     if (copy) {
       const converted = retireProductNpmCopy(program, copy, runtime);
       receipt.limitations.push(...converted.limitations);
@@ -298,7 +345,7 @@ export async function runHarnessUpdate(
     }
     receipt.phase = "settled";
     try {
-      prepared?.dispose();
+      for (const command of preparedCommands) command.dispose();
     } finally {
       lease?.release();
     }

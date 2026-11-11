@@ -6,7 +6,12 @@ import { defineHarnessProgram, programPath, programPlatform } from "@claudexor/c
 import { harnessPrograms } from "./harness-programs.js";
 import { inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
 import { newestSource, observeNewest } from "./harness-newest.js";
-import { SCRIPT, result, vendorFixture } from "./test-support/vendor-program-fixture.js";
+import {
+  SCRIPT,
+  executable,
+  result,
+  vendorFixture,
+} from "./test-support/vendor-program-fixture.js";
 
 const programs = harnessPrograms();
 const roots: string[] = [];
@@ -117,6 +122,45 @@ describe("adapter vendor declarations", () => {
         );
     },
   );
+  it("honors the vendor's custom Codex installation directory in execution and subsequent resolution", async () => {
+    const w = vendorFixture();
+    roots.push(w.home);
+    const declared = programs.find((program) => program.id === "codex")!;
+    const program = defineHarnessProgram({
+      ...declared,
+      launchers: [{ name: "fixture-codex-custom" }],
+      overrideEnv: "FIXTURE_CODEX_CUSTOM_BIN",
+    });
+    const folder = join(w.home, "custom/vendor/bin"),
+      installed = join(folder, "fixture-codex-custom");
+    const sourceEnv = {
+      HOME: w.home,
+      PATH: "",
+      CODEX_HOME: join(w.home, "codex-state"),
+      CODEX_INSTALL_DIR: folder,
+    };
+    const receipt = await runHarnessUpdate("codex", undefined, {
+      ...w.options,
+      program,
+      sourceEnv,
+      spawn: ((bin, args, options) => {
+        if (args[0] === "--version") return spawnSync(bin, args, options);
+        expect(options.env).toMatchObject({
+          HOME: w.home,
+          CODEX_HOME: sourceEnv.CODEX_HOME,
+          CODEX_INSTALL_DIR: folder,
+          CODEX_NON_INTERACTIVE: "1",
+        });
+        executable(installed, "1.2.3");
+        return result();
+      }) as typeof spawnSync,
+    });
+    expect(receipt).toMatchObject({
+      ok: true,
+      outcome: "changed",
+      after: { path: installed, version: "1.2.3" },
+    });
+  });
   it("states Windows limits and holds OpenCode to its V1 command", async () => {
     const w = vendorFixture();
     roots.push(w.home);

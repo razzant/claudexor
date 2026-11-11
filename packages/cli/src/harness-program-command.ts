@@ -18,7 +18,8 @@ export async function prepareProgramCommand(
   const replace = (value: string) =>
     programPath(value, runtime.sourceEnv)
       .replaceAll("{program}", selectedPath ?? "")
-      .replaceAll("{version}", version ?? "");
+      .replaceAll("{version}", version ?? "")
+      .replaceAll("{arch}", runtime.arch);
   if (command.kind === "exec" && command.command === "{program}" && !selectedPath)
     throw new Error("Install the program before requesting an exact version");
   const env = Object.fromEntries(

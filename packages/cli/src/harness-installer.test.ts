@@ -1,8 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { spawnProcess, type ChildStdin } from "@claudexor/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "./args.js";
 import {
+  MAINTENANCE_EVIDENCE_PREFIX,
   harnessInstallCommand,
   harnessMutationCommand,
   retiredInstallFlags,
@@ -32,6 +35,19 @@ describe("harness install/update CLI", () => {
       expect(retiredInstallFlags(args)).toContain("retired");
       expect(await harnessInstallCommand(args, true)).toBe(2);
       expect(output()).toContain("harness install <id> --yes");
+    },
+  );
+  it.each(["previous", "baseline", "latest", "^1.0.0"])(
+    "rejects a non-exact vendor-version value %s with the current spelling",
+    async (version) => {
+      const output = capture();
+      expect(
+        await harnessMutationCommand(
+          parseArgs(["harness", "update", "codex", "--vendor-version", version, "--yes"]),
+          true,
+        ),
+      ).toBe(2);
+      expect(output()).toContain("--vendor-version <exact>");
     },
   );
   it("requires explicit authorization from a nonterminal caller", async () => {
@@ -93,5 +109,71 @@ describe("harness install/update CLI", () => {
       ),
     ).toBe(0);
     expect(mutations).toBe(1);
+  });
+});
+
+it("the real CLI child acknowledges both conversion commands and closes its protocol input", async () => {
+  const w = vendorFixture();
+  roots.push(w.home);
+  const entry = join(
+    w.home,
+    ".claudexor/node/lib/node_modules/@fixture/harness/bin/fixture-harness",
+  );
+  executable(entry);
+  writeFileSync(
+    join(dirname(dirname(entry)), "package.json"),
+    JSON.stringify({ name: "@fixture/harness", bin: { "fixture-harness": "bin/fixture-harness" } }),
+  );
+  const launcher = join(w.home, ".claudexor/node/bin/fixture-harness");
+  mkdirSync(dirname(launcher), { recursive: true });
+  symlinkSync(entry, launcher);
+  const script = join(w.home, "cli-fixture.mjs");
+  const module = new URL("../dist/harness-installer.js", import.meta.url).href;
+  const core = new URL("../../core/dist/index.js", import.meta.url).href;
+  writeFileSync(
+    script,
+    String.raw`
+import { harnessMutationCommand } from ${JSON.stringify(module)};
+import { defineHarnessProgram } from ${JSON.stringify(core)};
+import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+const options = ${JSON.stringify(w.options)};
+defineHarnessProgram(options.program);
+options.fetch = async () => new Response("#!/bin/sh\n# fixture installer\n");
+options.spawn = (bin, args, opts) => {
+  if (args[0] === "--version") return spawnSync(bin, args, opts);
+  const version = bin === "/bin/sh" ? "2.0.0" : "3.4.5";
+  const path = ${JSON.stringify(w.installed)};
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "#!/bin/sh\necho " + version + "\n", { mode: 0o755 });
+  return { status: 0, stdout: "Done", stderr: "" };
+};
+process.exitCode = await harnessMutationCommand({ _: ["harness", "update", "fixture"], flags: { yes: true, "vendor-version": "3.4.5" } }, true, options);
+`,
+  );
+  const frames: Array<{ commands: unknown[] }> = [];
+  let stdout = "";
+  let input: ChildStdin | undefined;
+  for await (const event of spawnProcess(process.execPath, [script], {
+    env: { CLAUDEXOR_MAINTENANCE_PROTOCOL: "1" },
+    keepStdinOpen: true,
+    onSpawn: (io) => {
+      input = io;
+    },
+    timeoutMs: 10_000,
+    cancelKillDelayMs: 0,
+  })) {
+    if (event.type === "stderr" && event.line.startsWith(MAINTENANCE_EVIDENCE_PREFIX)) {
+      frames.push(JSON.parse(event.line.slice(MAINTENANCE_EVIDENCE_PREFIX.length)));
+      input!.write("ack\n");
+    } else if (event.type === "stdout") stdout += event.line;
+    else if (event.type === "exit") expect(event.code).toBe(0);
+  }
+  expect(frames.map((frame) => frame.commands.length)).toEqual([1, 2]);
+  expect(JSON.parse(stdout)).toMatchObject({
+    ok: true,
+    commands: [{ binary: "/bin/sh" }, { binary: w.installed }],
+    after: { path: w.installed, version: "3.4.5" },
   });
 });

@@ -65,6 +65,10 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
   const latestSeen = new Map<string, HarnessInspection["newest"]>();
   const generations = new Map<string, number>();
   const creating = new Set<string>();
+  const accepting = new Map<
+    string,
+    { body: string; result: Promise<ControlHarnessMaintenanceOperation> }
+  >();
   const activeRuns = deps.bus ? trackHarnessRuns(deps.bus) : null;
   const operationsOf = (id: string) => deps.maintenanceQueries.maintenanceForHarness(id);
   const save = (id: string, evidence: Evidence) => {
@@ -108,7 +112,6 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
           signal?.throwIfAborted();
           prepared(evidence); // synchronous store commit before the child may mutate
           input?.write("ack\n");
-          input?.end();
         } else {
           progress.push(redactSecrets(event.line).slice(0, 400));
           if (progress.length > 40) progress.shift();
@@ -332,6 +335,16 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
     },
     createMaintenanceOperation: async (body: unknown, idempotencyKey: string) => {
       const request = ControlHarnessMaintenanceCreateRequest.parse(body);
+      const canonical = JSON.stringify(request);
+      const pending = accepting.get(idempotencyKey);
+      if (pending) {
+        if (pending.body !== canonical)
+          throw failure(
+            "idempotency_conflict",
+            "This idempotency key is already accepting a different request.",
+          );
+        return pending.result;
+      }
       harnessProgram(request.harness);
       const params = HarnessMaintenanceParams.parse({
         kind: "harness_maintenance",
@@ -364,13 +377,18 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
           { operationId: active?.id ?? null },
         );
       creating.add(request.harness);
-      try {
+      const accepted = (async () => {
         const { id } = await deps.client.enqueue(params, {
           ...envelope,
           idempotencyRequest: request,
         });
         return detail(id);
+      })();
+      accepting.set(idempotencyKey, { body: canonical, result: accepted });
+      try {
+        return await accepted;
       } finally {
+        accepting.delete(idempotencyKey);
         creating.delete(request.harness);
       }
     },

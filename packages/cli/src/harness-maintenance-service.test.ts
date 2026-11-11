@@ -251,6 +251,29 @@ describe("durable vendor operation", () => {
     expect((await route.createMaintenanceOperation(latest, "key")).id).toBe(first.id);
     expect(await route.getMaintenanceOperation(first.id)).toEqual(done);
   });
+  it("rejoins a duplicate while asynchronous acceptance is still pending", async () => {
+    const w = await harnessWorld();
+    const enqueue = w.client.enqueue.getMockImplementation()!;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    w.client.enqueue.mockImplementationOnce(async (...args) => {
+      await held;
+      return enqueue(...args);
+    });
+    const first = w.maintenance.routes.createMaintenanceOperation(latest, "pending");
+    const duplicate = w.maintenance.routes.createMaintenanceOperation(latest, "pending");
+    await expect(
+      w.maintenance.routes.createMaintenanceOperation(
+        { harness: "claude", target: { kind: "latest" } },
+        "pending",
+      ),
+    ).rejects.toMatchObject({ code: "idempotency_conflict" });
+    expect(w.client.enqueue).toHaveBeenCalledOnce();
+    release();
+    expect((await first).id).toBe((await duplicate).id);
+  });
   it("commits exact command and before evidence before acknowledging mutation; active runs are a fact", async () => {
     const w = await harnessWorld();
     nativeEvent(w.bus, "harness.started");

@@ -429,10 +429,23 @@ describe("SQL command authority", () => {
     const evidence = {
       lifecycle: "succeeded",
       phase: "settled",
-      mechanism: "managed_npm",
       target: { kind: "version", version: "2.0.0" },
-      before: { version: "1.0.0", binary: "/fixture/vendor", selection: "managed", proved: true },
+      requester: { source: "control-api", requestId: "fixture" },
+      installationHome: "/fixture",
+      commands: [],
+      before: {
+        path: "/fixture/vendor",
+        realPath: "/fixture/vendor",
+        version: "1.0.0",
+        versionOutput: "1.0.0",
+        overrideEnv: null,
+        overrideValue: null,
+      },
       after: null,
+      elsewhere: null,
+      activeRunsAtStart: 0,
+      exitCode: 0,
+      outcome: "changed",
       mutation: "applied",
       termination: "not_applicable",
       limitations: [],
@@ -464,6 +477,11 @@ describe("SQL command authority", () => {
     const read = vi.spyOn(f.blobs, "read"),
       prepare = vi.spyOn(f.store, "prepare");
     expect(f.queries.maintenanceForHarness("codex")).toEqual(expected);
+    expect(expected[0]?.evidence).toMatchObject({
+      phase: "settled",
+      target: { kind: "version", version: "2.0.0" },
+      mutation: "applied",
+    });
     expect(f.queries.maintenanceForHarness("unknown")).toEqual([]);
     expect(read).not.toHaveBeenCalled();
     const query = prepare.mock.calls.find(([sql]) =>
