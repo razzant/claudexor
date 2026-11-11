@@ -8465,7 +8465,11 @@ bounded, redacted vendor error sentence.
 Engine-spawned Cursor children receive `--disable-auto-update`; Antigravity,
 Copilot and Grok keep their declared controls. Claude, Codex and OpenCode receive
 no added update switch. An unsupported Cursor switch returns its vendor error
-without a retry. Successful explicit Cursor maintenance also acknowledges and
+without a retry. Opaque wrappers and unknown executable formats preserve profile
+program copies because their dependencies cannot be proved. Cleanup is eligible
+only for a directly selected native image outside the profile tree, and the
+selected program must still answer its version after cleanup. Successful explicit
+Cursor maintenance also acknowledges and
 removes only enumerated unused copies under registered profile homes:
 `.local/share/cursor-agent` and its proven launcher symlinks. Redirected, replaced
 or selected paths are preserved. This is idempotent maintenance, with no startup

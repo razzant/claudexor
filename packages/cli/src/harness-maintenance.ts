@@ -385,6 +385,15 @@ export async function runHarnessUpdate(
   } finally {
     if (runtime && program && receipt.before) {
       receipt.after = resolveSelectedProgram(program, runtime);
+      if (receipt.ok && !receipt.dryRun && (!receipt.after.path || !receipt.after.version)) {
+        receipt.ok = false;
+        receipt.problem = ControlProblem.parse({
+          code: "program_verification_failed",
+          message:
+            "The selected program did not answer --version after maintenance and profile cleanup.",
+          retryable: true,
+        });
+      }
       const otherAfter = other();
       if (otherBefore) receipt.elsewhere = { before: otherBefore, after: otherAfter };
       const selectedChanged = changed(receipt.before, receipt.after);

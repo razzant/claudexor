@@ -42,6 +42,7 @@ function fixture() {
     overrideEnv: null,
     overrideValue: null,
   };
+  writeFileSync(selected.path!, Buffer.from("cffaedfe00000000", "hex"));
   const profile = CredentialProfile.parse({
     profile_id: "a",
     harness_id: "cursor",
@@ -84,3 +85,24 @@ it("does not follow a redirected profile directory or erase a launcher replaced 
   expect(planCursorProfileProgramCleanup([f.profile], f.selected).paths).toEqual([]);
   expect(existsSync(join(elsewhere, "cursor-agent"))).toBe(true);
 });
+
+it.each([false, true])(
+  "preserves copies behind an opaque selected wrapper (override: %s)",
+  (override) => {
+    const f = fixture();
+    const plan = planCursorProfileProgramCleanup([f.profile], f.selected);
+    expect(plan.paths).toContain(f.tree); // Direct native entry is independent.
+    writeFileSync(f.selected.path!, `#!/bin/sh\nexec '${f.old}' "$@"\n`);
+    if (override) {
+      f.selected.overrideEnv = "CLAUDEXOR_CURSOR_BIN";
+      f.selected.overrideValue = f.selected.path;
+    }
+    const opaque = planCursorProfileProgramCleanup([f.profile], f.selected);
+    expect(opaque.paths).toEqual([]);
+    expect(opaque.limitations.join(" ")).toContain("independence");
+    expect(plan.execute(f.selected).removed).toEqual([]); // Also recheck at deletion.
+    expect(existsSync(f.old)).toBe(true);
+    writeFileSync(f.selected.path!, "unknown entry without a shebang");
+    expect(planCursorProfileProgramCleanup([f.profile], f.selected).paths).toEqual([]);
+  },
+);

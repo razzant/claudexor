@@ -3,6 +3,7 @@ import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { planCursorProfileProgramCleanup } from "../../harness-cursor/src/profile-program-cleanup.js";
 import { inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
 import {
   SCRIPT,
@@ -13,6 +14,7 @@ import {
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const home of roots.splice(0)) rmSync(home, { recursive: true, force: true });
 }, 0);
 function world() {
@@ -288,6 +290,64 @@ describe("selected vendor operation", () => {
     });
     expect((acknowledgments[1] as typeof receipt).profileCleanup?.removedPaths).toEqual([]);
   });
+  it.each([false, true])(
+    "verifies the selected program after cleanup (cleanup breaks selection: %s)",
+    async (breaks) => {
+      const w = world();
+      executable(w.installed);
+      const path = join(w.home, "obsolete");
+      writeFileSync(path, "old");
+      const receipt = await runHarnessUpdate("fixture", undefined, {
+        ...w.options,
+        credentialProfiles: [],
+        planProfileProgramCleanup: () => ({
+          paths: [path],
+          limitations: [],
+          execute() {
+            rmSync(path);
+            if (breaks) rmSync(w.installed);
+            return { removed: [path], limitations: [] };
+          },
+        }),
+      });
+      expect(receipt.ok).toBe(!breaks);
+      expect(receipt.after?.version).toBe(breaks ? null : "1.0.0");
+      expect(receipt.problem).toEqual(
+        breaks ? expect.objectContaining({ code: "program_verification_failed" }) : null,
+      );
+    },
+  );
+  it.each([false, true])(
+    "preserves the running Cursor profile program behind a wrapper (override: %s)",
+    async (override) => {
+      const w = world();
+      vi.stubEnv("CLAUDEXOR_CONFIG_DIR", w.home);
+      const home = join(w.home, "profiles/cursor-a"),
+        target = join(home, ".local/share/cursor-agent/versions/current/cursor-agent");
+      executable(target);
+      const wrapper = join(w.home, ".claudexor/node/bin/fixture-harness");
+      executable(wrapper);
+      writeFileSync(wrapper, `#!/bin/sh\nexec '${target}' "$@"\n`);
+      if (override) w.options.sourceEnv!.FIXTURE_BIN = wrapper;
+      const receipt = await runHarnessUpdate("fixture", undefined, {
+        ...w.options,
+        credentialProfiles: [
+          {
+            profile_id: "a",
+            harness_id: "cursor",
+            display_name: "A",
+            credential_kind: "config_dir_login",
+            isolation_locator: home,
+            enabled: true,
+          },
+        ],
+        planProfileProgramCleanup: planCursorProfileProgramCleanup,
+      });
+      expect(receipt).toMatchObject({ ok: true, after: { version: "1.0.0" } });
+      expect(existsSync(target)).toBe(true);
+      expect(receipt.limitations.join(" ")).toContain("independence");
+    },
+  );
   it("a newest read failure cannot block Update", async () => {
     const w = world();
     executable(w.installed);

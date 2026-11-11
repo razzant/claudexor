@@ -1,6 +1,7 @@
-import { lstatSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, readSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import type { HarnessAdapter } from "@claudexor/core";
+import { withExecutableInspection, type HarnessAdapter } from "@claudexor/core";
+import type { SelectedHarnessProgram } from "@claudexor/schema";
 import { canonicalCursorProfileHome } from "./profile.js";
 
 const within = (path: string | null, root: string) =>
@@ -15,6 +16,32 @@ const stat = (path: string) => {
 };
 const same = (a: ReturnType<typeof stat>, b: ReturnType<typeof stat>) =>
   a !== null && b !== null && a.dev === b.dev && a.ino === b.ino && a.mtimeMs === b.mtimeMs;
+
+// A script can forward to any profile tree without changing its own realpath.
+// Never parse shell text to infer dependencies. Only a directly selected native
+// image outside the tree is eligible; unreadable and unrecognized entries stay.
+function directNativeProgram(selected: SelectedHarnessProgram): boolean {
+  if (!selected.path || !selected.realPath || !selected.version) return false;
+  try {
+    return withExecutableInspection(selected.path, (info, fd) => {
+      if (!info.isRegularFile || !info.identityStable || info.realpath !== selected.realPath)
+        return false;
+      const header = Buffer.alloc(4);
+      if (readSync(fd, header, 0, 4, 0) !== 4) return false;
+      return [
+        "7f454c46",
+        "feedface",
+        "cefaedfe",
+        "feedfacf",
+        "cffaedfe",
+        "cafebabe",
+        "bebafeca",
+      ].includes(header.toString("hex"));
+    });
+  } catch {
+    return false;
+  }
+}
 
 /** Idempotent repair of the measured HOME-relative updater fault, only on an explicit Update.
  * No glob over profiles, no startup sweep, no credential/config files, no launcher guesses. */
@@ -38,13 +65,12 @@ export const planCursorProfileProgramCleanup: NonNullable<
       const directory = stat(root);
       if (!directory) continue;
       if (
-        !selected.path ||
-        !selected.version ||
+        !directNativeProgram(selected) ||
         within(selected.path, root) ||
         within(selected.realPath, root)
       ) {
         limitations.push(
-          `Preserved ${root}: it is selected or the selected program is unverified.`,
+          `Preserved ${root}: it is selected or independence from the selected program cannot be proved (a wrapper or unknown executable).`,
         );
         continue;
       }
@@ -83,12 +109,13 @@ export const planCursorProfileProgramCleanup: NonNullable<
       for (const plan of plans) {
         try {
           if (
-            !current.path ||
-            !current.version ||
+            !directNativeProgram(current) ||
             within(current.path, plan.root) ||
             within(current.realPath, plan.root)
           )
-            throw new Error("the profile copy is selected or selection is unverified");
+            throw new Error(
+              "the profile copy is selected or independence from the selected program cannot be proved",
+            );
           if (realpathSync(dirname(plan.root)) !== dirname(plan.root))
             throw new Error("the profile program directory was redirected");
           for (const target of plan.targets) {
