@@ -284,7 +284,8 @@ commands are explicitly skipped, never passed. It never runs an installer.
 Use `--sources-only` on a shared machine to avoid even probing installed programs.
 The data's release-notes links are literal verified vendor addresses. Fixture
 version constants stamp recordings and snapshots only. Focused cache regressions
-must include a changed program behind an unchanged wrapper and a late old answer.
+must include 18-account passive reads, an unchanged wrapper refreshed by inventory
+or a native startup frame, and late-answer and credential-invalidation fences.
 
 The `publish` mode also carries `remote_runtime_manifest_b64`:
 the OWNER-SIGNED four-target SSH runtime manifest, transported the same way.

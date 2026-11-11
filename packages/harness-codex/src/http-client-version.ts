@@ -26,8 +26,8 @@ import { observeHarnessProgram, harnessBinaryIdentityOnPath } from "@claudexor/c
  *   REQUIRED query parameter (omitting or garbling it is an HTTP 400 that would
  *   take every model operation down).
  *
- * Every read observes the selected program again, including --version.
- * A wrapper can change its target while its own file stays unchanged.
+ * Reads use the shared file-identity observation. Inventory, fresh reads and
+ * native startup frames refresh a version changed behind an unchanged wrapper.
  */
 
 import type { ControlModelCatalogResponse } from "@claudexor/schema";

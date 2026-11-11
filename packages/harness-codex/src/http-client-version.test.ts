@@ -13,6 +13,8 @@ import {
   codexVersionTriple,
   describeCodexClientVersion,
 } from "./http-client-version.js";
+import { observeHarnessProgram } from "@claudexor/core";
+import { CODEX_PROGRAM } from "./program.js";
 import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
 describe("codexVersionTriple", () => {
@@ -92,7 +94,24 @@ describe("codexCatalogClientVersion", () => {
     expect(spawned).toBe(0);
   });
 
-  it("reads the program on every catalog read, including an unchanged wrapper and detection failure", async () => {
+  it("reuses the real wrapper answer until a fresh observation supplies another version or failure", async () => {
+    const target = join(dir, "reported-version");
+    writeFileSync(target, "codex-cli 9.0.0");
+    writeFileSync(bin, `#!/bin/sh\n/bin/cat '${target}'\n`);
+    const deps = { bin, env: env() };
+    expect((await codexCatalogClientVersion(deps)).version).toBe("9.0.0");
+    writeFileSync(target, "codex-cli 9.1.0");
+    expect((await codexCatalogClientVersion(deps)).version).toBe("9.0.0");
+    await observeHarnessProgram(CODEX_PROGRAM, env(), bin, { fresh: true });
+    expect(await codexCatalogClientVersion(deps)).toMatchObject({
+      version: "9.1.0",
+      program: { path: bin, version: "9.1.0" },
+    });
+    writeFileSync(target, "");
+    await observeHarnessProgram(CODEX_PROGRAM, env(), bin, { fresh: true });
+    expect((await codexCatalogClientVersion(deps)).source).toBe("verified_transport");
+  });
+  it("honors injected version answers, including detection failure", async () => {
     const answers = ["codex-cli 9.0.0", "codex-cli 9.1.0", null, "codex-cli 9.2.0"];
     const deps = { bin, env: env(), detectVersion: async () => answers.shift() ?? null };
     expect((await codexCatalogClientVersion(deps)).version).toBe("9.0.0");

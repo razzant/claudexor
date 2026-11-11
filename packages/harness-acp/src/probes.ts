@@ -47,16 +47,18 @@ export function acpProbes(
   let programKey: string | undefined;
   let programGeneration = 0;
   let programRead = 0;
+  let publishedRead = 0;
   const currentProgram = async (env?: HarnessModelSpec["env"], fresh = false) => {
     const read = ++programRead;
     const program = await observeHarnessProgram(entry.program, env, undefined, { fresh });
     // An older --version call cannot roll the shared capability back after a
     // newer observation. Paid conformance belongs to this program generation.
-    if (read !== programRead && program.key !== programKey)
+    if (read < publishedRead && program.key !== programKey)
       throw new AcpFailure(
         "program_changed_during_observation",
         "A newer program observation superseded this read.",
       );
+    publishedRead = Math.max(publishedRead, read);
     if (program.key !== programKey) {
       programKey = program.key;
       programGeneration++;

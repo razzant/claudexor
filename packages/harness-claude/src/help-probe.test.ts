@@ -75,7 +75,7 @@ function installStub(help: string, delaySeconds = 0): void {
   chmodSync(bin, 0o755);
 }
 
-it("notices a changed version and effort ladder behind an unchanged wrapper", async () => {
+it("refreshes help after an explicit observation of a changed version behind an unchanged wrapper", async () => {
   const version = join(dir, "version"),
     help = join(dir, "help");
   writeFileSync(
@@ -89,6 +89,10 @@ it("notices a changed version and effort ladder behind an unchanged wrapper", as
   expect((await probeClaudeEffortLevels()).levels).toEqual(LADDER_2_1_89);
   writeFileSync(version, "2.0.0");
   writeFileSync(help, HELP_2_1_89.replace("high, max", "high, xhigh, max"));
+  expect((await probeClaudeEffortLevels()).levels).toEqual(LADDER_2_1_89);
+  const { observeHarnessProgram } = await import("@claudexor/core");
+  const { CLAUDE_PROGRAM } = await import("./program.js");
+  await observeHarnessProgram(CLAUDE_PROGRAM, undefined, undefined, { fresh: true });
   expect((await probeClaudeEffortLevels()).levels).toEqual([
     "low",
     "medium",

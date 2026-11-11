@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { observeHarnessProgram } from "@claudexor/core";
 import { copilot } from "./entry.js";
 import { acpCapabilityProfile } from "./manifest.js";
 import { acpProbes } from "./probes.js";
@@ -46,6 +47,7 @@ function fixture() {
   };
   return {
     root,
+    entry,
     version,
     profile,
     probes: acpProbes(entry, profile, runner),
@@ -59,11 +61,14 @@ function fixture() {
   };
 }
 
-it("expires paid conformance at the next read after an unchanged wrapper selects a new version", async () => {
+it("expires paid conformance after a fresh observation of an unchanged wrapper", async () => {
   const f = fixture();
   expect((await f.probes.doctor({ cwd: f.root, conformance: true })).status).toBe("degraded");
   expect(f.profile.access_control.write_mechanism).toBe("tool_policy");
   writeFileSync(f.version, "2.0.0");
+  expect((await f.probes.discover()).sourceProgram?.version).toBe("1.0.0");
+  expect(f.profile.access_control.write_mechanism).toBe("tool_policy");
+  await observeHarnessProgram(f.entry.program, undefined, undefined, { fresh: true });
   const manifest = await f.probes.discover();
   expect(manifest.sourceProgram?.version).toBe("2.0.0");
   expect(manifest.capability_profile?.access_control.write_mechanism).toBe("none");
@@ -83,7 +88,9 @@ it("does not let a late old paid probe restore the new program's unproven write 
     writeFileSync(f.version, "2.0.0");
     f.setPermission(false);
     f.setGate(undefined);
-    expect((await f.probes.doctor({ cwd: f.root, conformance: true })).status).toBe("degraded");
+    expect((await f.probes.doctor({ cwd: f.root, conformance: true, fresh: true })).status).toBe(
+      "degraded",
+    );
     release();
     expect((await old).status).toBe("unavailable");
     expect(f.profile.access_control.write_mechanism).toBe("none");
@@ -92,4 +99,10 @@ it("does not let a late old paid probe restore the new program's unproven write 
     release();
     await old;
   }
+});
+
+it("concurrent first program readers share the observation without invalidating each other", async () => {
+  const f = fixture();
+  const manifests = await Promise.all(Array.from({ length: 18 }, () => f.probes.discover()));
+  expect(manifests.every((m) => m.sourceProgram?.version === "1.0.0")).toBe(true);
 });
