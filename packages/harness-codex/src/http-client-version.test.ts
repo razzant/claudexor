@@ -3,7 +3,7 @@
  * (issue #339): the transport's own verified level, raised to a newer installed
  * CLI, never lowered, never an unparseable string, memoised per binary identity.
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -94,7 +94,7 @@ describe("codexCatalogClientVersion", () => {
     expect(spawned).toBe(0);
   });
 
-  it("reuses the real wrapper answer until a fresh observation supplies another version or failure", async () => {
+  it("retains a wrapper's answer after an unanswered fresh ask, but not after file replacement", async () => {
     const target = join(dir, "reported-version");
     writeFileSync(target, "codex-cli 9.0.0");
     writeFileSync(bin, `#!/bin/sh\n/bin/cat '${target}'\n`);
@@ -109,7 +109,17 @@ describe("codexCatalogClientVersion", () => {
     });
     writeFileSync(target, "");
     await observeHarnessProgram(CODEX_PROGRAM, env(), bin, { fresh: true });
-    expect((await codexCatalogClientVersion(deps)).source).toBe("verified_transport");
+    expect(await codexCatalogClientVersion(deps)).toMatchObject({
+      version: "9.1.0",
+      source: "installed_cli",
+      program: { path: bin, version: "9.1.0" },
+    });
+    appendFileSync(bin, "\n# replaced entry identity\n");
+    expect(await codexCatalogClientVersion(deps)).toMatchObject({
+      version: CODEX_HTTP_CLIENT_VERSION,
+      source: "verified_transport",
+      program: { path: bin, version: null },
+    });
   });
   it("honors injected version answers, including detection failure", async () => {
     const answers = ["codex-cli 9.0.0", "codex-cli 9.1.0", null, "codex-cli 9.2.0"];
