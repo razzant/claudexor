@@ -182,3 +182,21 @@ echo "$value"
     await old;
   }
 });
+
+it.each([true, false])(
+  "retries program-change rejections but retains real vendor failures (program change: %s)",
+  async (changed) => {
+    const f = fixture();
+    f.models.mockImplementationOnce(async () => {
+      if (changed) f.setVersion("2.0.0");
+      else throw new Error("vendor unavailable");
+      return [{ id: "old", label: null, context_window: null, routes: null }];
+    });
+    expect((await f.catalog())[0]!.catalog).toBeNull();
+    f.setVersion("1.0.0"); // Next open has the original fingerprint, without refresh.
+    const next = (await f.catalog())[0]!;
+    if (changed) expect(next.catalog?.models[0]?.id).toBe("1.0.0");
+    else expect(next.catalog).toBeNull();
+    expect(f.models).toHaveBeenCalledTimes(changed ? 2 : 1);
+  },
+);

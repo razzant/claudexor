@@ -108,7 +108,9 @@ class AccountObservations {
     // later read of the same identity already satisfies this caller's refresh.
     if (current && current.sequence > sequence) {
       if (current.fingerprint !== fingerprint)
-        throw new Error("A newer program observation superseded this account read");
+        throw Object.assign(new Error("A newer program observation superseded this account read"), {
+          code: "account_observation_superseded",
+        });
       return current.promise as Promise<Observation<T>>;
     }
     if (
@@ -128,8 +130,21 @@ class AccountObservations {
       .then(async (value) => {
         assertSameProgram(observed, await observeHarnessProgram(program));
         if (this.entries.get(key) !== entry)
-          throw new Error("Account observation changed during acquisition; refresh again");
+          throw Object.assign(
+            new Error("Account observation changed during acquisition; refresh again"),
+            { code: "account_observation_superseded" },
+          );
         return { value, at: Date.now() };
+      })
+      .catch((error: unknown) => {
+        const code = (error as { code?: string } | null)?.code;
+        if (
+          (code === "program_changed_during_observation" ||
+            code === "account_observation_superseded") &&
+          this.entries.get(key) === entry
+        )
+          this.entries.delete(key);
+        throw error;
       })
       .finally(() => {
         entry.pending = false;

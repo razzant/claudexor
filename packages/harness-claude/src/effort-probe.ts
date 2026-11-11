@@ -324,7 +324,9 @@ const HELP_PROBE_TIMEOUT_MS = 10_000;
  */
 const helpProbes = new Map<string, Promise<ClaudeHelpProbe>>();
 
-async function helpProbeIdentity(patchPath?: string): Promise<{ key: string; spawn: string }> {
+async function helpProbeIdentity(
+  patchPath?: string,
+): Promise<{ key: string; spawn: string; cacheable: boolean }> {
   const id =
     patchPath === undefined
       ? harnessBinaryIdentity(resolveClaudeBin())
@@ -334,6 +336,7 @@ async function helpProbeIdentity(patchPath?: string): Promise<{ key: string; spa
     patchPath === undefined ? undefined : { PATH: patchPath },
   );
   return {
+    cacheable: program.program?.version != null,
     key: JSON.stringify([
       program.key,
       id
@@ -373,7 +376,7 @@ function abandonedProbe(): ClaudeHelpProbe {
  * forwards `xhigh` to a binary that rejects it, for the life of the daemon.
  */
 async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
-  const { key, spawn } = await helpProbeIdentity(patchPath);
+  const { key, spawn, cacheable } = await helpProbeIdentity(patchPath);
   const cached = helpProbes.get(key);
   if (cached) return cached;
   const pending = (async (): Promise<ClaudeHelpProbe> => {
@@ -400,7 +403,7 @@ async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
     if (helpProbes.get(key) === pending) helpProbes.delete(key);
   };
   void pending.then((probe) => {
-    if (!probe.ok || probe.code === null) forget();
+    if (!cacheable || !probe.ok || probe.code === null) forget();
   }, forget);
   return pending;
 }

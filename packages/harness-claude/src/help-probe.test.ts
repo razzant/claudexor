@@ -312,3 +312,29 @@ describe("the --help memo and its consumers follow a run's PATH patch", () => {
     expect(trusted.disclosure).toBeNull();
   });
 });
+
+it.each([true, false])(
+  "retains completed help only for a known program version (known: %s)",
+  async (known) => {
+    const help = join(dir, "help"),
+      calls = join(dir, "calls");
+    writeFileSync(
+      bin,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then ${known ? "echo 1.0.0; exit 0" : "exit 1"}; fi\necho help >> '${calls}'\n/bin/cat '${help}'\n`,
+      { mode: 0o755 },
+    );
+    writeFileSync(help, HELP_2_1_89);
+    const { probeClaudeHelp } = await import("./effort-probe.js");
+    expect(await probeClaudeHelp()).toMatchObject({
+      ok: true,
+      help: expect.stringContaining("high, max"),
+    });
+    writeFileSync(help, HELP_2_1_89.replace("high, max", "high, xhigh, max"));
+    const second = await probeClaudeHelp();
+    expect(second).toMatchObject({
+      ok: true,
+      help: expect.stringContaining(known ? "high, max" : "high, xhigh, max"),
+    });
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(known ? 1 : 2);
+  },
+);
