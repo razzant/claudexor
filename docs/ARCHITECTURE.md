@@ -3627,7 +3627,7 @@ an answer). A route line keeps its counts; its rounded failed share reads
 
 `POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
 
-A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup can speak for a store's absence.
+A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup and the [start lookups](#7-control-api), whose answers always name their store, can speak for a store's absence.
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
@@ -3732,6 +3732,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/runs/:id/run-again`
 - `GET /v2/runs/:id/time-limit`
 - `PATCH /v2/runs/:id/time-limit`
+- `POST /v2/runs/lookup`
 - `POST /v2/runs/next-message`
 - `GET /v2/runs/next-message/:id`
 - `POST /v2/runs/wait-many`
@@ -3767,6 +3768,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `POST /v2/threads/:id/turns`
 - `GET /v2/threads/:id/turns/:id/prompt`
 - `POST /v2/threads/:id/turns/:id/retry`
+- `POST /v2/threads/:id/turns/lookup`
 - `GET /v2/trust`
 - `POST /v2/trust`
 - `POST /v2/uploads`
@@ -4133,6 +4135,24 @@ not retry automatically.
   are serialized per thread, bind a turn to at most one run, preserve
   frozen-plan hash/override provenance on Exact Retry, and emit decision/rerun
   audit side effects only for the request that first accepted the command.
+- `POST /v2/runs/lookup` and `POST /v2/threads/:id/turns/lookup` are the
+  read-only twins of those creates for a caller whose create answer was lost.
+  The same body and `Idempotency-Key`, canonicalized exactly as create replay
+  (continuation inheritance included: once retention removed the predecessor,
+  `410 continuation_predecessor_not_retained`), are read against the command and
+  turn bindings without admission, preflight, enqueue, turn creation or a start
+  wait. A read answers HTTP 200 `ControlStartLookupResponse` naming the store it
+  read: `found` is the job handle as it stands (`runId` null before a run) with
+  any recorded refusal as `problem`; `turn_only` is a retained turn binding
+  without a retained command (refused before enqueue, or its command pruned),
+  with the turn's exact `runId` or null and its `enqueueError`, whatever the
+  conversation tail; `not_found` says only that this store's partition retains
+  no binding. It proves neither that the original was never accepted nor that a
+  new create is safe, and no lookup falls back to creating. Conflicts, malformed
+  input, `404 project_not_registered`, `404 thread_not_found` and the retryable
+  `503 idempotency_status_unavailable` keep their typed problems; a store
+  without identity, or one replaced during the read, answers
+  `503 store_identity_unavailable`. An engine without the routes answers a bare 404.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy

@@ -262,6 +262,20 @@ function recordedRunStartReplayProjection(
   };
 }
 
+/** The recorded request a continuation-resolved start body binds its key to. Create replay
+ * and the read-only start lookup share it, so a lookup reads what the create accepted. */
+export function recordedRunStart(body: unknown): RecordedControlRunStartRequest {
+  return recordedRunStartReplayProjection(RecordedControlRunStartRequest.parse(body));
+}
+
+/** The accepted-command query of a one-shot start: its recorded request under the caller's key. */
+export function acceptedRunQuery(recorded: RecordedControlRunStartRequest, idempotencyKey: string) {
+  return [
+    recorded,
+    { idempotencyKey, clientId: "control-api", idempotencyRequest: recorded },
+  ] as const;
+}
+
 function retiredAccessProfileError(): Error {
   return Object.assign(
     new Error(
@@ -309,6 +323,41 @@ function lookupProblemEvidence(error: unknown): Record<string, unknown> {
   };
 }
 
+/**
+ * The typed answer to a failed accepted-command read. Only the daemon's canonical key/project
+ * refusals are definite; any other failure leaves custody unknown and asks for the same key again.
+ */
+export function acceptedLookupFailure(
+  error: unknown,
+  stage: string,
+  extra: Record<string, unknown> = {},
+): Error {
+  const unregistered = projectNotRegisteredError(error);
+  if (unregistered) return unregistered;
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "idempotency_conflict" || error.code === "invalid_idempotency_key")
+  ) {
+    // CommandStore supplies code/status but no retryable property; expose
+    // the definite refusal explicitly without changing other lookup errors.
+    return Object.assign(error, { retryable: false });
+  }
+  return Object.assign(
+    new Error(
+      "idempotency status is temporarily unavailable; retry the same operation with the same Idempotency-Key",
+      { cause: error },
+    ),
+    {
+      status: 503,
+      code: "idempotency_status_unavailable",
+      retryable: true,
+      requiredActions: ["Retry the same operation with the same Idempotency-Key."],
+      context: safeProblemContext({ stage, cause: lookupProblemEvidence(error), ...extra }),
+    },
+  );
+}
+
 export interface RunCreateRouteContext {
   daemon: DaemonFacadeClient;
   readBody(req: IncomingMessage): Promise<unknown>;
@@ -340,35 +389,12 @@ export async function findAcceptedAroundPreflight<T>(
     try {
       return await findAccepted();
     } catch (error) {
-      const unregistered = projectNotRegisteredError(error);
-      if (unregistered) throw unregistered;
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        (error.code === "idempotency_conflict" || error.code === "invalid_idempotency_key")
-      ) {
-        // CommandStore supplies code/status but no retryable property; expose
-        // the definite refusal explicitly without changing other lookup errors.
-        throw Object.assign(error, { retryable: false });
-      }
-      throw Object.assign(
-        new Error(
-          "idempotency status is temporarily unavailable; retry the same operation with the same Idempotency-Key",
-          { cause: error },
-        ),
-        {
-          status: 503,
-          code: "idempotency_status_unavailable",
-          retryable: true,
-          requiredActions: ["Retry the same operation with the same Idempotency-Key."],
-          context: safeProblemContext({
-            stage,
-            cause: lookupProblemEvidence(error),
-            ...(stage === "lookup_after_preflight"
-              ? { preflight: lookupProblemEvidence(preflightError) }
-              : {}),
-          }),
-        },
+      throw acceptedLookupFailure(
+        error,
+        stage,
+        stage === "lookup_after_preflight"
+          ? { preflight: lookupProblemEvidence(preflightError) }
+          : {},
       );
     }
   };
@@ -400,8 +426,7 @@ export async function handleRunCreate(
   let recorded: RecordedControlRunStartRequest;
   try {
     idempotencyKey = requiredIdempotencyKey(req);
-    const body = await resolveContinuationBody(ctx.daemon, await ctx.readBody(req));
-    recorded = recordedRunStartReplayProjection(RecordedControlRunStartRequest.parse(body));
+    recorded = recordedRunStart(await resolveContinuationBody(ctx.daemon, await ctx.readBody(req)));
   } catch (error) {
     return ctx.requestError(res, error);
   }
@@ -416,11 +441,8 @@ export async function handleRunCreate(
   try {
     const prior = await findAcceptedAroundPreflight(
       () =>
-        ctx.daemon.findAccepted?.(recorded, {
-          idempotencyKey,
-          clientId: "control-api",
-          idempotencyRequest: recorded,
-        }) ?? Promise.resolve(null),
+        ctx.daemon.findAccepted?.(...acceptedRunQuery(recorded, idempotencyKey)) ??
+        Promise.resolve(null),
       async () => {
         if (recorded.access === RETIRED_EXTERNAL_SANDBOX_FULL) {
           throw retiredAccessProfileError();
