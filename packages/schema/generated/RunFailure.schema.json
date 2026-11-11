@@ -4,6 +4,17 @@
     "RunFailure": {
       "type": "object",
       "properties": {
+        "lastVendorError": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "requestRefusal": {
           "anyOf": [
             {
@@ -628,6 +639,11 @@
           "items": {
             "type": "object",
             "properties": {
+              "lastVendorError": {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "Last vendor diagnostic line, bounded and redacted; never classified."
+              },
               "harnessId": {
                 "type": "string",
                 "minLength": 1,

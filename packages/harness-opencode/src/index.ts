@@ -409,6 +409,7 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   if (key) env[key.envVar] = key.value;
 
   yield* runCliHarness({
+    program: OPENCODE_PROGRAM,
     bin: resolveOpenCodeBin(),
     args,
     spec,

@@ -1,3 +1,5 @@
+import { prepareNativeProgram } from "@claudexor/core";
+import { CODEX_PROGRAM } from "./program.js";
 import { spawnProcess, type ChildStdin, type SpawnOptions } from "@claudexor/core";
 import { verifyCodexAttachments } from "./attachments.js";
 import type { HarnessEvent } from "@claudexor/schema";
@@ -49,6 +51,8 @@ export type { CodexAppServerRunInput } from "./app-server-protocol.js";
 export async function* runCodexAppServer(
   input: CodexAppServerRunInput,
 ): AsyncGenerator<HarnessEvent> {
+  const program = await prepareNativeProgram(CODEX_PROGRAM, input.bin, input.spec, input.env);
+  input = { ...input, bin: program.bin };
   verifyCodexAttachments(input.spec.attachments);
   const run = input.spawn ?? spawnProcess;
   const abort = new AbortController();
@@ -354,10 +358,14 @@ export async function* runCodexAppServer(
   }
 
   try {
-    await request("initialize", {
+    const initialized = await request("initialize", {
       clientInfo: { name: "claudexor", version: CLAUDEXOR_VERSION },
       capabilities: { experimentalApi: true },
     });
+    // initialize.userAgent is the server-built client-name/version token; the later parenthesized client version is ours.
+    const userAgent = initialized["userAgent"];
+    if (typeof userAgent === "string")
+      program.observeVersion(/^[^/\s]+\/([^\s]+)/.exec(userAgent)?.[1]);
     await notify("initialized", null);
     const threadResult = await request(...codexAppServerThreadRequest(input.spec, input.effort));
     const thread = asObject(threadResult["thread"]);
@@ -387,14 +395,16 @@ export async function* runCodexAppServer(
     });
     // Explicit auxiliary roots ride only the turn policy (app-server-session.ts).
     const sandboxPolicy = codexTurnSandboxPolicy(input.spec, threadResult["sandbox"]);
-    yield await startCodexTurn({
-      spec: input.spec,
-      threadId,
-      sandboxPolicy,
-      requiredMcpServers: parseState.requiredMcpServers ?? [],
-      request,
-      nextNotification,
-    });
+    yield program.event(
+      await startCodexTurn({
+        spec: input.spec,
+        threadId,
+        sandboxPolicy,
+        requiredMcpServers: parseState.requiredMcpServers ?? [],
+        request,
+        nextNotification,
+      }),
+    );
     yield* browserStartup.takeEvents(input.spec.session_id);
     if (launchAdvisory) {
       yield {
@@ -531,14 +541,16 @@ export async function* runCodexAppServer(
         yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
         yield* asyncQuestions.takeEvents(notifications);
         if (!handback) yield* codexSettledTerminal(terminal.events, parseState);
-        yield codexCompletedEvent(
-          input.spec.session_id,
-          terminalPayload({
-            native_session_id: threadId,
-            native_turn_id: pendingTerminal?.["id"] ?? activeTurnId,
-            ...(subagents.count ? { subagent_threads: subagents.count } : {}),
-          }),
-          status === "interrupted",
+        yield program.event(
+          codexCompletedEvent(
+            input.spec.session_id,
+            terminalPayload({
+              native_session_id: threadId,
+              native_turn_id: pendingTerminal?.["id"] ?? activeTurnId,
+              ...(subagents.count ? { subagent_threads: subagents.count } : {}),
+            }),
+            status === "interrupted",
+          ),
         );
         return;
       }
@@ -555,10 +567,12 @@ export async function* runCodexAppServer(
       !cancellation.failure &&
       !processFailure
     ) {
-      yield codexCompletedEvent(
-        input.spec.session_id,
-        terminalPayload({ code: "user_cancelled", native_session_id: nativeThreadId }),
-        true,
+      yield program.event(
+        codexCompletedEvent(
+          input.spec.session_id,
+          terminalPayload({ code: "user_cancelled", native_session_id: nativeThreadId }),
+          true,
+        ),
       );
       return;
     }
@@ -577,18 +591,22 @@ export async function* runCodexAppServer(
         ? parseCodexStderrFailure(errorText(failure), input.spec.session_id, parseState)
         : null;
     if (nativeError) harnessReportedError = true;
-    yield nativeError ?? {
-      type: "error",
-      session_id: input.spec.session_id,
-      ts: nowIso(),
-      error: redactSecrets(errorText(failure)),
-      ...(requestRefusal ? { request_refusal: requestRefusal } : {}),
-      payload: { code: requestRefusal?.kind ?? code },
-    };
-    yield codexCompletedEvent(
-      input.spec.session_id,
-      terminalPayload({ code, native_session_id: nativeThreadId }),
-      aborted,
+    yield program.event(
+      nativeError ?? {
+        type: "error",
+        session_id: input.spec.session_id,
+        ts: nowIso(),
+        error: redactSecrets(errorText(failure)),
+        ...(requestRefusal ? { request_refusal: requestRefusal } : {}),
+        payload: { code: requestRefusal?.kind ?? code },
+      },
+    );
+    yield program.event(
+      codexCompletedEvent(
+        input.spec.session_id,
+        terminalPayload({ code, native_session_id: nativeThreadId }),
+        aborted,
+      ),
     );
   } finally {
     if (externalAbort instanceof AbortSignal) externalAbort.removeEventListener("abort", onAbort);

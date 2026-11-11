@@ -1,3 +1,4 @@
+import { NativeProgramEvidence } from "./harness-program.js";
 import { EffortResolution } from "./effort.js";
 import { z } from "zod/v3";
 import {
@@ -286,6 +287,7 @@ export type DelegationBeltEvidence = z.infer<typeof DelegationBeltEvidence>;
 
 export const AttemptTelemetryRecord = z
   .object({
+    programs: z.array(NativeProgramEvidence).optional(),
     request_refusal: HarnessRequestRefusal.optional(),
     effort_resolution: EffortResolution.optional(),
     processing: ProcessingReceipt.optional(),

@@ -132,7 +132,7 @@ describe("Codex app-server transport", () => {
       };
       const events: HarnessEvent[] = [];
       for await (const event of runCodexAppServer({
-        bin: "codex",
+        bin: "/fixture/codex",
         args: [],
         env: {},
         spawn,
@@ -208,7 +208,10 @@ describe("Codex app-server transport", () => {
           };
           writes.push(request);
           if (request.method === "initialize") {
-            push({ id: request.id, result: {} });
+            push({
+              id: request.id,
+              result: { userAgent: "claudexor/0.162.1 (fixture) unknown (claudexor; 5.0.0)" },
+            });
           } else if (request.method === "thread/start") {
             push({ id: request.id, result: { thread: { id: "thread-1" } } });
             push({
@@ -274,7 +277,7 @@ describe("Codex app-server transport", () => {
     let first: HarnessEvent | undefined;
     let quota: HarnessEvent | undefined;
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -287,6 +290,7 @@ describe("Codex app-server transport", () => {
       }
     }
 
+    expect(first?.program).toMatchObject({ version: "0.162.1", versionSource: "vendor_stream" });
     expect(writes.map((request) => request.id).filter(Boolean)).toEqual([1, 2, 3]);
     expect(writes.map((request) => request.method)).toEqual([
       "initialize",
@@ -381,7 +385,7 @@ describe("Codex app-server transport", () => {
     };
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-mcp-failure",
@@ -694,7 +698,7 @@ describe("Codex app-server transport", () => {
     });
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -812,7 +816,7 @@ describe("Codex app-server transport", () => {
     });
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -973,7 +977,7 @@ describe("Codex app-server transport", () => {
     const controller = new CodexAppServerController();
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -1085,7 +1089,7 @@ describe("Codex app-server transport", () => {
     const events: HarnessEvent[] = [];
     const collect = (async () => {
       for await (const event of runCodexAppServer({
-        bin: "codex",
+        bin: "/fixture/codex",
         args: [],
         spec,
         env: {},
@@ -1174,7 +1178,7 @@ describe("Codex app-server transport", () => {
       };
       const events: HarnessEvent[] = [];
       for await (const event of runCodexAppServer({
-        bin: "codex",
+        bin: "/fixture/codex",
         args: [],
         spec: HarnessRunSpec.parse({
           session_id: "session-system-error",
@@ -1260,7 +1264,7 @@ describe("Codex app-server transport", () => {
     };
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-survivor",
@@ -1340,7 +1344,7 @@ describe("Codex app-server transport", () => {
     });
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec,
       env: {},
@@ -1579,7 +1583,7 @@ describe("Codex live app-server events and messages", () => {
     const watchers: Array<{ match: (event: HarnessEvent) => boolean; resolve: () => void }> = [];
     const done = (async () => {
       for await (const event of runCodexAppServer({
-        bin: "codex",
+        bin: "/fixture/codex",
         args: [],
         spec,
         env: {},
@@ -2045,7 +2049,7 @@ describe("Codex app-server root-thread ownership (native sub-agents)", () => {
   ): Promise<HarnessEvent[]> {
     const events: HarnessEvent[] = [];
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-subagents",
@@ -2488,7 +2492,7 @@ describe("Codex app-server root-thread ownership (native sub-agents)", () => {
     const events: HarnessEvent[] = [];
     let steered: Promise<unknown> | undefined;
     for await (const event of runCodexAppServer({
-      bin: "codex",
+      bin: "/fixture/codex",
       args: [],
       spec: HarnessRunSpec.parse({
         session_id: "session-subagents",

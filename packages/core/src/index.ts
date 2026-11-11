@@ -48,3 +48,5 @@ export * from "./selected-program.js";
 export { programUpdateAvailable } from "./program-version.js";
 
 export * from "./program-observation.js";
+
+export * from "./native-program.js";

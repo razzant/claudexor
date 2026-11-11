@@ -226,6 +226,40 @@
           "items": {
             "type": "object",
             "properties": {
+              "programs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "version": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "versionSource": {
+                      "type": "string",
+                      "enum": [
+                        "vendor_stream",
+                        "version_probe",
+                        "unknown"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "version",
+                    "versionSource"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "attemptId": {
                 "$ref": "#/definitions/McpRunHandleResult/properties/deferredMessage/anyOf/0/properties/draftId"
               },
@@ -1070,6 +1104,17 @@
             {
               "type": "object",
               "properties": {
+                "lastVendorError": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "requestRefusal": {
                   "anyOf": [
                     {
@@ -1694,6 +1739,11 @@
                   "items": {
                     "type": "object",
                     "properties": {
+                      "lastVendorError": {
+                        "type": "string",
+                        "maxLength": 1000,
+                        "description": "Last vendor diagnostic line, bounded and redacted; never classified."
+                      },
                       "harnessId": {
                         "type": "string",
                         "minLength": 1,

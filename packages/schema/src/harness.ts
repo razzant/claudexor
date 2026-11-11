@@ -1,4 +1,4 @@
-import { HarnessProgramIdentity } from "./harness-program.js";
+import { HarnessProgramIdentity, NativeProgramEvidence } from "./harness-program.js";
 import { EffortHint, EffortResolution, ModelEffortCapability } from "./effort.js";
 import { z } from "zod/v3";
 import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
@@ -687,6 +687,7 @@ export type InputTokenUsage = z.infer<typeof InputTokenUsage>;
 /** Normalized event emitted by every adapter (the SSOT of adapter output). */
 export const HarnessEvent = z
   .object({
+    program: NativeProgramEvidence.optional(),
     request_refusal: HarnessRequestRefusal.optional(),
     effort_resolution: EffortResolution.optional(),
     processing: ProcessingReceipt.optional(),

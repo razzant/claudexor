@@ -108,3 +108,13 @@ export const HarnessProgramIdentity = z
   .object({ path: z.string(), version: z.string().nullable() })
   .strict();
 export type HarnessProgramIdentity = z.infer<typeof HarnessProgramIdentity>;
+
+/** Native execution provenance. A vendor startup answer outranks a pre-spawn version read. */
+export const NativeProgramEvidence = z
+  .object({
+    path: z.string().nullable(),
+    version: z.string().nullable(),
+    versionSource: z.enum(["vendor_stream", "version_probe", "unknown"]),
+  })
+  .strict();
+export type NativeProgramEvidence = z.infer<typeof NativeProgramEvidence>;

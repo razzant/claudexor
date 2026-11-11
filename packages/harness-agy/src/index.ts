@@ -535,6 +535,7 @@ async function* runAgy(
   const completion = createAgyNativeCompletion();
   const run = (settingsArgs: string[]) =>
     runCliHarness({
+      program: AGY_PROGRAM,
       bin: AGY_BIN(),
       args: [...settingsArgs, ...args],
       input,

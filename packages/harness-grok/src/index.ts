@@ -339,6 +339,7 @@ async function* runGrok(
   const parser = createGrokParser();
   const startup = createGrokStartupCheck(spec);
   for await (const event of runtime.runCli({
+    program: GROK_PROGRAM,
     bin: resolveGrokBin(),
     args,
     spec,

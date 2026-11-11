@@ -4,6 +4,40 @@
     "AttemptExecutionEvidence": {
       "type": "object",
       "properties": {
+        "programs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "versionSource": {
+                "type": "string",
+                "enum": [
+                  "vendor_stream",
+                  "version_probe",
+                  "unknown"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "version",
+              "versionSource"
+            ],
+            "additionalProperties": false
+          }
+        },
         "attemptId": {
           "type": "string",
           "minLength": 1,

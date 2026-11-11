@@ -313,6 +313,7 @@ export function detailFor(
     attemptExecution: telemetry?.attempts.map((attempt) => ({
       attemptId: attempt.attempt_id,
       harnessId: attempt.harness_id,
+      programs: attempt.programs,
       processing: attempt.processing,
       processingCostBasis: attempt.processing_cost_basis,
       usageCost: attempt.usage_cost,

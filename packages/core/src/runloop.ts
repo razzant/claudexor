@@ -1,4 +1,5 @@
-import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
+import { prepareNativeProgram, type NativeProgramRun } from "./native-program.js";
+import type { HarnessEvent, HarnessRunSpec, HarnessProgram } from "@claudexor/schema";
 import { spawnProcess, type ChildStdin } from "./proc.js";
 import type { WindowsConsolePolicy } from "./runtime-env.js";
 import type { ProcessTreeTerminationOutcome, ReapProcessTreeOptions } from "./process-tree.js";
@@ -47,6 +48,9 @@ export function abortSignalFromSpec(spec: HarnessRunSpec): AbortSignal | undefin
 }
 
 export interface CliRunLoopOptions {
+  program?: HarnessProgram;
+  /** Adapter-owned field from the vendor startup frame, never error prose. */
+  programVersion?: (frame: unknown) => unknown;
   bin: string;
   args: string[];
   /** Native process I/O seam; event parsing and lifecycle remain production-owned. */
@@ -104,6 +108,19 @@ export interface CliRunLoopOptions {
 }
 
 export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+  if (!opts.program) {
+    yield* runCliHarnessObserved(opts);
+    return;
+  }
+  const program = await prepareNativeProgram(opts.program, opts.bin, opts.spec, opts.env);
+  for await (const event of runCliHarnessObserved({ ...opts, bin: program.bin }, program))
+    yield program.event(event);
+}
+
+async function* runCliHarnessObserved(
+  opts: CliRunLoopOptions,
+  program?: NativeProgramRun,
+): AsyncGenerator<HarnessEvent> {
   if (opts.input !== undefined && opts.session !== undefined) {
     throw new Error("runCliHarness input and session are mutually exclusive stdin owners");
   }
@@ -213,6 +230,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
         droppedUnparsedLines += 1;
         continue;
       }
+      program?.observeVersion(opts.programVersion?.(obj));
       if (opts.session && session.io && opts.session.matches(obj)) {
         for await (const out of opts.session.handle(obj, session.io)) {
           if (out.type === "error") sawError = harnessReportedError = true;

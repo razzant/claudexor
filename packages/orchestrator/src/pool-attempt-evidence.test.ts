@@ -203,6 +203,20 @@ describe("PoolAttemptEvidence (per-try account attribution)", () => {
     expect(third!.vendorFailure).toBeNull();
   });
 
+  it("keeps the vendor's last error line bounded and redacted on the pool terminal", () => {
+    const evidence = new PoolAttemptEvidence("claude", "a01");
+    dispatched(evidence, spec("a"), 0);
+    evidence.observe(error("an earlier diagnostic"));
+    evidence.observe(error(`API rejected this client.\nUpdate this program. token=${secret}`));
+    evidence.settle(failed());
+    const terminal = poolFailure("Credential pool exhausted", [
+      { poolAttempts: evidence.snapshot() },
+    ]);
+    expect(terminal.poolAttempts[0]!.lastVendorError).toContain("Update this program.");
+    expect(terminal.message).toContain("Update this program.");
+    expect(terminal.message).not.toContain(secret);
+    expect(terminal.poolAttempts[0]!.lastVendorError!.length).toBeLessThanOrEqual(1000);
+  });
   it("takes each try's vendor failure from its own settled terminal, a zero exit included", () => {
     const evidence = new PoolAttemptEvidence("agy", "a01");
     const completed = (vendor_failure?: unknown): HarnessEvent => ({

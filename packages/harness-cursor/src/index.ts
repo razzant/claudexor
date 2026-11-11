@@ -478,6 +478,7 @@ async function* runCursor(
     spec.model_hint,
   );
   yield* deps.runCliHarness({
+    program: CURSOR_PROGRAM,
     bin: resolveCursorBin(),
     args,
     spec,

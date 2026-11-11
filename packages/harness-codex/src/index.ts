@@ -804,6 +804,7 @@ async function* runCodex(
       return;
     }
     const stream = runtime.runCliHarness({
+      program: CODEX_PROGRAM,
       bin: resolveCodexBin(),
       args,
       spec,

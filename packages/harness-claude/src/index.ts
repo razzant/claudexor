@@ -616,6 +616,13 @@ async function* runClaude(
   );
   const events = withClaudeInstructionsFile(spec.instructions, (instructionsPath) =>
     runtime.runCliHarness({
+      program: CLAUDE_PROGRAM,
+      programVersion: (raw) => {
+        const frame = raw as { type?: string; subtype?: string; claude_code_version?: unknown };
+        return frame?.type === "system" && frame.subtype === "init"
+          ? frame.claude_code_version
+          : null;
+      },
       bin: resolveClaudeBin(),
       args: claudeArgsForSpec(
         spec,

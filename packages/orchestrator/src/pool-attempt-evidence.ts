@@ -19,6 +19,7 @@ interface OpenTry {
   spec: HarnessRunSpec;
   tryIndex: number;
   error: string | null;
+  lastError: string | null;
   at: string | null;
   foreign: boolean;
   /** #414: the vendor's own failure this try's completion carried. */
@@ -58,6 +59,7 @@ export class PoolAttemptEvidence {
       spec,
       tryIndex,
       error: null,
+      lastError: null,
       at: null,
       vendor: null,
       foreign: false,
@@ -76,11 +78,13 @@ export class PoolAttemptEvidence {
     const bound = open.spec.credential_profile?.profile_id ?? null;
     if (event.credential_profile_id !== undefined && event.credential_profile_id !== bound)
       open.foreign = true;
+    if (event.type === "error") open.lastError = event.error ?? event.text ?? open.lastError;
     if (event.type === "error" && open.error === null) {
       open.error = event.error ?? event.text ?? null;
       open.at = event.ts;
     }
-    if (event.type === "completed") open.vendor = completionVendorFailure(event);
+    const vendor = completionVendorFailure(event);
+    if (vendor) open.vendor = vendor;
   }
 
   settle(
@@ -121,6 +125,12 @@ export class PoolAttemptEvidence {
       error: redactSecrets(
         open.error ?? facts.originalError ?? "the try ended in an error without a message",
       ),
+      lastVendorError: lastVendorSentence(
+        vendor?.message ??
+          open.lastError ??
+          facts.originalError ??
+          "the try ended in an error without a message",
+      ),
       vendorFailure: vendor ? redactVendorFailure(vendor) : null,
     });
   }
@@ -128,6 +138,17 @@ export class PoolAttemptEvidence {
   snapshot(): PoolAttemptFailure[] {
     return this.rows.map((row) => ({ ...row }));
   }
+}
+
+/** Preserve the vendor's last diagnostic line, without interpreting its prose. */
+export function lastVendorSentence(message: string): string {
+  return (
+    redactSecrets(message)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? ""
+  ).slice(0, 1000);
 }
 
 function isoOr(value: string | null, now: () => Date): string {
@@ -180,7 +201,7 @@ export function withPoolAttempts(message: string, attempts: readonly PoolAttempt
       a.profileDisplayName && a.profileDisplayName !== a.profileId
         ? ` (${a.profileDisplayName})`
         : "";
-    return `- ${a.harnessId}/${a.profileId ?? "default"}${label} · ${a.requestedModel ?? "default model"} · ${a.attemptId} try ${a.tryIndex + 1} · ${a.phase.replace("_", " ")} · ${a.category}: ${a.error}`;
+    return `- ${a.harnessId}/${a.profileId ?? "default"}${label} · ${a.requestedModel ?? "default model"} · ${a.attemptId} try ${a.tryIndex + 1} · ${a.phase.replace("_", " ")} · ${a.category}: ${a.lastVendorError ?? a.error}`;
   });
   return `${message}\n\nAccount attempts:\n${lines.join("\n")}`;
 }
