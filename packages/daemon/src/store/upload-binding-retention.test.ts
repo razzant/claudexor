@@ -452,8 +452,9 @@ describe("upload binding scan", () => {
       return result;
     }) as never);
     expect(await new UploadBindings(f.store).prune()).toEqual(finished(202));
-    // Two bindings per target: one full batch, then the rest.
-    expect(deleted).toEqual([200, 2]);
+    // Two bindings per target: one full batch, then the rest. The store's own
+    // periodic transactions, which delete no binding, may run between them.
+    expect(deleted.filter((count) => count > 0)).toEqual([200, 2]);
   }, 60_000);
 
   it("a failed delete transaction rejects the scan, keeps what was settled and leaves the scan due", async () => {
@@ -462,11 +463,17 @@ describe("upload binding scan", () => {
     clock += UPLOAD_BINDING_RETENTION_MS;
     const scanner = new UploadBindings(f.store);
     const transaction = f.store.transaction.bind(f.store);
-    let calls = 0;
-    const failing = vi.spyOn(f.store, "transaction").mockImplementation(((body: () => unknown) => {
-      if ((calls += 1) === 2) throw new Error("fixture: the second batch cannot commit");
-      return transaction(body);
-    }) as never);
+    let deleting = 0;
+    // The second transaction that deletes bindings fails inside the store and
+    // rolls back. The store's own periodic transactions pass through.
+    const failing = vi.spyOn(f.store, "transaction").mockImplementation(((body: () => unknown) =>
+      transaction(() => {
+        const before = bindings(f);
+        const result = body();
+        if (bindings(f) < before && (deleting += 1) === 2)
+          throw new Error("fixture: the second batch cannot commit");
+        return result;
+      })) as never);
     await expect(scanner.prune({ window: 4, batch: 2 })).rejects.toThrow();
     // The first batch of two targets stays deleted.
     expect(bindings(f)).toBe(8);
