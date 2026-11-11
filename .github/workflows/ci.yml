@@ -240,7 +240,7 @@ jobs:
   windows-test:
     name: Windows ${{ matrix.runner }} (Node ${{ matrix.node-version }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -437,6 +437,16 @@ jobs:
           node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
           if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
 
+      # The same real-vendor proof as the `vendor-programs` job, here because
+      # the Windows build needs this job's MSVC environment. One runner is enough.
+      - name: Vendor installation, update and npm-copy replacement routes
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/windows-local-install-smoke.mjs
+          if ($LASTEXITCODE -ne 0) { throw "vendor program smoke exited $LASTEXITCODE" }
+
   # Real vendor installers and updaters in a disposable HOME on each platform:
   # every adapter-declared installation route, the installed program's own
   # update, and replacement of a product-made npm copy. Receipts and the next
@@ -449,7 +459,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-26, windows-latest]
+        os: [ubuntu-latest, macos-26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

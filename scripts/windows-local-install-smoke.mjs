@@ -53,7 +53,7 @@ function environment(home) {
   return env;
 }
 
-function cli(env, args) {
+function cli(env, args, { refusal = false } = {}) {
   const result = spawnSync(
     process.execPath,
     [join(repo, "packages/cli/dist/cli.js"), ...args, "--json"],
@@ -65,6 +65,14 @@ function cli(env, args) {
       maxBuffer: 8 * 1024 * 1024,
     },
   );
+  // A refused operation still prints its receipt; the caller may read it.
+  if (refusal && result.status !== 0) {
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      /* fall through to the full report */
+    }
+  }
   // The receipt on stdout carries the vendor's own lines; print it with stderr.
   if (result.status !== 0)
     throw new Error(
@@ -99,7 +107,32 @@ function attempt(route, harness, run) {
     console.log(
       `FAILED ${route} ${harness}: ${error instanceof Error ? error.message : String(error)}`,
     );
+    if (win && route === "install") console.log(`WHERE ${harness}: ${whereOnWindows(harness)}`);
   }
+}
+
+/** Where a Windows installer really put its launchers: the registry PATH a new
+ * terminal would get, and the usual program roots. Diagnostic output only. */
+function whereOnWindows(harness) {
+  const names = harnessPrograms()
+    .find((program) => program.id === harness)
+    .launchers.map((launcher) => launcher.name);
+  const script = `
+$names = @(${names.map((name) => `'${name}'`).join(",")})
+$dirs = (@([Environment]::GetEnvironmentVariable('Path','Machine'), [Environment]::GetEnvironmentVariable('Path','User')) -join ';') -split ';' | Where-Object { $_ }
+$roots = @($env:ProgramFiles, \${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA 'Programs'), (Join-Path $env:LOCALAPPDATA 'Microsoft\\WinGet'), (Join-Path $env:LOCALAPPDATA 'Microsoft\\WindowsApps'))
+$found = @()
+foreach ($name in $names) {
+  foreach ($dir in $dirs) { Get-ChildItem -LiteralPath $dir -Filter "$name*" -ErrorAction SilentlyContinue | ForEach-Object { $found += "PATH: " + $_.FullName } }
+  foreach ($root in $roots) { if ($root) { Get-ChildItem -LiteralPath $root -Recurse -Depth 4 -Filter "$name*.exe" -ErrorAction SilentlyContinue | ForEach-Object { $found += "ROOT: " + $_.FullName } } }
+}
+$found | Sort-Object -Unique
+`;
+  const result = spawnSync("powershell", ["-NoProfile", "-Command", script], {
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  return `\n${result.stdout}${result.stderr}`;
 }
 
 /** Install with the vendor's installer, read it back, install again as a no-op. */
@@ -129,7 +162,11 @@ function updateRoute(program, env) {
   const row = cli(env, ["harness", "inspect", program.id]).harnesses[0];
   if (!row.selection.path) throw new Error("no program is selected to update");
   if (!row.actions.update.available) return { unavailable: row.actions.update.reason };
-  const receipt = cli(env, ["harness", "update", program.id, "--yes"]);
+  const receipt = cli(env, ["harness", "update", program.id, "--yes"], { refusal: true });
+  // A vendor's own refusal (an unauthenticated rate limit, for one) is a complete,
+  // honest result when the program still answers; it is printed, not counted.
+  if (!receipt.ok && receipt.problem?.code === "vendor_command_failed" && receipt.after?.version)
+    return { vendorRefused: receipt.progress, exitCode: receipt.exitCode };
   if (
     !receipt.ok ||
     !["changed", "not_changed"].includes(receipt.outcome) ||
