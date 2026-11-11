@@ -144,8 +144,9 @@ export class SqlResourceStore implements ResourceStorePort {
       return { ...payloadRef(resource), createdAt: resource.createdAt };
     });
   }
-  pruneUploadBindings(): number {
-    return this.uploads.bindings.prune();
+  /** One scan of expired upload bindings in bounded windows; `signal` ends it between windows. */
+  pruneUploadBindings(signal?: AbortSignal): Promise<number> {
+    return this.uploads.bindings.prune({ signal });
   }
   onObligationsCleared(rows: readonly ObligationRow[]): void {
     this.publisher.onCleared(rows);

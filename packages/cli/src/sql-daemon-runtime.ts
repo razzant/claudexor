@@ -180,11 +180,10 @@ export function createSqlDaemonExecutors(
     retention: (runner: RetentionRunner): RetentionRunner => {
       const wrapped = models.withRetention(runner);
       return recordLastRetention(
-        afterRetention(wrapped, (request) => {
-          if (!request.dry_run) {
-            options.daemon().pruneHistory();
-            graph.resources.pruneUploadBindings();
-          }
+        afterRetention(wrapped, async (request, _receipt, signal) => {
+          if (request.dry_run) return;
+          options.daemon().pruneHistory();
+          await graph.resources.pruneUploadBindings(signal);
         }),
         graph.store,
       );

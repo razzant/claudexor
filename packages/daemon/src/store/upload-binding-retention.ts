@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { setImmediate as yieldToAdmission } from "node:timers/promises";
 import { ControlResource, ControlUploadStatus } from "@claudexor/schema";
 import { StoreError } from "./errors.js";
 import {
@@ -16,10 +17,33 @@ import {
   readUploadRow,
   type ResourceRow,
 } from "./resource-rows.js";
+import { RETENTION_AGE_REVISIT_MS, RETENTION_ROW_WINDOW } from "./retention-pages.js";
 import type { EngineStore } from "./store.js";
 
 /** The accepted upload-binding lifetime starts at release/expiry, never at upload creation. */
 export const UPLOAD_BINDING_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+/** Expired targets one prune transaction confirms and deletes. */
+export const UPLOAD_BINDING_PRUNE_BATCH = 100;
+/** Key of the last of the next `?2` upload bindings after `?1`; null when none follow. */
+const PRUNE_WINDOW_END_SQL = `SELECT max(k) AS k FROM (SELECT key_digest AS k FROM idempotency
+  WHERE owner='upload' AND pid=0 AND key_digest>?1 ORDER BY key_digest LIMIT ?2)`;
+/** Targets of one window whose binding and resource are both past the cutoff `?3`.
+ * The binding's own age is tested first, so a binding inside the lifetime costs
+ * no upload or resource read. Both tests only narrow: `expired()` decides. */
+const PRUNE_WINDOW_SQL = `SELECT DISTINCT i.target_id FROM idempotency i
+  JOIN upload u ON u.id=i.target_id
+  JOIN resource r ON r.id=json_extract(CAST(u.body AS TEXT), '$.resourceId')
+  WHERE i.owner='upload' AND i.pid=0 AND i.key_digest>?1 AND i.key_digest<=?2
+    AND i.created_at<=?3 AND r.state IN ('released','expired')
+    AND coalesce(r.released_at, CASE WHEN r.state='expired' THEN r.expires_at END)<=?3`;
+export interface UploadBindingPrune {
+  /** Stop, restart and storage recovery: the scan ends before its next read or write. */
+  signal?: AbortSignal;
+  /** Binding rows one synchronous read examines. */
+  window?: number;
+  /** Targets one transaction confirms and deletes. */
+  batch?: number;
+}
 export type UploadOperation = "create" | "finalize" | "import";
 export interface LegacyUploadBinding {
   operation: Exclude<UploadOperation, "import">;
@@ -97,6 +121,12 @@ function expired(row: ResourceRow | undefined, now: number): boolean {
 
 /** SQL is authoritative once adopted. Historical files are point-read only on an enabled miss. */
 export class UploadBindings {
+  /** Disposable scan progress: the last binding key the current scan examined. */
+  private cursor = "";
+  /** Store time at which the last scan reached the end of the keys. */
+  private scannedAt: number | null = null;
+  private pruning: Promise<number> | null = null;
+
   constructor(private readonly store: EngineStore) {}
 
   lookup(
@@ -180,24 +210,80 @@ export class UploadBindings {
     return binding;
   }
 
-  /** Metadata rows remain so the point fallback applies this same lifetime forever. */
-  prune(): number {
-    const rows = this.store
-      .prepare(
-        `SELECT DISTINCT i.target_id FROM idempotency i
-      JOIN upload u ON u.id=i.target_id
-      JOIN resource r ON r.id=json_extract(CAST(u.body AS TEXT), '$.resourceId')
-      WHERE i.owner='upload' AND i.pid=0 AND r.state IN ('released','expired')`,
-      )
-      .all() as Array<{ target_id: string }>;
-    const targets = rows.filter((row) => this.targetExpired(row.target_id));
-    if (!targets.length) return 0;
-    return runMutation(this.store, (tx) =>
-      targets.reduce(
-        (n, row) => n + deleteTargetIdempotencyInTx(tx, "upload", 0, row.target_id),
-        0,
-      ),
-    );
+  /**
+   * Delete the bindings of expired targets; resolves to the number of bindings
+   * deleted. Metadata rows remain so the point fallback applies this same
+   * lifetime forever.
+   *
+   * One scan walks every upload binding in key order, a window of rows per
+   * synchronous read, and yields to admission after each window, so its longest
+   * hold of the event loop is one window whatever the store holds. Deletions are
+   * confirmed by the test `lookup()` applies and committed a batch at a time. A
+   * scan that was cancelled resumes after its last settled window on the next
+   * call. A scan that reached the end is not repeated before the regular age
+   * revisit: expiry depends on age alone, so the pass that follows a truncated
+   * one a second later has nothing new to find. `lookup()` applies the exact
+   * lifetime on every read; the scan only reclaims rows, and a binding created
+   * inside the lifetime (a legacy receipt adopted after its resource's release)
+   * waits for a later scan. One scan runs at a time: a concurrent caller joins
+   * the scan in flight.
+   */
+  prune(input: UploadBindingPrune = {}): Promise<number> {
+    this.pruning ??= this.scan(input).finally(() => {
+      this.pruning = null;
+    });
+    return this.pruning;
+  }
+
+  private async scan(input: UploadBindingPrune): Promise<number> {
+    const now = this.store.now().getTime();
+    if (
+      this.cursor === "" &&
+      this.scannedAt !== null &&
+      now - this.scannedAt < RETENTION_AGE_REVISIT_MS
+    )
+      return 0;
+    const window = input.window ?? RETENTION_ROW_WINDOW;
+    const batch = input.batch ?? UPLOAD_BINDING_PRUNE_BATCH;
+    const cutoff = new Date(now - UPLOAD_BINDING_RETENTION_MS).toISOString();
+    const windowEnd = this.store.prepare(PRUNE_WINDOW_END_SQL);
+    const candidates = this.store.prepare(PRUNE_WINDOW_SQL);
+    const pending = new Set<string>();
+    // Where the scan resumes while `pending` holds targets no transaction settled.
+    let unsettledFrom = this.cursor;
+    let removed = 0;
+    const settle = () => {
+      const targets = [...pending].filter((id) => this.targetExpired(id));
+      if (targets.length)
+        removed += runMutation(this.store, (tx) =>
+          targets.reduce((n, id) => n + deleteTargetIdempotencyInTx(tx, "upload", 0, id), 0),
+        );
+      pending.clear();
+    };
+    try {
+      for (;;) {
+        if (input.signal?.aborted) {
+          if (pending.size) this.cursor = unsettledFrom;
+          return removed;
+        }
+        const end = (windowEnd.get(this.cursor, window) as { k: string | null }).k;
+        if (end === null) break;
+        const found = candidates.all(this.cursor, end, cutoff) as Array<{ target_id: string }>;
+        if (found.length && !pending.size) unsettledFrom = this.cursor;
+        for (const row of found) pending.add(row.target_id);
+        this.cursor = end;
+        if (pending.size >= batch) settle();
+        await yieldToAdmission();
+      }
+      settle();
+    } catch (error) {
+      // Scan progress, not authority: the unsettled windows are read again.
+      if (pending.size) this.cursor = unsettledFrom;
+      throw error;
+    }
+    this.cursor = "";
+    this.scannedAt = this.store.now().getTime();
+    return removed;
   }
 
   private targetExpired(id: string): boolean {

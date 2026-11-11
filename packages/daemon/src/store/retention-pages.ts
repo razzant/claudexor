@@ -7,6 +7,10 @@ type Table = "thread" | "command" | "deferred_message";
  * count rows, not rowid values, so gaps left by deleted history cost nothing. */
 export const RETENTION_ROW_WINDOW = 1000;
 
+/** How often eligibility by age is looked at again: the interval of the
+ * scheduled pass, and the soonest a finished age scan repeats. */
+export const RETENTION_AGE_REVISIT_MS = 60 * 60 * 1000;
+
 /** Rowid of the last of the next `window` existing rows after `after`, or null
  * when none remain: a keyset seek, so a window never spans a rowid gap's width. */
 export function occupiedWindowEnd(

@@ -173,6 +173,38 @@ it.each(["model", "upload"])(
     });
   },
 );
+it("gives upload-binding cleanup the pass's signal, so a cancelled pass ends the scan", async () => {
+  const { root, sql } = await fixture();
+  const runtime = createSqlDaemonRuntime(sql.graph, {
+    server: { socketPath: join(root, "unused.sock"), token: "fixture" },
+    authReadiness: () => ({ invalidate() {} }),
+    agent: () => async () => ({ lifecycle: "succeeded" }),
+  });
+  cleanup.push(() => runtime.stop());
+  let entered!: () => void;
+  const scanning = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const signals: Array<AbortSignal | undefined> = [];
+  vi.spyOn(sql.graph.resources, "pruneUploadBindings").mockImplementation(async (signal) => {
+    signals.push(signal);
+    entered();
+    await new Promise<void>((resolve) =>
+      signal!.addEventListener("abort", () => resolve(), { once: true }),
+    );
+    return 0;
+  });
+  const run = runtime.retention(async () => receipt());
+  const pending = run({ dry_run: false });
+  await scanning;
+  expect(signals[0]!.aborted).toBe(false);
+  await run.cancel!();
+  await pending;
+  expect(signals[0]!.aborted).toBe(true);
+  // A preview deletes nothing, bindings included.
+  await run({ dry_run: true });
+  expect(signals).toHaveLength(1);
+});
 it("periodic retention uses the daemon's history policy and releases cancelled ids, but preview does neither", async () => {
   const { root, sql } = await fixture();
   const runtime = createSqlDaemonRuntime(sql.graph, {

@@ -5236,7 +5236,7 @@ page keeps every remaining candidate and schedules a fresh pass. An existing tom
 skipped before any proof refresh, and no await separates a candidate's final proof from
 its expiration marker. A project's Git object store that ends a pass strictly empty (no
 root record, pending lease, object or recent entry) is retired under its prune lock; an
-import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
+import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. Upload-binding cleanup, which runs after the pass, checks it between windows and resumes after its last settled window on the next pass. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
 retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
@@ -6023,7 +6023,16 @@ cleanup. Caller keys stay strict even with `purpose=model` or internal-looking
 names. The persisted presence flag disables the fallback when absent.
 Bindings expire 30 days after a resource's known release/expiry, never from a
 guessed file timestamp. An expired lookup deletes that target's SQL bindings
-before the historical read, so a damaged copy still refuses afterwards. Repair
+before the historical read, so a damaged copy still refuses afterwards.
+Retention reclaims the other expired bindings with a scan in key order: one
+window of rows per synchronous read (the row window of the other filtered
+retention reads), a yield to admission after each window, and deletions that
+the lookup's own test confirms and one transaction commits a batch at a time,
+so the scan never holds the event loop longer than one window whatever the
+store holds. A finished scan repeats at the hourly age revisit; the pass that
+follows a truncated one sooner only finishes an interrupted scan. A binding
+created inside the lifetime (a historical receipt adopted after its resource's
+release) waits for a later scan, while every lookup applies the exact lifetime. Repair
 before expiry replays the receipt; after it, the key is admitted as a new upload
 and an old finalize answers `upload_not_found`, not the expired receipt.
 Manually removing the historical directory can turn a later replay into a
