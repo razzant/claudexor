@@ -8461,7 +8461,7 @@ an unchanged wrapper is visible at the next read; stale in-flight answers cannot
 overwrite newer observations. Fixture version constants stamp recorded evidence
 only. Native attempt records retain each invoked path/version, using the vendor
 startup frame where available, and exhausted credential pools retain the last
-bounded, redacted vendor error sentence.
+bounded, redacted vendor error sentence alongside each try's original refusal.
 
 Engine-spawned Cursor children receive `--disable-auto-update`; Antigravity,
 Copilot and Grok keep their declared controls. Claude, Codex and OpenCode receive

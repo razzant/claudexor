@@ -214,9 +214,24 @@ describe("PoolAttemptEvidence (per-try account attribution)", () => {
     ]);
     expect(terminal.poolAttempts[0]!.lastVendorError).toContain("Update this program.");
     expect(terminal.message).toContain("Update this program.");
+    expect(terminal.message).toContain("an earlier diagnostic");
     expect(terminal.message).not.toContain(secret);
     expect(terminal.poolAttempts[0]!.lastVendorError!.length).toBeLessThanOrEqual(1000);
   });
+  it.each(["An unpaid invoice\n  (team account)", "A single refusal."])(
+    "keeps the complete original refusal without repeating its final line: %s",
+    (message) => {
+      const evidence = new PoolAttemptEvidence("cursor", "a01");
+      dispatched(evidence, spec("a"), 0);
+      evidence.observe(error(message));
+      evidence.settle(failed());
+      const terminal = poolFailure("Credential pool exhausted", [
+        { poolAttempts: evidence.snapshot() },
+      ]);
+      expect(terminal.message).toContain(message);
+      expect(terminal.message).not.toContain("Last vendor diagnostic:");
+    },
+  );
   it("takes each try's vendor failure from its own settled terminal, a zero exit included", () => {
     const evidence = new PoolAttemptEvidence("agy", "a01");
     const completed = (vendor_failure?: unknown): HarnessEvent => ({

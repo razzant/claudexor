@@ -201,7 +201,11 @@ export function withPoolAttempts(message: string, attempts: readonly PoolAttempt
       a.profileDisplayName && a.profileDisplayName !== a.profileId
         ? ` (${a.profileDisplayName})`
         : "";
-    return `- ${a.harnessId}/${a.profileId ?? "default"}${label} · ${a.requestedModel ?? "default model"} · ${a.attemptId} try ${a.tryIndex + 1} · ${a.phase.replace("_", " ")} · ${a.category}: ${a.lastVendorError ?? a.error}`;
+    const diagnostic =
+      a.lastVendorError && !a.error.includes(a.lastVendorError)
+        ? `${a.error}\n  Last vendor diagnostic: ${a.lastVendorError}`
+        : a.error;
+    return `- ${a.harnessId}/${a.profileId ?? "default"}${label} · ${a.requestedModel ?? "default model"} · ${a.attemptId} try ${a.tryIndex + 1} · ${a.phase.replace("_", " ")} · ${a.category}: ${diagnostic}`;
   });
   return `${message}\n\nAccount attempts:\n${lines.join("\n")}`;
 }
