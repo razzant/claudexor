@@ -1,14 +1,8 @@
-import type { PinnedVendorCliVersion } from "@claudexor/util";
+import type { VendorCliVersionStamp } from "@claudexor/util";
 
 /**
- * The OpenCode vendor-CLI version the remote harness installer pins
- * (issue #89). OpenCode is the one npm-distributed harness with NO recorded
- * stream fixture or verification stamp yet (fixtures are synthetic-only and
- * the fixture-freshness gate discloses that on every run), so unlike the
- * claude/codex constants this pin is NOT a verification claim — it is the
- * deterministic install target: two installs from the same Claudexor build
- * produce the same binary, and npm verifies the registry integrity checksum
- * for this exact version. Bump deliberately; when a live route exists, record
- * a real fixture and stamp it with this same version.
+ * The OpenCode V1 fixture reference. The stream fixtures are currently
+ * synthetic; this value is not a live verification claim. When a live fixture
+ * is recorded, stamp it with the version that actually produced it.
  */
-export const OPENCODE_VENDOR_CLI_VERSION: PinnedVendorCliVersion = "1.18.9";
+export const OPENCODE_VENDOR_CLI_VERSION: VendorCliVersionStamp = "1.18.9";

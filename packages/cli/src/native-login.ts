@@ -1,3 +1,6 @@
+import { resolveCodexBin } from "@claudexor/harness-codex";
+import { resolveClaudeBin } from "@claudexor/harness-claude";
+import { AGY_BIN } from "@claudexor/harness-agy";
 import {
   WINDOWS_RUNTIME_ENV_KEYS,
   harnessRuntimeEnv,
@@ -72,7 +75,7 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
     displayCommand: "grok login --device-auth",
   },
   codex: {
-    binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex",
+    binaryName: resolveCodexBin,
     // D-17: device-code auth is the DEFAULT flow, now driven over the codex
     // app-server (`account/login/start {chatgptDeviceCode}`) with NO Terminal.
     // Completed in an ISOLATED browser context it avoids the
@@ -85,7 +88,7 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
     displayCommand: "codex app-server device-code login (isolated Claudexor profile)",
   },
   claude: {
-    binaryName: () => process.env.CLAUDEXOR_CLAUDE_BIN || "claude",
+    binaryName: resolveClaudeBin,
     // No --claudeai flag: it is version-varying (absent on older CLIs, #17)
     // while plain `auth login` already defaults to the claude.ai subscription
     // route; the scoped CLAUDE_CONFIG_DIR isolates us from any user setting
@@ -104,7 +107,7 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
       basename(binary) === "agent" ? "agent login" : "cursor-agent login",
   },
   agy: {
-    binaryName: () => process.env.CLAUDEXOR_AGY_BIN || "agy",
+    binaryName: AGY_BIN,
     // agy has no login subcommand. BARE `agy` is the interactive TUI, which
     // OPENS THE BROWSER ITSELF and stays resident after authenticating — on a
     // daemon host that hijacks a browser nobody is watching and the runner

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveHarnessBinary,
-  runCapture,
+  resolveSelectedProgramAsync,
+  selectProgramLauncher,
   HarnessUnavailableError,
   type DoctorSpec,
   type HarnessModelSpec,
@@ -19,7 +20,7 @@ import {
 } from "@claudexor/schema";
 import type { AcpEntry } from "./entry.js";
 import { AcpFailure } from "./events.js";
-import { acpToken, prepareAcpEnv } from "./env.js";
+import { acpToken } from "./env.js";
 import { acpManifest } from "./manifest.js";
 import { acpRunner, ACP_DISCLOSURE } from "./run.js";
 import type { AcpObservation } from "./transport.js";
@@ -44,7 +45,7 @@ export function acpProbes(
 ) {
   let version: string | undefined;
   const binary = () => {
-    const bin = process.env[entry.binaryEnv] ?? entry.binary;
+    const bin = selectProgramLauncher(entry.program);
     if (!resolveHarnessBinary(bin))
       throw new HarnessUnavailableError(`${entry.displayName} binary is not installed`);
     return bin;
@@ -96,22 +97,10 @@ export function acpProbes(
   };
   return {
     async discover() {
-      const bin = binary();
-      if (!version) {
-        const prepared = prepareAcpEnv(entry, "");
-        try {
-          const result = await runCapture(bin, ["--version"], {
-            env: prepared.env,
-            inheritEnv: "clean",
-            timeoutMs: 10_000,
-          });
-          if (result.code !== 0)
-            throw new HarnessUnavailableError(`${entry.displayName} --version failed`);
-          version = result.stdout.trim() || "unknown";
-        } finally {
-          prepared.dispose();
-        }
-      }
+      const selected = await resolveSelectedProgramAsync(entry.program);
+      if (!selected.versionOutput)
+        throw new HarnessUnavailableError(`${entry.displayName} --version failed`);
+      version = selected.versionOutput;
       return acpManifest(entry, version, profile);
     },
     async doctor(spec: DoctorSpec) {

@@ -57,7 +57,7 @@ import type { HarnessCapabilities, HarnessModel } from "@claudexor/schema";
 import { resolveSecret } from "@claudexor/secrets";
 import { ensureDir, nativeHarnessStateRoot } from "@claudexor/util";
 import { CLAUDE_KNOWN_MODELS } from "./capability-profile.js";
-import { BIN } from "./effort-probe.js";
+import { resolveClaudeBin } from "./effort-probe.js";
 import { claudeNativeEnv } from "./index.js";
 import { CLAUDE_INIT_REQUEST_ID } from "./interactive.js";
 import { canonicalProfileConfigDir } from "./profile.js";
@@ -309,9 +309,15 @@ function probeBinaryIdentity(
 ): HarnessBinaryIdentity | null {
   const patchPath = base?.["PATH"];
   if (typeof patchPath === "string") {
-    return (deps.binaryIdentityOnPath ?? harnessBinaryIdentityOnPath)(BIN, patchPath);
+    return (deps.binaryIdentityOnPath ?? harnessBinaryIdentityOnPath)(
+      resolveClaudeBin(),
+      patchPath,
+    );
   }
-  return (deps.binaryIdentity ?? harnessBinaryIdentity)(BIN, composeBaseEnv("mirror_native"));
+  return (deps.binaryIdentity ?? harnessBinaryIdentity)(
+    resolveClaudeBin(),
+    composeBaseEnv("mirror_native"),
+  );
 }
 
 /** Injection seams (tests only; production callers pass the adapter's secret resolver). */

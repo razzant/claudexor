@@ -73,14 +73,14 @@ import {
 import { decorateCodexEvent, type CodexEventDecoration } from "./event-decoration.js";
 
 import {
-  BIN,
+  resolveCodexBin,
   detectVersion,
   installedCliCheck,
   missingCliError,
   missingCliReport,
   probeEnv,
 } from "./missing-cli.js";
-export { BIN } from "./missing-cli.js";
+export { resolveCodexBin } from "./missing-cli.js";
 
 export const selectCodexRunAuthRoute = selectStrictAuthRoute;
 
@@ -347,11 +347,11 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
       if (version === null) {
-        const advisory = runtime.brokenInstallAdvisory(BIN);
+        const advisory = runtime.brokenInstallAdvisory(resolveCodexBin());
         throw missingCliError(advisory && redactCodexDoctorDetail(advisory));
       }
       const apiKey = runtime.hasApiKey();
-      const login = await runtime.probeLogin(BIN, { env: codexNativeEnv() });
+      const login = await runtime.probeLogin(resolveCodexBin(), { env: codexNativeEnv() });
       const nativeSessionAvailable = login.method === "chatgpt";
       // Per-model effort vocabulary from the vendor, probed in the SAME native env
       // the login probe used (the catalog belongs to that CODEX_HOME's account). A
@@ -432,14 +432,14 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
       // diagnosis always describes the exact env the probe failed in.
       const version = await runtime.detectVersion(_spec.abortSignal, _spec.env);
       if (version === null) {
-        const advisory = runtime.brokenInstallAdvisory(BIN, probeEnv(_spec.env));
+        const advisory = runtime.brokenInstallAdvisory(resolveCodexBin(), probeEnv(_spec.env));
         return missingCliReport(advisory && redactCodexDoctorDetail(advisory));
       }
       const requestedSource = _spec.authSource;
       const probeNative = requestedSource === undefined || requestedSource === "native_session";
       const probeApi = requestedSource === undefined || requestedSource === "provider_auth_file";
       const login: CodexLoginProbe = probeNative
-        ? await runtime.probeLogin(BIN, {
+        ? await runtime.probeLogin(resolveCodexBin(), {
             env: codexNativeEnv(_spec.env),
             abortSignal: _spec.abortSignal,
           })
@@ -482,8 +482,8 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
         "explain",
         "audit",
       ];
-      const binPath = resolveHarnessBinary(BIN, probeEnv(_spec.env));
-      const installAdvisory = runtime.brokenInstallAdvisory(BIN, probeEnv(_spec.env));
+      const binPath = resolveHarnessBinary(resolveCodexBin(), probeEnv(_spec.env));
+      const installAdvisory = runtime.brokenInstallAdvisory(resolveCodexBin(), probeEnv(_spec.env));
       const apiSource: AuthSourceReadiness = {
         source: "provider_auth_file",
         availability: apiKey ? "available" : "unavailable",
@@ -646,7 +646,7 @@ async function* runCodex(
       const nativeLogin: CodexLoginProbe =
         authPreference === "api_key"
           ? { authed: false, method: "logged_out", probeError: null }
-          : await runtime.probeLogin(BIN, {
+          : await runtime.probeLogin(resolveCodexBin(), {
               env: nativeEnv,
               abortSignal: abortSignalFromSpec(spec),
             });
@@ -790,7 +790,7 @@ async function* runCodex(
 
     if (runtime.runAppServer) {
       const native = runtime.runAppServer({
-        bin: BIN,
+        bin: resolveCodexBin(),
         args,
         spec,
         env,
@@ -804,7 +804,7 @@ async function* runCodex(
       return;
     }
     const stream = runtime.runCliHarness({
-      bin: BIN,
+      bin: resolveCodexBin(),
       args,
       spec,
       input: codexExecInput(spec),

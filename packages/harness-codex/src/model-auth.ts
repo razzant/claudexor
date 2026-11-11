@@ -10,7 +10,7 @@ import {
 import type { CredentialProfile } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
 import { CODEX_FILE_AUTH_ARGS } from "./auth.js";
-import { BIN } from "./missing-cli.js";
+import { resolveCodexBin } from "./missing-cli.js";
 import { CodexModelError, record, text } from "./responses.js";
 
 /** Runtime-only access material; never serialized into an operation or resource. */
@@ -150,27 +150,31 @@ export async function refreshCodexModelAuth(
   const send = (value: unknown) => io?.write(`${JSON.stringify(value)}\n`);
   try {
     home = canonicalIsolationLocator(home, "managed Codex refresh home");
-    for await (const event of run(BIN, [...CODEX_FILE_AUTH_ARGS, "app-server", "--stdio"], {
-      cwd: home,
-      env: { ...providerScrubEnv(), CODEX_HOME: home },
-      abortSignal: signal,
-      // Same transport bound as the existing app-server quota reader, not an inference deadline.
-      timeoutMs: 10_000,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
-      keepStdinOpen: true,
-      onSpawn: (writer) => {
-        io = writer;
-        send({
-          id: 1,
-          method: "initialize",
-          params: { clientInfo: { name: "claudexor", version: CLAUDEXOR_VERSION } },
-        });
+    for await (const event of run(
+      resolveCodexBin(),
+      [...CODEX_FILE_AUTH_ARGS, "app-server", "--stdio"],
+      {
+        cwd: home,
+        env: { ...providerScrubEnv(), CODEX_HOME: home },
+        abortSignal: signal,
+        // Same transport bound as the existing app-server quota reader, not an inference deadline.
+        timeoutMs: 10_000,
+        cancelSignal: "SIGTERM",
+        cancelKillDelayMs: 0,
+        keepStdinOpen: true,
+        onSpawn: (writer) => {
+          io = writer;
+          send({
+            id: 1,
+            method: "initialize",
+            params: { clientInfo: { name: "claudexor", version: CLAUDEXOR_VERSION } },
+          });
+        },
+        onTerminationUnconfirmed: () => {
+          unconfirmed = true;
+        },
       },
-      onTerminationUnconfirmed: () => {
-        unconfirmed = true;
-      },
-    })) {
+    )) {
       if (event.type === "termination_unconfirmed") unconfirmed = true;
       if (event.type !== "stdout") continue;
       let value: Record<string, unknown> | null;

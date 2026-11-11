@@ -17,7 +17,7 @@ import { EffortHint, effortLevelsForModel, mergeEffortLadders } from "@claudexor
 import { effortLadders, resolveEffortEvidence } from "@claudexor/core";
 import { readCodexProcessingModels } from "./processing.js";
 import type { ProcessingCapability, HarnessModel } from "@claudexor/schema";
-import { BIN, probeEnv } from "./missing-cli.js";
+import { resolveCodexBin, probeEnv } from "./missing-cli.js";
 import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
 export type CodexEffortCapability = Record<string, ModelEffortCapability>;
@@ -458,7 +458,12 @@ export async function codexEffortsForEnv(
   deps: { probeEfforts: CodexEffortProbe; nowMs: () => number },
   envPatch?: Record<string, string | null | undefined>,
 ): Promise<{ catalog: CodexEffortCatalog; live: boolean }> {
-  return await codexEffortCapability(deps.probeEfforts, deps.nowMs, BIN, probeEnv(envPatch));
+  return await codexEffortCapability(
+    deps.probeEfforts,
+    deps.nowMs,
+    resolveCodexBin(),
+    probeEnv(envPatch),
+  );
 }
 
 /** The ONE effort result of a codex route: arg builders send `resolution.submitted`,

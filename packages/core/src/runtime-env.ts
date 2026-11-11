@@ -173,8 +173,12 @@ export function resolveHarnessBinary(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   return (
-    resolveHarnessCommandOnPath(bin, normalizedHarnessPath(source, execPath, platform), platform)
-      .command?.entrypoint ?? null
+    resolveHarnessCommandOnPath(
+      bin,
+      normalizedHarnessPath(source, execPath, platform),
+      platform,
+      source,
+    ).command?.entrypoint ?? null
   );
 }
 

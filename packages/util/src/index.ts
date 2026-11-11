@@ -1,6 +1,6 @@
 export * from "./process-timing.js";
 export { CLAUDEXOR_VERSION } from "./version.js";
-export type { PinnedVendorCliVersion } from "./vendor-pin.js";
+export type { VendorCliVersionStamp } from "./vendor-version.js";
 export * from "./secret-names.js";
 export * from "./sensitive-resource.js";
 export * from "./delegation-env.js";

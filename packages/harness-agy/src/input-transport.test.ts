@@ -18,6 +18,7 @@ import { createAgyAdapter } from "./index.js";
 import { agySettingsPath } from "./read-grant.js";
 
 const observed = vi.hoisted(() => ({
+  version: "1.1.13",
   options: [] as CliRunLoopOptions[],
   captures: [] as Array<SpawnOptions | undefined>,
 }));
@@ -25,9 +26,16 @@ vi.mock("@claudexor/core", async (original) => {
   const actual = await original<typeof import("@claudexor/core")>();
   return {
     ...actual,
-    runCapture: async (_bin: string, _args: string[], options?: SpawnOptions) => {
+    resolveSelectedProgramAsync: async (_program: unknown, options?: SpawnOptions) => {
       observed.captures.push(options);
-      return { code: 0, signal: null, stdout: "1.1.13\n", stderr: "" };
+      return {
+        path: "/fixture/agy",
+        realPath: "/fixture/agy",
+        version: observed.version,
+        versionOutput: observed.version,
+        overrideEnv: null,
+        overrideValue: null,
+      };
     },
     runCliHarness: (options: CliRunLoopOptions) => {
       observed.options.push(options);
@@ -76,6 +84,7 @@ vi.mock("@claudexor/core", async (original) => {
 
 const roots: string[] = [];
 afterEach(() => {
+  observed.version = "1.1.13";
   observed.options.length = 0;
   observed.captures.length = 0;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -140,6 +149,20 @@ describe("AGY Windows console policy", () => {
 });
 
 describe("AGY doctor readonly minimum (#653)", () => {
+  it("accepts a newer installed program without comparing it with the fixture stamp", async () => {
+    observed.version = "1.5.3";
+    const report = await createAgyAdapter({ prepareProfileKeychain: () => undefined }).doctor(
+      {} as never,
+    );
+    expect(report.checks.find((check) => check.id === "installed")).toMatchObject({
+      status: "pass",
+    });
+    expect(report.checks.find((check) => check.id === "readonly_min_version")).toMatchObject({
+      status: "pass",
+    });
+    expect(report.reasons.join(" ")).not.toContain("differs from");
+    expect(report.checks.some((check) => check.id === "version_pin")).toBe(false);
+  });
   it("states that readonly runs on the probed 1.1.13 stop for an update", async () => {
     const report = await createAgyAdapter({ prepareProfileKeychain: () => undefined }).doctor(
       {} as Parameters<ReturnType<typeof createAgyAdapter>["doctor"]>[0],

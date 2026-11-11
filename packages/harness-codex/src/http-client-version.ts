@@ -30,10 +30,10 @@ import { harnessBinaryIdentityOnPath } from "@claudexor/core";
  */
 
 import type { ControlModelCatalogResponse } from "@claudexor/schema";
-import type { PinnedVendorCliVersion } from "@claudexor/util";
-import { BIN, detectVersion, probeEnv } from "./missing-cli.js";
+import type { VendorCliVersionStamp } from "@claudexor/util";
+import { resolveCodexBin, detectVersion, probeEnv } from "./missing-cli.js";
 
-export const CODEX_HTTP_CLIENT_VERSION: PinnedVendorCliVersion = "0.156.1";
+export const CODEX_HTTP_CLIENT_VERSION: VendorCliVersionStamp = "0.156.1";
 
 export type CodexCatalogClientVersion = {
   version: string;
@@ -99,7 +99,7 @@ export async function codexCatalogClientVersion(
 ): Promise<CodexCatalogClientVersion> {
   const env = deps.env ?? probeEnv();
   const nowMs = deps.nowMs ?? Date.now;
-  const key = binaryIdentityKey(deps.bin ?? BIN, env);
+  const key = binaryIdentityKey(deps.bin ?? resolveCodexBin(), env);
   // No runnable CLI on this PATH: the transport still works (the token refresh
   // fails on its own terms later); declare the verified level.
   if (key === null) return VERIFIED;

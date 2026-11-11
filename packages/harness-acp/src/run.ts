@@ -1,6 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {
   abortSignalFromSpec,
+  selectProgramLauncher,
   effortResolutionEvent,
   HarnessUnavailableError,
   maskHarnessEventDiagnostics,
@@ -137,7 +138,7 @@ export function acpRunner(entry: AcpEntry) {
           );
           await emit(events.event("status", { text: ACP_DISCLOSURE }));
           transport = connectAcp({
-            binary: process.env[entry.binaryEnv] ?? entry.binary,
+            binary: selectProgramLauncher(entry.program),
             args,
             env: prepared.env,
             spec,

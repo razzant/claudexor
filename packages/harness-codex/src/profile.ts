@@ -18,7 +18,7 @@ import { namespacedSecretRefBase } from "@claudexor/secrets";
 import { claudexorOwnedRoot, nowIso, redactSecrets } from "@claudexor/util";
 import { codexAuthModeAt, ensureCodexApiAuth } from "./auth.js";
 import { canonicalIsolationLocator, normalizeThroughExistingAncestor } from "@claudexor/core";
-import { BIN, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
+import { resolveCodexBin, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
 
 /**
  * DAEMON-SIDE, PURE, non-secret identity reader for a codex account (INV-067).
@@ -126,7 +126,11 @@ export async function resolveCodexProfileRoute(
       // codexHome rides EXPLICITLY (round-17 BLOCK): the production probe
       // re-normalizes its env, and without the explicit home it would inspect
       // the DEFAULT store while claiming to verify the profile.
-      const login = await runtime.probeLogin(BIN, { env: nativeEnv, codexHome: home, abortSignal });
+      const login = await runtime.probeLogin(resolveCodexBin(), {
+        env: nativeEnv,
+        codexHome: home,
+        abortSignal,
+      });
       if (login.method === "chatgpt" && login.probeError === null)
         return { route: "subscription", nativeEnv, tempCodexHome: null, key: null, refusal: null };
       return {
@@ -189,7 +193,7 @@ export async function probeCodexCredentialProfile(
   try {
     if (profile.credential_kind === "config_dir_login") {
       const home = canonicalCodexProfileHome(profile.isolation_locator ?? "");
-      const login = await runtime.probeLogin(BIN, {
+      const login = await runtime.probeLogin(resolveCodexBin(), {
         env: codexNativeEnv(undefined, home),
         codexHome: home,
         abortSignal,

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { providerScrubEnv, runCapture } from "@claudexor/core";
 import { CODEX_FILE_AUTH_ARGS, codexApiKey, ensureCodexApiAuth } from "./auth.js";
-import { BIN, redactCodexDoctorDetail } from "./index.js";
+import { resolveCodexBin, redactCodexDoctorDetail } from "./index.js";
 
 export async function smokeIsolatedApiKey(
   abortSignal?: AbortSignal,
@@ -15,7 +15,7 @@ export async function smokeIsolatedApiKey(
     ensureCodexApiAuth({ CODEX_HOME: codexHome });
     const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS];
     args.push("--sandbox", "read-only", "--skip-git-repo-check", "Reply exactly OK");
-    const r = await runCapture(BIN, args, {
+    const r = await runCapture(resolveCodexBin(), args, {
       cwd: dir,
       env: {
         ...providerScrubEnv(),

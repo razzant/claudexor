@@ -1,3 +1,4 @@
+import { selectProgramLauncher } from "@claudexor/core";
 import { AGY_PROGRAM } from "./program.js";
 import { join } from "node:path";
 import { canonicalIsolationLocator, providerScrubEnv } from "@claudexor/core";
@@ -9,7 +10,7 @@ import { classifyAgyPrintResult, runAgyPrintCommand } from "./print-command.js";
 
 type EnvMap = Record<string, string | null | undefined>;
 
-export const AGY_BIN = () => process.env.CLAUDEXOR_AGY_BIN || "agy";
+export const AGY_BIN = () => selectProgramLauncher(AGY_PROGRAM);
 
 /** Canonical, Claudexor-owned HOME for one named Antigravity binding. */
 export function canonicalAgyProfileHome(locator: string): string {

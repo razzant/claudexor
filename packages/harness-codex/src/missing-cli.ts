@@ -1,10 +1,12 @@
+import { CODEX_PROGRAM } from "./program.js";
+import { selectProgramLauncher, resolveSelectedProgramAsync } from "@claudexor/core";
 import { isAbsolute } from "node:path";
-import { composeBaseEnv, runCapture } from "@claudexor/core";
+import { composeBaseEnv } from "@claudexor/core";
 import { HarnessUnavailableError } from "@claudexor/core";
 import { ConformanceReport as ConformanceReportSchema } from "@claudexor/schema";
 import type { ConformanceReport } from "@claudexor/schema";
 
-export const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
+export const resolveCodexBin = () => selectProgramLauncher(CODEX_PROGRAM);
 
 /**
  * Effective environment for a doctor probe: the scoped DoctorSpec.env is a
@@ -25,18 +27,14 @@ export async function detectVersion(
   abortSignal?: AbortSignal,
   env?: Record<string, string | null | undefined>,
 ): Promise<string | null> {
-  try {
-    const r = await runCapture(BIN, ["--version"], {
-      timeoutMs: 10_000,
+  const environment = probeEnv(env);
+  return (
+    await resolveSelectedProgramAsync(CODEX_PROGRAM, {
+      environment,
+      sourceEnv: environment,
       abortSignal,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
-      ...(env ? { env } : {}),
-    });
-    return r.stdout.trim() || `${BIN} (version unknown)`;
-  } catch {
-    return null;
-  }
+    })
+  ).versionOutput;
 }
 
 /** An absolute override was never a PATH lookup — say what actually failed. */
@@ -48,7 +46,7 @@ function deadEnd(bin: string): string {
  *  filesystem still holds evidence of a broken install. */
 export function missingCliError(
   advisory: string | null,
-  bin: string = BIN,
+  bin: string = resolveCodexBin(),
 ): HarnessUnavailableError {
   const summary = isAbsolute(bin)
     ? `codex CLI override ${bin} is not runnable (fix CLAUDEXOR_CODEX_BIN)`
@@ -58,7 +56,10 @@ export function missingCliError(
 
 /** The doctor() unavailable report for a missing CLI; wording is unchanged
  *  when there is no advisory evidence. */
-export function missingCliReport(advisory: string | null, bin: string = BIN): ConformanceReport {
+export function missingCliReport(
+  advisory: string | null,
+  bin: string = resolveCodexBin(),
+): ConformanceReport {
   return ConformanceReportSchema.parse({
     harness_id: "codex",
     status: "unavailable",

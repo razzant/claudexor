@@ -1,15 +1,12 @@
 import { COPILOT_PROGRAM } from "./program.js";
-import type { PinnedVendorCliVersion } from "@claudexor/util";
+import type { VendorCliVersionStamp } from "@claudexor/util";
 
 /** Agent identity stays vendor-specific; the transport is shared. */
 export interface AcpEntry {
   id: string;
-  program?: import("@claudexor/schema").HarnessProgram;
+  program: import("@claudexor/schema").HarnessProgram;
   displayName: string;
-  binary: string;
-  binaryEnv: string;
-  npmPackage: string;
-  version: PinnedVendorCliVersion;
+  version: VendorCliVersionStamp;
   flags: readonly string[];
   tokenEnv: string;
   homeEnv: string;
@@ -22,15 +19,11 @@ export interface AcpEntry {
   disabledToolsNotice?: string;
 }
 
-// Docs-verified 2026-10-03, not a live CLI conformance claim. The npm pin is
-// deterministic_only. --no-remote disables remote control, not network access.
+// Docs-verified 2026-10-03; the version is a fixture reference, not a live conformance claim. --no-remote disables remote control, not network access.
 export const copilot: AcpEntry = {
   id: "copilot",
   program: COPILOT_PROGRAM,
   displayName: "GitHub Copilot",
-  binary: "copilot",
-  binaryEnv: "CLAUDEXOR_COPILOT_BIN",
-  npmPackage: "@github/copilot",
   version: "1.0.91",
   flags: [
     "--acp",

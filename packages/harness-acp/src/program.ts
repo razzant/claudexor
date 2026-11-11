@@ -57,7 +57,11 @@ export const COPILOT_PROGRAM = defineHarnessProgram({
     darwin: posix,
     linux: posix,
     win32: {
-      launcherDirs: ["{home}/.local/bin", "{localAppData}/Microsoft/WinGet/Links"],
+      launcherDirs: [
+        "{home}/.local/bin",
+        "{localAppData}/Microsoft/WinGet/Links",
+        "{localAppData}/Microsoft/WindowsApps",
+      ],
       newest: {
         url: "https://registry.npmjs.org/@github/copilot/latest",
         pick: {

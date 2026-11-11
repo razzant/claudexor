@@ -2,7 +2,7 @@ import { defineHarnessProgram } from "@claudexor/core";
 import type { HarnessProgramPlatform } from "@claudexor/schema";
 
 const posix: HarnessProgramPlatform = {
-  launcherDirs: ["{home}/.local/bin"],
+  launcherDirs: ["{env:CODEX_INSTALL_DIR}", "{home}/.local/bin"],
   newest: {
     url: "https://releases.openai.com/codex/channels/latest",
     pick: {
@@ -54,6 +54,7 @@ export const CODEX_PROGRAM = defineHarnessProgram({
     "XDG_CACHE_HOME",
     "XDG_STATE_HOME",
     "CODEX_HOME",
+    "CODEX_INSTALL_DIR",
   ],
   legacyNpmPackage: "@openai/codex",
   platforms: {
@@ -61,6 +62,7 @@ export const CODEX_PROGRAM = defineHarnessProgram({
     linux: posix,
     win32: {
       launcherDirs: [
+        "{env:CODEX_INSTALL_DIR}",
         "{home}/.local/bin",
         "{localAppData}/Microsoft/WinGet/Links",
         "{localAppData}/Programs/OpenAI/Codex/bin",

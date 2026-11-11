@@ -1,3 +1,9 @@
+import { CLAUDE_PROGRAM } from "./program.js";
+import {
+  selectProgramLauncher,
+  resolveSelectedProgramAsync,
+  composeBaseEnv,
+} from "@claudexor/core";
 /**
  * Effort discovery for the INSTALLED claude CLI.
  *
@@ -30,7 +36,7 @@ import {
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { CLAUDE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
-export const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
+export const resolveClaudeBin = () => selectProgramLauncher(CLAUDE_PROGRAM);
 
 /**
  * Recorded fallback, captured from `claude --help` on the CLI version stamped
@@ -80,9 +86,7 @@ export function claudeEffortResolution(
 }
 
 /** Vendor CLI version `CLAUDE_EFFORT_SNAPSHOT` was captured from. Aliases the
- * per-package vendor-version SSOT (vendor-cli-version.ts), the same constant
- * the remote installer pins — bumping the pin without re-recording this
- * snapshot is a lie the alias makes impossible to tell twice. */
+ * per-package vendor-version SSOT (vendor-cli-version.ts), the stamp on this recorded effort snapshot. It never selects a vendor install. */
 export const CLAUDE_EFFORT_SNAPSHOT_VERIFIED_AGAINST: string = CLAUDE_VENDOR_CLI_VERSION;
 
 /**
@@ -190,18 +194,10 @@ export async function detectClaudeVersion(
   abortSignal?: AbortSignal,
   patchPath?: string,
 ): Promise<string | null> {
-  try {
-    const r = await runCapture(helpProbeIdentity(patchPath).spawn, ["--version"], {
-      ...(patchPath !== undefined ? { env: { PATH: patchPath } } : {}),
-      timeoutMs: 10_000,
-      abortSignal,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
-    });
-    return r.stdout.trim() || `${BIN} (version unknown)`;
-  } catch {
-    return null;
-  }
+  const environment = composeBaseEnv("mirror_native");
+  if (patchPath !== undefined) environment.PATH = patchPath;
+  return (await resolveSelectedProgramAsync(CLAUDE_PROGRAM, { environment, abortSignal }))
+    .versionOutput;
 }
 
 /**
@@ -331,15 +327,15 @@ let helpProbe: { key: string; promise: Promise<ClaudeHelpProbe> } | null = null;
 function helpProbeIdentity(patchPath?: string): { key: string; spawn: string } {
   const id =
     patchPath === undefined
-      ? harnessBinaryIdentity(BIN)
-      : harnessBinaryIdentityOnPath(BIN, patchPath);
+      ? harnessBinaryIdentity(resolveClaudeBin())
+      : harnessBinaryIdentityOnPath(resolveClaudeBin(), patchPath);
   return {
     key: JSON.stringify(
       id
         ? [id.path, id.ino, id.size, id.mtimeMs, id.interpreter]
-        : ["unresolved", BIN, patchPath ?? null],
+        : ["unresolved", resolveClaudeBin(), patchPath ?? null],
     ),
-    spawn: id?.launcher ?? id?.path ?? BIN,
+    spawn: id?.launcher ?? id?.path ?? resolveClaudeBin(),
   };
 }
 

@@ -3,14 +3,20 @@ import { realpathSync } from "node:fs";
 import type { HarnessProgram, SelectedHarnessProgram } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { interpretedCommand } from "./npm-launch.js";
-import { normalizedHarnessPath, resolveHarnessCommandOnPath } from "./runtime-env.js";
+import {
+  normalizedHarnessPath,
+  resolveHarnessCommandOnPath,
+  type WindowsConsolePolicy,
+} from "./runtime-env.js";
+import { runCapture } from "./proc.js";
 
-/** Cursor's generic `agent` alias, for example, requires the adapter's own
- * real-path evidence. An explicit override remains the caller's exact choice. */
+/** One launch-name/override/alias choice for runs and every program probe. */
 export function selectProgramLauncher(
   program: HarnessProgram,
-  env: NodeJS.ProcessEnv,
-  resolve: (name: string) => string | null,
+  env: NodeJS.ProcessEnv = process.env,
+  resolve: (name: string) => string | null = (name) =>
+    resolveHarnessCommandOnPath(name, normalizedHarnessPath(env), process.platform, env).command
+      ?.entrypoint ?? null,
 ): string {
   const override = env[program.overrideEnv];
   if (override) return override;
@@ -38,11 +44,7 @@ export interface ProgramResolutionOptions {
   spawn?: typeof spawnSync;
 }
 
-/** No memo: even an unchanged wrapper can invoke a newly updated program. */
-export function resolveSelectedProgram(
-  program: HarnessProgram,
-  options: ProgramResolutionOptions = {},
-): SelectedHarnessProgram {
+function selection(program: HarnessProgram, options: ProgramResolutionOptions) {
   const source = options.sourceEnv ?? process.env;
   const platform = options.platform ?? process.platform;
   const env = options.environment ?? {
@@ -62,11 +64,46 @@ export function resolveSelectedProgram(
   const command = resolve(bin);
   const path = command?.entrypoint ?? null;
   let realPath: string | null = null;
-  let versionOutput: string | null = null;
-  if (command && path) {
+  try {
+    if (path) realPath = realpathSync(path);
+  } catch {
+    /* raced away */
+  }
+  const overrideValue = source[program.overrideEnv] || null;
+  const observed: SelectedHarnessProgram = {
+    path,
+    realPath,
+    version: null,
+    versionOutput: null,
+    overrideEnv: overrideValue ? program.overrideEnv : null,
+    overrideValue,
+  };
+  return { command, env, observed };
+}
+
+function withVersion(observed: SelectedHarnessProgram, output: string): SelectedHarnessProgram {
+  const versionOutput = redactSecrets(output.trim()).split(/\r?\n/)[0]?.slice(0, 256) || null;
+  const version =
+    versionOutput?.match(
+      /(?:^|\s)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=\s|$)/,
+    )?.[1] ?? versionOutput;
+  return { ...observed, versionOutput, version };
+}
+
+/** Synchronous CLI child variant. No memo: an unchanged wrapper can change its target. */
+export function resolveSelectedProgram(
+  program: HarnessProgram,
+  options: ProgramResolutionOptions = {},
+): SelectedHarnessProgram {
+  const { command, env, observed } = selection(program, options);
+  if (command) {
     try {
-      realPath = realpathSync(path);
-      const invocation = interpretedCommand(path, ["--version"], env, command.interpreter);
+      const invocation = interpretedCommand(
+        command.entrypoint,
+        ["--version"],
+        env,
+        command.interpreter,
+      );
       const result = (options.spawn ?? spawnSync)(invocation.binary, invocation.args, {
         env: invocation.env,
         cwd: options.cwd,
@@ -76,27 +113,40 @@ export function resolveSelectedProgram(
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      if (result.status === 0 && !result.error) {
-        versionOutput =
-          redactSecrets(String(result.stdout ?? "").trim())
-            .split(/\r?\n/)[0]
-            ?.slice(0, 256) || null;
-      }
+      if (result.status === 0 && !result.error)
+        return withVersion(observed, String(result.stdout ?? ""));
     } catch {
       /* A selected but unreadable version stays unknown. */
     }
   }
-  const version =
-    versionOutput?.match(
-      /(?:^|\s)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=\s|$)/,
-    )?.[1] ?? versionOutput;
-  const overrideValue = source[program.overrideEnv] || null;
-  return {
-    path,
-    realPath,
-    version,
-    versionOutput,
-    overrideEnv: overrideValue ? program.overrideEnv : null,
-    overrideValue,
-  };
+  return observed;
+}
+
+/** The same observation in daemon/adapter code without blocking its event loop. */
+export async function resolveSelectedProgramAsync(
+  program: HarnessProgram,
+  options: Omit<ProgramResolutionOptions, "spawn"> & {
+    abortSignal?: AbortSignal;
+    windowsConsole?: WindowsConsolePolicy;
+  } = {},
+): Promise<SelectedHarnessProgram> {
+  const { command, env, observed } = selection(program, options);
+  if (command) {
+    try {
+      const result = await runCapture(command.entrypoint, ["--version"], {
+        inheritEnv: "clean",
+        env,
+        cwd: options.cwd,
+        timeoutMs: 10_000,
+        abortSignal: options.abortSignal,
+        windowsConsole: options.windowsConsole,
+        cancelSignal: "SIGTERM",
+        cancelKillDelayMs: 0,
+      });
+      if (result.code === 0) return withVersion(observed, result.stdout);
+    } catch {
+      /* Missing or failed version does not invent a version. */
+    }
+  }
+  return observed;
 }

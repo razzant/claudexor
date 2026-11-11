@@ -41,6 +41,7 @@ export type HarnessNewestSource = z.infer<typeof HarnessNewestSource>;
 
 export const HarnessProgramPlatform = z
   .object({
+    /** Folder templates may use {env:NAME}; absent vendor inputs omit that folder. */
     launcherDirs: z.array(z.string()),
     install: HarnessProgramCommand.optional(),
     update: HarnessProgramCommand.optional(),

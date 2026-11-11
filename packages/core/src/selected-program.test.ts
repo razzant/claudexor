@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { defineHarnessProgram } from "./program-registry.js";
+import { defineHarnessProgram, programPath } from "./program-registry.js";
 import { normalizedHarnessPath } from "./runtime-env.js";
-import { resolveSelectedProgram, selectProgramLauncher } from "./selected-program.js";
+import {
+  resolveSelectedProgram,
+  resolveSelectedProgramAsync,
+  selectProgramLauncher,
+} from "./selected-program.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -99,6 +103,38 @@ describe("selected program", () => {
     executable(alias);
     expect(selectProgramLauncher(program, {}, (name) => (name === "agent" ? alias : null))).toBe(
       "cursor-agent",
+    );
+  });
+  it("uses the same entry and own version in async native probes, including wrapper changes and failures", async () => {
+    const home = root();
+    const next = join(home, "vendor");
+    executable(next, "vendor-cli 1.0.0");
+    const path = join(home, "wrapper");
+    writeFileSync(path, `#!/bin/sh\nexec '${next}' "$@"\n`, { mode: 0o755 });
+    const options = {
+      sourceEnv: { HOME: home, PATH: "", FIXTURE_BIN: path },
+      nodePath: "/absent/node",
+    };
+    expect(await resolveSelectedProgramAsync(fixture, options)).toEqual(
+      resolveSelectedProgram(fixture, options),
+    );
+    executable(next, "vendor-cli 2.0.0");
+    expect(await resolveSelectedProgramAsync(fixture, options)).toMatchObject({
+      path,
+      version: "2.0.0",
+      overrideValue: path,
+    });
+    writeFileSync(next, "#!/bin/sh\necho 'not a successful version'\nexit 1\n");
+    expect(await resolveSelectedProgramAsync(fixture, options)).toMatchObject({
+      path,
+      version: null,
+      versionOutput: null,
+    });
+  });
+  it("omits an unset vendor directory input and expands an explicit one", () => {
+    expect(programPath("{env:CODEX_INSTALL_DIR}", {})).toBe("");
+    expect(programPath("{env:CODEX_INSTALL_DIR}", { CODEX_INSTALL_DIR: "/vendor/custom" })).toBe(
+      "/vendor/custom",
     );
   });
   it("adds the declared Windows installer folder from LOCALAPPDATA", () => {

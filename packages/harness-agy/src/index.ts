@@ -1,3 +1,4 @@
+import { composeBaseEnv, resolveSelectedProgramAsync } from "@claudexor/core";
 import { AGY_PROGRAM } from "./program.js";
 export { AGY_PROGRAM } from "./program.js";
 import type {
@@ -23,7 +24,6 @@ import {
   harnessPlatform,
   needsPrivatePerProfileKeychain,
   promptWithInstructions,
-  runCapture,
   runCliHarness,
 } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
@@ -91,15 +91,12 @@ function accessArgs(access: AccessProfile): string[] {
 const AGY_WINDOWS_CONSOLE = "none";
 
 async function detectVersion(): Promise<string | null> {
-  try {
-    const r = await runCapture(AGY_BIN(), ["--version"], {
-      timeoutMs: 10_000,
+  return (
+    await resolveSelectedProgramAsync(AGY_PROGRAM, {
+      environment: { ...composeBaseEnv("mirror_native"), ...AGY_PROGRAM.childUpdateEnv },
       windowsConsole: AGY_WINDOWS_CONSOLE,
-    });
-    return r.stdout.trim() || `${AGY_BIN()} (version unknown)`;
-  } catch {
-    return null;
-  }
+    })
+  ).versionOutput;
 }
 
 /** Historical menu hints; account-specific presence comes from `models()`.

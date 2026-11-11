@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { providerScrubEnv, runCapture } from "@claudexor/core";
 import {
   anthropicApiKey,
-  BIN,
+  resolveClaudeBin,
   CLAUDE_PROVIDER_ENV_DENYLIST,
   redactClaudeDoctorDetail,
 } from "./index.js";
@@ -23,7 +23,7 @@ export async function smokeIsolatedApiKey(
     env.CLAUDE_CONFIG_DIR = dir;
     env.ANTHROPIC_API_KEY = key;
     const r = await runCapture(
-      BIN,
+      resolveClaudeBin(),
       [
         "-p",
         "Reply exactly OK",
@@ -73,7 +73,7 @@ export async function smokeIsolatedOAuthToken(
       CLAUDE_CODE_OAUTH_TOKEN: token,
     };
     const r = await runCapture(
-      BIN,
+      resolveClaudeBin(),
       [
         "-p",
         "Reply exactly OK",

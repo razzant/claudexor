@@ -2,7 +2,7 @@ import type { ChildStdin } from "@claudexor/core";
 import { harnessBinaryIdentity, harnessBinaryIdentityOnPath, spawnProcess } from "@claudexor/core";
 import { ensureDir, noProjectRepoRoot } from "@claudexor/util";
 import { setTimeout as sleep } from "node:timers/promises";
-import { BIN } from "./effort-probe.js";
+import { resolveClaudeBin } from "./effort-probe.js";
 
 /** Claude Code refreshes OAuth access tokens inside this five-minute window. */
 export const CLAUDE_OAUTH_REFRESH_SKEW_MS = 5 * 60_000;
@@ -56,7 +56,7 @@ export async function refreshClaudeNativeAuth(
   const spawn = overrides.spawn ?? spawnProcess;
   const nowMs = overrides.nowMs ?? Date.now;
   const wait = overrides.sleep ?? ((ms: number) => sleep(ms));
-  const bin = overrides.bin ?? BIN;
+  const bin = overrides.bin ?? resolveClaudeBin();
   const cwd = overrides.cwd ?? noProjectRepoRoot();
   const timeoutMs = overrides.timeoutMs ?? REFRESH_WAKE_TIMEOUT_MS;
   const pollMs = overrides.pollMs ?? REFRESH_WAKE_POLL_MS;

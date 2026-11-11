@@ -20,7 +20,8 @@ import {
   HarnessUnavailableError,
   promptWithInstructions,
   providerScrubEnv,
-  runCapture,
+  selectProgramLauncher,
+  resolveSelectedProgramAsync,
   runCliHarness,
 } from "@claudexor/core";
 import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
@@ -28,7 +29,7 @@ import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
 export { OPENCODE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
-const BIN = process.env.CLAUDEXOR_OPENCODE_BIN || "opencode";
+const resolveOpenCodeBin = () => selectProgramLauncher(OPENCODE_PROGRAM);
 
 function accessArgs(access: AccessProfile): string[] {
   switch (access) {
@@ -45,12 +46,7 @@ function accessArgs(access: AccessProfile): string[] {
 }
 
 async function detectVersion(): Promise<string | null> {
-  try {
-    const r = await runCapture(BIN, ["--version"], { timeoutMs: 10_000 });
-    return r.stdout.trim() || `${BIN} (version unknown)`;
-  } catch {
-    return null;
-  }
+  return (await resolveSelectedProgramAsync(OPENCODE_PROGRAM)).versionOutput;
 }
 
 const PROVIDER_KEY_ENV = ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
@@ -413,7 +409,7 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   if (key) env[key.envVar] = key.value;
 
   yield* runCliHarness({
-    bin: BIN,
+    bin: resolveOpenCodeBin(),
     args,
     spec,
     env,
