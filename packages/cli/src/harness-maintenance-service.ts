@@ -64,7 +64,10 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
   const cli = deps.cli ?? { command: process.execPath, args: [claudexorCliEntry()] };
   const spawn = deps.spawn ?? spawnProcess;
   const latestSeen = new Map<string, HarnessInspection["newest"]>();
-  const generations = new Map<string, number>();
+  const inspections = new Map<
+    string,
+    { latest: boolean; pending: boolean; promise: Promise<HarnessInspection> }
+  >();
   const creating = new Set<string>();
   const accepting = new Map<
     string,
@@ -130,20 +133,12 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
 
   // Read the program again on every requested inventory read. An external
   // updater or unchanged wrapper is as authoritative as this operation.
-  async function inspect(
-    ids: string[],
-    latest: boolean,
-    signal?: AbortSignal,
-  ): Promise<HarnessInspection[]> {
-    const result: HarnessInspection[] = [];
-    for (const id of ids) {
-      const generation = (generations.get(id) ?? 0) + 1;
-      generations.set(id, generation);
-      const out = await runChild(
-        ["harness", "inspect", id, ...(latest ? ["--latest"] : [])],
-        signal,
-      );
-      signal?.throwIfAborted();
+  function inspectOne(id: string, latest: boolean): Promise<HarnessInspection> {
+    const current = inspections.get(id);
+    if (current?.pending && (!latest || current.latest)) return current.promise;
+    const entry = { latest, pending: true, promise: null! as Promise<HarnessInspection> };
+    entry.promise = (async () => {
+      const out = await runChild(["harness", "inspect", id, ...(latest ? ["--latest"] : [])]);
       if (out.unconfirmed)
         throw failure(
           "maintenance_inspection_failed",
@@ -158,10 +153,10 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
           `No typed inspection for ${id}: ${out.progress.slice(-3).join(" | ")}`,
           502,
         );
-      if (generations.get(id) !== generation) {
-        result.push(...(await inspect([id], latest, signal)));
-        continue;
-      }
+      // Only the newest acquisition publishes. Following its promise does not
+      // start another child or invalidate another reader.
+      if (inspections.get(id) !== entry)
+        return inspections.get(id)?.promise ?? inspectOne(id, latest);
       if (parsed.data.newest.status !== "not_read") latestSeen.set(id, parsed.data.newest);
       else if (latestSeen.has(id)) parsed.data.newest = latestSeen.get(id)!;
       parsed.data.updateAvailable = programUpdateAvailable(
@@ -169,8 +164,16 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
         parsed.data.selection.version,
         parsed.data.newest.status === "available" ? parsed.data.newest.version : null,
       );
-      result.push(parsed.data);
-    }
+      return parsed.data;
+    })().finally(() => {
+      entry.pending = false;
+    });
+    inspections.set(id, entry);
+    return entry.promise;
+  }
+  async function inspect(ids: string[], latest: boolean): Promise<HarnessInspection[]> {
+    const result: HarnessInspection[] = [];
+    for (const id of ids) result.push(await inspectOne(id, latest));
     return result;
   }
 
@@ -209,7 +212,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
     });
   }
   function invalidate(harness: string) {
-    generations.set(harness, (generations.get(harness) ?? 0) + 1);
+    inspections.delete(harness);
     accountObservations.invalidateHarness(harness);
     deps.readiness?.().invalidate(harness);
     clearCodexEffortCache();

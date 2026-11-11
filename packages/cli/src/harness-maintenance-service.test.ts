@@ -401,38 +401,40 @@ describe("durable vendor operation", () => {
       ],
     });
   });
-  it("a late inspection cannot restore a program seen before a newer read", async () => {
-    let release!: () => void, announce!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const started = new Promise<void>((resolve) => {
-      announce = resolve;
-    });
-    let version = "1.0.0",
-      count = 0;
-    const w = await harnessWorld({}, async function* () {
-      const seen = version;
-      if (++count === 1) {
-        announce();
-        await held;
-      }
-      yield {
-        type: "stdout",
-        line: JSON.stringify({
-          harnesses: [{ ...ROW, selection: selection(seen), observedAt: new Date().toISOString() }],
-        }),
-      };
-      yield { type: "exit", code: 0, signal: null };
-    });
-    const old = w.maintenance.routes.maintenanceInventory({ harnessIds: ["codex"] });
-    await started;
-    version = "2.0.0";
-    expect(
-      (await w.maintenance.routes.maintenanceInventory({ harnessIds: ["codex"] })).harnesses[0]!
-        .selection.version,
-    ).toBe("2.0.0");
-    release();
-    expect((await old).harnesses[0]!.selection.version).toBe("2.0.0");
-  });
+  it.each(["old-first", "new-first"])(
+    "concurrent observations terminate and fence late answers (%s)",
+    async (order) => {
+      const waiting: Array<() => void> = [];
+      let count = 0;
+      const w = await harnessWorld({}, async function* () {
+        const version = `${++count}.0.0`;
+        await new Promise<void>((resolve) => waiting.push(resolve));
+        yield {
+          type: "stdout",
+          line: JSON.stringify({
+            harnesses: [
+              { ...ROW, observedAt: new Date().toISOString(), selection: selection(version) },
+            ],
+          }),
+        };
+      });
+      const read = (checkLatest = false) =>
+        w.maintenance.routes.maintenanceInventory({ harnessIds: ["codex"], checkLatest });
+      const first = read();
+      const shared = read();
+      await vi.waitFor(() => expect(waiting).toHaveLength(1));
+      const newest = read(true); // Requires a public-source read as well.
+      await vi.waitFor(() => expect(waiting).toHaveLength(2));
+      waiting[order === "old-first" ? 0 : 1]!();
+      await new Promise((resolve) => setImmediate(resolve));
+      waiting[order === "old-first" ? 1 : 0]!();
+      for (const result of await Promise.all([first, shared, newest]))
+        expect(result.harnesses[0]!.selection.version).toBe("2.0.0");
+      expect(count).toBe(2);
+      const next = read();
+      await vi.waitFor(() => expect(waiting).toHaveLength(3));
+      waiting[2]!();
+      expect((await next).harnesses[0]!.selection.version).toBe("3.0.0");
+    },
+  );
 });
