@@ -54,6 +54,31 @@ function oldCopy(w: ReturnType<typeof world>, remote = false) {
 }
 
 describe("selected vendor operation", () => {
+  it.each([
+    { error: new DOMException("Download was aborted", "AbortError"), code: "maintenance_failed" },
+    {
+      error: Object.assign(new Error("Download unavailable"), { code: "download_unavailable" }),
+      code: "download_unavailable",
+    },
+  ])("retains a script-download failure receipt with code $code", async ({ error, code }) => {
+    const w = world();
+    const spawn = vi.fn();
+    const receipt = await runHarnessUpdate("fixture", undefined, {
+      ...w.options,
+      spawn,
+      fetch: async () => {
+        throw error;
+      },
+    });
+    expect(receipt).toMatchObject({
+      ok: false,
+      problem: { code, message: error.message },
+      exitCode: null,
+      commands: [],
+      mutation: "none",
+    });
+    expect(spawn).not.toHaveBeenCalled();
+  });
   it.each([true, false])(
     "recovers a killed conversion's fixed hidden package (replacement still acceptable: %s)",
     async (acceptable) => {

@@ -434,8 +434,9 @@ export async function runHarnessUpdate(
     receipt.ok = true;
     await cleanupProfiles(false);
   } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
     receipt.problem = ControlProblem.parse({
-      code: (error as { code?: string }).code ?? "maintenance_failed",
+      code: typeof code === "string" ? code : "maintenance_failed",
       message: redactSecrets(error instanceof Error ? error.message : String(error)),
       retryable: true,
     });
