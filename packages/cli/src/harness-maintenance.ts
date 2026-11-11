@@ -32,6 +32,7 @@ import {
   productNpmCopy,
   replacementProgram,
   retireProductNpmCopy,
+  recoverProductNpmCopies,
 } from "./harness-npm-conversion.js";
 import { prepareProgramCommand, previewProgramCommand } from "./harness-program-command.js";
 
@@ -292,6 +293,15 @@ export async function runHarnessUpdate(
       ];
       if (!initial.available)
         throw Object.assign(new Error(initial.reason!), { code: "program_action_unavailable" });
+    }
+    if (!options.dryRun) {
+      const recovered = await recoverProductNpmCopies(program, runtime, async (path) => {
+        receipt.limitations.push(`Recovering interrupted npm conversion at ${path}.`);
+        await options.beforeMutation?.(receipt);
+      });
+      receipt.limitations.push(...recovered.limitations);
+      cleaned ||= recovered.changed;
+      if (recovered.changed) before = resolveSelectedProgram(program, runtime);
     }
     await cleanupProfiles(true);
     if (cleanup) before = resolveSelectedProgram(program, runtime);

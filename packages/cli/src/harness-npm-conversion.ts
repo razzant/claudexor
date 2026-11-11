@@ -1,6 +1,5 @@
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { randomUUID } from "node:crypto";
 import {
   hideProgramPaths,
   programUpdateAvailable,
@@ -17,6 +16,11 @@ export interface ProductNpmCopy {
   launchers: string[];
   entrypoints: string[];
 }
+const prefixes = (runtime: InstallerRuntime) => [
+  managedNodeRoot(runtime.home),
+  join(runtime.home, ".claudexor/remote/vendor"),
+];
+const hiddenPackage = (path: string) => `${path}.claudexor-converted`;
 function inside(root: string, path: string): boolean {
   const rest = relative(root, path);
   return rest !== "" && rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
@@ -30,10 +34,7 @@ export function productNpmCopy(
   runtime: InstallerRuntime,
 ): ProductNpmCopy | null {
   if (!program.legacyNpmPackage || !selected.realPath) return null;
-  for (const prefix of [
-    managedNodeRoot(runtime.home),
-    join(runtime.home, ".claudexor/remote/vendor"),
-  ]) {
+  for (const prefix of prefixes(runtime)) {
     const packageRoot = join(
       npmGlobalPackagesDir(prefix, runtime.platform),
       program.legacyNpmPackage,
@@ -148,20 +149,88 @@ export function retireProductNpmCopy(
       new Error("The old package/launcher relation changed during conversion; nothing was removed"),
       { code: "conversion_source_changed" },
     );
-  const hidden = hideProgramPaths(
-    [...copy.launchers, copy.packageRoot].map((path) => ({
-      path,
-      hidden: join(dirname(path), `.claudexor-converted-${randomUUID()}`),
-    })),
-  );
+  // Leave the proven launchers in place while their package is hidden. Their
+  // targets become unresolvable; one fixed package sibling is enough to recover.
+  const launchers = copy.launchers.map((path) => ({ path, before: lstatSync(path) }));
+  const unchanged = ({ path, before }: (typeof launchers)[number]) => {
+    const after = lstatSync(path);
+    return (
+      before.dev === after.dev &&
+      before.ino === after.ino &&
+      before.mtimeMs === after.mtimeMs &&
+      before.size === after.size
+    );
+  };
+  const hidden = hideProgramPaths([
+    { path: copy.packageRoot, hidden: hiddenPackage(copy.packageRoot) },
+  ]);
   let selection: SelectedHarnessProgram;
   try {
     selection = resolveSelectedProgram(program, runtime);
     if (!matches(selection)) throw new Error("Selection changed before conversion committed");
+    if (!launchers.every(unchanged))
+      throw new Error("An npm launcher changed before conversion committed");
   } catch (error) {
     hidden.restore();
     throw error;
   }
-  const { limitations } = hidden.retire();
+  const { removed, limitations } = hidden.retire();
+  if (removed.length)
+    for (const launcher of launchers) {
+      try {
+        if (!unchanged(launcher)) throw new Error("launcher changed");
+        rmSync(launcher.path);
+      } catch {
+        limitations.push(`Retired npm package; launcher could not be removed at ${launcher.path}`);
+      }
+    }
   return { selection, limitations };
+}
+
+/** Resume a killed conversion on explicit maintenance only. Restore the fixed
+ * package sibling, then use the same own-version/line/ordering proof to retire
+ * it, or leave the restored copy intact. No journal or startup sweep. */
+export async function recoverProductNpmCopies(
+  program: HarnessProgram,
+  runtime: InstallerRuntime,
+  acknowledge: (path: string) => Promise<void>,
+): Promise<{ changed: boolean; limitations: string[] }> {
+  let changed = false;
+  const limitations: string[] = [];
+  if (!program.legacyNpmPackage) return { changed, limitations };
+  for (const prefix of prefixes(runtime)) {
+    const root = join(npmGlobalPackagesDir(prefix, runtime.platform), program.legacyNpmPackage);
+    const hidden = hiddenPackage(root);
+    try {
+      let stat;
+      try {
+        stat = lstatSync(hidden);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      if (
+        !stat.isDirectory() ||
+        realpathSync(dirname(root)) !== dirname(root) ||
+        !inside(realpathSync(prefix), realpathSync(hidden)) ||
+        JSON.parse(readFileSync(join(hidden, "package.json"), "utf8")).name !==
+          program.legacyNpmPackage
+      )
+        throw new Error("hidden package identity is not proven");
+      await acknowledge(hidden);
+      hideProgramPaths([{ path: root, hidden }]).restore();
+      changed = true;
+      const previous = resolveSelectedProgram(program, runtime);
+      const copy = productNpmCopy(program, previous, runtime);
+      if (!copy || copy.packageRoot !== root)
+        throw new Error("restored package/launcher relation is not selected");
+      const result = retireProductNpmCopy(program, copy, runtime, previous);
+      limitations.push(`Retired interrupted npm conversion at ${root}.`, ...result.limitations);
+    } catch (error) {
+      limitations.push(
+        `Npm conversion recovery at ${root}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return { changed, limitations };
 }

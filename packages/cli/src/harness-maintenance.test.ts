@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -53,6 +54,63 @@ function oldCopy(w: ReturnType<typeof world>, remote = false) {
 }
 
 describe("selected vendor operation", () => {
+  it.each([true, false])(
+    "recovers a killed conversion's fixed hidden package (replacement still acceptable: %s)",
+    async (acceptable) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.versionScheme = "semver";
+      executable(w.installed, "2.0.0");
+      const hidden = `${old.pkg}.claudexor-converted`;
+      const script = join(w.home, "killed-conversion.mjs");
+      writeFileSync(
+        script,
+        `
+import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolveSelectedProgram, defineHarnessProgram } from ${JSON.stringify(new URL("../../core/dist/index.js", import.meta.url).href)};
+import { installerRuntime } from ${JSON.stringify(new URL("../dist/harness-install-runtime.js", import.meta.url).href)};
+import { productNpmCopy, retireProductNpmCopy } from ${JSON.stringify(new URL("../dist/harness-npm-conversion.js", import.meta.url).href)};
+const program = defineHarnessProgram(${JSON.stringify(w.program)});
+const runtime = installerRuntime(program, ${JSON.stringify(w.options)});
+runtime.spawn = (bin, args, options) => {
+  if (existsSync(${JSON.stringify(hidden)})) process.kill(process.pid, 'SIGKILL');
+  return spawnSync(bin, args, options);
+};
+const before = resolveSelectedProgram(program, runtime);
+retireProductNpmCopy(program, productNpmCopy(program, before, runtime), runtime, before);
+throw new Error('The child must die while the package is hidden');
+`,
+      );
+      const child = spawnSync(process.execPath, [script], { encoding: "utf8", timeout: 15_000 });
+      expect(child.signal, child.stderr).toBe("SIGKILL");
+      expect(existsSync(hidden)).toBe(true);
+      expect(existsSync(old.pkg)).toBe(false);
+      expect(lstatSync(old.launcher).isSymbolicLink()).toBe(true);
+      if (!acceptable) executable(w.installed, "0.9.0");
+      const acknowledgments: string[] = [];
+      w.options.beforeMutation = async (receipt) => {
+        acknowledgments.push(
+          ...receipt.limitations.filter((line) => line.startsWith("Recovering interrupted")),
+        );
+      };
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        return result("Vendor command result", acceptable ? 0 : 1);
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(acknowledgments).toContain(`Recovering interrupted npm conversion at ${hidden}.`);
+      expect(existsSync(hidden)).toBe(false);
+      expect(existsSync(old.pkg)).toBe(!acceptable);
+      expect(existsSync(old.launcher)).toBe(!acceptable);
+      expect(receipt.after?.version).toBe(acceptable ? "2.0.0" : "1.0.0");
+      expect(receipt.ok).toBe(acceptable);
+    },
+  );
   it("updates a person's npm copy without converting when the adapter never owned that package", async () => {
     const w = world();
     const old = oldCopy(w);
