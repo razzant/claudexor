@@ -46,7 +46,9 @@ __afterAllReap(() => {
 }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function tempDir(name = "daemon"): string {
-  return realpathSync(reapMk(join(tmpdir(), `claudexor-${name}-`)));
+  // The configured TMPDIR may already be long; leave room for daemon.sock
+  // within macOS's Unix socket limit. The label is diagnostic, not identity.
+  return realpathSync(reapMk(join(tmpdir(), `d-${name.slice(0, 6)}-`)));
 }
 
 const TEST_RUNTIME_IDENTITY = {

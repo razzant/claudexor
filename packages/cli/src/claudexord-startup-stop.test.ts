@@ -257,8 +257,9 @@ async function foreignRuntime(): Promise<number> {
 /** A real built daemon in a private root, no credentials, with one step held. */
 function startDaemon(hold: Record<string, string>, extra: Record<string, string> = {}) {
   expect(existsSync(daemonEntry), "build the daemon before this process qualification").toBe(true);
-  const root = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "cx278-")));
-  const [home, config, temporary] = ["home", "config", "tmp"].map((name) => join(root, name));
+  // Keep the real daemon socket below macOS's path limit in a long private TMPDIR.
+  const root = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "ds-")));
+  const [home, config, temporary] = ["h", "c", "t"].map((name) => join(root, name));
   const daemonDir = join(config, "daemon");
   for (const dir of [home, daemonDir, temporary]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const disabled = { enabled: false, native_credentials_enabled: false };
