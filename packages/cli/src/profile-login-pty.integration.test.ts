@@ -112,7 +112,7 @@ async function withFixture(
   expect(existsSync(CLI), "build the real CLI before this acceptance test").toBe(true);
   const keys = ["CLAUDEXOR_CONFIG_DIR", "HOME", "USERPROFILE", "XDG_CONFIG_HOME"] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "c363-pty-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p-")));
   process.env.CLAUDEXOR_CONFIG_DIR = root;
   const home = join(root, "home");
   mkdirSync(home);
@@ -126,15 +126,18 @@ async function withFixture(
     fixture.bin,
     `#!${process.execPath}\n` +
       `
+const args = process.argv.slice(2);
+if (args[0] === '--disable-auto-update') args.shift();
+if (args[0] === '--version') { console.log('2026.11.10-abc123'); process.exit(0); }
 const fs = require('node:fs');
 const path = require('node:path');
 const root = ${JSON.stringify(fixture.root)};
 const file = name => path.join(root,name);
-if (process.argv[2] === 'status') {
+if (args[0] === 'status') {
   console.log(JSON.stringify({authenticated: fs.existsSync(file('finished')), email:'fixture@example.test'}));
   process.exit(0);
 }
-if (process.argv[2] !== 'login') process.exit(2);
+if (args[0] !== 'login') process.exit(2);
 fs.appendFileSync(file('starts'), 'start\\n');
 fs.writeFileSync(file('login.json.tmp'), JSON.stringify({pid:process.pid, stdin:!!process.stdin.isTTY, stdout:!!process.stdout.isTTY, stderr:!!process.stderr.isTTY,home:process.env.HOME,credentialStore:process.env.AGENT_CLI_CREDENTIAL_STORE}));
 fs.renameSync(file('login.json.tmp'), file('login.json'));

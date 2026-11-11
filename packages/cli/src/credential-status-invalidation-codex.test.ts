@@ -21,7 +21,7 @@ import {
   bustLoginCredentialState,
 } from "./credential-status-invalidation.js";
 
-// The adapter reads its binary path when its module loads.
+// Select the offline fixture for every dynamic program observation.
 const stub = vi.hoisted(() => {
   const dir = `${(process.env.TMPDIR ?? "/tmp").replace(/\/+$/, "")}/claudexor-610-catalog-${process.pid}`;
   process.env.CLAUDEXOR_CODEX_BIN = `${dir}/codex`;
@@ -35,6 +35,7 @@ const stub = vi.hoisted(() => {
  * `release` before it answers `model/list`, the same way a slow remote fetch does.
  */
 const STUB_SOURCE = `#!/usr/bin/env node
+if (process.argv.includes("--version")) { console.log("1.0.0"); process.exit(0); }
 const { appendFileSync, existsSync, readFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const home = process.env.CODEX_HOME;

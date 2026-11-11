@@ -62,6 +62,8 @@ function writeVendor(): void {
     vendor.bin,
     [
       "#!/bin/sh",
+      '[ "$1" != --disable-auto-update ] || shift',
+      'if [ "$1" = --version ]; then echo 2026.11.10-abc123; exit 0; fi',
       `D="${d}"`,
       'if [ "$1" = status ]; then',
       '  echo status >> "$D/status-calls"',

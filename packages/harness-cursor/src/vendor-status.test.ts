@@ -115,7 +115,7 @@ describe("Cursor status preserves server proof independently of local login", ()
       const bin = join(root, "cursor-agent");
       writeFileSync(
         bin,
-        `#!/usr/bin/env node\nconst fs = require('node:fs'); const path = require('node:path');
+        `#!/usr/bin/env node\nif (process.argv.includes("--version")) { console.log("2026.11.10-abc123"); process.exit(0); }\nconst fs = require('node:fs'); const path = require('node:path');
 const home = process.env.HOME;
 fs.appendFileSync(path.join(home,'status-calls.jsonl'), JSON.stringify({argv:process.argv.slice(2),HOME:home,USERPROFILE:process.env.USERPROFILE,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,APPDATA:process.env.APPDATA,store:process.env.AGENT_CLI_CREDENTIAL_STORE,hasKey:Boolean(process.env.CURSOR_API_KEY)})+'\\n');
 process.stdout.write(fs.readFileSync(path.join(home,'status-fixture.json'),'utf8'));
@@ -151,7 +151,7 @@ process.stdout.write(fs.readFileSync(path.join(home,'status-fixture.json'),'utf8
           .map((line) => JSON.parse(line));
         expect(calls).toHaveLength(1);
         expect(calls[0]).toMatchObject({
-          argv: ["status", "--format", "json"],
+          argv: ["--disable-auto-update", "status", "--format", "json"],
           store: "file",
           hasKey: false,
         });
