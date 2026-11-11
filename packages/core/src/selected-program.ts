@@ -92,10 +92,12 @@ export function selectProgramEntry(
 ) {
   const source = options.sourceEnv ?? process.env;
   const platform = options.platform ?? process.platform;
-  const env = options.environment ?? {
-    ...source,
-    PATH: normalizedHarnessPath(source, options.nodePath, platform),
-  };
+  const env = options.environment
+    ? { ...options.environment }
+    : {
+        ...source,
+        PATH: normalizedHarnessPath(source, options.nodePath, platform),
+      };
   const resolve = (name: string) =>
     resolveHarnessCommandOnPath(
       name,

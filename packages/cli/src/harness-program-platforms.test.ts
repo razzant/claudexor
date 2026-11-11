@@ -1,5 +1,5 @@
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defineHarnessProgram, programPath, programPlatform } from "@claudexor/core";
@@ -133,7 +133,7 @@ describe("adapter vendor declarations", () => {
           : id === "agy"
             ? "{localAppData}/agy/bin"
             : id === "copilot"
-              ? "{localAppData}/Microsoft/WinGet/Links"
+              ? "{localAppData}/GitHubCopilotCLI"
               : data.launcherDirs[0]!;
       const installed = join(programPath(folder, sourceEnv), `fixture-${id}.exe`);
       const invocations: Array<{ bin: string; args: string[]; env: NodeJS.ProcessEnv }> = [];
@@ -145,7 +145,10 @@ describe("adapter vendor declarations", () => {
         sourceEnv,
         fetch: fetcher,
         spawn: ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
-          if (args[0] === "query") return result("", 1);
+          if (args[0] === "query")
+            return id === "copilot" && existsSync(installed)
+              ? result(`    Path    REG_SZ    ${dirname(installed)}\n`)
+              : result("", 1);
           if (args[0] === "--version") return result("fixture 1.2.3\n");
           invocations.push({ bin, args: [...args], env: opts.env! });
           if (id !== "copilot")
@@ -285,14 +288,17 @@ describe("adapter vendor declarations", () => {
       url: "https://opencode.ai/install",
     });
     expect(opencode.platforms.darwin!.update).toMatchObject({ args: ["upgrade"] });
-    expect(
-      (
-        await runHarnessUpdate("opencode", "2.0.0", {
-          ...w.options,
-          program: { ...opencode, launchers: [{ name: "missing-opencode-fixture" }] },
-        })
-      ).problem?.message,
-    ).toContain("1.x");
+    executable(w.installed, "1.19.5");
+    const selected = {
+      ...w.options,
+      program: { ...opencode, overrideEnv: "FIXTURE_BIN" },
+      sourceEnv: { ...w.options.sourceEnv, FIXTURE_BIN: w.installed },
+    };
+    expect((await inspectHarness("opencode", selected)).actions.exactVersion.available).toBe(true);
+    expect((await runHarnessUpdate("opencode", "1.19.5", selected)).ok).toBe(true);
+    expect((await runHarnessUpdate("opencode", "2.0.0", selected)).problem?.message).toContain(
+      "1.x",
+    );
     expect(
       await observeNewest(
         opencode,

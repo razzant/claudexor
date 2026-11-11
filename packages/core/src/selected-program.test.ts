@@ -199,10 +199,13 @@ describe("selected program", () => {
         nodePath: "/absent/node",
         spawn: spawn as unknown as typeof spawnSync,
       };
-      expect(resolveSelectedProgram(fixture, options)).toMatchObject({
-        path: installed,
-        version: "1.0.109",
-      });
+      expect(resolveSelectedProgram(fixture, { ...options, environment: sourceEnv })).toMatchObject(
+        {
+          path: installed,
+          version: "1.0.109",
+        },
+      );
+      expect(sourceEnv.PATH).toBe(""); // Registry discovery must not edit the caller's environment.
       expect(spawn).toHaveBeenCalledTimes(3);
       spawn.mockClear();
       expect(
