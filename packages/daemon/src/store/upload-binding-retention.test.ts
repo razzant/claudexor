@@ -439,6 +439,43 @@ describe("upload binding scan", () => {
     expect(bindings(f)).toBe(0);
   });
 
+  it("settles at most 100 targets in one transaction with the production options", async () => {
+    const f = await open();
+    await uploads(f, 101, true);
+    clock += UPLOAD_BINDING_RETENTION_MS;
+    const transaction = f.store.transaction.bind(f.store);
+    const deleted: number[] = [];
+    vi.spyOn(f.store, "transaction").mockImplementation(((body: () => unknown) => {
+      const before = bindings(f);
+      const result = transaction(body);
+      deleted.push(before - bindings(f));
+      return result;
+    }) as never);
+    expect(await new UploadBindings(f.store).prune()).toEqual(finished(202));
+    // Two bindings per target: one full batch, then the rest.
+    expect(deleted).toEqual([200, 2]);
+  }, 60_000);
+
+  it("a failed delete transaction rejects the scan, keeps what was settled and leaves the scan due", async () => {
+    const f = await open();
+    await uploads(f, 6, true);
+    clock += UPLOAD_BINDING_RETENTION_MS;
+    const scanner = new UploadBindings(f.store);
+    const transaction = f.store.transaction.bind(f.store);
+    let calls = 0;
+    const failing = vi.spyOn(f.store, "transaction").mockImplementation(((body: () => unknown) => {
+      if ((calls += 1) === 2) throw new Error("fixture: the second batch cannot commit");
+      return transaction(body);
+    }) as never);
+    await expect(scanner.prune({ window: 4, batch: 2 })).rejects.toThrow();
+    // The first batch of two targets stays deleted.
+    expect(bindings(f)).toBe(8);
+    failing.mockRestore();
+    // Nothing was stamped as finished, so the same scanner scans again at once.
+    expect(await scanner.prune({ window: 4, batch: 2 })).toEqual(finished(8));
+    expect(bindings(f)).toBe(0);
+  });
+
   it("deletes every expired target across windows and batches, and nothing else", async () => {
     const f = await open();
     await uploads(f, 5, true);
@@ -544,6 +581,8 @@ describe("upload binding scan", () => {
     vi.mocked(timers.setImmediate).mockClear();
     expect(await scanner.prune()).toEqual(finished(0));
     expect(yields()).toBe(0);
+    // No scan is due, so a cancelled pass cut nothing short.
+    expect(await scanner.prune({ signal: AbortSignal.abort() })).toEqual(finished(0));
     clock += 1;
     expect(await scanner.prune()).toEqual(finished(0));
     expect(yields()).toBe(1);

@@ -233,12 +233,13 @@ export class UploadBindings {
    */
   async prune(input: UploadBindingPrune = {}): Promise<UploadBindingScan> {
     const interrupted = () => input.signal?.aborted === true;
-    if (interrupted()) return { removed: 0, interrupted: true };
     const now = this.store.now().getTime();
     const sinceScan = this.scannedAt === null ? null : now - this.scannedAt;
     // A clock that moved back proves nothing about elapsed time: scan.
     if (sinceScan !== null && sinceScan >= 0 && sinceScan < RETENTION_AGE_REVISIT_MS)
       return { removed: 0, interrupted: false };
+    // Only a scan that was due can be cut short.
+    if (interrupted()) return { removed: 0, interrupted: true };
     const window = input.window ?? RETENTION_ROW_WINDOW;
     const batch = input.batch ?? UPLOAD_BINDING_PRUNE_BATCH;
     const cutoff = new Date(now - UPLOAD_BINDING_RETENTION_MS).toISOString();
@@ -249,10 +250,10 @@ export class UploadBindings {
     let removed = 0;
     const settle = () => {
       const targets = [...pending].slice(0, batch);
-      const expired = targets.filter((id) => this.targetExpired(id));
-      if (expired.length)
+      const confirmed = targets.filter((id) => this.targetExpired(id));
+      if (confirmed.length)
         removed += runMutation(this.store, (tx) =>
-          expired.reduce((n, id) => n + deleteTargetIdempotencyInTx(tx, "upload", 0, id), 0),
+          confirmed.reduce((n, id) => n + deleteTargetIdempotencyInTx(tx, "upload", 0, id), 0),
         );
       for (const id of targets) pending.delete(id);
     };
