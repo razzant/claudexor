@@ -1,6 +1,13 @@
-import type { HarnessEvent, ProcessingCostBasis, ProcessingReceipt } from "@claudexor/schema";
+import type {
+  HarnessEvent,
+  ProcessingCostBasis,
+  ProcessingReceipt,
+  NativeProgramEvidence,
+} from "@claudexor/schema";
 
 export interface ProcessingTelemetry {
+  programs?: NativeProgramEvidence[];
+  programOpen?: boolean;
   processing?: ProcessingReceipt;
   processingCostBasis?: ProcessingCostBasis;
   processingIntervals?: ProcessingReceipt[];
@@ -10,6 +17,14 @@ export interface ProcessingTelemetry {
 /** Adapters own each native session's observations. Preserve completed native
  * retry intervals as well, so a later ordinary run cannot erase paid/mixed work. */
 export function observeProcessing(t: ProcessingTelemetry, event: HarnessEvent): void {
+  if (event.program) {
+    const programs = (t.programs ??= []);
+    if (!t.programOpen) {
+      programs.push(event.program);
+      t.programOpen = true;
+    } else programs[programs.length - 1] = event.program;
+  }
+  if (event.type === "completed") t.programOpen = false;
   if (event.type === "started")
     t.currentProcessing = t.processing
       ? { ...t.processing, observed: "unknown", observedNative: [] }

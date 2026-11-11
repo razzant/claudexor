@@ -1,0 +1,317 @@
+{
+  "generatedBy": ["createCursorParser", "harnessEventPayload"],
+  "source": "packages/harness-cursor/fixtures/shell/background-completion.jsonl",
+  "rows": [
+    {
+      "seq": 1,
+      "ts": "2026-10-29T00:00:00.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:00.000Z",
+        "type": "started",
+        "title": "started",
+        "observed_model": "Fixture Model",
+        "payload": { "native_session_id": "ses-background-completion" }
+      }
+    },
+    {
+      "seq": 2,
+      "ts": "2026-10-29T00:00:01.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:01.000Z",
+        "type": "message",
+        "title": "I'll run one command in the foreground and one in the background.",
+        "text": "I'll run one command in the foreground and one in the background."
+      }
+    },
+    {
+      "seq": 3,
+      "ts": "2026-10-29T00:00:02.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:02.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-foreground-sleep",
+          "target": "sleep 45"
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "ts": "2026-10-29T00:00:03.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:03.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 148478 · pid 148480",
+        "text": "tool_result: Handed off to background after its 30s timeout; completion not observed · shell 148478 · pid 148480",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-foreground-sleep",
+          "target": "sleep 45",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"sleep 45\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"\",\"stderr\":\"\",\"executionTime\":0,\"shellId\":148478,\"interleavedOutput\":\"\",\"pid\":148480,\"msToWait\":30000,\"backgroundReason\":\"SHELL_BACKGROUND_REASON_TIMEOUT\"},\"isBackground\":false,\"terminalsFolder\":\"/home/use",
+          "command_outcome": {
+            "state": "backgrounded",
+            "background_reason": "timeout",
+            "timeout_ms": 30000,
+            "shell_id": "148478",
+            "pid": 148480
+          }
+        },
+        "payload": {
+          "native_result": {
+            "success": {
+              "command": "sleep 45",
+              "workingDirectory": "/repo",
+              "exitCode": 0,
+              "signal": "",
+              "stdout": "",
+              "stderr": "",
+              "executionTime": 0,
+              "shellId": 148478,
+              "interleavedOutput": "",
+              "pid": 148480,
+              "msToWait": 30000,
+              "backgroundReason": "SHELL_BACKGROUND_REASON_TIMEOUT"
+            },
+            "isBackground": false,
+            "terminalsFolder": "/home/user/.cursor/projects/repo/terminals"
+          }
+        }
+      }
+    },
+    {
+      "seq": 5,
+      "ts": "2026-10-29T00:00:04.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:04.000Z",
+        "type": "tool_call",
+        "title": "shell",
+        "text": "shell",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-background-sleep",
+          "target": "sleep 5"
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "ts": "2026-10-29T00:00:05.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:05.000Z",
+        "type": "tool_result",
+        "title": "tool_result: Handed off to background; completion not observed · shell 148490 · pid 148492",
+        "text": "tool_result: Handed off to background; completion not observed · shell 148490 · pid 148492",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-background-sleep",
+          "target": "sleep 5",
+          "status": "ok",
+          "content_summary": "{\"success\":{\"command\":\"sleep 5\",\"workingDirectory\":\"/repo\",\"exitCode\":0,\"signal\":\"\",\"stdout\":\"\",\"stderr\":\"\",\"executionTime\":0,\"shellId\":148490,\"interleavedOutput\":\"\",\"pid\":148492,\"backgroundReason\":\"SHELL_BACKGROUND_REASON_USER_REQUEST\"},\"isBackground\":true,\"terminalsFolder\":\"/home/user/.cursor/proj",
+          "command_outcome": {
+            "state": "backgrounded",
+            "background_reason": "requested",
+            "shell_id": "148490",
+            "pid": 148492
+          }
+        },
+        "payload": {
+          "native_result": {
+            "success": {
+              "command": "sleep 5",
+              "workingDirectory": "/repo",
+              "exitCode": 0,
+              "signal": "",
+              "stdout": "",
+              "stderr": "",
+              "executionTime": 0,
+              "shellId": 148490,
+              "interleavedOutput": "",
+              "pid": 148492,
+              "backgroundReason": "SHELL_BACKGROUND_REASON_USER_REQUEST"
+            },
+            "isBackground": true,
+            "terminalsFolder": "/home/user/.cursor/projects/repo/terminals"
+          }
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "ts": "2026-10-29T00:00:06.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:06.000Z",
+        "type": "message",
+        "title": "Both commands are now in background shells; I'll wait for their notifications.",
+        "text": "Both commands are now in background shells; I'll wait for their notifications."
+      }
+    },
+    {
+      "seq": 8,
+      "ts": "2026-10-29T00:00:07.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:07.000Z",
+        "type": "status",
+        "title": "Completion reported; exit code unknown · handed off to background · shell 148490 · pid 148492",
+        "text": "Completion reported; exit code unknown · handed off to background · shell 148490 · pid 148492",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-background-sleep",
+          "target": "sleep 5",
+          "command_outcome": {
+            "state": "completion_reported",
+            "background_reason": "requested",
+            "shell_id": "148490",
+            "pid": 148492,
+            "completion_status": "success"
+          }
+        },
+        "payload": {
+          "code": "command_outcome_refined",
+          "native_notification": {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "148490",
+            "status": "success",
+            "title": "Run background sleep command",
+            "session_id": "ses-background-completion",
+            "timestamp_ms": 36200
+          }
+        }
+      }
+    },
+    {
+      "seq": 9,
+      "ts": "2026-10-29T00:00:08.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:08.000Z",
+        "type": "status",
+        "title": "Completion reported; exit code unknown · handed off to background after its 30s timeout · shell 148478 · pid 148480",
+        "text": "Completion reported; exit code unknown · handed off to background after its 30s timeout · shell 148478 · pid 148480",
+        "tool": {
+          "name": "shell",
+          "kind": "command",
+          "use_id": "call-foreground-sleep",
+          "target": "sleep 45",
+          "command_outcome": {
+            "state": "completion_reported",
+            "background_reason": "timeout",
+            "timeout_ms": 30000,
+            "shell_id": "148478",
+            "pid": 148480,
+            "completion_status": "success"
+          }
+        },
+        "payload": {
+          "code": "command_outcome_refined",
+          "native_notification": {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "148478",
+            "status": "success",
+            "title": "Run foreground sleep command",
+            "session_id": "ses-background-completion",
+            "timestamp_ms": 46050
+          }
+        }
+      }
+    },
+    {
+      "seq": 10,
+      "ts": "2026-10-29T00:00:09.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:09.000Z",
+        "type": "message",
+        "title": "Both background commands reported completion.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "text": "Both background commands reported completion.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```"
+      }
+    },
+    {
+      "seq": 11,
+      "ts": "2026-10-29T00:00:10.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:10.000Z",
+        "type": "usage",
+        "title": "usage: 3000 in / 90 out",
+        "usage": {
+          "input_tokens": 3000,
+          "output_tokens": 90,
+          "cached_input_tokens": 500,
+          "input_token_usage": {
+            "total_tokens": 3500,
+            "cache_read_tokens": 500,
+            "cache_write_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "seq": 12,
+      "ts": "2026-10-29T00:00:11.000Z",
+      "type": "harness.event",
+      "payload": {
+        "harness_id": "cursor",
+        "attempt_id": "a01",
+        "session_id": "ses-fixture",
+        "ts": "2026-10-29T00:00:11.000Z",
+        "type": "message",
+        "title": "Both background commands reported completion.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "text": "Both background commands reported completion.\n```json\n{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]}}\n```",
+        "final": true,
+        "payload": { "final_source": "assistant_message" }
+      }
+    }
+  ]
+}

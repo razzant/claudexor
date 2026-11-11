@@ -1,4 +1,4 @@
-import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
+import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { createInterface } from "node:readline";
@@ -21,6 +21,7 @@ import { createCursorAdapter } from "@claudexor/harness-cursor";
 import { registerConfigDirProfile } from "./profile-registration.js";
 import { setupJobControlServices } from "./setup-job-control-services.js";
 import { createSetupJobManager } from "./setup-jobs.js";
+import { SqlSetupLifecycleSlot } from "./sql-setup-lifecycle.js";
 
 // Real Windows console, built CLI/runner, control API and lifecycle manager.
 // Only vendor commands and the daemon socket-health facade are offline fixtures.
@@ -154,8 +155,10 @@ async function withFixture(
       : [];
   const cursor = createCursorAdapter();
   const token = ensureToken();
+  // The daemon's SQL setup store; its engine store lives in daemonDir() and is closed here.
+  const sql = await sqlFixture(root);
   const manager = createSetupJobManager({
-    store: new SetupJobStore(daemonDir()),
+    store: new SqlSetupLifecycleSlot(daemonDir(), sql.graph).current(),
     rootDir: daemonDir(),
     runnerPath: RUNNER,
     monitorPollMs: 50,
@@ -215,7 +218,7 @@ async function withFixture(
       await until("fixture login drain", () => manager.list({ active: true }).length === 0);
     } finally {
       await manager.shutdown();
-      (manager._store as SetupJobStore).journal.close();
+      await sql.close();
       await server.stop();
       await new Promise<void>((done) => health.close(() => done()));
       for (const key of keys) {

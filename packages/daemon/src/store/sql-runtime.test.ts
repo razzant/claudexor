@@ -2,18 +2,25 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DurableJournal } from "./test-support/fixtures/legacy/journal/index.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DaemonLocalClient } from "../daemon-local-client.js";
 import { DaemonServer, type RunnerFn } from "../server.js";
 import { quarantineGenerationInTx, setGlobalGenerationInTx } from "./generations.js";
 import { createPartition } from "./partitions.js";
 import { createSqlDaemonServices } from "./sql-daemon-services.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const close of cleanups.splice(0).reverse()) await close();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 
 async function fixture(
@@ -21,7 +28,7 @@ async function fixture(
   recoveryRequired = false,
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sql-runtime-")));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const store = await EngineStore.open({
     daemonDir: root,
     workerEntry: resolve(import.meta.dirname, "../../dist/store/flusher-worker.js"),
@@ -146,6 +153,7 @@ describe("SQL daemon composition through the existing RPC boundary", () => {
         request: {
           interaction_id: "question",
           source_tool: "ask",
+          delivery: "blocking",
           questions: [
             { id: "q", question: "Continue?", header: null, multi_select: false, options: [] },
           ],
@@ -160,6 +168,60 @@ describe("SQL daemon composition through the existing RPC boundary", () => {
     await expect(waiting).resolves.toEqual({ kind: "released", reason: "run_terminal" });
     expect(f.graph.interactions.pendingForRun(runId)).toEqual([]);
     expect(f.graph.threads.turnsFor(thread.id)[0]?.prompt).toBe("full prompt");
+  });
+
+  it("persists each question's delivery and reads a historical row as blocking (#628)", async () => {
+    const f = await fixture();
+    const runId = "run-delivery";
+    const asked = f.graph.interactions.register(
+      {
+        runId,
+        taskId: "task",
+        attemptId: "a01",
+        harnessId: "codex",
+        request: {
+          interaction_id: "async-question",
+          source_tool: "request_user_input_async",
+          delivery: "async",
+          questions: [
+            { id: "q", question: "Who is it for?", header: null, multi_select: false, options: [] },
+          ],
+        },
+        requestedAt: new Date().toISOString(),
+        timeoutAt: null,
+      },
+      {},
+    );
+    // A row written before delivery existed carries no field at all.
+    const historical = {
+      interactionId: "historical-question",
+      runId,
+      attemptId: "a01",
+      harnessId: "claude",
+      sourceTool: "AskUserQuestion",
+      questions: [],
+      requestedAt: new Date().toISOString(),
+      timeoutAt: null,
+    };
+    f.store
+      .prepare("INSERT INTO interaction(id,pid,run_id,state,request) VALUES(?,?,?,'pending',?)")
+      .run(
+        `${runId}\u0000historical-question`,
+        f.global.pid,
+        runId,
+        Buffer.from(JSON.stringify(historical)),
+      );
+    expect(
+      f.graph.interactions
+        .pendingForRun(runId)
+        .map((pending) => [pending.interactionId, pending.delivery]),
+    ).toEqual([
+      ["async-question", "async"],
+      ["historical-question", "blocking"],
+    ]);
+    f.graph.interactions.dropForRun(runId);
+    await expect(asked).resolves.toEqual({ kind: "released", reason: "run_terminal" });
+    expect(f.graph.interactions.pendingForRun(runId)).toEqual([]);
   });
 
   it("hides all old generation commands on global quarantine without deleting evidence", async () => {

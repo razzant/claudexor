@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { DaemonLoopFacts } from "@claudexor/schema";
@@ -12,8 +13,8 @@ afterEach(() => {
 const turn = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function blockLoop(ms: number): void {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
     /* hold the event loop */
   }
 }

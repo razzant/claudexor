@@ -6,14 +6,20 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  codexRateLimitCursor,
+  resetRolloutReadStatsForTests,
+  rolloutReadStatsForTests,
+  setRolloutReadLimitsForTests,
+} from "./rollout-file.js";
+import {
+  codexRolloutCursor,
   codexTranscriptModel,
   codexTranscriptRateLimits,
   codexTranscriptVendorFailure,
@@ -41,7 +47,7 @@ describe("codexTranscriptModel", () => {
       ].join("\n") + "\n",
     );
   });
-  afterAll(() => rmSync(home, { recursive: true, force: true }));
+  afterAll(() => rmSync(home, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   it("reads the model codex recorded for the matching thread (verified-tier evidence)", () => {
     expect(codexTranscriptModel(home, thread)).toBe("gpt-5.5");
@@ -159,7 +165,7 @@ describe("codexTranscriptRateLimits reads the rollout incrementally", () => {
 
   it("answers like a whole-file read at every step of a growing rollout", () => {
     const { home, file } = rollout();
-    const cursor = codexRateLimitCursor();
+    const cursor = codexRolloutCursor();
     const steps: Array<[string, number | null]> = [
       [other("hello"), null],
       [record(10), 0.1],
@@ -180,7 +186,7 @@ describe("codexTranscriptRateLimits reads the rollout incrementally", () => {
 
   it("reads only the bytes appended since the last call", () => {
     const { home, file } = rollout();
-    const cursor = codexRateLimitCursor();
+    const cursor = codexRolloutCursor();
     writeFileSync(file, record(10) + other("x"));
     expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.1);
     // Rewrite the consumed bytes in place (same size and file): a whole-file
@@ -197,7 +203,7 @@ describe("codexTranscriptRateLimits reads the rollout incrementally", () => {
 
   it("preserves request-kind scope through the incremental cursor without broadening unknown buckets", () => {
     const { home, file } = rollout();
-    const cursor = codexRateLimitCursor();
+    const cursor = codexRolloutCursor();
     appendFileSync(file, record(10));
     expect(
       codexTranscriptRateLimits(home, threadId, cursor)?.constraints[0]?.applies_to_request_kinds,
@@ -218,7 +224,7 @@ describe("codexTranscriptRateLimits reads the rollout incrementally", () => {
 
   it("starts over on a replaced or truncated rollout, and for another thread", () => {
     const { home, file } = rollout();
-    const cursor = codexRateLimitCursor();
+    const cursor = codexRolloutCursor();
     writeFileSync(file, record(40) + record(41));
     expect(used(codexTranscriptRateLimits(home, threadId, cursor))).toBe(0.41);
     const replacement = `${file}.next`;
@@ -270,7 +276,7 @@ describe("codexTranscriptVendorFailure", () => {
   let seq = 0;
   afterAll(() => {
     for (const home of homes) rmSync(home, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   /** Install `content` as the rollout of a fresh thread in a fresh CODEX_HOME. */
   function install(content: string): { home: string; thread: string; file: string } {
@@ -562,4 +568,231 @@ describe("codexTranscriptVendorFailure", () => {
     // One second later the guard holds.
     expect(read(previousTurnOnly, (SPAWN_S + 1) * 1000)).toBeNull();
   });
+});
+
+// #336: every reader goes through one bounded, link-refusing scan. Its answers
+// must not depend on how reads split the file, and a newer marker it cannot
+// read must never let an older turn's fact stand in for the newest one.
+describe("bounded rollout reads (#336)", () => {
+  const RECORDED = fileURLToPath(new URL("../fixtures/rollout", import.meta.url));
+  const thread = "0199eeee-ffff-7000-8111-222233334444";
+  const homes: string[] = [];
+  afterEach(() => setRolloutReadLimitsForTests(null));
+  afterAll(() => homes.forEach((home) => rmSync(home, { recursive: true, force: true })), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+  function install(content: string): { home: string; file: string } {
+    const home = mkdtempSync(join(tmpdir(), "codex-bounded-"));
+    homes.push(home);
+    const day = join(home, "sessions", "2026", "10", "28");
+    mkdirSync(day, { recursive: true });
+    const file = join(day, `rollout-2026-10-28T10-00-00-${thread}.jsonl`);
+    writeFileSync(file, content);
+    return { home, file };
+  }
+  const json = (record: unknown) => JSON.stringify(record);
+  const turnContext = (turn: string | undefined, model: unknown) =>
+    json({ type: "turn_context", payload: { ...(turn ? { turn_id: turn } : {}), model } });
+  const started = (turn: string, at: number) =>
+    json({ type: "event_msg", payload: { type: "task_started", turn_id: turn, started_at: at } });
+  const failed = (turn: string, at: number, code: string) =>
+    json({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: turn,
+        started_at: at,
+        error: { message: code, codex_error_info: code },
+      },
+    });
+  const tokens = (used: number) =>
+    json({
+      type: "event_msg",
+      payload: { type: "token_count", rate_limits: { primary: { used_percent: used } } },
+    });
+  const quoted = json({
+    type: "response_item",
+    payload: { type: "message", text: "ж😀 quotes turn_context, rate_limits and task_complete" },
+  });
+  const answers = (home: string, notBeforeMs = 0) => ({
+    model: codexTranscriptModel(home, thread),
+    used: codexTranscriptRateLimits(home, thread)?.constraints[0]?.used_ratio ?? null,
+    vendor: codexTranscriptVendorFailure(home, thread, notBeforeMs)?.code ?? null,
+  });
+
+  // Valid input under the bound: the same answers as the whole-file readers
+  // they replace (.review-evidence/rollout336 compares them with the base code).
+  const corpus: Array<[string, string, ReturnType<typeof answers>, number?]> = [
+    [
+      "recorded resumed session",
+      readFileSync(join(RECORDED, "recorded-resumed-overloaded-0.153.3.jsonl"), "utf8"),
+      { model: "gpt-6-astra", used: 0.15, vendor: "server_overloaded" },
+      1789939141_000,
+    ],
+    [
+      "multi-turn with a model change, CRLF, empty lines and quoted markers",
+      [
+        started("t1", 10),
+        turnContext("t1", "gpt-a"),
+        tokens(10),
+        failed("t1", 10, "first"),
+        "",
+        quoted,
+        started("t2", 20),
+        turnContext("t2", "gpt-b"),
+        quoted,
+        tokens(20),
+      ].join("\r\n") + "\n",
+      { model: "gpt-b", used: 0.2, vendor: null },
+    ],
+    [
+      "valid records not yet newline-terminated at EOF",
+      [started("t1", 10), turnContext("t1", "gpt-a"), tokens(30), failed("t1", 10, "eof")].join(
+        "\n",
+      ),
+      { model: "gpt-a", used: 0.3, vendor: "eof" },
+    ],
+  ];
+  it.each(corpus)("%s: identical at every chunk size", (_name, content, expected, notBeforeMs) => {
+    const { home } = install(content);
+    for (const chunkBytes of [1, 2, 3, 5, 8, 13, 64, 1 << 20]) {
+      setRolloutReadLimitsForTests({ chunkBytes });
+      expect(answers(home, notBeforeMs), `chunk ${chunkBytes}`).toEqual(expected);
+    }
+  });
+
+  it("the newest unreadable turn marker leaves the model unknown instead of reviving an older turn's", () => {
+    setRolloutReadLimitsForTests({ chunkBytes: 7, maxLineBytes: 256 });
+    const older = turnContext("t1", "gpt-old");
+    // Torn (complete line, not JSON), over the bound, and a record without a model.
+    for (const newer of [
+      turnContext("t2", "gpt-new").slice(0, 40),
+      turnContext("t2", "x".repeat(300)),
+      turnContext("t2", ""),
+    ]) {
+      const { home, file } = install(`${older}\n${newer}\n`);
+      expect(codexTranscriptModel(home, thread), newer.slice(0, 50)).toBeNull();
+      appendFileSync(file, `${turnContext("t3", "gpt-later")}\n`);
+      expect(codexTranscriptModel(home, thread)).toBe("gpt-later");
+    }
+    // An over-bound line without a marker is not a turn: the model stands.
+    const { home } = install(
+      `${older}\n${json({ type: "response_item", text: "y".repeat(400) })}\n`,
+    );
+    expect(codexTranscriptModel(home, thread)).toBe("gpt-old");
+  });
+
+  it("over the bound: quota keeps its last reading and a completion record is unknown (fail-soft)", () => {
+    setRolloutReadLimitsForTests({ maxLineBytes: 256 });
+    const huge = "z".repeat(400);
+    const { home } = install(
+      [
+        tokens(40),
+        json({ type: "event_msg", payload: { type: "token_count", rate_limits: { note: huge } } }),
+        started("t1", 10),
+        failed("t1", 10, "small"),
+        json({ type: "event_msg", payload: { type: "task_complete", turn_id: "t1", note: huge } }),
+      ].join("\n") + "\n",
+    );
+    expect(answers(home)).toEqual({ model: null, used: 0.4, vendor: null });
+  });
+
+  it("only a turn_context RECORD names the model (a quoted record with a model field does not)", () => {
+    const decoy = json({
+      type: "response_item",
+      payload: { text: "turn_context", model: "decoy" },
+    });
+    const { home } = install(`${turnContext("t1", "gpt-real")}\n${decoy}\n`);
+    expect(codexTranscriptModel(home, thread)).toBe("gpt-real");
+  });
+
+  it("binds the model to the turn the stream started; an earlier turn or a turn-less record never stands in", () => {
+    const { home, file } = install(`${started("t1", 10)}\n${turnContext("t1", "gpt-old")}\n`);
+    const cursor = codexRolloutCursor();
+    expect(codexTranscriptModel(home, thread, cursor, "t2")).toBeNull();
+    appendFileSync(file, `${started("t2", 20)}\n`);
+    expect(codexTranscriptModel(home, thread, cursor, "t2")).toBeNull();
+    appendFileSync(file, turnContext("t2", "gpt-new")); // complete JSON, newline not yet written
+    expect(codexTranscriptModel(home, thread, cursor, "t2")).toBe("gpt-new");
+    appendFileSync(file, "\n");
+    expect(codexTranscriptModel(home, thread, cursor, "t2")).toBe("gpt-new");
+    // Unbound (no turn id from the stream): the last record, as before.
+    expect(codexTranscriptModel(home, thread)).toBe("gpt-new");
+    const legacy = install(`${turnContext(undefined, "gpt-legacy")}\n`);
+    expect(codexTranscriptModel(legacy.home, thread, codexRolloutCursor(), "t1")).toBeNull();
+    expect(codexTranscriptModel(legacy.home, thread)).toBe("gpt-legacy");
+  });
+
+  it("one cursor serves model and quota from a single pass over the appended bytes", () => {
+    const history = Array.from({ length: 200 }, (_, i) => tokens(i % 100)).join("\n") + "\n";
+    const { home, file } = install(history);
+    const cursor = codexRolloutCursor();
+    resetRolloutReadStatsForTests();
+    expect(codexTranscriptModel(home, thread, cursor, "t9")).toBeNull();
+    expect(codexTranscriptRateLimits(home, thread, cursor)?.constraints[0]?.used_ratio).toBe(0.99);
+    for (let i = 0; i < 20; i++)
+      expect(codexTranscriptModel(home, thread, cursor, "t9")).toBeNull();
+    const appended = `${started("t9", 90)}\n${turnContext("t9", "gpt-9")}\n${tokens(5)}\n`;
+    appendFileSync(file, appended);
+    expect(codexTranscriptModel(home, thread, cursor, "t9")).toBe("gpt-9");
+    expect(codexTranscriptRateLimits(home, thread, cursor)?.constraints[0]?.used_ratio).toBe(0.05);
+    expect(rolloutReadStatsForTests().bytes).toBe(
+      Buffer.byteLength(history) + Buffer.byteLength(appended),
+    );
+  });
+
+  it("a replaced or truncated rollout restarts both facts", () => {
+    const { home, file } = install(`${turnContext("t1", "gpt-a")}\n${tokens(70)}\n`);
+    const cursor = codexRolloutCursor();
+    expect(codexTranscriptModel(home, thread, cursor)).toBe("gpt-a");
+    writeFileSync(`${file}.next`, `${tokens(3)}\n`);
+    renameSync(`${file}.next`, file);
+    expect(codexTranscriptModel(home, thread, cursor)).toBeNull();
+    expect(codexTranscriptRateLimits(home, thread, cursor)?.constraints[0]?.used_ratio).toBe(0.03);
+    writeFileSync(file, `${turnContext("t2", "gpt-b")}\n`);
+    expect(codexTranscriptModel(home, thread, cursor)).toBe("gpt-b");
+    expect(codexTranscriptRateLimits(home, thread, cursor)).toBeNull();
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "never reads through a link: a linked rollout, day or sessions directory yields nothing",
+    () => {
+      const outside = mkdtempSync(join(tmpdir(), "codex-bounded-outside-"));
+      homes.push(outside);
+      const bytes = [
+        started("t1", 10),
+        turnContext("t1", "outside"),
+        tokens(77),
+        failed("t1", 10, "outside"),
+      ];
+      writeFileSync(join(outside, `rollout-x-${thread}.jsonl`), bytes.join("\n") + "\n");
+      const linkedFile = install("");
+      rmSync(linkedFile.file);
+      symlinkSync(join(outside, `rollout-x-${thread}.jsonl`), linkedFile.file);
+      const linkedDay = mkdtempSync(join(tmpdir(), "codex-bounded-day-"));
+      homes.push(linkedDay);
+      mkdirSync(join(linkedDay, "sessions", "2026", "10"), { recursive: true });
+      symlinkSync(outside, join(linkedDay, "sessions", "2026", "10", "28"));
+      const linkedRoot = mkdtempSync(join(tmpdir(), "codex-bounded-root-"));
+      homes.push(linkedRoot);
+      const realTree = mkdtempSync(join(tmpdir(), "codex-bounded-tree-"));
+      homes.push(realTree);
+      mkdirSync(join(realTree, "2026", "10", "28"), { recursive: true });
+      writeFileSync(
+        join(realTree, "2026", "10", "28", `rollout-x-${thread}.jsonl`),
+        bytes.join("\n") + "\n",
+      );
+      symlinkSync(realTree, join(linkedRoot, "sessions"));
+      for (const home of [linkedFile.home, linkedDay, linkedRoot])
+        expect(answers(home), home).toEqual({ model: null, used: null, vendor: null });
+      // The selected home itself may be a link: that is the operator's choice, not a rollout link.
+      const aliasDir = mkdtempSync(join(tmpdir(), "codex-bounded-alias-"));
+      homes.push(aliasDir);
+      const real = install(bytes.join("\n") + "\n");
+      symlinkSync(real.home, join(aliasDir, "home"));
+      expect(answers(join(aliasDir, "home"))).toEqual({
+        model: "outside",
+        used: 0.77,
+        vendor: "outside",
+      });
+    },
+  );
 });

@@ -2,16 +2,33 @@ import Foundation
 
 /// Mirrors packages/schema/src/account-resources.ts. Provider amounts stay
 /// decimal strings with their reported units; the client never converts money.
+/// A nil profileId names the harness's default API-key route (a resources row
+/// or refresh, never an account); reset requests always name an account.
 public struct AccountTarget: Codable, Hashable, Sendable {
     public let harness: String
-    public let profileId: String
+    public let profileId: String?
     private enum CodingKeys: String, CodingKey {
         case harness
         case profileId = "profile_id"
     }
-    public init(harness: String, profileId: String) {
+    public init(harness: String, profileId: String?) {
         self.harness = harness
         self.profileId = profileId
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        harness = try c.decode(String.self, forKey: .harness)
+        guard c.contains(.profileId) else {
+            throw DecodingError.keyNotFound(CodingKeys.profileId, .init(
+                codingPath: decoder.codingPath, debugDescription: "Missing profile_id"))
+        }
+        profileId = try c.decodeIfPresent(String.self, forKey: .profileId)
+    }
+    /// The wire requires profile_id; the default route sends an explicit null.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(harness, forKey: .harness)
+        try c.encode(profileId, forKey: .profileId)
     }
 }
 
@@ -34,10 +51,23 @@ public enum ResourceFreshness: String, Codable, Sendable {
     case fresh, stale, unknown
 }
 
+public struct ResourceUsagePeriod: Codable, Equatable, Sendable {
+    public let startsAt: String?
+    public let endsAt: String?
+    private enum CodingKeys: String, CodingKey {
+        case startsAt = "starts_at"
+        case endsAt = "ends_at"
+    }
+}
+
 public struct AccountBalance: Codable, Equatable, Sendable, Identifiable {
     public let id: String
     public let label: String
     public let amount: String?
+    public var scope: String? = nil
+    public var usageKind: String? = nil
+    public var period: ResourceUsagePeriod? = nil
+    public var feeIncluded: Bool? = nil
     public let unit: String
     public let currency: String?
     public let decimalPlaces: Int?
@@ -45,6 +75,9 @@ public struct AccountBalance: Codable, Equatable, Sendable, Identifiable {
     public let unlimited: Bool?
     private enum CodingKeys: String, CodingKey {
         case id, label, amount, unit, currency, unlimited
+        case scope, period
+        case usageKind = "usage_kind"
+        case feeIncluded = "fee_included"
         case hasBalance = "has_balance"
         case decimalPlaces = "decimal_places"
     }
@@ -55,14 +88,27 @@ public struct AccountSpending: Codable, Equatable, Sendable, Identifiable {
     public let label: String
     public let enabled: Bool?
     public let used: String?
+    public var scope: String? = nil
+    public var usageKind: String? = nil
+    public var period: ResourceUsagePeriod? = nil
+    public var feeIncluded: Bool? = nil
     public let limit: String?
     public let unit: String
     public let currency: String?
     public let decimalPlaces: Int?
     public let resetsAt: String?
     public let reason: String?
+    /// true: a cap is reported in `limit`; false: the provider reports no cap.
+    public var capped: Bool? = nil
+    /// Provider-reported amount left under `limit`, with its sign.
+    public var remaining: String? = nil
+    /// UTC window `used` counts: day, week, month or lifetime.
+    public var window: String? = nil
     private enum CodingKeys: String, CodingKey {
         case id, label, enabled, used, limit, unit, currency, reason
+        case scope, period, capped, remaining, window
+        case usageKind = "usage_kind"
+        case feeIncluded = "fee_included"
         case resetsAt = "resets_at"
         case decimalPlaces = "decimal_places"
     }
@@ -121,10 +167,16 @@ public struct AccountResourceDiagnostic: Codable, Equatable, Sendable {
 
 public struct AccountResourceSnapshot: Codable, Equatable, Sendable {
     public let target: AccountTarget
+    /// Non-secret identity of the API key an API-key row was read with.
+    public var credentialFingerprint: String? = nil
     public let balances: ResourceFacet<[AccountBalance]>
     public let spending: ResourceFacet<[AccountSpending]>
     public let resets: ResourceFacet<[AccountResetOffer]>
     public let diagnostics: ResourceFacet<[AccountResourceDiagnostic]>
+    private enum CodingKeys: String, CodingKey {
+        case target, balances, spending, resets, diagnostics
+        case credentialFingerprint = "credential_fingerprint"
+    }
 }
 
 /// Rich and legacy reads share the existing quota display owner. This wrapper

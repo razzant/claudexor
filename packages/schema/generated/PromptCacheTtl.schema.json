@@ -1,0 +1,14 @@
+{
+  "$ref": "#/definitions/PromptCacheTtl",
+  "definitions": {
+    "PromptCacheTtl": {
+      "type": "string",
+      "enum": [
+        "5m",
+        "1h"
+      ],
+      "description": "Native prompt-cache lifetime for the main conversation and helper requests of a harness that declares it. Omission sends no override: native defaults, profile settings and the inherited environment stay in effect."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import type { HarnessAdapter } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
@@ -24,13 +25,15 @@ import {
 import { type ReviewerSpec } from "@claudexor/review";
 import { verifyAndDeliverFiles } from "@claudexor/delivery";
 import { Orchestrator } from "./orchestrator.js";
+import { OrchestratorCredentials } from "./orchestrator-credentials.js";
 
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "claudexor-directory-runtime-"));
+  // Leave room for a Unix socket when the test runner supplies a long TMPDIR.
+  const root = mkdtempSync(join(tmpdir(), "dr-"));
   dirs.push(root);
   writeFileSync(join(root, "input.txt"), "selected source\r\n");
   writeFileSync(join(root, "outside.txt"), "unselected source");
@@ -97,7 +100,7 @@ function approvingReviewer(id: string, providerFamily: "openai" | "anthropic"): 
           kind: "local_cli",
           provider_family: providerFamily,
           access_profiles_supported: ["readonly"],
-          capabilities: { review: true, known_models: [`${id}-model`] },
+          capabilities: { review: true, read_files: true, known_models: [`${id}-model`] },
         });
       },
       async doctor() {
@@ -315,16 +318,141 @@ describe("ordinary directory Agent execution", () => {
       repoRoot: root,
       workspaceKind: "directory",
       prompt: "Read the directory",
+      scopePaths: ["."],
       harnesses: [author.adapter.id],
       access: "readonly",
     });
     expect(result.facts.lifecycle).toBe("succeeded");
     expect(readdirSync(root).sort()).toEqual(["input.txt", "outside.txt"]);
     expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+    expect(existsSync(join(result.runDir, "attempts/a01/final/files/manifest.json"))).toBe(false);
+    expect(readFileSync(join(result.runDir, "final/answer.md"), "utf8")).toContain(
+      "Prepared the output.",
+    );
+    const attempt = new ArtifactStore(root).readYaml<Record<string, unknown>>(
+      join(result.runDir, "attempts/a01/attempt.yaml"),
+    );
+    expect(attempt).not.toHaveProperty("capture_refusal");
   });
 
+  it.skipIf(process.platform === "win32")(
+    "answers from a readonly live directory containing a Unix socket",
+    async () => {
+      const root = fixture();
+      const socket = createServer();
+      await new Promise<void>((resolve, reject) => {
+        socket.once("error", reject);
+        socket.listen(join(root, "s"), resolve);
+      });
+      try {
+        const author = writer(Buffer.from([1]));
+        const result = await new Orchestrator({
+          registry: new Map([[author.adapter.id, author.adapter]]),
+        }).run({
+          repoRoot: root,
+          workspaceKind: "directory",
+          inPlace: true,
+          scopePaths: ["."],
+          access: "readonly",
+          harnesses: [author.adapter.id],
+          prompt: "Read the directory without changing its files",
+        });
+        expect(result.facts.lifecycle).toBe("succeeded");
+        expect(author.calls).toEqual([root]);
+        expect(readFileSync(join(result.runDir, "final/answer.md"), "utf8")).toContain(
+          "Prepared the output.",
+        );
+        expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+        expect(existsSync(join(result.runDir, "attempts/a01/final/files/manifest.json"))).toBe(
+          false,
+        );
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          socket.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "preserves readonly dispatch and HOME selection, delegated=%s",
+    async (delegated) => {
+      const root = fixture(),
+        executionRoot = delegated ? fixture() : root;
+      const author = writer(Buffer.from([1]));
+      const seen: Array<{ cwd: string; access: string; home?: string; homeExists: boolean }> = [];
+      const run = author.adapter.run;
+      author.adapter.run = async function* (spec) {
+        seen.push({
+          cwd: spec.cwd,
+          access: spec.access,
+          home: spec.env?.HOME,
+          homeExists: Boolean(spec.env?.HOME && existsSync(spec.env.HOME)),
+        });
+        yield* run.call(author.adapter, spec);
+      };
+      const result = await new Orchestrator({
+        registry: new Map([[author.adapter.id, author.adapter]]),
+      }).run({
+        repoRoot: root,
+        executionRoot,
+        delegated,
+        workspaceKind: "directory",
+        inPlace: true,
+        scopePaths: ["input.txt"],
+        access: "readonly",
+        harnesses: [author.adapter.id],
+        prompt: "Read the selected folder",
+      });
+      expect(result.facts.lifecycle).toBe("succeeded");
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ cwd: executionRoot, access: "readonly" });
+      if (delegated) {
+        expect(seen[0]!.homeExists).toBe(true);
+        expect(seen[0]!.home).not.toBe(process.env.HOME);
+        expect(seen[0]!.home).not.toBe(executionRoot);
+      } else expect(seen[0]!.home).toBeUndefined();
+      expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+      expect(readdirSync(executionRoot).sort()).toEqual(["input.txt", "outside.txt"]);
+    },
+  );
+
+  it.each([["."], ["input.txt"]])(
+    "does not mark an empty readonly answer as delivered with scope %j",
+    async (...scopePaths) => {
+      const root = fixture();
+      const author = writer(Buffer.from([1]));
+      author.adapter.run = async function* (spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", ts, session_id: spec.session_id };
+        yield { type: "completed", ts, session_id: spec.session_id };
+      };
+      const served = vi.spyOn(OrchestratorCredentials.prototype, "noteTryServed");
+      try {
+        const result = await new Orchestrator({
+          registry: new Map([[author.adapter.id, author.adapter]]),
+        }).run({
+          repoRoot: root,
+          workspaceKind: "directory",
+          scopePaths,
+          access: "readonly",
+          harnesses: [author.adapter.id],
+          prompt: "Read only",
+        });
+        expect(served.mock.calls.map(([, , delivered]) => delivered)).toEqual([false]);
+        const facts = RunFacts.parse(
+          new ArtifactStore(root).readYaml(join(result.runDir, "final/run_facts.yaml")),
+        );
+        expect(facts.deliverable.present).toBe(false);
+        expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+      } finally {
+        served.mockRestore();
+      }
+    },
+  );
+
   it.each([true, false])(
-    "refuses secret output without retained blobs or fake rollback (direct=%s)",
+    "retains credential-shaped directory output exactly (direct=%s, INV-146)",
     async (inPlace) => {
       const root = fixture();
       const secret = `ghp_${"Q".repeat(25)}`;
@@ -339,10 +467,12 @@ describe("ordinary directory Agent execution", () => {
         harnesses: [author.adapter.id],
         inPlace,
       });
-      expect(result.facts.lifecycle).toBe("failed");
+      expect(result.facts.lifecycle).toBe("succeeded");
       expect(author.calls).toHaveLength(1);
-      expect(existsSync(join(result.runDir, "attempts/a01/final/files"))).toBe(false);
-      expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(false);
+      expect(existsSync(join(result.runDir, "final/work_product.yaml"))).toBe(true);
+      const manifest = readFileSync(join(result.runDir, "final/files/manifest.json"), "utf8");
+      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      expect(manifest).toContain(digest);
       expect(existsSync(join(root, "output.bin"))).toBe(inPlace);
     },
   );
@@ -381,7 +511,7 @@ describe("ordinary directory Agent execution", () => {
               kind: "local_cli",
               provider_family: providerFamily,
               access_profiles_supported: ["readonly"],
-              capabilities: { review: true, known_models: [`${id}-model`] },
+              capabilities: { review: true, read_files: true, known_models: [`${id}-model`] },
             });
           },
           async doctor() {

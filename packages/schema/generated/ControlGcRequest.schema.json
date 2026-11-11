@@ -9,6 +9,10 @@
           "default": false,
           "description": "Report what WOULD be deleted without touching disk."
         },
+        "retention_report": {
+          "type": "boolean",
+          "description": "Include typed holds, root/home counts and truncation; lockstep clients only."
+        },
         "model_payload_report": {
           "type": "boolean",
           "description": "Include exact model-purpose resource cleanup outcomes. Cleanup itself always runs; opt-in keeps older strict receipt readers compatible."
@@ -16,6 +20,10 @@
         "data_root_report": {
           "type": "boolean",
           "description": "Opt in to the advisory data-root scan: when true, the receipt carries data_root_unrecognized. Capability negotiation for engine-version skew — a client omits this unless the serving daemon is the SAME engine version, so an older daemon never sees the unknown request key and an older client never receives the unknown receipt key."
+        },
+        "native_home_report": {
+          "type": "boolean",
+          "description": "Include adapter-owned native-home retirement outcomes. Cleanup always runs; lockstep opt-in keeps older strict clients compatible."
         },
         "trash_purge_report": {
           "type": "boolean",

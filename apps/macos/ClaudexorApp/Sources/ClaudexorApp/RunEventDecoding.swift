@@ -15,25 +15,15 @@ extension AppModel {
         from payload: JSONValue,
         expectedLifecycle: String?
     ) -> RunOutcomeFacts? {
+        // The one wire decoder: a frame carries every axis a detail read does
+        // (review_requested, work_state), and repeating it cannot rewrite them.
         guard let raw = payload["facts"],
-              let lifecycle = raw["lifecycle"]?.stringValue,
-              let checks = raw["checks"]?.stringValue,
-              let review = raw["review"]?.stringValue,
-              RunPhase(api: lifecycle).isTerminal,
-              expectedLifecycle == nil || expectedLifecycle == lifecycle
+              let data = try? JSONEncoder().encode(raw),
+              let facts = try? JSONDecoder().decode(RunOutcomeFacts.self, from: data),
+              RunPhase(api: facts.lifecycle).isTerminal,
+              expectedLifecycle == nil || expectedLifecycle == facts.lifecycle
         else { return nil }
-        let reason: String?
-        switch raw["reason"] {
-        case .string(let value)?: reason = value
-        case .null?, nil: reason = nil
-        default: return nil
-        }
-        return RunOutcomeFacts(
-            lifecycle: lifecycle,
-            noChanges: raw["noChanges"]?.boolValue,
-            checks: checks,
-            review: review,
-            reason: reason)
+        return facts
     }
 
     /// The server persisted a refusal on a recorded turn when the HTTP error
@@ -86,8 +76,16 @@ extension AppModel {
             sourceTool: payload["source_tool"]?.stringValue,
             questions: questions,
             requestedAt: payload["requested_at"]?.stringValue ?? "",
-            timeoutAt: payload["timeout_at"]?.stringValue
+            timeoutAt: payload["timeout_at"]?.stringValue,
+            delivery: interactionDelivery(from: payload)
         )
+    }
+
+    /// The `delivery` an interaction.* event payload carries. Absent (older
+    /// engines) keeps the historical meaning, blocking; like the engine, only an
+    /// explicit `async` reads as the agent working on, so no question is softened.
+    static func interactionDelivery(from payload: JSONValue) -> InteractionDelivery {
+        payload["delivery"]?.stringValue == InteractionDelivery.async.rawValue ? .async : .blocking
     }
 
     static func planItems(from payload: JSONValue) -> [PlanItem]? {
@@ -111,8 +109,20 @@ extension AppModel {
     /// pinned primary harness never ran and the run routed elsewhere. Built from
     /// typed event facts only — "requested claude → ran on codex (quota
     /// exhausted)". Pure so it is unit-tested directly against the event payload.
-    static func primaryDivergedNote(requested: String, effective: String?, reason: String?) -> String {
+    ///
+    /// `readiness_preferred` (#133): the primary was only a preference inside an
+    /// Auto pool and the doctor reports it degraded, so Auto ran a ready harness.
+    /// Said as a preference, never as a strict choice that was overridden; the
+    /// engine's `detail` carries the doctor's reason verbatim.
+    static func primaryDivergedNote(
+        requested: String, effective: String?, reason: String?, detail: String? = nil
+    ) -> String {
         let ran = (effective?.isEmpty == false) ? "ran on \(effective!)" : "no harness could run"
+        if reason == "readiness_preferred" {
+            let doctor = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return "preferred \(requested) → \(ran). Auto runs only ready harnesses; "
+                + (doctor.isEmpty ? "\(requested) is not ready" : doctor)
+        }
         let why: String
         switch reason {
         case "quota_exhausted", "subscription_exhausted": why = "\(requested) quota exhausted"

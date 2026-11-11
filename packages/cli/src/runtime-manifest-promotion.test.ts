@@ -100,7 +100,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(work, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("verify-signed-runtime-manifest (A-5 publish gate)", () => {
   it("ACCEPTS a valid signed manifest that byte-matches the promoted closure", () => {

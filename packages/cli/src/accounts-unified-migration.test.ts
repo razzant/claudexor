@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
 import { defaultNativeCodexHome } from "@claudexor/harness-codex";
@@ -24,6 +24,10 @@ import {
   type AccountsMigrationStores,
 } from "./accounts-unified-migration.js";
 import { quotaSubjectUniverseFromConfig } from "./quota-subject-universe.js";
+import { parseArgs } from "./args.js";
+import { findCommand } from "./command-help.js";
+import { commandFlagScopeError, commandPositionalError } from "./command-scope.js";
+import { EXTERNAL_DAEMON_REMEDY } from "./daemon-owner.js";
 
 const dirs: string[] = [];
 let configDir: string;
@@ -36,7 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 function jwt(payload: Record<string, unknown>): string {
   return `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.y`;
@@ -377,6 +381,24 @@ describe("unified-accounts startup migration (plan §K.6)", () => {
     expect(again.map((r) => r.row_id)).toEqual(["codex-default"]);
   });
 
+  it.each(["missing-harness", "toString", "constructor", "__proto__"])(
+    "rollback ignores an absent record %s without changing migration state",
+    (harness) => {
+      seedCodexLogin();
+      runAccountsUnifiedMigration(stubStores().stores);
+      const migrationBefore = readFileSync(accountsMigrationFilePath(), "utf8");
+      const configBefore = readFileSync(join(configDir, "config.yaml"), "utf8");
+      const { stores, calls } = stubStores();
+
+      expect(rollbackAccountsUnifiedMigration(stores, harness)).toEqual([]);
+      expect(calls.rolledBack).toEqual([]);
+      expect(calls.removedSubjects).toEqual([]);
+      expect(readFileSync(accountsMigrationFilePath(), "utf8")).toBe(migrationBefore);
+      expect(readFileSync(join(configDir, "config.yaml"), "utf8")).toBe(configBefore);
+      expect(accountsMigrationGate("codex")).toBeNull();
+    },
+  );
+
   it("retires the null quota subject from the refresh universe for migrated harnesses only", () => {
     seedCodexLogin();
     seedClaudeLogin();
@@ -424,6 +446,70 @@ describe("unified-accounts startup migration (plan §K.6)", () => {
     expect(accountsMigrationGate("codex")).toBeNull();
     expect(registryRows()).toEqual([]);
     expect(existsSync(join(home, "auth.json"))).toBe(true); // bytes never move
+  });
+
+  it("every command the gate names passes CLI preflight; the rollback targets only its harness (#570)", () => {
+    seedCodexLogin();
+    seedClaudeLogin();
+    runAccountsUnifiedMigration(stubStores().stores);
+    const writePhase = (phase: string) => {
+      const file = readAccountsMigrationFile();
+      writeFileSync(
+        accountsMigrationFilePath(),
+        JSON.stringify({ ...file, codex: { ...file["codex"], phase } }),
+      );
+    };
+    const reasons: string[] = [];
+    for (const phase of ["registry_written", "rolling_back"]) {
+      writePhase(phase);
+      reasons.push(accountsMigrationGate("codex")?.reason ?? "");
+    }
+    // The startup pass logs the same instruction for the interrupted rollback
+    // and nothing for claude's completed migration.
+    const logged: string[] = [];
+    runAccountsUnifiedMigration({ ...stubStores().stores, log: (line) => logged.push(line) });
+    expect(logged).toHaveLength(1);
+    reasons.push(...logged);
+    for (const reason of reasons) {
+      const commands = [...reason.matchAll(/`claudexor ([^`]+)`/g)].map((match) => match[1]!);
+      expect(commands, reason).toContain("profiles rollback-migration codex");
+      for (const command of commands) {
+        const args = parseArgs(command.split(" "));
+        const id = args._[0] ?? "";
+        expect(findCommand(id), command).toBeDefined();
+        expect(commandFlagScopeError(id, Object.keys(args.flags)), command).toBeNull();
+        expect(commandPositionalError(id, args._.slice(1)), command).toBeNull();
+      }
+    }
+  });
+
+  it("the gate's restart advice holds for either lifecycle owner, whatever the daemon's own env (#570)", () => {
+    seedCodexLogin();
+    runAccountsUnifiedMigration(stubStores().stores);
+    const file = readAccountsMigrationFile();
+    writeFileSync(
+      accountsMigrationFilePath(),
+      JSON.stringify({ ...file, codex: { ...file["codex"], phase: "registry_written" } }),
+    );
+    // The gate runs in the daemon; an owning application need not give its
+    // daemon the attaching CLI's variable, so the text cannot branch on it. An
+    // invalid value there must not turn the typed refusal into a throw either.
+    const reasons = ["standalone", "external", "not-an-owner"].map((owner) => {
+      vi.stubEnv("CLAUDEXOR_DAEMON_OWNER", owner);
+      try {
+        return accountsMigrationGate("codex")?.reason;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+    expect(new Set(reasons).size).toBe(1);
+    const reason = reasons[0] ?? "";
+    expect(reason).toContain(`externally owned: ${EXTERNAL_DAEMON_REMEDY}`);
+    expect(reason).toContain("standalone: `claudexor daemon stop`, then any command");
+    expect(reason).toContain("`claudexor profiles rollback-migration codex`");
+    // The only mention of the stop an external reader is refused is that
+    // standalone-scoped one.
+    expect(reason.match(/daemon stop/g)).toHaveLength(1);
   });
 
   it("a corrupt migration file fails the run gate CLOSED and is never overwritten by re-migration", () => {

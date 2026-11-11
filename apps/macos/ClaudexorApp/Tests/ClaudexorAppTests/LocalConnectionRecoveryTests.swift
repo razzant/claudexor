@@ -39,9 +39,12 @@ private final class LocalConnectionRecoveryHarness {
     var startResults: [Bool]
     var probeOverride: (@MainActor () async -> LocalConnectionProbeResult)?
     var pauseActions: [Int: @MainActor () -> Void] = [:]
+    /// Re-observation answers under the outage lease; none answer by default.
+    var engineAnswerResults: [Bool] = []
 
     private(set) var prepareCount = 0
     private(set) var probeCount = 0
+    private(set) var engineAnswerCount = 0
     private(set) var pollCount = 0
     private(set) var startCount = 0
     private(set) var offlineCount = 0
@@ -59,18 +62,27 @@ private final class LocalConnectionRecoveryHarness {
         startResults = starts
     }
 
-    func run(generation runGeneration: Int? = nil) async {
+    func run(
+        generation runGeneration: Int? = nil, launchAvailable: Bool = true,
+        resumingConnection: Bool = false
+    ) async {
         let loop = LocalConnectionRecoveryLoop(
             generation: runGeneration ?? generation,
             currentGeneration: { self.generation },
             lifecycleOwner: lifecycleOwner,
             prepareProbe: { self.prepareCount += 1 },
             probe: { await self.nextProbe() },
+            engineAnswers: { self.nextEngineAnswer() },
             pollConnected: { await self.nextPoll() },
-            startDaemon: { self.nextStart() },
+            startDaemon: { _ in self.nextStart() },
             enterOffline: { self.offlineCount += 1 },
             pause: { await self.pause() })
-        await loop.run()
+        await loop.run(launchAvailable: launchAvailable, resumingConnection: resumingConnection)
+    }
+
+    private func nextEngineAnswer() -> Bool {
+        engineAnswerCount += 1
+        return engineAnswerResults.isEmpty ? false : engineAnswerResults.removeFirst()
     }
 
     private func nextProbe() async -> LocalConnectionProbeResult {
@@ -110,6 +122,72 @@ private final class LocalConnectionRecoveryHarness {
 
         #expect(sut.startCount == 1)
         #expect(sut.pauseCount == 3)
+    }
+
+    @MainActor
+    @Test func startupOwnershipLastsUntilHandshakeThenReleasesBeforeConnectedPolling() async throws {
+        let owner = LocalRuntimeLifecycleOwner()
+        var generation = 1
+        var probes = 0
+        var starts = 0
+        let loop = LocalConnectionRecoveryLoop(
+            generation: 1, currentGeneration: { generation }, lifecycleOwner: owner,
+            prepareProbe: {},
+            probe: {
+                probes += 1
+                if probes == 1 { return .unavailable }
+                #expect(owner.claim(.installation) == .contended)
+                return probes == 2 ? .unavailable : .connected
+            },
+            engineAnswers: { false },
+            pollConnected: {
+                let lease = owner.claim(.installation).lease
+                #expect(lease != nil)
+                if let lease { owner.release(lease) }
+                generation += 1
+                return .superseded
+            },
+            startDaemon: { _ in starts += 1; return true }, enterOffline: {},
+            pause: { await Task.yield() })
+        await loop.run()
+        #expect(starts == 1)
+        #expect(probes == 3)
+        let lease = try #require(owner.claim(.installation).lease)
+        owner.release(lease)
+    }
+
+    @MainActor
+    @Test func retiringAConnectingGenerationCancelsItsPendingSpawnBeforeReleasingOwnership() async throws {
+        let owner = LocalRuntimeLifecycleOwner()
+        var generation = 1
+        var pending: LocalRuntimeLaunchPermit?
+        var actualSpawns = 0
+        let loop = LocalConnectionRecoveryLoop(
+            generation: 1, currentGeneration: { generation }, lifecycleOwner: owner,
+            prepareProbe: {}, probe: { .unavailable }, engineAnswers: { false },
+            pollConnected: { .unavailable },
+            startDaemon: { pending = $0; return true }, enterOffline: {}, pause: { generation += 1 })
+        await loop.run()
+        let lease = try #require(owner.claim(.reconciliation).lease)
+        let oldLaunch = try #require(pending)
+        #expect(oldLaunch.perform { actualSpawns += 1; return true } == false)
+        #expect(actualSpawns == 0)
+        #expect(owner.claim(.installation) == .contended)
+        owner.release(lease)
+    }
+
+    @Test func expiredLaunchCannotSpawnAndAFreshLeaseCanStillLaunch() throws {
+        let owner = LocalRuntimeLifecycleOwner()
+        let oldLease = try #require(owner.claim(.outageRecovery).lease)
+        let expired = owner.launchPermit(for: oldLease, until: ContinuousClock.now.advanced(by: .seconds(-1)))
+        var spawns = 0
+        #expect(expired.perform { spawns += 1; return true } == false)
+        owner.release(oldLease)
+        let freshLease = try #require(owner.claim(.outageRecovery).lease)
+        let fresh = owner.launchPermit(for: freshLease, until: ContinuousClock.now.advanced(by: .seconds(5)))
+        #expect(fresh.perform { spawns += 1; return true })
+        #expect(spawns == 1)
+        owner.release(freshLease)
     }
 
     @MainActor
@@ -198,7 +276,7 @@ private final class LocalConnectionRecoveryHarness {
     @MainActor
     @Test func busyLifecycleDefersWithoutConsumingThenLaunchesOnceReleased() async throws {
         let owner = LocalRuntimeLifecycleOwner()
-        let busyLease = try #require(owner.claim(.installation))
+        let busyLease = try #require(owner.claim(.installation).lease)
         let sut = LocalConnectionRecoveryHarness(
             lifecycleOwner: owner,
             probes: [.unavailable, .unavailable, .unavailable])
@@ -213,11 +291,11 @@ private final class LocalConnectionRecoveryHarness {
     @Test func lifecycleCompletionSnapshotAndConditionalClaimAreAtomicAndTokenBound() throws {
         let owner = LocalRuntimeLifecycleOwner()
         let initial = owner.completionSnapshot()
-        let installation = try #require(owner.claim(.installation))
+        let installation = try #require(owner.claim(.installation).lease)
 
         // Being busy refuses without fabricating a completion.
         #expect(owner.claim(
-            .outageRecovery, ifNoCompletionSince: initial) == nil)
+            .outageRecovery, ifNoCompletionSince: initial) == .contended)
         #expect(owner.completionSnapshot() == initial)
 
         owner.release(installation)
@@ -225,18 +303,18 @@ private final class LocalConnectionRecoveryHarness {
         #expect(completed != initial)
         // The stale observation cannot claim even though the owner is idle.
         #expect(owner.claim(
-            .outageRecovery, ifNoCompletionSince: initial) == nil)
+            .outageRecovery, ifNoCompletionSince: initial) == .contended)
 
         let recovery = try #require(owner.claim(
-            .outageRecovery, ifNoCompletionSince: completed))
+            .outageRecovery, ifNoCompletionSince: completed).lease)
         owner.release(installation)
         // A stale token neither clears the current owner nor advances receipt.
         #expect(owner.completionSnapshot() == completed)
-        #expect(owner.claim(.reconciliation) == nil)
+        #expect(owner.claim(.reconciliation) == .contended)
 
         owner.release(recovery)
         #expect(owner.completionSnapshot() != completed)
-        #expect(owner.claim(.reconciliation) != nil)
+        #expect(owner.claim(.reconciliation).lease != nil)
     }
 
     @MainActor
@@ -290,6 +368,16 @@ private final class LocalConnectionRecoveryHarness {
     }
 
     @MainActor
+    @Test func explicitSwitchReconnectCannotLaunchUntilAFreshConnectionRearmsIt() async {
+        let sut = LocalConnectionRecoveryHarness(
+            probes: [.unavailable, .connected, .unavailable], polls: [.unavailable])
+        sut.pauseActions[1] = { #expect(sut.startCount == 0) }
+        await sut.run(launchAvailable: false)
+        #expect(sut.startCount == 1)
+        #expect(sut.pollCount == 1)
+    }
+
+    @MainActor
     @Test func steadyPostStartFailureConsumesTheOutageFallback() async {
         let sut = LocalConnectionRecoveryHarness(
             probes: [.connected, .unavailable, .unavailable],
@@ -324,6 +412,59 @@ private final class LocalConnectionRecoveryHarness {
 
         #expect(sut.startCount == 1)
         #expect(sut.offlineCount == 1)
+    }
+
+    @MainActor
+    @Test func resumedConnectionPollsItsClientWithoutProbingAndArmsOneOutageLaunch() async {
+        let sut = LocalConnectionRecoveryHarness(
+            probes: [.unavailable], polls: [.connected, .unavailable])
+        sut.pauseActions[1] = {
+            // The kept client is polled first: no Connecting reset, no discovery.
+            #expect(sut.prepareCount == 0)
+            #expect(sut.probeCount == 0)
+        }
+
+        await sut.run(resumingConnection: true)
+
+        #expect(sut.pollCount == 2)
+        #expect(sut.engineAnswerCount == 1)
+        #expect(sut.startCount == 1)
+    }
+
+    @MainActor
+    @Test func engineAnsweringUnderTheLeaseKeepsTheAllowanceForARealOutage() async {
+        let sut = LocalConnectionRecoveryHarness(
+            probes: [.unavailable, .unavailable, .unavailable])
+        sut.engineAnswerResults = [true, false]
+
+        await sut.run()
+
+        // The first claim found an engine and released; the second one started.
+        #expect(sut.engineAnswerCount == 2)
+        #expect(sut.startCount == 1)
+        #expect(sut.offlineCount == 1)
+    }
+
+    @MainActor
+    @Test func generationRetiredDuringReobservationReleasesTheLeaseWithoutLaunching() async throws {
+        let owner = LocalRuntimeLifecycleOwner()
+        var generation = 1
+        var starts = 0
+        let loop = LocalConnectionRecoveryLoop(
+            generation: 1, currentGeneration: { generation }, lifecycleOwner: owner,
+            prepareProbe: {}, probe: { .unavailable },
+            engineAnswers: {
+                #expect(owner.claim(.installation) == .contended)
+                generation += 1 // a manual Reconnect while discovery is re-read
+                return false
+            },
+            pollConnected: { .unavailable },
+            startDaemon: { _ in starts += 1; return true }, enterOffline: {},
+            pause: { await Task.yield() })
+        await loop.run()
+        #expect(starts == 0)
+        let lease = try #require(owner.claim(.installation).lease)
+        owner.release(lease)
     }
 
     @MainActor

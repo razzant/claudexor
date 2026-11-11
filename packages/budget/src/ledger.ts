@@ -1,5 +1,6 @@
 import { UNKNOWN_COST } from "./cost-evidence.js";
 export { routeCostEvidence, attemptCostEvidence } from "./cost-evidence.js";
+export type { CashCertainty, CashSettledCallback } from "./shared-financial-state.js";
 import type {
   BudgetLease,
   BudgetObservation,
@@ -17,12 +18,15 @@ import {
   quotaSnapshotIdentity,
 } from "@claudexor/schema";
 import { newId, nowIso, sha256 } from "@claudexor/util";
+import { reportedCashKnowledge } from "./usage-evidence.js";
 import {
   newSharedFinancialState,
   recordSharedSettlement,
   settlementIsEstimated,
   taskFinancialTotals,
   settlementValuationKnowledge,
+  type CashCertainty,
+  type CashSettledCallback,
   type SharedFinancialState,
 } from "./shared-financial-state.js";
 
@@ -57,6 +61,9 @@ export interface BudgetSettlement {
   cashKnowledge?: CostKnowledge;
   /** Valuation certainty is independent from billed cash certainty. */
   valuationKnowledge?: CostKnowledge;
+  /** Included work whose route reported no actual debit: the reported total is
+   * unknown while `cashKnowledge` (controllable cash) still governs the cap. */
+  allowanceDebitUnobserved?: boolean;
   source: string;
   provenance: string[];
   cashUsd?: number;
@@ -94,13 +101,7 @@ export class BudgetLedger {
   private readonly promptCounts = new Map<string, number>();
   private readonly financial: SharedFinancialState;
   private readonly taskScope: string | null;
-  private readonly localOnCashSettled?: (
-    cashSpendUsd: number,
-    valuationUsd: number,
-    cashEstimated: boolean,
-    valuationKnowledge: CostKnowledge,
-    cashKnowledge: CostKnowledge,
-  ) => void;
+  private readonly localOnCashSettled?: CashSettledCallback;
   private released = false;
 
   constructor(
@@ -114,13 +115,7 @@ export class BudgetLedger {
        * consumers (run events → UI) render cash without inferring from route
        * labels. Valuation rides along for telemetry, never for the cash fact.
        */
-      onCashSettled?: (
-        cashSpendUsd: number,
-        valuationUsd: number,
-        cashEstimated: boolean,
-        valuationKnowledge: CostKnowledge,
-        cashKnowledge: CostKnowledge,
-      ) => void;
+      onCashSettled?: CashSettledCallback;
     } = {},
     shared?: { financial: SharedFinancialState; taskScope: string },
   ) {
@@ -130,16 +125,7 @@ export class BudgetLedger {
     this.localOnCashSettled = shared ? deps.onCashSettled : undefined;
   }
 
-  scopedToTask(
-    taskId: string,
-    onCashSettled?: (
-      cashSpendUsd: number,
-      valuationUsd: number,
-      cashEstimated: boolean,
-      valuationKnowledge: CostKnowledge,
-      cashKnowledge: CostKnowledge,
-    ) => void,
-  ): BudgetLedger {
+  scopedToTask(taskId: string, onCashSettled?: CashSettledCallback): BudgetLedger {
     if (!taskId.trim()) throw new Error("budget task scope must not be empty");
     return new BudgetLedger(
       this.financial.budget,
@@ -316,6 +302,7 @@ export class BudgetLedger {
     );
     const taskTotals = taskFinancialTotals(this.financial, lease.task_id);
     const cashKnowledge = zeroCash ? "exact" : (settlement.cashKnowledge ?? settlement.knowledge);
+    const reported = reportedCashKnowledge(cashKnowledge, settlement.allowanceDebitUnobserved);
     const valuationReported =
       settlement.valuationUsd !== undefined ||
       settlement.valuationKnowledge !== undefined ||
@@ -325,9 +312,12 @@ export class BudgetLedger {
       taskTotals,
       cashUsd,
       valuationUsd,
-      cashKnowledge,
+      reported,
       valuationReported ? (settlement.valuationKnowledge ?? settlement.knowledge) : null,
+      cashKnowledge,
     );
+    // The finite cap governs controllable cash; an unobserved allowance debit
+    // is reported unknown but is not a cap the engine can verify or enforce.
     if (this.financial.budget.kind === "finite") {
       if (cashKnowledge === "unknown") this.financial.unverifiable = true;
       if (this.financial.cashUsd > this.financial.budget.maxUsd) this.financial.overshot = true;
@@ -338,6 +328,7 @@ export class BudgetLedger {
       taskTotals.cashEstimated,
       taskTotals.valuationKnowledge ?? "unknown",
       taskTotals.cashKnowledge ?? "unknown",
+      taskTotals.controllableCashKnowledge ?? "unknown",
     );
   }
   cancel(leaseId: string): void {
@@ -359,6 +350,17 @@ export class BudgetLedger {
         ? this.financial.cashKnowledge
         : this.financial.totalsByTask.get(this.taskScope)?.cashKnowledge) ?? "unknown"
     );
+  }
+
+  /** Reported and cap-governed certainty of `spend()`; they differ only when
+   * included work reports no actual debit. */
+  cashCertainty(): CashCertainty {
+    const totals =
+      this.taskScope === null ? this.financial : this.financial.totalsByTask.get(this.taskScope);
+    return {
+      reported: totals?.cashKnowledge ?? null,
+      controllable: totals?.controllableCashKnowledge ?? null,
+    };
   }
 
   valuation(): number {

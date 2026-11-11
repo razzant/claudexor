@@ -1,13 +1,16 @@
 import { describe, it, expect } from "vitest";
 import type { WorkReport } from "@claudexor/schema";
 import {
+  attemptInterruption,
   finalizeAttempt,
   readOnlyNoSuccessTerminal,
+  type AttemptInterruption,
   unrecoveredToolErrorFailure,
   webEvidenceFailure,
 } from "./attemptFinalize.js";
 import {
   resolveWorkReportEnvelope,
+  unwrapAttemptAnswer,
   unwrapWorkReportEnvelope,
   type WorkReportEnvelopeMode,
 } from "./workReportEnvelope.js";
@@ -264,9 +267,9 @@ describe("unwrapWorkReportEnvelope", () => {
     expect(r.workReport).toBeNull();
   });
 
-  it("redacts secret-like tokens in required_inputs locator+description (one owner)", () => {
-    // Assemble the fake token at runtime so this test file never carries a
-    // contiguous secret-like token at rest (runSupport.test.ts pattern).
+  it("keeps required_inputs locator+description exactly as the model wrote them (INV-146)", () => {
+    // Assembled at runtime so this test file never carries a contiguous
+    // token-shaped literal at rest.
     const fakeToken = ["sk-ant", "1234567890abcdefghij"].join("-");
     const text = JSON.stringify({
       work_report: {
@@ -283,15 +286,13 @@ describe("unwrapWorkReportEnvelope", () => {
     });
     const r = unwrapWorkReportEnvelope(text, ACTIVE);
     expect(r.contractViolation).toBeNull();
-    const ri = r.workReport?.required_inputs[0];
-    // The raw token never survives into the validated work_report (which flows
-    // to telemetry yaml, decision facts, and the CLI needsInputLabel).
-    expect(ri?.locator).not.toContain(fakeToken);
-    expect(ri?.description).not.toContain(fakeToken);
-    expect(ri?.locator).toContain("[redacted]");
-    expect(ri?.description).toContain("[redacted]");
-    // Non-secret text is preserved.
-    expect(ri?.description).toContain("to proceed");
+    // The validated work_report feeds telemetry, decision facts, the CLI
+    // needs-input label and the next turn: the model's own words, unchanged.
+    expect(r.workReport?.required_inputs[0]).toEqual({
+      kind: "credential",
+      locator: `env:API_KEY=${fakeToken}`,
+      description: `paste ${fakeToken} to proceed`,
+    });
   });
 
   it("flags a missing/malformed work_report as a contract violation", () => {
@@ -336,7 +337,7 @@ describe("unwrapWorkReportEnvelope", () => {
     }
   });
 
-  it("redacts the retained contradictory claim before handing it to evidence writers", () => {
+  it("retains the contradictory claim exactly for the evidence writers (INV-146)", () => {
     const secret = "sk-" + "aB3dEf9h".repeat(6);
     const result = unwrapWorkReportEnvelope(
       JSON.stringify({
@@ -350,7 +351,11 @@ describe("unwrapWorkReportEnvelope", () => {
     );
     expect(result.workReport).toBeNull();
     expect(result.reportProblem?.kind).toBe("completed_with_required_inputs");
-    expect(JSON.stringify(result.reportProblem)).not.toContain(secret);
+    expect(result.reportProblem?.reported.required_inputs[0]).toEqual({
+      kind: "context",
+      locator: secret,
+      description: `See ${secret}`,
+    });
   });
 
   it("does not let a prototype-pollution output key escape the envelope", () => {
@@ -582,7 +587,7 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
     workReport: null as WorkReport | null,
     workReportSource: "absent" as const,
     workReportViolation: null as string | null,
-    contextTerminalExhausted: false,
+    interruption: null as AttemptInterruption | null,
   };
 
   it("clean completed report ⇒ completed work_state, no reason", () => {
@@ -635,9 +640,33 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
   });
 
   it("terminal context exhaustion with no completed report ⇒ interrupted", () => {
-    const r = finalizeAttempt({ ...base, contextTerminalExhausted: true });
+    const r = finalizeAttempt({ ...base, interruption: "context_capacity_exhausted" });
     expect(r.outcomeClass).toBe("interrupted");
     expect(r.reason).toBe("context_capacity_exhausted");
+  });
+
+  it("the max-turns cap ⇒ interrupted with its own reason, outranking the contract and the error (#299)", () => {
+    const r = finalizeAttempt({
+      ...base,
+      harnessErrored: true,
+      workReportSource: "constrained",
+      workReportViolation: "final answer is not the JSON work_report envelope",
+      interruption: "turn_limit_reached",
+    });
+    expect(r.outcomeClass).toBe("interrupted");
+    expect(r.reason).toBe("turn_limit_reached");
+    expect(r.workState).toEqual({ state: "unverified", source: "constrained" });
+  });
+
+  it("attemptInterruption: context exhaustion outranks the cap; neither is null", () => {
+    const t = (contextExhausted: boolean, turnLimitReached: boolean) => ({
+      contextExhausted,
+      turnLimitReached,
+    });
+    expect(attemptInterruption(t(true, true))).toBe("context_capacity_exhausted");
+    expect(attemptInterruption(t(false, true))).toBe("turn_limit_reached");
+    expect(attemptInterruption(t(false, false))).toBeNull();
+    expect(attemptInterruption(null)).toBeNull();
   });
 
   it("a COMPLETED report survives a concurrent context signal (completed wins the exhaustion race)", () => {
@@ -645,7 +674,7 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
       ...base,
       workReport: completed,
       workReportSource: "constrained",
-      contextTerminalExhausted: true,
+      interruption: "context_capacity_exhausted",
     });
     expect(r.outcomeClass).toBe("clean");
     expect(r.workState.state).toBe("completed");
@@ -694,6 +723,43 @@ describe("finalizeAttempt (the unified finalizer matrix)", () => {
       workReportSource: "constrained",
     });
     expect(r.deliverablePresent).toBe(false);
+  });
+});
+
+describe("an errored attempt without an accepted final (unwrapAttemptAnswer)", () => {
+  it.each([
+    ["instructed fence", FENCE],
+    ["constrained json", ACTIVE],
+    ["side tool", SIDE_TOOL],
+  ] as const)("%s: no footer or contract verdict, the route keeps its source", (_name, mode) => {
+    const unwrapped = unwrapAttemptAnswer("", true, mode);
+    expect(unwrapped).toEqual({
+      deliverable: "",
+      workReport: null,
+      source: mode.source,
+      contractViolation: null,
+    });
+    const finalized = finalizeAttempt({
+      deliverableEvidence: false,
+      harnessErrored: true,
+      workReport: unwrapped.workReport,
+      workReportSource: unwrapped.source,
+      workReportViolation: unwrapped.contractViolation,
+      workReportUnverified: unwrapped.unverified ?? null,
+      interruption: null,
+    });
+    expect(finalized.workState).toEqual({ state: "unverified", source: mode.source });
+    expect(finalized.outcomeClass).toBe("clean");
+    expect(finalized.harnessErrored).toBe(true);
+  });
+
+  it("keeps the given text as deliverable evidence and runs the route's unwrap otherwise", () => {
+    expect(unwrapAttemptAnswer("narration", true, FENCE).deliverable).toBe("narration");
+    expect(unwrapAttemptAnswer("", false, FENCE).unverified?.reason).toBe("footer_missing");
+    expect(unwrapAttemptAnswer("", false, ACTIVE).contractViolation).not.toBeNull();
+    // An inactive route has no transport: its absence stays disclosed as absent.
+    const inactive = { ...ACTIVE, active: false, source: "absent" as const };
+    expect(unwrapAttemptAnswer("x", true, inactive)).toMatchObject({ source: "absent" });
   });
 });
 

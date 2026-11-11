@@ -1,3 +1,5 @@
+import { THREAD_HISTORY_OPERATION_DRAFTS } from "./thread-history-routes.js";
+import { THREAD_EXPORT_OPERATION_DRAFTS } from "./thread-export-routes.js";
 import { ACCOUNT_RESOURCE_OPERATION_DRAFTS } from "./account-resource-routes.js";
 import {
   CONTROL_PROTOCOL_MAJOR,
@@ -6,68 +8,35 @@ import {
   type ControlOperationDescriptor,
   ControlHarnessSetupHarness,
 } from "@claudexor/schema";
-import { queryParam, resumeHeader } from "./operation-parameters.js";
+import { STORE_IDENTITY_HEADER, queryParam, resumeHeader } from "./operation-parameters.js";
 import { REMOTE_OPERATION_DRAFTS } from "./remote-operation-descriptors.js";
 import { MODEL_OPERATION_DRAFTS } from "./model-routes.js";
 import { MAINTENANCE_OPERATION_DRAFTS } from "./maintenance-routes.js";
-import type { OperationDraft } from "./operation-draft.js";
-import { OPERATION_SUMMARIES } from "./operation-summaries.js";
-
-function descriptor(input: OperationDraft): ControlOperationDescriptor {
-  // Resource-family classification (QA-054) follows the resource plane.
-  // Collection/create routes inherit their family without an instance id:
-  // GET/POST /v2/projects are project-applicable, just as runs/threads are.
-  // A missing collection branch would falsely report global applicability.
-  const applicability =
-    input.path.includes("/threads/") || input.path === "/v2/threads"
-      ? "thread"
-      : input.path.includes("/runs/") || input.path === "/v2/runs"
-        ? "run"
-        : input.path.includes("/projects/") || input.path === "/v2/projects"
-          ? "project"
-          : "global";
-  const key = `${input.method} ${input.path}`;
-  const summary = input.summary ?? OPERATION_SUMMARIES[key];
-  if (!summary) {
-    // Fail loudly at construction: a new route without a human summary can
-    // never ship a blank descriptor (INV-122 SSOT — no silent gaps).
-    throw new Error(`operation catalog: missing summary for '${key}'`);
-  }
-  return {
-    ...input,
-    summary,
-    // Every product route is loopback + bearer; the loopback-only health probe
-    // is unversioned and never enters this catalog.
-    auth: "loopback_bearer",
-    errorSchema: "ControlProblem",
-    id: `${input.method.toLowerCase()}:${input.path.slice(4).replaceAll(/[:/<>]+/g, ".")}`,
-    applicability: input.applicability ?? applicability,
-    parameters: input.parameters ?? [],
-    idempotency: input.idempotency ?? (input.mutability === "read_only" ? "natural" : "none"),
-    completion:
-      input.completion ?? (input.responseKind === "stream" ? "terminal_stream" : "immediate"),
-  };
-}
-
-const j = (
-  method: OperationDraft["method"],
-  path: string,
-  mutability: OperationDraft["mutability"],
-  requestSchema: string | null = null,
-  responseSchema: string | null = null,
-  extra: Partial<OperationDraft> = {},
-): ControlOperationDescriptor =>
-  descriptor({
-    method,
-    path,
-    mutability,
-    requestSchema,
-    responseSchema,
-    responseKind: "json",
-    ...extra,
-  });
+import { PROJECT_OPERATION_DRAFTS } from "./project-operation-descriptors.js";
+import { RUN_EVENT_PART_OPERATION_DRAFTS } from "./run-event-part-routes.js";
+import { START_OPERATION_DRAFTS, TURN_LOOKUP_OPERATION_DRAFTS } from "./run-start-routes.js";
+import { descriptor, jsonOperation as j } from "./operation-descriptor.js";
+import { TASK_GROUP_RUNS_OPERATION_DRAFTS } from "./task-group-routes.js";
 
 const operations: ControlOperationDescriptor[] = [
+  j(
+    "POST",
+    "/v2/runs/next-message",
+    "mutating",
+    "DeferredMessageMutation",
+    "DeferredMessageReceipt",
+    {
+      idempotency: "key_required",
+      summary: "Create, replace or clear one operator-owned deferred next message",
+    },
+  ),
+  j("GET", "/v2/runs/next-message/:id", "read_only", null, "DeferredMessageDetail", {
+    summary:
+      "Read one exact deferred draft and its existing predecessor result and successor handles",
+  }),
+  ...TASK_GROUP_RUNS_OPERATION_DRAFTS.map(descriptor),
+  ...THREAD_HISTORY_OPERATION_DRAFTS.map(descriptor),
+  ...THREAD_EXPORT_OPERATION_DRAFTS.map(descriptor),
   ...MODEL_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/uploads", "mutating", "ControlUploadCreateRequest", "ControlUploadStatus", {
     idempotency: "key_required",
@@ -83,7 +52,29 @@ const operations: ControlOperationDescriptor[] = [
     "ControlResource",
     { idempotency: "key_required" },
   ),
-  j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse"),
+  // Its catalog presence is the keyed-import feature marker clients detect.
+  j(
+    "POST",
+    "/v2/uploads/imports",
+    "mutating",
+    "ControlUploadImportRequest",
+    "ControlUploadImport",
+    {
+      idempotency: "key_required",
+    },
+  ),
+  // Its presence also marks the managed import lifetime (`lifetime: "managed"`).
+  j(
+    "POST",
+    "/v2/resources/:id/release",
+    "mutating",
+    "ControlResourceReleaseRequest",
+    "ControlResourceRelease",
+    { idempotency: "natural" },
+  ),
+  j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse", {
+    parameters: [STORE_IDENTITY_HEADER],
+  }),
   j("GET", "/v2/daemon/status", "read_only", null, "ControlDaemonStatus"),
   j("GET", "/v2/operations", "read_only", null, "ControlOperationCatalog"),
   ...MAINTENANCE_OPERATION_DRAFTS.map(descriptor),
@@ -169,25 +160,7 @@ const operations: ControlOperationDescriptor[] = [
   }),
   j("GET", "/v2/projects", "read_only", null, "ControlProjectListResponse"),
   ...REMOTE_OPERATION_DRAFTS.map(descriptor),
-  j(
-    "POST",
-    "/v2/projects",
-    "mutating",
-    "ControlProjectRegisterRequest",
-    "ControlProjectRegisterResponse",
-    { idempotency: "key_required" },
-  ),
-  j(
-    "POST",
-    "/v2/projects/:id/relink",
-    "mutating",
-    "ControlProjectRelinkRequest",
-    "ControlProject",
-    { idempotency: "natural" },
-  ),
-  j("DELETE", "/v2/projects/:id", "mutating", null, "ControlProjectRemoveReceipt", {
-    idempotency: "natural",
-  }),
+  ...PROJECT_OPERATION_DRAFTS.map(descriptor),
   j("GET", "/v2/projects/:id/events", "read_only", null, null, {
     responseKind: "stream",
     parameters: [
@@ -252,14 +225,15 @@ const operations: ControlOperationDescriptor[] = [
       }),
     ],
   }),
-  j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", "ControlRunStartResponse", {
-    completion: "durable_handle",
-    idempotency: "key_required",
-  }),
+  ...START_OPERATION_DRAFTS.map(descriptor),
+  j("POST", "/v2/runs/wait-many", "read_only", "RunWaitManyInput", "RunWaitManyResult"),
   j("GET", "/v2/runs/:id", "read_only", null, "ControlRunDetail"),
+  j("GET", "/v2/runs/:id/time-limit", "read_only", null, "RunTimeLimitSnapshot"),
+  j("PATCH", "/v2/runs/:id/time-limit", "mutating", "RunTimeLimitRequest", "RunTimeLimitSnapshot"),
   j("POST", "/v2/runs/:id/retry", "mutating", null, "ControlRunRetryResponse", {
     completion: "durable_handle",
     idempotency: "key_required",
+    parameters: [STORE_IDENTITY_HEADER],
   }),
   j("GET", "/v2/runs/:id/run-again", "read_only", null, "ControlRunAgainDraft"),
   j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest", "ControlDeliveryResponse", {
@@ -299,6 +273,7 @@ const operations: ControlOperationDescriptor[] = [
     "ControlRunDecisionResponse",
     {
       idempotency: "key_required",
+      parameters: [STORE_IDENTITY_HEADER],
     },
   ),
   j("GET", "/v2/runs/:id/events", "read_only", null, null, {
@@ -314,6 +289,7 @@ const operations: ControlOperationDescriptor[] = [
       }),
     ],
   }),
+  ...RUN_EVENT_PART_OPERATION_DRAFTS.map(descriptor),
   j(
     "POST",
     "/v2/runs/:id/interactions/:id/answer",
@@ -374,10 +350,13 @@ const operations: ControlOperationDescriptor[] = [
     "ControlThreadTurnResponse",
     {
       idempotency: "key_required",
+      parameters: [STORE_IDENTITY_HEADER],
     },
   ),
+  ...TURN_LOOKUP_OPERATION_DRAFTS.map(descriptor),
   j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
+    parameters: [STORE_IDENTITY_HEADER],
   }),
   j("GET", "/v2/trust", "read_only", null, "ControlTrustListResponse", {
     parameters: [

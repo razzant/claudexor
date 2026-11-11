@@ -15,8 +15,8 @@
  *     acceptance survives) and its latest `command.updated`;
  *     `command.pruned` forgets both plus the pruned runs' journaled run events,
  *     and survives itself as the latest tombstone per root set so crash-GC keeps
- *     the pruned commands' project roots (model-operation receipts are never
- *     pruned by retention — INV-064);
+ *     the pruned commands' project roots (model-operation receipts leave only
+ *     by their own 30-day SQL rule, never the product cap — INV-064);
  *   - a terminal run keeps its terminal `run.event` (exactly one in a
  *     well-formed journal; duplicate terminals survive until the run's prune
  *     tombstone retires the whole group, so replay validation fails on them

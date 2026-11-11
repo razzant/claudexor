@@ -1,6 +1,10 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { EventLog } from "@claudexor/event-log";
 import { ControlTimelineEvent, type HarnessEvent } from "@claudexor/schema";
+import { AnswerAssembly } from "../../core/src/answer-assembly.js";
 import { countsAsAgentProgress } from "../../core/src/inactivity.js";
 import { createClaudeParser } from "../../harness-claude/src/parse.js";
 import { parseCodexEvent } from "../../harness-codex/src/parse.js";
@@ -11,7 +15,7 @@ import {
   createAttemptTelemetry,
   observeAttemptTelemetry,
 } from "../../orchestrator/src/attemptTelemetry.js";
-import { timelineEvents } from "./run-timeline.js";
+import { readRunEventsWithIntegrity, timelineEvents } from "./run-timeline.js";
 
 function runEvents(harnessId: string, events: HarnessEvent[]): Record<string, unknown>[] {
   return events.map((event, index) => ({
@@ -147,7 +151,82 @@ describe("timeline text metadata across native parser and event-log projection",
     expect(rows.map((row) => row.detail).join("")).toBe("claude text");
   });
 
-  it("keeps full text and redaction in detail when the title is abbreviated", () => {
+  it("carries Claude speech keys, the CLI's abandon marker and the unkeyed final from native frames through events.jsonl to timeline rows (issue1698)", () => {
+    const parse = createClaudeParser();
+    const native = readFileSync(
+      new URL("../../harness-claude/fixtures/recorded-partial-replay.jsonl", import.meta.url),
+      "utf8",
+    );
+    const events = native
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((line) => parse(JSON.parse(line), "s1") ?? []);
+    const dir = mkdtempSync(join(tmpdir(), "claude-speech-chain-"));
+    try {
+      // The orchestrator's journaling path: one harness.event per normalized event.
+      const log = new EventLog(join(dir, "events.jsonl"), "run-speech", "task-speech");
+      for (const event of events)
+        log.emit("harness.event", harnessEventPayload("claude", "a01", event));
+      log.dispose();
+      const read = readRunEventsWithIntegrity({ runDir: dir });
+      const journaled = read.events.map((ev) => ev["payload"] as Record<string, unknown>);
+      const final = journaled.find((payload) => payload["final"] === true)!;
+      expect(final["speech"]).toBeUndefined();
+      expect((final["payload"] as Record<string, unknown>)["final_source"]).toBe("result");
+      const marker = journaled.find(
+        (payload) => (payload["speech"] as { op?: string } | undefined)?.op === "abandoned",
+      )!;
+      expect(marker["type"]).toBe("status");
+      expect(marker["payload"]).toEqual({ code: "speech_abandoned", from_block_index: 0 });
+
+      const rows = timelineEvents({ runDir: dir }, read.events, read.integrity);
+      const names = new Map<string, string>();
+      const label = (key: string | null) => {
+        if (key === null) return null;
+        if (!names.has(key)) names.set(key, `K${names.size + 1}`);
+        return names.get(key);
+      };
+      expect(
+        rows
+          .filter((row) => row.textKind === "message" || row.speechOp !== null)
+          .map((row) => [
+            row.textKind,
+            row.textDelta,
+            label(row.speechKey),
+            row.speechOp,
+            row.textFinal,
+            row.detail,
+          ]),
+      ).toEqual([
+        ["message", true, "K1", "fragment", false, "Checking"],
+        ["message", true, "K1", "fragment", false, " the"],
+        [null, false, "K1", "abandoned", false, "streamed text abandoned by the CLI"],
+        ["message", true, "K2", "fragment", false, "Checking"],
+        ["message", true, "K2", "fragment", false, " the"],
+        ["message", true, "K2", "fragment", false, " file first."],
+        ["message", false, "K2", "complete", false, "Checking the file first."],
+        ["message", true, "K3", "fragment", false, "The file"],
+        ["message", true, "K3", "fragment", false, " does not exist."],
+        ["message", false, "K3", "complete", false, "The file does not exist."],
+        ["message", false, null, null, true, "The file does not exist."],
+      ]);
+      expect(
+        rows
+          .filter((row) => row.textKind === null && row.speechOp === null)
+          .every((row) => row.speechKey === null && row.textFinal === false),
+      ).toBe(true);
+
+      // The answer consumer still takes the typed final verbatim.
+      const answer = new AnswerAssembly();
+      for (const event of events) answer.observe(event);
+      expect(answer.hasFinal()).toBe(true);
+      expect(answer.text()).toBe("The file does not exist.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps full exact text in detail when the title is abbreviated", () => {
     const text = `  ${"word ".repeat(130)}\n`;
     const rows = timelineEvents(
       {},
@@ -165,8 +244,7 @@ describe("timeline text metadata across native parser and event-log projection",
         { type: "message", session_id: "s1", ts: "t", text: `value ${secret} end` },
       ]),
     );
-    expect(redacted[0]?.detail).not.toContain(secret);
-    expect(redacted[0]?.detail).toContain("[redacted]");
+    expect(redacted[0]?.detail).toBe(`value ${secret} end`);
   });
 
   it("leaves legacy and non-text rows separate even when they carry incidental delta fields", () => {
@@ -186,6 +264,27 @@ describe("timeline text metadata across native parser and event-log projection",
     const legacy = ControlTimelineEvent.parse({ type: "harness.event", title: "old row" });
     expect(legacy.textKind).toBeNull();
     expect(legacy.textDelta).toBe(false);
+    expect([legacy.speechKey, legacy.speechOp, legacy.textFinal]).toEqual([null, null, false]);
+    // Only a well-formed typed speech projects; finality is a text-row fact.
+    const odd = timelineEvents({}, [
+      {
+        type: "harness.event",
+        payload: {
+          type: "status",
+          text: "working",
+          speech: { key: "k", op: "merge" },
+          final: true,
+        },
+      },
+      {
+        type: "harness.event",
+        payload: { type: "message", text: "x", speech: { key: "", op: "fragment" } },
+      },
+    ]);
+    expect(odd.map((row) => [row.speechKey, row.speechOp, row.textFinal])).toEqual([
+      [null, null, false],
+      [null, null, false],
+    ]);
   });
 
   it("preserves timeline omission markers as non-text boundaries", () => {
@@ -204,7 +303,6 @@ describe("timeline text metadata across native parser and event-log projection",
       unreadable: false,
       malformedLines: 1,
       nonObjectLines: 0,
-      tailTruncated: false,
     });
     expect(rows.slice(0, 2).map((row) => [row.type, row.textKind, row.textDelta])).toEqual([
       ["timeline.evidence_incomplete", null, false],

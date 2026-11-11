@@ -14,6 +14,8 @@ describe("SensitiveResourcePolicy hostile corpus", () => {
     ["home/.config/gcloud/application_default_credentials.json", "credential_store"],
     ["home/.ssh/id_ed25519", "credential_store"],
     ["home/Library/Keychains/login.keychain-db", "credential_store"],
+    ["home/.grok/auth.json", "credential_store"],
+    ["profiles/grok-work/.grok/sessions/s.jsonl", "credential_store"],
     ["home/login.keychain-db", "credential_file"],
     ["repo/id_rsa", "private_key"],
     [".claudexor/auth/native.json", "credential_store"],
@@ -75,7 +77,7 @@ describe("SensitiveResourcePolicy hostile corpus", () => {
     expect(second).toMatchObject({ action: "allow", matches: 0, text: first.text });
   });
 
-  it("allows only contained, relocatable, non-sensitive symlink targets", () => {
+  it("allows only contained, relocatable symlink targets; a credential NAME is not a reason (INV-146)", () => {
     const base = {
       sourceRoot: "/workspace",
       canonicalSourceRoot: "/workspace",
@@ -100,7 +102,7 @@ describe("SensitiveResourcePolicy hostile corpus", () => {
         linkTarget: ".env",
         resolvedTargetPath: "/workspace/.env",
       }),
-    ).toMatchObject({ allowed: false, reason: "sensitive_target" });
+    ).toMatchObject({ allowed: true, reason: null });
     expect(
       sensitiveResourcePolicy.assessSymlink({
         ...base,

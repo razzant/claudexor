@@ -1,5 +1,6 @@
 import { z } from "zod/v3";
 import { WorkspaceKind, WorkspaceScopePath } from "./files-manifest.js";
+import { AuxiliaryWritableRootsRequest } from "./auxiliary-writable-roots.js";
 
 export const RunExecution = z
   .object({
@@ -30,6 +31,7 @@ export const RunExecution = z
       .describe(
         "Agent-selected input footprint. Directory copies materialize this entire selection; direct runs need no whole-tree baseline.",
       ),
+    auxiliaryWritableRoots: AuxiliaryWritableRootsRequest.optional(),
   })
   .strict()
   .describe("Execution isolation and delegation settings for a run.");

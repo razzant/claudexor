@@ -23,6 +23,7 @@ import {
 } from "./run-detail-projections.js";
 import { projectRunOutcomeFacts } from "./daemon-outcome.js";
 import { projectRunFacts } from "./run-facts-projection.js";
+import { AcpTimeLimitFeed } from "./acp-time-limit-feed.js";
 
 // Daemon job state IS the run lifecycle (D8): terminal set = the ONE
 // projection-owned TERMINAL_LIFECYCLES, never a local re-derivation.
@@ -188,6 +189,7 @@ export function projectAcpRunControls(input: Record<string, unknown>): Record<st
 }
 
 type Hooks = {
+  onEvent?: (event: unknown) => void;
   onInteraction?: (ctx: any) => Promise<any | null>;
   signal?: AbortSignal;
 };
@@ -197,10 +199,12 @@ type Bridges = {
     addr: ControlApiAddress,
     signal: AbortSignal,
   ) => (info: { runId: string }) => Promise<void>;
+  /** Prompts run beside the poll loop; the caller's cancel or close() ends any left open. */
   interactions: (
     addr: ControlApiAddress,
     handler: (ctx: any) => Promise<any | null>,
-  ) => (info: { runId: string }) => Promise<void>;
+    callerSignal?: AbortSignal,
+  ) => ((info: { runId: string }) => Promise<void>) & { close(): void };
 };
 
 /** Daemon-thread implementation behind the official ACP protocol projection. */
@@ -355,39 +359,50 @@ export async function acpSessionQuery(
   let runDir = typeof started["runDir"] === "string" ? started["runDir"] : "";
   const cancel = hooks?.signal ? bridges.cancel(addr, hooks.signal) : null;
   const interactions = hooks?.onInteraction
-    ? bridges.interactions(addr, hooks.onInteraction)
+    ? bridges.interactions(addr, hooks.onInteraction, hooks.signal)
     : null;
-  for (;;) {
-    const record = await client.status(jobId);
-    runId = record.runId ?? runId;
-    runDir = record.runDir ?? runDir;
-    if (runId) {
-      if (cancel) await cancel({ runId });
-      if (interactions) await interactions({ runId });
+  const events = hooks?.onEvent ? new AcpTimeLimitFeed(addr, hooks.onEvent) : null;
+  let terminal = false;
+  try {
+    for (;;) {
+      const record = await client.status(jobId);
+      runId = record.runId ?? runId;
+      runDir = record.runDir ?? runDir;
+      if (runId) {
+        events?.start(runId);
+        if (cancel) await cancel({ runId });
+        // Never waits for a prompt, so the cancel above and the terminal below
+        // are still observed; only a blocking prompt's failure rejects here.
+        if (interactions) await interactions({ runId });
+      }
+      if (TERMINALS.has(record.state)) {
+        terminal = true;
+        const detail = await projectTerminalTurnDetail(
+          addr,
+          runId,
+          record.state as RunOutcomeFacts["lifecycle"],
+        );
+        const summary = acpTerminalSummary({ runId, runDir, record, detail });
+        const { primaryOutput: _primaryOutput, ...terminalProjection } = detail;
+        // Plan lifecycle (D17): a plan turn that ends needs_answers carries its
+        // derived readiness + the ENGINE-parsed open questions so the ACP surface
+        // renders them as TURN TEXT (the user answers in an ordinary follow-up
+        // plan turn — the same server path, no typed-form faking the protocol
+        // lacks). Empty/null for non-plan turns and ready plans. ONE degrading
+        // detail read feeds all terminal projections (projectTerminalTurnDetail).
+        return {
+          runId,
+          runDir,
+          status: record.state,
+          summary,
+          ...terminalProjection,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    if (TERMINALS.has(record.state)) {
-      const detail = await projectTerminalTurnDetail(
-        addr,
-        runId,
-        record.state as RunOutcomeFacts["lifecycle"],
-      );
-      const summary = acpTerminalSummary({ runId, runDir, record, detail });
-      const { primaryOutput: _primaryOutput, ...terminalProjection } = detail;
-      // Plan lifecycle (D17): a plan turn that ends needs_answers carries its
-      // derived readiness + the ENGINE-parsed open questions so the ACP surface
-      // renders them as TURN TEXT (the user answers in an ordinary follow-up
-      // plan turn — the same server path, no typed-form faking the protocol
-      // lacks). Empty/null for non-plan turns and ready plans. ONE degrading
-      // detail read feeds all terminal projections (projectTerminalTurnDetail).
-      return {
-        runId,
-        runDir,
-        status: record.state,
-        summary,
-        ...terminalProjection,
-      };
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  } finally {
+    interactions?.close();
+    await events?.close(terminal);
   }
 }
 

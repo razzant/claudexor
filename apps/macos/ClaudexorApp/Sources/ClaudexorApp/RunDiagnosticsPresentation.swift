@@ -30,15 +30,28 @@ enum RunDiagnosticsPresentation {
             sections.append("# Failure\n\n" + lines.joined(separator: "\n"))
         }
         if let error, !error.isEmpty { sections.append("# Engine Error\n\n\(error)") }
-        if let web = detail.summary.webEvidence, web.attempted || web.required {
-            var lines = [
-                "status: \(web.status)", "mode: \(web.mode)",
-                "required: \(web.required)", "attempted: \(web.attempted)",
-                "satisfied: \(web.satisfied)"
-            ]
-            if let tool = web.tool { lines.append("tool: \(tool)") }
-            if let target = web.target { lines.append("target: \(target)") }
-            if let error = web.errorSummary { lines.append("error: \(error)") }
+        // #215: a route handed the Browser keeps its reported startup visible here.
+        let browserRoutes = (detail.summary.routeControls ?? []).contains(where: \.browser)
+        if let web = detail.summary.webEvidence,
+           web.attempted || web.required || web.mode == "off" || browserRoutes {
+            // Without telemetry the observed fields are placeholders, not observations:
+            // keep what was requested and say the rest is unavailable.
+            let observed = web.available != false
+            var lines = observed
+                ? ["status: \(web.status)", "mode: \(web.mode)", "required: \(web.required)",
+                   "attempted: \(web.attempted)", "satisfied: \(web.satisfied)"]
+                : ["observed: unavailable", RouteControlsPresentation.telemetryUnavailable,
+                   "mode: \(web.mode)", "required: \(web.required)"]
+            if observed, let verification = web.verification { lines.append("verification: \(verification)") }
+            if observed, let content = web.verifiedContent { lines.append("verified content: \(content)") }
+            // #118: what the evidence covers, and each route's own web switch.
+            if observed, let scope = web.observation { lines.append("scope: \(scope.evidence); network \(scope.network)") }
+            for route in detail.summary.routeControls ?? [] {
+                lines.append("route \(RouteControlsPresentation.webRouteLine(route))")
+            }
+            if observed, let tool = web.tool { lines.append("tool: \(tool)") }
+            if observed, let target = web.target { lines.append("target: \(target)") }
+            if observed, let error = web.errorSummary { lines.append("error: \(error)") }
             if let ref = web.rawDetailRef { lines.append("detail: \(ref)") }
             sections.append("# Web Evidence\n\n" + lines.joined(separator: "\n"))
         }

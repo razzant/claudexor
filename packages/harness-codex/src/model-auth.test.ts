@@ -78,6 +78,23 @@ describe("managed Codex model credentials", () => {
       original.accountFingerprint,
     );
   });
+  it("plan changes invalidate capability identity without changing account identity", async () => {
+    const get = async (plan: string) => {
+      const body = JSON.parse(auth());
+      body.tokens.id_token = jwt({
+        sub: "user",
+        "https://api.openai.com/auth": { chatgpt_plan_type: plan },
+      });
+      return prepareCodexModelAuth(profile(), new AbortController().signal, {
+        readAuthFile: async () => JSON.stringify(body),
+        now: () => NOW,
+      });
+    };
+    const free = await get("free"),
+      pro = await get("pro");
+    expect(free.accountFingerprint).toBe(pro.accountFingerprint);
+    expect(free.capabilityFingerprint).not.toBe(pro.capabilityFingerprint);
+  });
   it("does not infer successful refresh from the helper returning", async () => {
     const refresh = vi.fn(async () => {});
     await expect(

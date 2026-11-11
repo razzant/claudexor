@@ -6,6 +6,7 @@ import {
   QuotaSnapshot as QuotaSnapshotSchema,
   QuotaWindowObservation,
   QuotaWindowSupersession,
+  withCurrentQuotaScopes,
   type QuotaSnapshot,
   type AccountResourceObservation,
   type AccountTarget,
@@ -29,6 +30,13 @@ const REPLAY_TYPES = [
   REMOVED,
   PROJECTION_UPDATED,
 ];
+
+/** Current producers already write the current scope representation; only a
+ * restored record can carry a retired one. History keeps its original bytes. */
+function restore(owner: { apply: (snapshot: QuotaSnapshot) => void }, snapshot: QuotaSnapshot) {
+  const current = withCurrentQuotaScopes(snapshot);
+  if (current) owner.apply(current);
+}
 
 /** Replay is part of QuotaRegistry's existing journal projection, not another store. */
 export function replayQuotaJournal(
@@ -78,7 +86,7 @@ export function replayQuotaJournal(
         hashJson(legacyV320Snapshot(pendingScoped.snapshot)) === baseHash
           ? pendingScoped.snapshot
           : null;
-      owner.apply(committedScoped ?? base);
+      restore(owner, committedScoped ?? base);
       pendingScoped = null;
       rawMutationAfterMarker = true;
       continue;
@@ -100,7 +108,7 @@ export function replayQuotaJournal(
       continue;
     }
     if (record.type === WINDOW_OBSERVED) {
-      owner.apply(QuotaWindowObservation.parse(record.payload).snapshot);
+      restore(owner, QuotaWindowObservation.parse(record.payload).snapshot);
       rawMutationAfterMarker = true;
       continue;
     }

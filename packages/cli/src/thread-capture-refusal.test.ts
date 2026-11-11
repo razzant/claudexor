@@ -14,6 +14,8 @@ import { applyThreadDiff } from "./thread-delivery.js";
 vi.mock("@claudexor/workspace", async (original) => ({
   ...(await original<typeof import("@claudexor/workspace")>()),
   captureWorkingTreeTransient: vi.fn(),
+  // The fixture's worktree path is not a repository: this capture has no accepted paths.
+  rawAcceptedPaths: async () => [],
 }));
 vi.mock("@claudexor/delivery", async (original) => ({
   ...(await original<typeof import("@claudexor/delivery")>()),
@@ -23,7 +25,7 @@ const roots: string[] = [];
 afterEach(() => {
   vi.resetAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function isolatedThreads() {
   const setThreadWorktree = vi.fn();
@@ -39,7 +41,6 @@ it("refuses an incomplete thread capture before empty/apply or watermark advance
   const failure = new CaptureOutputExceeded("stdout");
   vi.mocked(captureWorkingTreeTransient).mockResolvedValue({
     patch: "",
-    binarySecretPaths: [],
     captureIncomplete: true,
     captureFailure: failure,
   });
@@ -62,7 +63,6 @@ it("answers the sanitized capture facts on the first refusal and on every durabl
   });
   vi.mocked(captureWorkingTreeTransient).mockResolvedValue({
     patch: "",
-    binarySecretPaths: [],
     captureIncomplete: true,
     captureFailure: failure,
   });

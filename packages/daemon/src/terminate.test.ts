@@ -19,7 +19,7 @@ import {
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const SOCKET_PATH = "/tmp/claudexor-termination-test.sock";
 const LEASE_PATH = `${SOCKET_PATH}.writer`;

@@ -50,6 +50,11 @@
               "description": "Canonical run mode: ask and plan are read-only, agent writes. Strategy controls are separate schema-owned fields, never modes.",
               "default": "agent"
             },
+            "taskGroupId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Caller-generated UUID saved before launching the first member. Each job still needs its own idempotency key; the group grants no execution authority."
+            },
             "scope": {
               "anyOf": [
                 {
@@ -140,6 +145,14 @@
                     "minLength": 1
                   },
                   "description": "Agent-selected input footprint. Directory copies materialize this entire selection; direct runs need no whole-tree baseline."
+                },
+                "auxiliaryWritableRoots": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": "Exact existing absolute directories, created by the caller, that an Agent run with effective workspace_write may also write (service caches or scratch outside the execution tree). [] grants nothing extra; so does omission, except that a continueFrom successor omitting execution inherits its predecessor's whole execution group. Requires a lane whose capability_profile.access_control.auxiliary_writable_roots is true; the files are never part of the project result."
                 }
               },
               "additionalProperties": false,
@@ -201,6 +214,14 @@
                 "economy"
               ],
               "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+            },
+            "promptCacheTtl": {
+              "type": "string",
+              "enum": [
+                "5m",
+                "1h"
+              ],
+              "description": "Native prompt-cache lifetime for the main conversation and helper requests of a harness that declares it. Omission sends no override: native defaults, profile settings and the inherited environment stay in effect."
             },
             "efforts": {
               "type": "object",
@@ -449,7 +470,7 @@
             },
             "continueFrom": {
               "$ref": "#/definitions/ControlRunAgainDraft/properties/sourceRunId",
-              "description": "Continue a terminal predecessor run owned by this daemon; one accepted successor per predecessor. Omitted mode, scope, execution, harness and model come from the predecessor; prompt is the continuation text and may be empty."
+              "description": "Continue a terminal predecessor run owned by this daemon; one accepted successor per predecessor. Omitted mode, scope, execution, harness, model and promptCacheTtl come from the predecessor; prompt is the continuation text and may be empty."
             },
             "continueCarrier": {
               "type": "string",
@@ -556,7 +577,15 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 604800,
-              "description": "Hard wall-clock deadline for the whole run (seconds, from scheduler start, max 7 days); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept."
+              "description": "Wall-clock limit for the whole run (seconds, max seven days). Omission disables the clock. Explicit limits cancel by default; soft mode warns and continues."
+            },
+            "timeLimitMode": {
+              "type": "string",
+              "enum": [
+                "soft",
+                "hard"
+              ],
+              "description": "Initial timer mode: soft warns and continues; hard cancels. Omission is hard with maxSeconds and soft without it."
             },
             "denyPaths": {
               "type": "array",

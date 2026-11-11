@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { harnessHasDefaultCredentialStore, harnessSupportsBootstrapLogin } from "@claudexor/schema";
 import { authSourceAvailability } from "./cli-io.js";
 import { authLoginHarnessList, isKnownAuthLoginHarness } from "./ops-commands.js";
 
@@ -29,5 +30,12 @@ describe("post-login verification", () => {
     expect(isKnownAuthLoginHarness("agy")).toBe(false);
     expect(authLoginHarnessList()).not.toContain("agy");
     expect(authLoginHarnessList().split("|")).toEqual(["codex", "claude", "cursor"]);
+  });
+
+  it("requires a named Grok profile instead of offering bootstrap login or a default store", () => {
+    expect(harnessHasDefaultCredentialStore("grok")).toBe(false);
+    expect(harnessSupportsBootstrapLogin("grok")).toBe(false);
+    expect(isKnownAuthLoginHarness("grok")).toBe(false);
+    expect(authLoginHarnessList().split("|")).not.toContain("grok");
   });
 });

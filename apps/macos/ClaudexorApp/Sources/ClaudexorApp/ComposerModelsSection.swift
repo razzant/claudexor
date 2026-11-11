@@ -75,10 +75,27 @@ struct ComposerModelsSection: View {
         // same-key hit would keep offering models the new route refuses), and
         // a failed fetch leaves the key missing so the next open retries.
         .task(id: families.map(\.rawValue).joined(separator: ",") + ":" + (route ?? "any")) {
-            for family in Self.familiesToFetch(families, route: route, cached: catalogs.keys) {
+            // A failed live read (#393) is shown, never trusted as cached truth:
+            // the next open reads it again.
+            for family in Self.familiesToFetch(families, route: route, cached: Self.settledKeys(catalogs)) {
                 await load(family)
             }
         }
+    }
+
+    /// Catalog keys that need no refetch: answered reads, not failed ones.
+    static func settledKeys(_ catalogs: [String: HarnessModelsResponse]) -> [String] {
+        catalogs.filter { $0.value.problem == nil }.map(\.key)
+    }
+
+    /// The row's visible words for a failed live catalog read (#393); the
+    /// engine's message and typed cause ride the hover help in full.
+    static let catalogProblemLabel = "Catalog unavailable"
+
+    static func catalogProblemHelp(_ family: HarnessFamily, _ catalog: HarnessModelsResponse) -> String {
+        let message = (catalog.problem?.message).flatMap { $0.isEmpty ? nil : $0 }
+            ?? "the live model catalog could not be read (\(catalog.problemCause ?? "unknown cause"))"
+        return "\(family.label): \(message). This is not an empty catalog."
     }
 
     /// Fetch one family's catalog, recording an honest failure state (QA-055b):
@@ -126,6 +143,22 @@ struct ComposerModelsSection: View {
             }
             .catalogModelPicker()
             .help(pickerHelp(family, catalog, hiddenOnRoute: catalog.models.count - visible.count))
+        } else if let catalog = catalogs[key], let problem = catalog.problem {
+            // The live read FAILED with a typed cause (#393): its empty list proves
+            // nothing, so it is never shown as "Harness default only".
+            HStack(spacing: Theme.Spacing.xs) {
+                Text(Self.catalogProblemLabel)
+                    .font(.caption)
+                    .foregroundStyle(Theme.status(.caution))
+                if problem.retryable {
+                    Button("Retry") { Task { await load(family) } }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
+            }
+            // Holds the picker's column so the "primary" tag never drifts (§1 rule 4).
+            .frame(width: Theme.Layout.modelPickerWidth, alignment: .leading)
+            .help(Self.catalogProblemHelp(family, catalog))
         } else if catalogs[key] != nil {
             // A LOADED catalog that cannot enumerate (source: none) — the
             // server's answer, honestly rendered.

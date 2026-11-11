@@ -29,7 +29,7 @@ vi.mock("node:fs", async (importOriginal) => {
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("orchestrator terminal persistence port", () => {
   it("passes canonical facts and prepared telemetry through RunInput without a daemon/SQLite dependency", async () => {
@@ -105,7 +105,7 @@ describe("orchestrator terminal persistence port", () => {
       });
       expect(result.lifecycle).toBe("failed");
       expect(seen).toHaveLength(1);
-      expect(seen[0]!.telemetry?.run_facts).toEqual(seen[0]!.event.payload.run_facts);
+      expect(seen[0]!.telemetry?.run_facts).toBeNull();
       const events = readFileSync(paths.eventsPath, "utf8")
         .trim()
         .split("\n")

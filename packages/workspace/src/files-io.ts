@@ -13,7 +13,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { WorkspaceScopePath, type WorkspaceFileState } from "@claudexor/schema";
-import { newId, sensitiveResourcePolicy } from "@claudexor/util";
+import { newId } from "@claudexor/util";
 
 /** Resolve relative entries without following an ancestor link into another tree. */
 export async function workspaceFilePath(
@@ -56,13 +56,11 @@ export async function readWorkspaceFile(
   const temp = contentDir ? join(contentDir, newId("pending")) : null;
   let output: Awaited<ReturnType<typeof open>> | null = null;
   const hash = createHash("sha256");
-  const scanner = contentDir ? sensitiveResourcePolicy.createContentScanner() : null;
   let sizeBytes = 0;
   try {
     output = temp ? await open(temp, "wx", 0o600) : null;
     for await (const chunk of input.createReadStream({ autoClose: false })) {
       hash.update(chunk);
-      scanner?.write(chunk.toString("latin1"));
       sizeBytes += chunk.length;
       if (output) await output.writeFile(chunk);
     }
@@ -76,8 +74,6 @@ export async function readWorkspaceFile(
     )
       throw new Error(`File changed while being captured: ${path}`);
     const digest = hash.digest("hex");
-    if (scanner?.finish())
-      throw new Error("File contains credential material; no artifact was published");
     if (output && temp && contentDir) {
       await output.sync();
       await output.close();
@@ -120,8 +116,6 @@ export async function directoryInventory(
       return;
     visited.add(relative);
     const path = await workspaceFilePath(root, relative);
-    if (contentDir && sensitiveResourcePolicy.classifyPath(relative).sensitive)
-      throw new Error("Selected file uses a credential-resource path; no artifact was published");
     const state = await readWorkspaceFile(path, contentDir);
     if (!state) return;
     if (relative !== ".") entries.set(relative, state);

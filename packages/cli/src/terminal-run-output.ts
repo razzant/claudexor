@@ -1,4 +1,10 @@
-import { isTerminalLifecycle, type ModeKind, type RunOutcomeFacts } from "@claudexor/schema";
+import {
+  isTerminalLifecycle,
+  acceptedReceiptMetadata,
+  taskGroupReceiptMetadata,
+  type ModeKind,
+  type RunOutcomeFacts,
+} from "@claudexor/schema";
 import { daemonOutcomeProblemFields } from "./daemon-outcome.js";
 import type { DaemonRunOutcome } from "./daemon-run.js";
 import { terminalDetailFields } from "./delegation-output.js";
@@ -22,6 +28,8 @@ export function projectTerminalRunOutput(
   options: TerminalRunOutputOptions = {},
 ): Record<string, unknown> {
   return {
+    ...(out.runId ? {} : taskGroupReceiptMetadata(out.errorContext)),
+    ...acceptedReceiptMetadata(out),
     ...(options.frame ? { frame: options.frame } : {}),
     runId: out.runId,
     runDir: out.runDir,

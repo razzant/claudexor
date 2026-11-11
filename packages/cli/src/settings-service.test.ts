@@ -16,7 +16,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 // HERMETIC codex stub: the adapter resolves its binary (CLAUDEXOR_CODEX_BIN)
 // at MODULE LOAD, and codex discover() hard-requires `--version` to answer.

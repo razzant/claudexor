@@ -171,6 +171,7 @@
                   "claude_oauth_usage",
                   "agy_command_usage",
                   "cursor_rate_limit",
+                  "grok_rate_limit",
                   "claude_rate_limit_event",
                   "codex_app_server_event",
                   "codex_image_response"

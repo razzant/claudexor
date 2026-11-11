@@ -1,7 +1,9 @@
 /**
- * Orphaned-child bookkeeping for the daemon. Harness children run in
+ * Orphaned-child bookkeeping for the daemon. POSIX harness children run in
  * their OWN process groups (deliberate: group kill), so they survive a daemon
- * crash/SIGKILL and keep mutating trees with nobody watching. The daemon
+ * crash/SIGKILL and keep mutating trees with nobody watching (a Windows child
+ * has no group identity and is never registered; one started with the default
+ * hidden console normally ends with the daemon). The daemon
  * periodically snapshots exact kernel process-group handles to a pids file;
  * on the next start, only the same leader birth identity may be signalled.
  */

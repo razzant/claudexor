@@ -39,6 +39,10 @@ struct HarnessInfo: Identifiable, Hashable {
     /// Manifest `browser_tool` capability — drives the composer's
     /// agent-browser toggle (only offered where Playwright MCP can inject).
     var acceptsBrowser: Bool = false
+    /// Manifest `read_files` capability, verbatim; nil when the manifest does
+    /// not declare it. The engine refuses project-scoped Ask on a harness that
+    /// declares `false` (#133), so the composer says so before sending.
+    var readsFiles: Bool? = nil
     /// Engine-owned Delegate readiness for this exact harness/runtime route.
     /// nil means a legacy runtime and fails closed in the composer.
     var delegation: HarnessDelegationCapability? = nil

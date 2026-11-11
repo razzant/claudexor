@@ -20,8 +20,19 @@ import {
 } from "./acp-surface-runner.js";
 
 describe("ACP run-control projection", () => {
+  it("preserves explicit soft timer settings without creating an implicit limit", () => {
+    expect(projectAcpRunControls({ maxSeconds: 60, timeLimitMode: "soft" })).toEqual({
+      maxSeconds: 60,
+      timeLimitMode: "soft",
+    });
+    expect(projectAcpRunControls({})).toEqual({});
+  });
   it("keeps explicit Standard and directory footprint on the thread request", () => {
-    const execution = { workspaceKind: "directory", scopePaths: ["input", "image.bin"] };
+    const execution = {
+      workspaceKind: "directory",
+      scopePaths: ["input", "image.bin"],
+      auxiliaryWritableRoots: ["/srv/cache"],
+    };
     const reviewerPanel = [{ harness: "claude", processingPreference: "economy" }];
     expect(
       projectAcpRunControls({
@@ -69,7 +80,7 @@ describe("ACP run-control projection", () => {
 const tempDirs: string[] = [];
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
 
@@ -372,6 +383,63 @@ describe("projectTerminalTurnDetail (post-terminal degrade)", () => {
 });
 
 describe("acpSessionQuery terminal RunFacts binding", () => {
+  it.each(["running", "succeeded"])(
+    "forwards a soft timer warning when the first status is %s",
+    async (state) => {
+      const daemonRun = await import("./daemon-run.js");
+      const live = await import("./live.js");
+      const event = {
+        type: "control.applied",
+        payload: {
+          control: { kind: "time_limit", action: "reached" },
+          timeLimit: { mode: "soft" },
+        },
+      };
+      const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+        client: {
+          status: vi
+            .fn()
+            .mockResolvedValueOnce({ state, runId: "run-soft" })
+            .mockResolvedValue({ state: "succeeded", runId: "run-soft" }),
+        },
+        addr,
+      } as never);
+      const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail").mockResolvedValue(null);
+      const controlSpy = vi
+        .spyOn(live, "controlApiFetch")
+        .mockImplementation(async (_addr, path) => {
+          if (path === "/threads/thread-soft")
+            return Response.json({ thread: { id: "thread-soft", repoRoot: "/repo" } });
+          if (path === "/threads/thread-soft/turns") return Response.json({ jobId: "job-soft" });
+          if (path === "/runs/run-soft/events")
+            return new Response(
+              `event: control.applied\ndata: ${JSON.stringify(event)}\n\nevent: end\ndata: {}\n\n`,
+            );
+          throw new Error(`unexpected request ${path}`);
+        });
+      const onEvent = vi.fn();
+      try {
+        const result = await acpSessionQuery(
+          {
+            mode: "__acp_session_prompt",
+            sessionId: "thread-soft",
+            prompt: "work",
+            maxSeconds: 1,
+            timeLimitMode: "soft",
+          },
+          { onEvent } as never,
+          {} as never,
+        );
+        expect(onEvent).toHaveBeenCalledWith(event);
+        expect(result).toMatchObject({ runId: "run-soft", status: "succeeded" });
+      } finally {
+        ensureSpy.mockRestore();
+        detailSpy.mockRestore();
+        controlSpy.mockRestore();
+      }
+    },
+  );
+
   it("uses the exact terminal status runId and failed lifecycle at the detail boundary", async () => {
     const daemonRun = await import("./daemon-run.js");
     const live = await import("./live.js");
@@ -424,6 +492,71 @@ describe("acpSessionQuery terminal RunFacts binding", () => {
       });
       expect(result["runFacts"]).toEqual(failedRunFacts);
       expect(result).not.toHaveProperty("detailProblem");
+    } finally {
+      ensureSpy.mockRestore();
+      detailSpy.mockRestore();
+      controlSpy.mockRestore();
+    }
+  });
+});
+
+describe("ACP prompt with an async question (#628)", () => {
+  it("collects the terminal while an async answer prompt is still open, then closes that prompt", async () => {
+    const daemonRun = await import("./daemon-run.js");
+    const live = await import("./live.js");
+    const { makeCancelBridge, makeInteractionBridge } = await import("./mcp-runner.js");
+    const status = vi
+      .fn()
+      .mockResolvedValueOnce({ state: "running", runId: "run-async" })
+      .mockResolvedValue({ state: "succeeded", runId: "run-async", runDir: "/runs/run-async" });
+    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+      client: { status },
+      addr,
+    } as never);
+    const detailSpy = vi.spyOn(daemonRun, "fetchRunDetail").mockResolvedValue(null);
+    const controlSpy = vi.spyOn(live, "controlApiFetch").mockImplementation(async (_addr, path) => {
+      if (path === "/threads/thread-async")
+        return Response.json({ thread: { id: "thread-async", repoRoot: "/repo" } });
+      if (path === "/threads/thread-async/turns") return Response.json({ jobId: "job-async" });
+      if (path === "/runs/run-async")
+        return Response.json({
+          pendingInteractions: [
+            {
+              interactionId: "async-1",
+              questions: [
+                {
+                  id: "q1",
+                  question: "Who is it for?",
+                  header: null,
+                  options: [],
+                  multi_select: false,
+                },
+              ],
+              timeoutAt: null,
+              delivery: "async",
+            },
+          ],
+        });
+      throw new Error(`unexpected request ${path}`);
+    });
+    const asked: any[] = [];
+    try {
+      const result = (await acpSessionQuery(
+        { mode: "__acp_session_prompt", sessionId: "thread-async", prompt: "work" },
+        {
+          // The ACP client never answers: the prompt stays open.
+          onInteraction: (ctx: any) => {
+            asked.push(ctx);
+            return new Promise(() => undefined);
+          },
+        },
+        { cancel: makeCancelBridge, interactions: makeInteractionBridge },
+      )) as Record<string, unknown>;
+      expect(result).toMatchObject({ runId: "run-async", status: "succeeded" });
+      expect(asked).toHaveLength(1);
+      expect(asked[0].request).toMatchObject({ interaction_id: "async-1", delivery: "async" });
+      // The runner stopped observing the run, so the open prompt was closed.
+      expect(asked[0].signal.aborted).toBe(true);
     } finally {
       ensureSpy.mockRestore();
       detailSpy.mockRestore();

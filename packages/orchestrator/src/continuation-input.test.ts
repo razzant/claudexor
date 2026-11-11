@@ -7,7 +7,10 @@ import { unconfirmedContinuationInputs } from "./continuation-input.js";
 import { uncertainInputFor } from "./inrun-continuity-carrier.js";
 
 const roots: string[] = [];
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+afterEach(
+  () => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })),
+  0,
+); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("continuation caller delivery", () => {
   it("marks every cut entry, including zero inline characters, with its complete durable text", () => {
@@ -21,7 +24,7 @@ describe("continuation caller delivery", () => {
         { text: newest, runDir },
         { text: older, runDir },
       ],
-      "a01",
+      new Set(["a01"]),
     )!;
     const cuts = [
       ...notice.matchAll(/\[cut: (\d+) of (\d+) characters; the complete text is in (.+)\]/g),
@@ -52,7 +55,7 @@ describe("continuation caller delivery", () => {
         payload: { message_id: "correction", text: latest, attempt_id: "a01" },
       }) + "\n",
     );
-    const notice = uncertainInputFor(runDir, [{ text: older, runDir }], "a01")!;
+    const notice = uncertainInputFor(runDir, [{ text: older, runDir }], new Set(["a01"]))!;
     expect(notice.startsWith(`${latest}\n\n`)).toBe(true);
     expect(notice).toContain(
       `[cut: ${2048 - latest.length} of ${older.length} characters; the complete text is in ${path}]`,
@@ -60,60 +63,74 @@ describe("continuation caller delivery", () => {
     expect(readFileSync(path, "utf8")).toBe(older);
   });
 
-  it.each(["unstarted", "mismatch_before_effects", "matched_before_effects"])(
-    "carries unconfirmed caller text (%s)",
-    (identity) => {
-      const runDir = mkdtempSync(join(tmpdir(), "cx-continuation-input-"));
-      roots.push(runDir);
-      writeContinuationSources(runDir, [
-        { runId: "run-a", runDir: join(runDir, "a"), state: "failed" },
-      ]);
-      const rows = [
-        { type: "run.created", payload: { prompt: "Keep the existing public interface" } },
-        ...(identity === "unstarted"
-          ? []
-          : [{ type: "harness.event", payload: { type: "started", attempt_id: "a01" } }]),
-        {
-          type: "run.continuity",
-          payload: {
-            receipt: {
-              tryIndex: 0,
-              attemptId: "a01",
-              carrier: "native",
-              cause: "transport",
-              from: { runId: "run-a", attemptId: "a01", profileId: null },
-              to: { profileId: null },
-              workspace: "same_root",
-              memory: "full",
-              instructions: "as_sent",
-              reingestedTokens: null,
-              observedModel: null,
-              modelMismatch: null,
-              identityCheck: identity === "unstarted" ? "not_applicable" : identity,
-              inputDelivery: "confirmed",
+  it.each([
+    "unstarted",
+    "mismatch_before_effects",
+    "matched_before_effects",
+    "another process session started",
+  ])("carries unconfirmed caller text (%s)", (identity) => {
+    const runDir = mkdtempSync(join(tmpdir(), "cx-continuation-input-"));
+    roots.push(runDir);
+    writeContinuationSources(runDir, [
+      { runId: "run-a", runDir: join(runDir, "a"), state: "failed" },
+    ]);
+    const rows = [
+      { type: "run.created", payload: { prompt: "Keep the existing public interface" } },
+      ...(identity === "unstarted"
+        ? []
+        : [
+            {
+              type: "harness.event",
+              payload: {
+                type: "started",
+                attempt_id: "a01",
+                // The start joins its receipt only through the same process session.
+                session_id: identity === "another process session started" ? "ses-2" : "ses-1",
+              },
             },
+          ]),
+      {
+        type: "run.continuity",
+        payload: {
+          attempt_id: "a01",
+          session_id: "ses-1",
+          receipt: {
+            tryIndex: 0,
+            attemptId: "a01",
+            carrier: "native",
+            cause: "transport",
+            from: { runId: "run-a", attemptId: "a01", profileId: null },
+            to: { profileId: null },
+            workspace: "same_root",
+            memory: "full",
+            instructions: "as_sent",
+            reingestedTokens: null,
+            observedModel: null,
+            modelMismatch: null,
+            identityCheck: identity.endsWith("_effects") ? identity : "not_applicable",
+            inputDelivery: "confirmed",
           },
         },
-      ];
-      writeFileSync(
-        join(runDir, "events.jsonl"),
-        rows
-          .map((row, seq) =>
-            JSON.stringify({
-              seq: seq + 1,
-              run_id: "run-b",
-              task_id: "task-b",
-              ts: new Date().toISOString(),
-              ...row,
-            }),
-          )
-          .join("\n") + "\n",
-      );
-      expect(unconfirmedContinuationInputs([{ runId: "run-b", runDir, state: "failed" }])).toEqual(
-        identity === "matched_before_effects"
-          ? []
-          : [{ text: "Keep the existing public interface", runDir }],
-      );
-    },
-  );
+      },
+    ];
+    writeFileSync(
+      join(runDir, "events.jsonl"),
+      rows
+        .map((row, seq) =>
+          JSON.stringify({
+            seq: seq + 1,
+            run_id: "run-b",
+            task_id: "task-b",
+            ts: new Date().toISOString(),
+            ...row,
+          }),
+        )
+        .join("\n") + "\n",
+    );
+    expect(unconfirmedContinuationInputs([{ runId: "run-b", runDir, state: "failed" }])).toEqual(
+      identity === "matched_before_effects"
+        ? []
+        : [{ text: "Keep the existing public interface", runDir }],
+    );
+  });
 });

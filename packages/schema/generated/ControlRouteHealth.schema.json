@@ -1,0 +1,214 @@
+{
+  "$ref": "#/definitions/ControlRouteHealth",
+  "definitions": {
+    "ControlRouteHealth": {
+      "type": "object",
+      "properties": {
+        "windowDays": {
+          "type": "number",
+          "const": 7,
+          "description": "Length of the fixed window in days."
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Start of the window: generatedAt minus windowDays. The window holds the terminal product runs created at or after it."
+        },
+        "generatedAt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "When the daemon computed this answer; nothing is stored."
+        },
+        "scannedRuns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Terminal product runs read inside the window; the sum of every route's runs."
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "True when the scan reached the window start or the end of the retained run records (the engine keeps terminal records for at least thirty days, longer than the window); false when it stopped early."
+        },
+        "incompleteReason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "scan_bound"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the scan stopped early: scan_bound means the fixed newest-first record bound was reached inside the window, so older runs of the window are not counted. Null when complete."
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "harnessId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Harness of the route: the run's settled route harness, else its failure's harness, else its primary harness, else unknown."
+              },
+              "access": {
+                "type": "string",
+                "enum": [
+                  "readonly",
+                  "workspace_write",
+                  "full",
+                  "inherit_native",
+                  "unknown"
+                ],
+                "description": "Effective access profile the engine passed to the route; unknown when the run recorded none. The retired external_sandbox_full counts as full."
+              },
+              "runs": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Terminal product runs of the route created inside the window; always succeeded + failed + cancelled + other."
+              },
+              "succeeded": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Runs whose lifecycle ended succeeded."
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Runs whose lifecycle ended failed."
+              },
+              "cancelled": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Runs whose lifecycle ended cancelled or interrupted."
+              },
+              "other": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Runs in any other terminal lifecycle."
+              },
+              "topFailures": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "validation",
+                        "project",
+                        "auth",
+                        "harness_unavailable",
+                        "harness_error",
+                        "config_error",
+                        "budget",
+                        "policy",
+                        "cancelled",
+                        "internal",
+                        "unknown"
+                      ],
+                      "description": "Typed failure category shared by every run in the group; unknown when the run left no typed failure record."
+                    },
+                    "code": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "finite_zero",
+                            "hard_cap",
+                            "estimate_headroom",
+                            "unknown_paid_in_flight",
+                            "budget_overshoot",
+                            "cost_unverifiable",
+                            "delegation_child_drain_timeout",
+                            "subscription_window_exhausted",
+                            "credential_pool_exhausted",
+                            "input_too_large",
+                            "raw_context_mandatory_unavailable",
+                            "raw_context_exceeds_window",
+                            "model_catalog_unavailable",
+                            "model_selection_required",
+                            "raw_patch_requires_isolation",
+                            "raw_patch_missing_evidence",
+                            "raw_patch_digest_mismatch",
+                            "raw_patch_base_mismatch",
+                            "raw_patch_path_traversal",
+                            "raw_patch_outside_scope",
+                            "raw_patch_stale_preimage",
+                            "raw_patch_binary_unsupported",
+                            "raw_patch_truncated",
+                            "raw_patch_apply_failed",
+                            "vendor_cli_too_old",
+                            "credential_source_unconfirmed",
+                            "vendor_not_retryable",
+                            "delegated_home_unavailable",
+                            "delegated_confinement_unavailable",
+                            "delegated_evidence_incomplete",
+                            "access_profile_incompatible",
+                            "auxiliary_writable_roots_unsupported",
+                            "retired_access_profile"
+                          ],
+                          "description": "Machine-readable failure sub-code within a RunFailure category, including historical delegated-run failures and active access-profile refusals."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Failure sub-code shared by the group; null when the failures carried none."
+                    },
+                    "message": {
+                      "type": "string",
+                      "maxLength": 160,
+                      "description": "First line of the failures' display-safe message, redacted and cut to 160 characters; empty when the run left no message."
+                    },
+                    "count": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "description": "Failed runs of the route in this group."
+                    }
+                  },
+                  "required": [
+                    "category",
+                    "code",
+                    "message",
+                    "count"
+                  ],
+                  "additionalProperties": false,
+                  "description": "One group of a route's failed runs, keyed by category, code and message."
+                },
+                "maxItems": 3,
+                "description": "At most three groups of the route's failed runs, most frequent first."
+              }
+            },
+            "required": [
+              "harnessId",
+              "access",
+              "runs",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "other",
+              "topFailures"
+            ],
+            "additionalProperties": false,
+            "description": "Outcome counts of one route (harness x effective access) inside the window."
+          },
+          "description": "Every route with at least one run in the window, sorted by harnessId, then access."
+        }
+      },
+      "required": [
+        "windowDays",
+        "from",
+        "generatedAt",
+        "scannedRuns",
+        "complete",
+        "incompleteReason",
+        "routes"
+      ],
+      "additionalProperties": false,
+      "description": "Per-route run outcomes over the last seven days, computed on demand from retained run records. Facts only: no thresholds, no alarms."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

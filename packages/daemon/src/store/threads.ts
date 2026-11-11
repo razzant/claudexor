@@ -10,7 +10,6 @@ import { Thread as ThreadSchema, ThreadTurn as ThreadTurnSchema } from "@claudex
 import {
   newId,
   nowIso,
-  redactSecrets,
   safeProblemContext,
   safeProblemMessage,
   safeProblemRequiredActions,
@@ -38,6 +37,7 @@ import {
   mergeThreadPatch,
 } from "../thread-store-support.js";
 import { threadWorktreeMutation } from "../thread-worktree-state.js";
+import { syncThreadResourceUsesInTx } from "./resource-uses.js";
 
 import type { CreateThreadInput, CreateTurnInput, UpdateThreadInput } from "../threads.js";
 import { BlobFiles } from "./blob-files.js";
@@ -107,6 +107,7 @@ export class SqlThreadStore {
       ...(prepared.mutation.checkpoints ?? []).map((item) => item.thread_id),
     ]);
     for (const id of touched) this.pingHeadInTx(tx, id);
+    syncThreadResourceUsesInTx(tx, prepared.mutation, this);
   }
 
   private commit(mutation: ThreadMutation, purge?: Thread): void {
@@ -202,8 +203,11 @@ export class SqlThreadStore {
     if (
       !this.store.prepare("SELECT 1 FROM effect_obligation WHERE kind='purge_fs' AND key=?").get(id)
     ) {
+      // A retired thread's accepted inventory cleared with its cleanup, so nothing
+      // that reappeared since was exported: this cleanup holds every such byte.
+      const held = thread.retirement ? { retirement: thread.retirement, acceptedLane: [] } : {};
       runMutation(this.store, () =>
-        this.obligations.create("purge_fs", id, this.generation.pid, { thread }),
+        this.obligations.create("purge_fs", id, this.generation.pid, { thread, ...held }),
       );
     }
     return thread;
@@ -315,6 +319,11 @@ export class SqlThreadStore {
     return resumeMapFrom(this.sessionsForThread(threadId), threadId, profileId);
   }
 
+  /** Off the request thread, before `createTurn`: write a large prompt body it will own. */
+  async stageTurnPrompt(prompt: string): Promise<void> {
+    await this.blobs.stageBody(Buffer.from(prompt));
+  }
+
   createTurn(threadId: string, prompt: string, input: CreateTurnInput = {}): ThreadTurn {
     const idempotency = turnIdempotency(this.generation.name, threadId, input.idempotency);
     if (idempotency) {
@@ -353,8 +362,8 @@ export class SqlThreadStore {
       plan_hash: input.planHash ?? null,
       plan_readiness_overridden: input.planOverridden === true,
       kind,
-      // Redact at the persistence boundary (the store is read back into UIs).
-      prompt: redactSecrets(prompt),
+      // Exact: later turns, continuation and Run Again read this prompt back.
+      prompt,
       attachments: input.attachments ?? [],
       created_at: nowIso(),
     });

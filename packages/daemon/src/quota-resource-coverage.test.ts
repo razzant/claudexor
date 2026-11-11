@@ -52,7 +52,7 @@ const update = (offers: AccountResetOffer[], resolved: string[]) => ({
   resets_resolved_ids: resolved,
 });
 const cleanup: Array<() => void> = [];
-afterEach(() => cleanup.splice(0).forEach((fn) => fn()));
+afterEach(() => cleanup.splice(0).forEach((fn) => fn()), 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("reset inventory coverage", () => {
   it("keeps coverage through source validation without adding it to public snapshots", () => {

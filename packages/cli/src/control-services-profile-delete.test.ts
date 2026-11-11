@@ -77,7 +77,7 @@ describe("deleteCredentialProfile (INV-135 delete service)", () => {
     else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("removes the registry entry AND the scoped login dir, honestly receipted", async () => {
     const { profile } = registerConfigDirProfile({ harnessId: "claude", profileId: "work" });

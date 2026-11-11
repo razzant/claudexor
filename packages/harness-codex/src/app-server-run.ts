@@ -1,54 +1,59 @@
+import { prepareNativeProgram } from "@claudexor/core";
+import { CODEX_PROGRAM } from "./program.js";
 import { spawnProcess, type ChildStdin, type SpawnOptions } from "@claudexor/core";
-import type { EffortHint, HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
-import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
-import { codexAppServerInput } from "./attachments.js";
+import { verifyCodexAttachments } from "./attachments.js";
+import type { HarnessEvent } from "@claudexor/schema";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import {
   asObject,
-  CodexAppServerController,
+  CodexServerRequestRefusal,
   codexAppServerEvents,
-  codexAppServerThreadParams,
   codexRequestRefusal,
   createCodexSteer,
   errorText,
   readCodexLifecycle,
   rpcProvenance,
   type CodexThreadLifecycle,
+  type CodexAppServerRunInput,
   type JsonObject,
 } from "./app-server-protocol.js";
+import {
+  CodexBrowserStartup,
+  codexRequiredMcpStatuses,
+  notificationArrival,
+  observeCodexMcpStartup,
+  waitForCodexBrowser,
+  waitForCodexMcp,
+} from "./app-server-mcp-startup.js";
 import { CodexCancellation } from "./app-server-cancel.js";
+import { CodexApprovals } from "./app-server-approvals.js";
+import { CodexAsyncQuestions } from "./app-server-async-questions.js";
+import { CodexAutoReview } from "./app-server-auto-review.js";
+import { startCodexThread, startCodexTurn } from "./app-server-start.js";
+import { codexTurnSandboxPolicy } from "./app-server-session.js";
 import {
   CodexSubagentThreads,
   codexCompletedEvent,
   codexCleanupIsProofLimitation,
   codexHasCompletedAnswer,
+  codexSettledTerminal,
   codexTeardownFailed,
   codexTerminalEvents,
+  observeCodexRootError,
   ownsNotification,
 } from "./app-server-threads.js";
 import { parseCodexStderrFailure, type CodexParseState } from "./parse.js";
 import { parseCodexRpcError } from "./rpc-error.js";
 import { codexResumeIdentityMismatch } from "./resume-identity.js";
-
 export { CodexAppServerController } from "./app-server-protocol.js";
 export { codexAppServerEvents, codexAppServerThreadParams } from "./app-server-protocol.js";
-export interface CodexAppServerRunInput {
-  bin: string;
-  args: string[];
-  spec: HarnessRunSpec;
-  env: Record<string, string | null | undefined>;
-  spawn?: typeof spawnProcess;
-  controller?: CodexAppServerController;
-  /** The run's ONE effort receipt (`submitted`); resolved from the snapshot when absent. */
-  effort?: EffortHint | null;
-  pollIntervalMs?: number;
-  cancelDeadlineMs?: number;
-  /** Bound on the vendor's `turn/steer` answer (default 30 s); see createCodexSteer. */
-  steerDeadlineMs?: number;
-}
-
+export type { CodexAppServerRunInput } from "./app-server-protocol.js";
 export async function* runCodexAppServer(
   input: CodexAppServerRunInput,
 ): AsyncGenerator<HarnessEvent> {
+  const program = await prepareNativeProgram(CODEX_PROGRAM, input.bin, input.spec, input.env, true);
+  input = { ...input, bin: program.bin };
+  verifyCodexAttachments(input.spec.attachments);
   const run = input.spawn ?? spawnProcess;
   const abort = new AbortController();
   const pending = new Map<
@@ -72,7 +77,6 @@ export async function* runCodexAppServer(
   let activeTurnId: string | null = null;
   const ownedCommandItemIds = new Set<string>();
   const subagents = new CodexSubagentThreads();
-  // Cancellation is visible to transport teardown; its dependency seams are lazy.
   const cancellation = new CodexCancellation({
     spawned,
     threadId: () => (threadConfirmed ? nativeThreadId : null),
@@ -92,14 +96,8 @@ export async function* runCodexAppServer(
   let terminationUnconfirmed: { survivors: number[]; unresolved: JsonObject[] } | null = null;
   let outputDrainTruncated = false;
   let nativeSystemError = false;
-  const requiredMcpStatuses = new Map<
-    string,
-    { status: "starting" | "ready" | "failed" | "cancelled"; error?: string }
-  >(
-    input.spec.extra_mcp_servers
-      .filter((server) => server.required)
-      .map((server) => [server.name, { status: "starting" }] as const),
-  );
+  const requiredMcpStatuses = codexRequiredMcpStatuses(input.spec);
+  const browserStartup = new CodexBrowserStartup(input.spec);
   const parseState: CodexParseState = {
     envelopeActive: input.spec.output_schema !== undefined && input.spec.output_schema !== null,
     requiredMcpServers: input.spec.extra_mcp_servers
@@ -107,16 +105,49 @@ export async function* runCodexAppServer(
       .map((server) => server.name),
     startedEmitted: true,
   };
-
   const rejectPending = (error: Error): void => {
     for (const request of pending.values()) request.reject(error);
     pending.clear();
+  };
+  const enqueue = (notification: JsonObject): void => {
+    notifications.push(notification);
+    notificationWaiter.wake?.();
+    notificationWaiter.wake = undefined;
+  };
+  // The run facts both native-request owners read.
+  const owned = {
+    spec: input.spec,
+    io: () => io!,
+    threadId: () => nativeThreadId,
+    turnId: () => activeTurnId,
+    live: () => !cancellation.requested && !processStopped && !abort.signal.aborted,
+    enqueue,
+    failed: (error: Error) => {
+      processFailure = error;
+      rejectPending(error);
+      notificationWaiter.wake?.();
+    },
+  };
+  const approvals = new CodexApprovals(owned);
+  const asyncQuestions = new CodexAsyncQuestions(owned, (message) => steer.send(message));
+  const autoReview = new CodexAutoReview({
+    spec: input.spec,
+    threadId: () => nativeThreadId,
+    turnId: () => activeTurnId,
+    live: () => !cancellation.requested && !processStopped && !abort.signal.aborted,
+  });
+  const closeOwners = (): void => {
+    approvals.close();
+    autoReview.close();
+    asyncQuestions.close();
   };
   // Only root frames move run state; ownership is defined in app-server-threads.ts.
   const observeOwnNotification = (notification: JsonObject): void => {
     const method = notification["method"];
     const params = asObject(notification["params"]);
     if (!ownsNotification(params, nativeThreadId)) return;
+    observeCodexRootError(parseState, method, params);
+    asyncQuestions.observe(method, params);
     if (method === "turn/started") {
       const turn = asObject(params?.["turn"]);
       if (typeof turn?.["id"] === "string") activeTurnId = turn["id"];
@@ -128,30 +159,21 @@ export async function* runCodexAppServer(
       if (item?.["type"] === "commandExecution" && typeof item["id"] === "string")
         ownedCommandItemIds.add(item["id"]);
     } else if (method === "thread/status/changed") {
-      if (asObject(params?.["status"])?.["type"] === "systemError") nativeSystemError = true;
-    } else if (method === "mcpServer/startupStatus/updated") {
-      const name = params?.["name"];
-      const status = params?.["status"];
-      if (
-        typeof name === "string" &&
-        requiredMcpStatuses.has(name) &&
-        (status === "starting" ||
-          status === "ready" ||
-          status === "failed" ||
-          status === "cancelled")
-      ) {
-        const error = params?.["error"] ?? params?.["failureReason"];
-        requiredMcpStatuses.set(name, {
-          status,
-          ...(typeof error === "string" ? { error } : {}),
-        });
-        if (status === "failed" || status === "cancelled") harnessReportedError = true;
+      if (asObject(params?.["status"])?.["type"] === "systemError") {
+        nativeSystemError = true;
+        approvals.close();
+        autoReview.close(new Error("Codex root thread failed during native authorization"));
       }
+    } else if (method === "mcpServer/startupStatus/updated") {
+      if (observeCodexMcpStartup(params, requiredMcpStatuses, browserStartup))
+        harnessReportedError = true;
     }
   };
   const onMessage = (message: unknown): void => {
     const object = asObject(message);
     if (!object) throw new Error("Codex app-server sent a non-object JSON-RPC frame");
+    autoReview.observe(object);
+    if (approvals.observe(object)) return;
     if (typeof object["id"] === "number") {
       const request = pending.get(object["id"]);
       if (!request) return;
@@ -173,15 +195,13 @@ export async function* runCodexAppServer(
     if (typeof object["method"] === "string") {
       observeOwnNotification(object);
       steer.observeEcho(object);
-      notifications.push(object);
-      notificationWaiter.wake?.();
-      notificationWaiter.wake = undefined;
+      enqueue(object);
     }
   };
-
   const process = (async (): Promise<void> => {
     try {
       const options: SpawnOptions = {
+        stdoutFraming: "lf",
         cwd: input.spec.cwd,
         env: input.env,
         inheritEnv: input.spec.env_inheritance,
@@ -189,6 +209,7 @@ export async function* runCodexAppServer(
         abortSignal: abort.signal,
         onSpawn(childIo) {
           io = childIo;
+          void childIo.closed.then(() => closeOwners());
           resolveSpawn();
         },
       };
@@ -197,6 +218,7 @@ export async function* runCodexAppServer(
           try {
             onMessage(JSON.parse(event.line));
           } catch (error) {
+            if (error instanceof CodexServerRequestRefusal) throw error;
             throw new Error(`Invalid Codex app-server frame: ${errorText(error)}`);
           }
         } else if (event.type === "launch_advisory") {
@@ -224,6 +246,7 @@ export async function* runCodexAppServer(
       rejectPending(processFailure);
       throw processFailure;
     } finally {
+      closeOwners();
       processStopped = true;
       if (abort.signal.aborted)
         rejectPending(cancellation.failure ?? new Error("Codex app-server stopped"));
@@ -232,16 +255,16 @@ export async function* runCodexAppServer(
     }
   })();
   void process.catch(() => {});
-
-  // `taint`: a refused request marks the run harness_reported_error; a live
-  // message (turn/steer) passes false so a benign refusal never poisons the run.
+  // taint=false keeps benign turn/steer refusals out of harness_reported_error.
   const request = async (method: string, params: JsonObject, taint = true): Promise<JsonObject> => {
-    await Promise.race([
-      spawned,
-      process.then(() => {
-        throw processFailure ?? new Error("Codex app-server exited before accepting requests");
-      }),
-    ]);
+    // Once ready, write synchronously with the caller's last authority check.
+    if (!io)
+      await Promise.race([
+        spawned,
+        process.then(() => {
+          throw processFailure ?? new Error("Codex app-server exited before accepting requests");
+        }),
+      ]);
     const id = nextId++;
     const response = new Promise<JsonObject>((resolve, reject) => {
       pending.set(id, { resolve, reject, taint });
@@ -261,6 +284,10 @@ export async function* runCodexAppServer(
     send: (method, params) => rpcProvenance(request(method, params, false)),
     responseDeadlineMs: input.steerDeadlineMs ?? 30_000,
   });
+  const assertProcessLive = (): void => {
+    if (processFailure) throw processFailure;
+    if (processStopped) throw cancellation.failure ?? new Error("Codex app-server disconnected");
+  };
   const nextNotification = async (
     method: string,
     accept: (params: JsonObject | null) => boolean = () => true,
@@ -271,10 +298,8 @@ export async function* runCodexAppServer(
         (item) => item["method"] === method && accept(asObject(item["params"])),
       );
       if (index >= 0) return consume ? notifications.splice(index, 1)[0]! : notifications[index]!;
-      if (processFailure) throw processFailure;
-      await new Promise<void>((resolve) => {
-        notificationWaiter.wake = resolve;
-      });
+      assertProcessLive();
+      await notificationArrival(notificationWaiter);
     }
   };
   /** Next queued notification; with `timeoutMs`, `null` once the wait lapses in silence. */
@@ -282,42 +307,14 @@ export async function* runCodexAppServer(
     for (;;) {
       const next = notifications.shift();
       if (next) return next;
-      if (processFailure) throw processFailure;
-      if (processStopped) throw cancellation.failure ?? new Error("Codex app-server disconnected");
-      const woke = await new Promise<boolean>((resolve) => {
-        let timer: NodeJS.Timeout | undefined;
-        notificationWaiter.wake = () => {
-          if (timer) clearTimeout(timer);
-          resolve(true);
-        };
-        if (timeoutMs !== undefined)
-          timer = setTimeout(() => {
-            notificationWaiter.wake = undefined;
-            resolve(false);
-          }, timeoutMs);
-      });
-      if (!woke) return null;
-    }
-  };
-  const waitForRequiredMcp = async (): Promise<void> => {
-    while (requiredMcpStatuses.size) {
-      const failed = [...requiredMcpStatuses].filter(
-        ([, value]) => value.status === "failed" || value.status === "cancelled",
-      );
-      if (failed.length) {
-        throw new Error(
-          `required MCP servers failed to initialize: ${failed
-            .map(([name, value]) => `${name}: ${value.error ?? value.status}`)
-            .join(", ")}`,
-        );
-      }
-      if ([...requiredMcpStatuses.values()].every((value) => value.status === "ready")) return;
-      await nextNotification("mcpServer/startupStatus/updated");
+      assertProcessLive();
+      if (!(await notificationArrival(notificationWaiter, timeoutMs))) return null;
     }
   };
   let stopPromise: Promise<void> | null = null;
   const stopProcess = (): Promise<void> =>
     (stopPromise ??= (async () => {
+      closeOwners();
       if (!abort.signal.aborted) abort.abort();
       io?.end();
       await process.catch(() => {});
@@ -326,10 +323,17 @@ export async function* runCodexAppServer(
     const stderrTail = redactSecrets(stderrRing.join("\n")).slice(-1_000).trim();
     return {
       ...extra,
+      ...(autoReview.authorizationSubmissions.length
+        ? { native_authorization_requests: autoReview.authorizationSubmissions }
+        : {}),
       ...(launchAdvisory && !launchAdvisoryShown
         ? { launch_advisory: redactSecrets(launchAdvisory) }
         : {}),
       ...(harnessReportedError ? { harness_reported_error: true } : {}),
+      // The root turn's own wire record; a readable rollout record replaces it.
+      ...(harnessReportedError && parseState.rootFailure
+        ? { vendor_failure: parseState.rootFailure }
+        : {}),
       ...(stderrTail ? { stderr_tail: stderrTail } : {}),
       ...(droppedUnrecognizedEvents
         ? { dropped_unrecognized_events: droppedUnrecognizedEvents }
@@ -338,9 +342,14 @@ export async function* runCodexAppServer(
       ...(outputDrainTruncated ? { output_drain: "truncated" } : {}),
     };
   };
+  const completed = (payload: JsonObject, interrupted = false) =>
+    program.event(codexCompletedEvent(input.spec.session_id, payload, interrupted));
   const readLifecycle = (): Promise<CodexThreadLifecycle> =>
     readCodexLifecycle(request, nativeThreadId, ownedCommandItemIds);
-  const { cancel } = cancellation;
+  const cancel = () => {
+    closeOwners();
+    return cancellation.cancel();
+  };
   input.controller?.bind(cancel);
   input.controller?.bindSteer(steer.send);
   const onAbort = (): void => void cancel();
@@ -349,28 +358,17 @@ export async function* runCodexAppServer(
     if (externalAbort.aborted) onAbort();
     else externalAbort.addEventListener("abort", onAbort, { once: true });
   }
-
   try {
-    await request("initialize", {
-      clientInfo: { name: "claudexor", version: CLAUDEXOR_VERSION },
-      capabilities: { experimentalApi: true },
-    });
-    await notify("initialized", null);
-    const threadResult = await request(
-      input.spec.resume_session_id ? "thread/resume" : "thread/start",
-      input.spec.resume_session_id
-        ? {
-            ...codexAppServerThreadParams(input.spec, input.effort),
-            threadId: input.spec.resume_session_id,
-          }
-        : codexAppServerThreadParams(input.spec, input.effort),
+    const { threadResult, threadId } = await startCodexThread(
+      input,
+      request,
+      notify,
+      program.observeVersion,
     );
-    const thread = asObject(threadResult["thread"]);
-    const threadId = thread?.["id"];
-    if (typeof threadId !== "string") throw new Error("Codex app-server omitted thread id");
     const identityMismatch = codexResumeIdentityMismatch(input.spec, threadId);
     if (identityMismatch) {
       await stopProcess();
+      yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
       yield* identityMismatch;
       return;
     }
@@ -380,51 +378,28 @@ export async function* runCodexAppServer(
     // Nothing has consumed this queue yet. Classify startup state effects in
     // arrival order now that start named the root; resume was bound upfront.
     if (rootWasUnknown) notifications.forEach(observeOwnNotification);
-    await waitForRequiredMcp();
-    const turnResult = await request("turn/start", {
-      threadId,
-      input: codexAppServerInput(input.spec),
-      ...(input.spec.output_schema !== undefined && input.spec.output_schema !== null
-        ? { outputSchema: input.spec.output_schema }
-        : {}),
+    await waitForCodexMcp(requiredMcpStatuses, nextNotification);
+    await waitForCodexBrowser({
+      startup: browserStartup,
+      deadlineMs: input.browserStartupDeadlineMs,
+      assertProcessLive,
+      stopRequested: () => cancellation.requested,
+      abandoned: () => nativeSystemError,
+      nextArrival: (timeoutMs) => notificationArrival(notificationWaiter, timeoutMs),
     });
-    // The turn THIS run started is the RPC result's turn; the root thread's
-    // matching `turn/started` is awaited so the adapter state (activeTurnId)
-    // is primed. A sub-agent turn queued meanwhile (a resumed plan-review
-    // thread may re-engage an earlier child) never satisfies the wait.
-    const requestedTurnId = asObject(turnResult["turn"])?.["id"];
-    const started = await nextNotification(
-      "turn/started",
-      (params) =>
-        ownsNotification(params, threadId) &&
-        (typeof requestedTurnId !== "string" ||
-          asObject(params?.["turn"])?.["id"] === requestedTurnId),
-      // Keep the start in timeline order: an earlier root completion must see
-      // the new turn queued before it can become the terminal candidate.
-      false,
+    // Explicit auxiliary roots ride only the turn policy (app-server-session.ts).
+    const sandboxPolicy = codexTurnSandboxPolicy(input.spec, threadResult["sandbox"]);
+    yield program.event(
+      await startCodexTurn({
+        spec: input.spec,
+        threadId,
+        sandboxPolicy,
+        requiredMcpServers: parseState.requiredMcpServers ?? [],
+        request,
+        nextNotification,
+      }),
     );
-    const turnId =
-      typeof requestedTurnId === "string"
-        ? requestedTurnId
-        : asObject(asObject(started["params"])?.["turn"])?.["id"];
-    if (typeof turnId !== "string") throw new Error("Codex app-server omitted active turn id");
-    yield {
-      type: "started",
-      session_id: input.spec.session_id,
-      ts: nowIso(),
-      payload: {
-        native_session_id: threadId,
-        native_turn_id: turnId,
-        ...(parseState.requiredMcpServers?.length
-          ? {
-              mcp_servers: parseState.requiredMcpServers.map((name) => ({
-                name,
-                status: "connected",
-              })),
-            }
-          : {}),
-      },
-    };
+    yield* browserStartup.takeEvents(input.spec.session_id);
     if (launchAdvisory) {
       yield {
         type: "status",
@@ -459,6 +434,9 @@ export async function* runCodexAppServer(
           continue;
         } else {
           const mapped =
+            approvals.events(notification) ??
+            asyncQuestions.events(notification) ??
+            autoReview.events(notification) ??
             steer.deliveredEvents(notification) ??
             codexAppServerEvents(notification, input.spec.session_id, parseState);
           if (mapped) {
@@ -508,23 +486,41 @@ export async function* runCodexAppServer(
           break;
         const systemError = nativeSystemError || current.threadStatus === "systemError";
         if (!current.threadSettled || current.goalActive || current.ownedBackground.length) {
-          if (systemError && current.ownedBackground.length) {
-            await new Promise<void>((resolve) => setTimeout(resolve, input.pollIntervalMs ?? 250));
-            continue;
-          }
-          if (!systemError && current.ownedBackground.length && !current.goalActive) {
+          if (current.ownedBackground.length && (systemError || !current.goalActive)) {
             await new Promise<void>((resolve) => setTimeout(resolve, input.pollIntervalMs ?? 250));
             continue;
           }
           if (!systemError) break;
         }
         const status = pendingTerminal?.["status"];
+        const finalAnswer = parseState.lastAgentMessage ?? "";
         const terminal = codexTerminalEvents({
           pendingTerminal,
           systemError,
           sessionId: input.spec.session_id,
           parseState,
         });
+        // Hand denials back only after this turn's answer, never from a failed thread.
+        const handback =
+          status === "completed" &&
+          !(systemError || harnessReportedError || terminal.reportedError === true) &&
+          !cancellation.requested &&
+          autoReview.pending;
+        const handbackInput = {
+          turnId: String(pendingTerminal?.["id"]),
+          sandboxPolicy,
+          finalAnswer,
+          completed: terminal.events,
+          request,
+          readLifecycle,
+          failure: () => processFailure,
+          cancelled: () => cancellation.requested,
+          cancel,
+        };
+        if (handback && (yield* autoReview.handback(handbackInput))) {
+          pendingTerminal = null;
+          break;
+        }
         if (terminal.reportedError !== null) harnessReportedError = terminal.reportedError;
         let failed = systemError || harnessReportedError || cancellation.requested;
         completedAnswer = !failed && codexHasCompletedAnswer(status, current, terminal.events);
@@ -536,9 +532,10 @@ export async function* runCodexAppServer(
         // only revalidate a candidate answer here.
         if (completedAnswer && codexTeardownFailed(notifications, nativeThreadId, failed))
           throw new Error("Codex completion was invalidated during process teardown");
-        for (const event of terminal.events) yield event;
-        yield codexCompletedEvent(
-          input.spec.session_id,
+        yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
+        yield* asyncQuestions.takeEvents(notifications);
+        if (!handback) yield* codexSettledTerminal(terminal.events, parseState);
+        yield completed(
           terminalPayload({
             native_session_id: threadId,
             native_turn_id: pendingTerminal?.["id"] ?? activeTurnId,
@@ -550,7 +547,10 @@ export async function* runCodexAppServer(
       }
     }
   } catch (error) {
+    if (cancellation.requested) await cancel();
     await stopProcess();
+    yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
+    yield* asyncQuestions.takeEvents(notifications);
     if (processFailure && cancellation.requested) cancellation.failure ??= processFailure;
     if (
       cancellation.requested &&
@@ -558,8 +558,7 @@ export async function* runCodexAppServer(
       !cancellation.failure &&
       !processFailure
     ) {
-      yield codexCompletedEvent(
-        input.spec.session_id,
+      yield completed(
         terminalPayload({ code: "user_cancelled", native_session_id: nativeThreadId }),
         true,
       );
@@ -567,29 +566,30 @@ export async function* runCodexAppServer(
     }
     const aborted = cancellation.requested;
     const failure = processFailure ?? cancellation.failure ?? error;
+    if (failure instanceof CodexServerRequestRefusal) harnessReportedError = true;
     const requestRefusal = codexRequestRefusal(failure);
     const code =
       cancellation.failure || terminationUnconfirmed
         ? "codex_control_loss"
-        : "codex_app_server_failure";
+        : failure instanceof CodexServerRequestRefusal
+          ? failure.code
+          : "codex_app_server_failure";
     const nativeError =
       !requestRefusal && failure !== processFailure && !cancellation.failure
         ? parseCodexStderrFailure(errorText(failure), input.spec.session_id, parseState)
         : null;
     if (nativeError) harnessReportedError = true;
-    yield nativeError ?? {
-      type: "error",
-      session_id: input.spec.session_id,
-      ts: nowIso(),
-      error: redactSecrets(errorText(failure)),
-      ...(requestRefusal ? { request_refusal: requestRefusal } : {}),
-      payload: { code: requestRefusal?.kind ?? code },
-    };
-    yield codexCompletedEvent(
-      input.spec.session_id,
-      terminalPayload({ code, native_session_id: nativeThreadId }),
-      aborted,
+    yield program.event(
+      nativeError ?? {
+        type: "error",
+        session_id: input.spec.session_id,
+        ts: nowIso(),
+        error: redactSecrets(errorText(failure)),
+        ...(requestRefusal ? { request_refusal: requestRefusal } : {}),
+        payload: { code: requestRefusal?.kind ?? code },
+      },
     );
+    yield completed(terminalPayload({ code, native_session_id: nativeThreadId }), aborted);
   } finally {
     if (externalAbort instanceof AbortSignal) externalAbort.removeEventListener("abort", onAbort);
     input.controller?.clear(cancel);

@@ -20,24 +20,14 @@ function panelFlags(args: ParsedArgs): ControlReviewerPanelEntry[] | undefined {
   );
 }
 
-/** `--delta-scope <baseSha>`: the contract's sol lane reviews the packet's
- * sealed DELTA.patch since baseSha (INV-125 second amendment). SUBTRACTIVE
- * after the wave-6 integrity finding: there is no harness parameter — the
- * lane is pinned by the engine, and base/digest verify against the sealed
- * FINGERPRINTS. Sealed-packet mode only. */
-function deltaScopeFlag(args: ParsedArgs): { baseSha: string } | undefined {
-  const raw = flagValues(args, "delta-scope");
-  if (raw.length === 0) return undefined;
-  const text = raw.length === 1 && typeof raw[0] === "string" ? raw[0].trim() : "";
-  if (raw.length !== 1 || !/^[0-9a-f]{40}$/i.test(text)) {
-    throw new Error(
-      `--delta-scope expects exactly one 40-hex base SHA (the lane is pinned to the contract's sol slot), got '${raw.map(String).join("', '")}'`,
-    );
-  }
-  return { baseSha: text.toLowerCase() };
-}
+/** The retired single-lane sealed-delta review (#257) stays a known flag only
+ * so an old invocation is refused with its replacement, never reviewed some
+ * other way. */
+const RETIRED_DELTA_SCOPE =
+  "claudexor review: --delta-scope was retired; a sealed packet review always covers the complete packet (drop the flag), and a chosen delta is an ordinary diff review: `git diff <base>..<candidate> > delta.patch`, then `claudexor review --diff delta.patch`";
 
 export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  if (flagValues(args, "delta-scope").length > 0) return printUsageError(json, RETIRED_DELTA_SCOPE);
   const diffPath = flagStr(args, "diff");
   const evidenceDir = flagStr(args, "evidence-dir");
   const artifactsDir = flagStr(args, "artifacts-dir");
@@ -54,7 +44,7 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
   const frozenRequested = frozenValues.some((value) => value !== undefined);
   const usage =
     'usage: claudexor review --diff <file> [--intent "<text>"] [--tests "<evidence>"] [--reviewer-panel <list> | --reviewer-panel-json <json-array>] [--json]\n' +
-    "   or: claudexor review --evidence-dir <path> --artifacts-dir <external-path> --candidate-sha <sha> --candidate-tree <tree> --packet-manifest-digest <sha256> [--reviewer-panel <list> | --reviewer-panel-json <json-array>] [--delta-scope <baseSha>] [--json]";
+    "   or: claudexor review --evidence-dir <path> --artifacts-dir <external-path> --candidate-sha <sha> --candidate-tree <tree> --packet-manifest-digest <sha256> [--reviewer-panel <list> | --reviewer-panel-json <json-array>] [--json]";
   if ((!diffPath && !frozenRequested) || (frozenRequested && frozenValues.some((v) => !v))) {
     return printUsageError(json, usage);
   }
@@ -67,21 +57,6 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
     return printUsageError(
       json,
       "claudexor review: sealed packet mode cannot be combined with --diff, --intent, or --tests",
-    );
-  }
-  let deltaScope: { baseSha: string } | undefined;
-  try {
-    deltaScope = deltaScopeFlag(args);
-  } catch (err) {
-    return printUsageError(
-      json,
-      `claudexor review: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  if (deltaScope && !frozenRequested) {
-    return printUsageError(
-      json,
-      "claudexor review: --delta-scope is only valid in sealed packet mode",
     );
   }
   let diffText: string | undefined;
@@ -110,7 +85,6 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
               candidateSha: candidateSha!,
               candidateTree: candidateTree!,
               packetManifestSha256: packetManifestSha256!,
-              ...(deltaScope ? { deltaScope } : {}),
             },
           }
         : {

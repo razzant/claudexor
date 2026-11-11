@@ -699,7 +699,7 @@ struct TurnStartAdmissionTests {
             requests.record(request)
             guard request.url?.port == 12_370,
                   request.httpMethod == "GET",
-                  request.url?.path == "/v2/threads/thread-a"
+                  request.url?.path == "/v2/threads/thread-a/history"
             else { throw TurnStartTestError.unexpectedRequest }
             detailStarted.record(request)
             _ = releaseDetail.wait(timeout: .now() + 5)

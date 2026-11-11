@@ -1,7 +1,12 @@
 import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
-import { ensureDir, projectRuntimeDir } from "@claudexor/util";
+import {
+  ensureDir,
+  ownedProjectRuntimeDir,
+  ownedRuntimeNamespaceDir,
+  projectRuntimeDir,
+} from "@claudexor/util";
 import { ensureHarnessHome, harnessHomeEnv } from "./harness-home.js";
 
 /**
@@ -149,11 +154,12 @@ function safeReaddir(dir: string): string[] {
 /**
  * Lifecycle owner (a): remove every lane home of one thread. Called on thread
  * PURGE (mirrors `purgeThreadWorktree`) so a purged conversation leaves no
- * durable scoped home behind.
+ * durable scoped home behind. Like the other two owners it refuses a link
+ * above the thread's dir (`ownedProjectRuntimeDir`) and only unlinks one at it.
  */
 export function purgeThreadLanes(projectRoot: string, threadId: string): void {
   assertSafeSegment("threadId", threadId);
-  const root = lanesRootDir(projectRuntimeDir(projectRoot));
+  const root = ownedProjectRuntimeDir(projectRoot, "lanes");
   const threadDir = join(root, threadId);
   if (!threadDir.startsWith(root + sep)) return;
   rmSync(threadDir, { recursive: true, force: true });
@@ -177,10 +183,10 @@ export function purgeProfileLanes(
   profileId: string,
 ): number {
   const laneSeg = `${harnessId}-${profileId}`;
-  const root = lanesRootDir(projectRuntimeDir(projectRoot));
+  const root = ownedProjectRuntimeDir(projectRoot, "lanes");
   let removed = 0;
   for (const threadId of safeReaddir(root)) {
-    const laneDir = join(root, threadId, laneSeg);
+    const laneDir = join(ownedProjectRuntimeDir(projectRoot, "lanes", threadId), laneSeg);
     if (laneDir.startsWith(root + sep) && existsSync(laneDir)) {
       rmSync(laneDir, { recursive: true, force: true });
       removed += 1;
@@ -234,20 +240,20 @@ function renameLanes(projectRoot: string, fromSeg: string, toSeg: string): numbe
 /**
  * Lifecycle owner (c): orphan retention GC. Remove lane dirs whose thread no
  * longer exists (trashed-then-purged, or lost out-of-band). Bounded to the
- * project's own lanes root; the live-thread set is the caller's fail-closed
- * truth (a quarantined partition contributes no ids, so its lanes are left
- * alone by the caller, never swept as orphans).
+ * inventoried runtime namespace's lanes root; the live-thread set is the caller's fail-closed
+ * truth (the retention reference reader contributes quarantined thread ids
+ * without decoding their bodies, so those lanes are left alone by the caller).
  */
-export function sweepOrphanLanes(projectRoot: string, liveThreadIds: Set<string>): string[] {
+export function sweepOrphanLanes(runtime: string, liveThreadIds: Set<string>): string[] {
   const actions: string[] = [];
-  const root = lanesRootDir(projectRuntimeDir(projectRoot));
+  const root = ownedRuntimeNamespaceDir(runtime, "lanes");
   for (const threadId of safeReaddir(root)) {
     if (liveThreadIds.has(threadId)) continue;
     const threadDir = join(root, threadId);
     if (!threadDir.startsWith(root + sep)) continue;
     try {
       rmSync(threadDir, { recursive: true, force: true });
-      actions.push(`removed orphan lane dir ${threadId} under ${projectRoot}`);
+      actions.push(`removed orphan lane dir ${threadId} under ${runtime}`);
     } catch {
       /* best-effort: a leftover lane dir is harmless and re-sweepable */
     }

@@ -1,0 +1,11 @@
+{
+  "$ref": "#/definitions/McpStoreIdentityInput",
+  "definitions": {
+    "McpStoreIdentityInput": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

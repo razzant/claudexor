@@ -1,0 +1,50 @@
+{
+  "$ref": "#/definitions/McpRunWaitInput",
+  "definitions": {
+    "McpRunWaitInput": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Run id, or the job id of an accepted launch that may still be queued."
+        },
+        "afterSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "default": 0,
+          "description": "Last durable event seq already consumed (the previous nextSeq), never snapshotSeq."
+        },
+        "waitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50000,
+          "default": 25000,
+          "description": "Bound of the event stage. Zero never waits for new events: it returns the bounded page already available at the snapshot fence, read within a separate 5s budget. Daemon discovery and each snapshot read have their own 5s budgets, so one call can take up to waitMs plus about 15s."
+        },
+        "maxEvents": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50
+        },
+        "wake": {
+          "type": "string",
+          "enum": [
+            "batch",
+            "event"
+          ],
+          "default": "batch",
+          "description": "batch (default): collect events until the page fills, it includes a question event (interaction.requested, also one written before the wait), the run ends, or waitMs elapses. event: return as soon as any event is available. A pending question whose event is not in the page is reported in both modes but never ends a wait by itself."
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

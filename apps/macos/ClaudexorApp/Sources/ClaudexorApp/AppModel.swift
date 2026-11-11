@@ -59,16 +59,19 @@ final class AppModel {
         route = .task(id)
         inspectorPresented = true
     }
+    /// Where this session's state persists (AppPersistence.swift), fixed
+    /// before launch restore so the writers below save what it restores.
+    let persistence: AppPersistence
     var appearance: AppearanceMode = .dark {
-        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudexor.appearance") }
+        didSet { persistence.preferences?.save(appearance.rawValue, "claudexor.appearance") }
     }
     /// The shared AuthSheet's target (harness default login, or a profile login).
     var authSheetTarget: AuthSheetTarget?
     var projectRoot: String = "" {
-        didSet { UserDefaults.standard.set(projectRoot, forKey: "claudexor.projectRoot") }
+        didSet { persistence.preferences?.save(projectRoot, "claudexor.projectRoot") }
     }
     var recentProjects: [String] = [] {
-        didSet { UserDefaults.standard.set(recentProjects, forKey: "claudexor.recentProjects") }
+        didSet { persistence.preferences?.save(recentProjects, "claudexor.recentProjects") }
     }
     /// A draft and every materialized thread have one immutable execution
     /// location. Local daemon ids are never assumed globally unique: the UI
@@ -111,7 +114,11 @@ final class AppModel {
     // Threads (chat/session-first): the conversation list + selected detail.
     var threads: [ThreadSummary] = []
     var selectedThreadId: String?
-    var selectedThreadDetail: ThreadDetailResponse?
+    var selectedThreadDetail: ThreadDetailResponse? // workspace-only, on demand
+    var selectedHistory: ThreadHistoryStore?
+    var workspaceHistoryVisible = false
+    var workspaceHistoryError: String?
+    @ObservationIgnored let workspaceHistoryLoader = WorkspaceHistoryLoader()
     var threadStatus: String?
     /// What a failed Delete Now said, and what each engine's last thread list
     /// could not show; later lists retire the banner (AppModel+ThreadTrash.swift).
@@ -214,10 +221,10 @@ final class AppModel {
                 return await AppRuntimeDaemonControl.servingHandshake(using: client)
             })
     }
-    /// The one session-wide exact owner shared by updater installation and
-    /// steady local-daemon reconciliation. Filesystem locking protects the
-    /// pointer; this lease protects the stop/start lifecycle itself.
-    @ObservationIgnored let localRuntimeLifecycleOwner = LocalRuntimeLifecycleOwner()
+    @ObservationIgnored let localRuntimeLifecycleOwner: LocalRuntimeLifecycleOwner
+    var localDaemonBuildSwitch: LocalDaemonBuildSwitch?
+    /// Only the pending explicit switch owns this progress publication.
+    @ObservationIgnored var localDaemonBuildSwitchProgress: (generation: Int, notice: String)?
     /// One lifecycle owner for the entire AppModel session. It is created lazily
     /// so tests can replace `makeDaemonControl` before the first reconciliation;
     /// the actor itself coalesces overlapping connect/poll attempts.
@@ -226,6 +233,12 @@ final class AppModel {
     /// discovery/install text so either owner can settle without erasing the
     /// other's state.
     var localDaemonReconciliationNotice: String?
+    /// A replacement this app ran left no engine the connection loop will start
+    /// by itself; Offline offers Retry until an engine is adopted.
+    var localEngineAwaitsRetry = false
+    /// This app started an engine that answered, and no connection has adopted
+    /// it yet. Losing it then leaves nothing the loop will start by itself.
+    @ObservationIgnored var localSuccessorPending = false
     /// The update CHECKER (actor, off the observable graph) + an injectable
     /// transport factory so tests drive a stub without the network. One auto
     /// foreground check per session; the menu command forces a re-check. The chip
@@ -270,9 +283,11 @@ final class AppModel {
     /// Display freshness is intentionally separate from routing authority.
     /// Stale values may remain visible, but can never make `next_up` current.
     var accountsQuotaDisplayStates: [ExecutionLocationID: AccountsQuotaDisplayState] = [:]
-    let accountResourceActions = AccountsResourceActions(preferences: .standard)
+    let accountResourceActions: AccountsResourceActions
     let accountsRoutingEvidence = AccountsRoutingEvidenceState()
     @ObservationIgnored var accountsQuotaDisplayGenerations: [ExecutionLocationID: UInt64] = [:]
+    /// Per account, the binding changes (key or presence) seen: committed snapshots and acknowledged own writes.
+    @ObservationIgnored var accountResourceBindingChanges: [ExecutionLocationID: [AccountTarget: UInt64]] = [:]
     @ObservationIgnored var accountsQuotaSubscribers:
         [ExecutionLocationID: Set<UUID>] = [:]
     @ObservationIgnored var accountsQuotaDisplayTasks:
@@ -379,6 +394,10 @@ final class AppModel {
     /// TERMINAL chat transcripts per run (live transcripts stream in the run's
     /// RunLiveBox; foldLiveBox moves the final reducer here at terminal).
     var transcripts: [String: TranscriptReducer] = [:]
+    /// A REMOTE run's engine receipts (`workspace.prepared`, #563), keyed by
+    /// location and run id so identical daemon run ids never mix. Remote runs
+    /// fold no executor transcript; only these receipts reach their turn card.
+    var remoteTranscripts: [RunDetailLoadKey: TranscriptReducer] = [:]
     /// Per-run live streaming boxes (P1 granularity): the dictionary property
     /// only changes on attach/fold (rare); hot per-event writes mutate the
     /// box CLASS internals and invalidate only that box's readers.
@@ -407,7 +426,12 @@ final class AppModel {
         client = newClient
     }
 
-    init(client: GatewayClient? = nil, requestNotificationAuthorization: Bool = true) {
+    init(client: GatewayClient? = nil, requestNotificationAuthorization: Bool = true, loadPersistedState: Bool = true,
+         persistence: AppPersistence = .memoryOnly,
+         lifecycleOwner: LocalRuntimeLifecycleOwner = LocalRuntimeLifecycleOwner()) {
+        self.localRuntimeLifecycleOwner = lifecycleOwner
+        self.persistence = persistence
+        self.accountResourceActions = AccountsResourceActions(preferences: persistence.accountResetRecovery)
         let sshManager = SSHConnectionManager()
         self.sshConnectionManager = sshManager
         self.remoteRuntimeInstaller = RemoteRuntimeInstaller(ssh: sshManager)
@@ -418,26 +442,34 @@ final class AppModel {
         // Without this first-run authorization request, run-completion
         // notifications are silently dropped in the bundled .app forever.
         if requestNotificationAuthorization { Notifier.requestAuthIfPossible() }
-        if let raw = UserDefaults.standard.string(forKey: "claudexor.appearance"),
+        if loadPersistedState { restore() }
+    }
+
+    /// Launch restore. It assigns through the `didSet` writers, as the app
+    /// always has: the restored appearance, project and recents are saved
+    /// again, and an applied `CLAUDEXOR_DEBUG_APPEARANCE` or
+    /// `CLAUDEXOR_PROJECT_ROOT` value becomes the saved one.
+    private func restore() {
+        if let raw = persistence.preferences?.load("claudexor.appearance") as? String,
            let saved = AppearanceMode(rawValue: raw) {
             appearance = saved
         }
-        // Dev/QA only: force an appearance for deterministic screenshots.
-        switch ProcessInfo.processInfo.environment["CLAUDEXOR_DEBUG_APPEARANCE"] {
+        switch persistence.environment["CLAUDEXOR_DEBUG_APPEARANCE"] {
         case "light": appearance = .light
         case "dark": appearance = .dark
         default: break
         }
-        projectRoot = UserDefaults.standard.string(forKey: "claudexor.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
-        recentProjects = UserDefaults.standard.stringArray(forKey: "claudexor.recentProjects") ?? []
-        remoteConnections = ((try? RemoteConnectionStore.applicationSupport().load()) ?? [])
+        projectRoot = persistence.preferences?.load("claudexor.projectRoot") as? String
+            ?? persistence.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
+        recentProjects = persistence.preferences?.load("claudexor.recentProjects") as? [String] ?? []
+        remoteConnections = ((try? persistence.remoteConnections?().load()) ?? [])
             .map { stored in
                 var value = stored
                 value.status = .offline
                 return value
             }
-        remoteThreadCache = (try? RemoteThreadCacheStore.applicationSupport().load()) ?? []
-        sshHostScan = SSHHostScanState.scan()
+        remoteThreadCache = (try? persistence.remoteThreadCache?().load()) ?? []
+        if persistence.scansSSHConfig { sshHostScan = SSHHostScanState.scan() }
     }
 
     /// Single-flight + coalescing runs-list refresh (QA-052), mirroring the
@@ -493,7 +525,10 @@ final class AppModel {
                     summary: summary,
                     existing: existingById[summary.runId] ?? summary.jobId.flatMap { existingById[$0] })
             }
-            let threadParents = Set(selectedThreadDetail?.turns.compactMap(\.runId) ?? [])
+            // The family of the selection current at this response, never one
+            // captured before it; remote run ids name another engine's runs.
+            let selected = selectedHistory?.locationID == .local ? selectedHistory : nil
+            let threadParents = Set(selected?.rows.compactMap(\.runId) ?? [])
             liveTasks = Self.preservingSelectedThreadFamily(
                 refreshed: refreshed,
                 existing: existingTasks,
@@ -794,6 +829,7 @@ final class AppModel {
     /// The thread the conversation is currently showing (detail preferred — it is
     /// the freshest copy after a PATCH/turn — falling back to the list summary).
     var currentThread: ThreadSummary? {
+        if let header = selectedHistory?.header { return header.thread.summary }
         if let d = selectedThreadDetail { return d.thread }
         if let id = selectedThreadId {
             if selectedExecutionLocation == .local {
@@ -810,61 +846,13 @@ final class AppModel {
     /// else the list summary). Used by thread-scoped spec actions so they resolve
     /// the owning thread's repo, not whatever is selected when the await resolves.
     func threadRepoRoot(_ tid: String) -> String? {
-        if tid == selectedThreadId, let d = selectedThreadDetail { return d.thread.repoRoot }
+        if tid == selectedThreadId { return currentThread?.repoRoot }
         if selectedExecutionLocation == .local {
             return threads.first { $0.id == tid }?.repoRoot
         }
         return remoteThreadCache.first {
             $0.locationID == selectedExecutionLocation && $0.thread.id == tid
         }?.thread.repoRoot
-    }
-
-    /// The selected thread's HEAD turn runId — the CANCEL target. Present as soon
-    /// as the head turn binds a runId, EVEN BEFORE its live `TaskRun` row hydrates
-    /// (so Stop is actionable in that window). nil only during the 202 pre-bind
-    /// window, where there is nothing to cancel yet.
-    var selectedHeadRunId: String? {
-        // Prefer the loaded detail's head turn runId; during the detail-load window
-        // (detail not yet this thread) fall back to the thread summary's headRunId so
-        // Stop stays actionable for a thread you just selected while it's still live.
-        if selectedThreadDetail?.thread.id == selectedThreadId,
-           let runId = selectedThreadDetail?.turns.last?.runId {
-            return runId
-        }
-        guard let selectedThreadId else { return nil }
-        return threadSummary(selectedThreadId, at: selectedExecutionLocation)?.headRunId
-    }
-
-    /// The composer Send/Stop affordance for the head turn, resolved by the pure
-    /// Kit core (`resolveComposerTurnState`) so every window is unit-tested. See
-    /// `ComposerTurnState` for the precedence; the inputs are:
-    ///  - headRunId: the cancel target (nil = 202 pre-bind window).
-    ///  - hydratedRowActive: the live row's `isActive` once it has merged into
-    ///    `liveTasks` (authoritative — reflects cancel/completion); nil otherwise.
-    ///  - embeddedStateActive: the embedded run-card state (fallback while no live
-    ///    row has hydrated — covers the 202 and bound-but-not-hydrated windows).
-    var composerTurnState: ComposerTurnState {
-        // Trust the loaded detail ONLY when it actually belongs to the selected
-        // thread. openThread sets selectedThreadId BEFORE the detail arrives, so
-        // during that load window selectedThreadDetail is still the PREVIOUS thread's
-        // (or nil) — using it would judge the wrong thread. `.idle` here makes the
-        // composer's busy-gate fall back to the thread-summary head run (isThreadBusy).
-        guard selectedThreadDetail?.thread.id == selectedThreadId,
-              let last = selectedThreadDetail?.turns.last else { return .idle }
-        let headRunId = last.runId
-        // hydratedRowActive is authoritative when known: a run WE cancelled is
-        // inactive even before its (cancelled) live row hydrates — otherwise the
-        // composer would stay on Stop after a successful cancel in the not-yet-
-        // hydrated window (the embedded card still says "running").
-        let hydratedRowActive: Bool? = headRunId.flatMap { id in
-            wasRunCancelled(id, at: selectedExecutionLocation)
-                ? false
-                : task(id, at: selectedExecutionLocation)?.phase.isActive
-        }
-        let embeddedStateActive = last.run.map { RunPhase(api: $0.state).isActive } ?? false
-        return resolveComposerTurnState(headRunId: headRunId,
-                                        hydratedRowActive: hydratedRowActive,
-                                        embeddedStateActive: embeddedStateActive)
     }
 
     /// Is a specific thread too busy to accept a new turn? A submit in flight blocks
@@ -882,7 +870,7 @@ final class AppModel {
         // previous thread's, so fall through to the summary head run below.
         if locationID == selectedExecutionLocation,
            id == selectedThreadId,
-           selectedThreadDetail?.thread.id == id {
+           selectedHistory?.header?.thread.id == id {
             return composerTurnState != .idle
         }
         // Non-selected target, OR the selected thread whose detail hasn't loaded yet:
@@ -1040,11 +1028,12 @@ final class AppModel {
             }
             remoteThreadCache.append(RemoteThreadCacheEntry(
                 locationID: locationID, thread: updated, syncedAt: .now))
-            try? RemoteThreadCacheStore.applicationSupport().save(remoteThreadCache)
+            persistRemoteThreadCache()
         }
         if selectedExecutionLocation == locationID,
            selectedThreadId == updated.id
         {
+            selectedHistory?.acknowledgeMetadata(updated)
             threadStatus = nil
             if let detail = selectedThreadDetail {
                 selectedThreadDetail = ThreadDetailResponse(
@@ -1155,7 +1144,7 @@ final class AppModel {
                 }
                 remoteThreadCache.append(RemoteThreadCacheEntry(
                     locationID: locationID, thread: thread, syncedAt: .now))
-                try? RemoteThreadCacheStore.applicationSupport().save(remoteThreadCache)
+                persistRemoteThreadCache()
                 if let projectList = try? await requestClient.listProjects(),
                    isCurrentGateway(requestClient, at: locationID) {
                     remoteProjects[locationID] = projectList.projects
@@ -1452,7 +1441,9 @@ final class AppModel {
         }
         guard isCurrentGateway(requestClient, at: locationID) else { return true }
         if selectedExecutionLocation == locationID, selectedThreadId == threadId {
-            await refreshOpenThread(locationID: locationID, id: threadId)
+            if selectedHistory == nil { await openThread(locationID: locationID, id: threadId) }
+            await selectedHistory?.jump()
+            invalidateWorkspaceHistory()
         }
         guard isCurrentGateway(requestClient, at: locationID) else { return true }
         if case .started(let info) = result {

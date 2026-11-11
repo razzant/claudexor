@@ -11,7 +11,7 @@ const tempRoots: string[] = [];
 
 afterEach(() => {
   for (const path of tempRoots.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
   it("keeps the portable skill aligned with the real MCP and generated-skill safety surface", async () => {
@@ -53,8 +53,83 @@ describe("portable Agent Skill, Copilot plugin, and MCP distribution", () => {
         join(home, ".codex", "plugins", "claudexor", "skills", "claudexor", "SKILL.md"),
         "utf8",
       );
+      for (const name of [
+        "claudexor_run_wait",
+        "claudexor_runs_wait",
+        "claudexor_task_group_runs",
+        "claudexor_run_event_read",
+        "claudexor_run_message",
+        "claudexor_run_continue",
+        "claudexor_thread_history",
+        "claudexor_thread_prompt",
+        "claudexor_store_identity",
+        "claudexor_upload_import",
+        "claudexor_upload_create",
+        "claudexor_upload_import_local",
+        "claudexor_upload_status",
+        "claudexor_upload_finalize",
+        "claudexor_upload_cancel",
+        "claudexor_next_message",
+        "claudexor_next_message_read",
+      ])
+        expect(generated, `generated skill omits ${name}`).toContain(`\`${name}\``);
+      // Independent API-reference literals shared by the shipped and generated
+      // skills. Keep the old safety and host snapshots intact.
+      for (const reference of [
+        "`taskGroupId`",
+        "`--task-group-id`",
+        "`storeId`",
+        "{taskGroupId, expectedStoreId?, limit?, state?, cursor?}",
+        "1..200",
+        "2048 characters",
+        "131072 UTF-8 bytes",
+        "`nextCursor`",
+        "`current_served_generations`",
+        "`retained_only`",
+        "Missing membership grants no resubmission authority.",
+        "Exact Retry and a decision",
+        "Thread turns, Delegate tools and ACP session settings",
+        "With only group/store saved, recover retained",
+        "`problems` response keeps healthy summaries",
+        "`not_found` against store/receipts/group",
+        "`snapshot_unavailable` with bounded backoff",
+        "`not_observed` for",
+        "MCP-server host",
+        "`{idempotencyKey,request:{kind,mime,name,sizeBytes}}`",
+        "`{uploadId,path}`",
+        "`{uploadId,idempotencyKey,request:{expectedSha256}}`",
+        "`uploadId`",
+        "`expectedSha256`",
+        "`attachments: [{resourceId}]`",
+        "`claudexor_run_continue`",
+        "Omission adds no new refs; `[]` is explicit empty.",
+        "`{expectedStoreId,path,idempotencyKey}`",
+        "never a later store answer.",
+        "A continuation inherits no attachments:",
+        "Never auto-cancel an unknown finalize outcome.",
+        "replay the original finalize key/body even after status 404",
+        "Model-purpose resources are not ordinary attachments.",
+        "plain text, Markdown, JSON, PDF and DOCX",
+        "no built-in PDF/DOCX parsing or OCR promise",
+        "stable keys and exact bodies",
+        'action:"create"',
+        'action:"replace"',
+        'action:"clear"',
+        "expectedRevision",
+        "captures controls once",
+        "complete replacement resource-ref set",
+        "originally applied revision",
+        "addressed bounded",
+        "terminal predecessor does not resolve the draft",
+        "HTTP429/willRetry",
+        "Held edits do not rearm",
+        "Delegate/belt callers",
+      ]) {
+        expect(generated).toContain(reference);
+        expect(portable).toContain(reference);
+      }
       for (const safety of [
-        "NEVER paste live credentials into prompts",
+        "Credentials Claudexor itself uses belong in",
         "NEVER auto-answer `claudexor decision`",
       ]) {
         expect(generated).toContain(safety);

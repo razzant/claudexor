@@ -8,6 +8,7 @@ import {
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { dominantHarnessFailureCategory } from "./harnessFailure.js";
+import { completionVendorFailure } from "./transientClassify.js";
 import type { TryFacts } from "./inrun-continuity-types.js";
 
 /** The admission gate's callback, fired once a send is admitted, right before
@@ -18,8 +19,11 @@ interface OpenTry {
   spec: HarnessRunSpec;
   tryIndex: number;
   error: string | null;
+  lastError: string | null;
   at: string | null;
   foreign: boolean;
+  /** #414: the vendor's own failure this try's completion carried. */
+  vendor?: VendorFailureEvidence | null;
   /** Set by the gate's own callback once this try's send was admitted. */
   dispatched?: true;
   gate: unknown;
@@ -51,7 +55,16 @@ export class PoolAttemptEvidence {
 
   begin(spec: HarnessRunSpec, tryIndex: number): void {
     const gate = spec.extra[DISPATCH];
-    const open: OpenTry = { spec, tryIndex, error: null, at: null, foreign: false, gate };
+    const open: OpenTry = {
+      spec,
+      tryIndex,
+      error: null,
+      lastError: null,
+      at: null,
+      vendor: null,
+      foreign: false,
+      gate,
+    };
     this.open = open;
     spec.extra[DISPATCH] = () => {
       open.dispatched = true;
@@ -65,10 +78,13 @@ export class PoolAttemptEvidence {
     const bound = open.spec.credential_profile?.profile_id ?? null;
     if (event.credential_profile_id !== undefined && event.credential_profile_id !== bound)
       open.foreign = true;
+    if (event.type === "error") open.lastError = event.error ?? event.text ?? open.lastError;
     if (event.type === "error" && open.error === null) {
       open.error = event.error ?? event.text ?? null;
       open.at = event.ts;
     }
+    const vendor = completionVendorFailure(event);
+    if (vendor) open.vendor = vendor;
   }
 
   settle(
@@ -91,7 +107,7 @@ export class PoolAttemptEvidence {
     if (open.foreign || !open.dispatched || !facts.harnessErrored) return;
     if (facts.aborted || facts.budgetStopped || facts.requestRefused) return;
     const profile = open.spec.credential_profile ?? null;
-    const vendor = [...facts.newTransients].reverse().find((t) => t.vendorFailure)?.vendorFailure;
+    const vendor = open.vendor;
     this.rows.push({
       harnessId: this.harnessId,
       profileId: profile?.profile_id ?? null,
@@ -109,6 +125,12 @@ export class PoolAttemptEvidence {
       error: redactSecrets(
         open.error ?? facts.originalError ?? "the try ended in an error without a message",
       ),
+      lastVendorError: lastVendorSentence(
+        vendor?.message ??
+          open.lastError ??
+          facts.originalError ??
+          "the try ended in an error without a message",
+      ),
       vendorFailure: vendor ? redactVendorFailure(vendor) : null,
     });
   }
@@ -118,12 +140,23 @@ export class PoolAttemptEvidence {
   }
 }
 
+/** Preserve the vendor's last diagnostic line, without interpreting its prose. */
+export function lastVendorSentence(message: string): string {
+  return (
+    redactSecrets(message)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? ""
+  ).slice(0, 1000);
+}
+
 function isoOr(value: string | null, now: () => Date): string {
   const at = value === null ? Number.NaN : Date.parse(value);
   return new Date(Number.isFinite(at) ? at : now().getTime()).toISOString();
 }
 
-/** Vendor text was redacted at event ingress; redact again like safeMessage (INV-062). */
+/** Vendor failure text is a diagnostic derivative: masked like safeMessage (INV-146). */
 export function redactVendorFailure(vendor: VendorFailureEvidence): VendorFailureEvidence {
   return {
     code: vendor.code === null ? null : redactSecrets(vendor.code),
@@ -157,7 +190,9 @@ export function terminalPoolAttempts(
  * The ONE human rendering of a pool failure, shared by every failure terminal
  * (failure.yaml `safeMessage`, `run.failed` error, summary.md and the returned
  * summary): the terminal's own message, then each failed try with its account
- * and its own error text. The structured list rides beside it unchanged.
+ * and its own error text. The structured list rides beside it unchanged. Only
+ * the failure record may then name retained output, after this text's first
+ * line (`namingRetainedOutput`); the other three keep it as is.
  */
 export function withPoolAttempts(message: string, attempts: readonly PoolAttemptFailure[]): string {
   if (attempts.length === 0) return message;
@@ -166,7 +201,11 @@ export function withPoolAttempts(message: string, attempts: readonly PoolAttempt
       a.profileDisplayName && a.profileDisplayName !== a.profileId
         ? ` (${a.profileDisplayName})`
         : "";
-    return `- ${a.harnessId}/${a.profileId ?? "default"}${label} · ${a.requestedModel ?? "default model"} · ${a.attemptId} try ${a.tryIndex + 1} · ${a.phase.replace("_", " ")} · ${a.category}: ${a.error}`;
+    const diagnostic =
+      a.lastVendorError && !a.error.includes(a.lastVendorError)
+        ? `${a.error}\n  Last vendor diagnostic: ${a.lastVendorError}`
+        : a.error;
+    return `- ${a.harnessId}/${a.profileId ?? "default"}${label} · ${a.requestedModel ?? "default model"} · ${a.attemptId} try ${a.tryIndex + 1} · ${a.phase.replace("_", " ")} · ${a.category}: ${diagnostic}`;
   });
   return `${message}\n\nAccount attempts:\n${lines.join("\n")}`;
 }

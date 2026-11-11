@@ -1,0 +1,162 @@
+{
+  "$ref": "#/definitions/TaskGroupRunsResult",
+  "definitions": {
+    "TaskGroupRunsResult": {
+      "type": "object",
+      "properties": {
+        "taskGroupId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Caller-generated UUID saved before launching the first member. Each job still needs its own idempotency key; the group grants no execution authority."
+        },
+        "storeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visibility": {
+          "type": "string",
+          "const": "current_served_generations"
+        },
+        "retention": {
+          "type": "string",
+          "const": "retained_only"
+        },
+        "viewToken": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "jobId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "runId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observation": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "queued",
+                          "running",
+                          "succeeded",
+                          "failed",
+                          "cancelled",
+                          "interrupted"
+                        ],
+                        "description": "Control-plane run state = the run LIFECYCLE (D8): queued/running while live, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks/review/delivery) is orthogonal — see outcomeFacts."
+                      },
+                      "pending": {
+                        "type": "boolean"
+                      },
+                      "token": {
+                        "type": "string",
+                        "minLength": 43,
+                        "maxLength": 43,
+                        "pattern": "^[A-Za-z0-9_-]{43}$"
+                      },
+                      "problem": {
+                        "type": "null"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "pending",
+                      "token",
+                      "problem"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "null"
+                      },
+                      "pending": {
+                        "type": "null"
+                      },
+                      "token": {
+                        "type": "null"
+                      },
+                      "problem": {
+                        "type": "string",
+                        "enum": [
+                          "not_found",
+                          "snapshot_unavailable",
+                          "not_observed"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "pending",
+                      "token",
+                      "problem"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": [
+              "jobId",
+              "runId",
+              "createdAt",
+              "observation"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 200
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "taskGroupId",
+        "storeId",
+        "visibility",
+        "retention",
+        "viewToken",
+        "members",
+        "hasMore",
+        "nextCursor"
+      ],
+      "additionalProperties": false,
+      "description": "One retained-only page in current served generations, at most 131072 UTF-8 bytes of logical JSON; absence is not historical completeness or launch authority."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1,168 +1,106 @@
 import { z } from "zod/v3";
 import { ControlProblem } from "./problem.js";
 import { IsoTimestamp } from "./primitives.js";
+import { HarnessProgramCommand, SelectedHarnessProgram } from "./harness-program.js";
 
-/** One exact vendor registry version (no range, tag or `v` prefix). */
 export const HarnessVendorVersion = z
   .string()
   .regex(
     /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
   )
-  .describe("One exact vendor version.");
+  .describe("One exact vendor version, never a range or a release fixture stamp.");
 
 export const HarnessMaintenanceTarget = z
-  .discriminatedUnion("kind", [
-    z.object({ kind: z.literal("latest") }).strict(),
-    z.object({ kind: z.literal("version"), version: HarnessVendorVersion }).strict(),
-    z.object({ kind: z.literal("previous") }).strict(),
-    z.object({ kind: z.literal("baseline") }).strict(),
-  ])
+  .discriminatedUnion(
+    "kind",
+    [
+      z.object({ kind: z.literal("latest") }).strict(),
+      z.object({ kind: z.literal("version"), version: HarnessVendorVersion }).strict(),
+    ],
+    {
+      errorMap: () => ({
+        message:
+          'Use target {kind:"latest"} or {kind:"version",version:"<exact>"}; previous and baseline are retired.',
+      }),
+    },
+  )
   .describe(
-    "latest = the vendor's newest release; version = one exact version (up or down); previous = the proved version recorded before an earlier maintenance mutation; baseline = this release's tested pin.",
+    "latest runs the selected program's updater, or installs when missing; version uses the adapter's exact-version command. Retired previous/baseline targets must be sent as version with an explicit version.",
   );
 export type HarnessMaintenanceTarget = z.infer<typeof HarnessMaintenanceTarget>;
+const Target = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("latest"), version: z.null() }).strict(),
+  z.object({ kind: z.literal("version"), version: HarnessVendorVersion }).strict(),
+]);
+const Requester = z.object({ source: z.string(), requestId: z.string().nullable() }).strict();
 
-const TargetKind = z.enum(["latest", "version", "previous", "baseline"]);
-const SelectionKind = z
-  .enum(["managed", "override", "path", "missing"])
-  .describe(
-    "managed = Claudexor's managed npm copy; override = the explicit CLAUDEXOR_<HARNESS>_BIN program; path = another copy found on the harness PATH; missing = nothing launchable.",
-  );
-const Mechanism = z
-  .enum(["managed_npm", "vendor_updater", "vendor_script"])
-  .describe(
-    "managed_npm installs one exact registry version in place; vendor_updater runs the vendor's own `update` on its canonical launcher (latest only); vendor_script has no engine-run update.",
-  );
+export const HarnessNewestObservation = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("not_read"), source: z.string().nullable() }).strict(),
+  z
+    .object({
+      status: z.literal("available"),
+      source: z.string(),
+      version: z.string(),
+      observedAt: IsoTimestamp,
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("unavailable"),
+      source: z.string().nullable(),
+      observedAt: IsoTimestamp,
+      problem: ControlProblem,
+    })
+    .strict(),
+]);
+export type HarnessNewestObservation = z.infer<typeof HarnessNewestObservation>;
 
-export const HarnessMaintenanceEntry = z
+export const HarnessMaintenanceCommand = z
   .object({
-    harness: z.string(),
-    mechanism: Mechanism,
-    maintainable: z.boolean().describe("Whether the engine can run an operation for it now."),
-    canCheckLatest: z
-      .boolean()
-      .describe(
-        "Whether checkLatest can observe the newest release for this mechanism (npm registry); false for vendor updaters, whose Update still targets latest.",
-      ),
-    targets: z
-      .array(TargetKind)
-      .describe("Targets an operation may name; empty when not maintainable."),
-    remedy: z.string().nullable().describe("Manual remedy when not maintainable."),
-    selection: z
-      .object({
-        kind: SelectionKind,
-        binary: z.string().nullable().describe("The program the harness resolves and runs."),
-        version: z
-          .string()
-          .nullable()
-          .describe("That selected program's own --version answer; never the managed copy's."),
-        overrideEnv: z.string().nullable(),
-      })
-      .strict(),
-    installed: z
-      .object({
-        version: z.string().nullable().describe("The managed npm copy's package version."),
-        binary: z.string().nullable(),
-        proved: z.boolean().describe("The managed launcher reported exactly that version."),
-      })
-      .strict(),
-    releaseTested: z
-      .object({
-        version: z.string().nullable(),
-        verification: z.enum(["release_verified", "deterministic_only"]).nullable(),
-      })
-      .strict()
-      .describe("This release's tested pin: a separate fact, never the selected target."),
-    available: z
-      .object({ version: z.string(), observedAt: IsoTimestamp })
-      .strict()
-      .nullable()
-      .describe("Last observed newest release; null = not checked (not 'up to date')."),
-    availableProblem: ControlProblem.nullable(),
-    previous: z
-      .object({ version: z.string(), operationId: z.string() })
-      .strict()
-      .nullable()
-      .describe("Proved earlier version from retained operation evidence; null when unknown."),
-    operation: z
-      .object({
-        id: z.string(),
-        state: z.string(),
-        phase: z.string(),
-        targetVersion: z.string().nullable(),
-        finishedAt: IsoTimestamp.nullable(),
-      })
+    binary: z.string(),
+    args: z.array(z.string()),
+    env: z.record(z.string()),
+    script: z
+      .object({ url: z.string(), size: z.number().int().positive(), sha256: z.string() })
       .strict()
       .nullable(),
-    observedAt: IsoTimestamp,
   })
   .strict();
-export type HarnessMaintenanceEntry = z.infer<typeof HarnessMaintenanceEntry>;
+export type HarnessMaintenanceCommand = z.infer<typeof HarnessMaintenanceCommand>;
 
-export const ControlHarnessMaintenanceInventory = z
-  .object({ observedAt: IsoTimestamp, harnesses: z.array(HarnessMaintenanceEntry) })
-  .strict()
-  .describe("Response for GET /v2/maintenance/harnesses.");
-export type ControlHarnessMaintenanceInventory = z.infer<typeof ControlHarnessMaintenanceInventory>;
-
-export const ControlHarnessMaintenanceCreateRequest = z
-  .object({ harness: z.string().min(1).max(64), target: HarnessMaintenanceTarget })
-  .strict();
-export type ControlHarnessMaintenanceCreateRequest = z.infer<
-  typeof ControlHarnessMaintenanceCreateRequest
->;
-
-/** Durable command params; `target.version` is bound at acceptance for
- * previous/baseline/version and stays null for latest until execution. */
-export const HarnessMaintenanceParams = z
-  .object({
-    kind: z.literal("harness_maintenance"),
-    harness: z.string().min(1).max(64),
-    target: z.object({ kind: TargetKind, version: HarnessVendorVersion.nullable() }).strict(),
-  })
-  .strict();
-export type HarnessMaintenanceParams = z.infer<typeof HarnessMaintenanceParams>;
-
-export function isHarnessMaintenanceOperation(params: unknown): boolean {
-  return (
-    typeof params === "object" &&
-    params !== null &&
-    "kind" in params &&
-    params.kind === "harness_maintenance"
-  );
-}
-
-const Before = z
-  .object({
-    version: z.string().nullable(),
-    binary: z.string().nullable(),
-    selection: SelectionKind,
-    proved: z.boolean(),
-  })
-  .strict();
-const After = z
-  .object({
-    version: z.string().nullable(),
-    binary: z.string().nullable(),
-    selected: z.boolean().describe("The harness now resolves this program."),
-    proved: z.boolean(),
-  })
-  .strict();
-
-/** Evidence kept in the generic command record (JobRecord.result). */
+/** Kept in the existing command record, including partial effects on cancellation. */
 export const HarnessMaintenanceEvidence = z
   .object({
     phase: z.enum(["accepted", "preparing", "installing", "settled"]),
-    mechanism: Mechanism.nullable(),
-    target: z.object({ kind: TargetKind, version: z.string().nullable() }).strict(),
-    before: Before.nullable(),
-    after: After.nullable(),
-    mutation: z
-      .enum(["none", "applied", "unknown"])
-      .describe("Whether installed bytes could have changed."),
+    target: Target,
+    requester: Requester,
+    installationHome: z.string().nullable(),
+    commands: z.array(HarnessMaintenanceCommand),
+    profileCleanup: z
+      .object({ plannedPaths: z.array(z.string()), removedPaths: z.array(z.string()) })
+      .strict()
+      .optional(),
+    before: SelectedHarnessProgram.nullable(),
+    after: SelectedHarnessProgram.nullable(),
+    elsewhere: z
+      .object({ before: SelectedHarnessProgram, after: SelectedHarnessProgram })
+      .strict()
+      .nullable(),
+    activeRunsAtStart: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .describe("A fact, never permission to proceed; null when the CLI has no daemon run census."),
+    exitCode: z.number().int().nullable(),
+    outcome: z.enum(["changed", "not_changed", "changed_elsewhere", "unknown"]),
+    mutation: z.enum(["none", "applied", "unknown"]),
     termination: z.enum(["not_applicable", "confirmed", "unconfirmed"]),
     limitations: z.array(z.string()),
-    progress: z.array(z.string()).max(40),
+    progress: z
+      .array(z.string())
+      .max(40)
+      .describe("Bounded, redacted vendor diagnostics, including advice when nothing changed."),
     problem: ControlProblem.nullable(),
   })
   .strict();
@@ -177,5 +115,62 @@ export const ControlHarnessMaintenanceOperation = HarnessMaintenanceEvidence.ext
   finishedAt: IsoTimestamp.nullable(),
 })
   .strict()
-  .describe("A durable harness maintenance operation; 202 on create is a handle, not success.");
+  .describe("A durable maintenance operation; acceptance is a handle, not completion.");
 export type ControlHarnessMaintenanceOperation = z.infer<typeof ControlHarnessMaintenanceOperation>;
+
+const Action = z
+  .object({
+    available: z.boolean(),
+    reason: z.string().nullable(),
+    /** Display only. {version} is user input; {installedProgram} is resolved after installation. */
+    commands: z.array(HarnessProgramCommand),
+  })
+  .strict();
+export const HarnessMaintenanceEntry = z
+  .object({
+    harness: z.string(),
+    selection: SelectedHarnessProgram,
+    newest: HarnessNewestObservation,
+    updateAvailable: z.enum(["yes", "no", "cannot_tell"]),
+    releaseNotesUrl: z.string().url().nullable(),
+    actions: z.object({ install: Action, update: Action, exactVersion: Action }).strict(),
+    operation: ControlHarnessMaintenanceOperation.nullable(),
+    observedAt: IsoTimestamp,
+  })
+  .strict();
+export type HarnessMaintenanceEntry = z.infer<typeof HarnessMaintenanceEntry>;
+export const ControlHarnessMaintenanceInventory = z
+  .object({
+    observedAt: IsoTimestamp,
+    harnesses: z.array(HarnessMaintenanceEntry),
+  })
+  .strict();
+export type ControlHarnessMaintenanceInventory = z.infer<typeof ControlHarnessMaintenanceInventory>;
+
+export const ControlHarnessMaintenanceCreateRequest = z
+  .object({
+    harness: z.string().min(1).max(64),
+    target: HarnessMaintenanceTarget,
+  })
+  .strict();
+export type ControlHarnessMaintenanceCreateRequest = z.infer<
+  typeof ControlHarnessMaintenanceCreateRequest
+>;
+export const HarnessMaintenanceParams = z
+  .object({
+    kind: z.literal("harness_maintenance"),
+    harness: z.string().min(1).max(64),
+    target: Target,
+    requester: Requester,
+  })
+  .strict();
+export type HarnessMaintenanceParams = z.infer<typeof HarnessMaintenanceParams>;
+
+export function isHarnessMaintenanceOperation(params: unknown): boolean {
+  return (
+    typeof params === "object" &&
+    params !== null &&
+    "kind" in params &&
+    params.kind === "harness_maintenance"
+  );
+}

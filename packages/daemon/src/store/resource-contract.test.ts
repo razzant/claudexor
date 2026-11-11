@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ResourceStorePort } from "../store-contracts.js";
 import { ResourceStore as FrozenResourceStore } from "./test-support/fixtures/legacy/daemon/resource-store.js";
 import {
@@ -15,6 +15,7 @@ import { readUploadRow, putResourceInTx, putUploadInTx, readResourceRow } from "
 import type { SqlWriteContext } from "./mutation.js";
 import { lookupIdempotency } from "./idempotency.js";
 import { uploadKeyDigest } from "./upload-binding-retention.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -28,6 +29,27 @@ vi.mock("node:fs", async (original) => {
 });
 
 const ids = vi.hoisted(() => ({ counters: new Map<string, number>() }));
+const writeFault = vi.hoisted(() => ({ enospcSuffix: "", closes: 0 }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (writeFault.enospcSuffix && String(args[0]).endsWith(writeFault.enospcSuffix)) {
+        const close = handle.close.bind(handle);
+        handle.write = (async () => {
+          throw Object.assign(new Error("full"), { code: "ENOSPC" });
+        }) as typeof handle.write;
+        handle.close = (async () => {
+          writeFault.closes += 1;
+          return close();
+        }) as typeof handle.close;
+      }
+      return handle;
+    },
+  };
+});
 vi.mock("@claudexor/util", async (original) => ({
   ...(await original<object>()),
   newId: (prefix: string) => {
@@ -56,15 +78,21 @@ async function fixture() {
   fixtures.push(f);
   return f;
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.mocked(fs.readdirSync).mockReset();
   vi.mocked(fs.writeSync).mockReset();
   vi.mocked(fs.openSync).mockReset();
   vi.mocked(fs.closeSync).mockReset();
+  writeFault.enospcSuffix = "";
+  writeFault.closes = 0;
   for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) fs.rmSync(path, { recursive: true, force: true });
+  return () => {
+    for (const path of ownedRoots) fs.rmSync(path, { recursive: true, force: true });
+  };
 });
 function failure(fn: () => unknown) {
   try {
@@ -121,15 +149,13 @@ describe("SQL ResourceStore contract", () => {
     );
     expect(f.store.prepare("SELECT 1 FROM upload").get()).toBeUndefined();
     const initial = f.resources.create(uploadRequest, "stream-full");
-    vi.mocked(fs.writeSync).mockImplementationOnce(() => {
-      throw Object.assign(new Error("full"), { code: "ENOSPC" });
-    });
-    const closed = vi.mocked(fs.closeSync).mockClear();
+    writeFault.closes = 0;
+    writeFault.enospcSuffix = `${initial.uploadId}.part`;
     await expect(f.resources.write(initial.uploadId, chunks("test"))).rejects.toMatchObject({
       code: "store_full",
       status: 507,
     });
-    expect(closed).toHaveBeenCalledOnce();
+    expect(writeFault.closes).toBe(1);
     expect(f.resources.status(initial.uploadId)).toMatchObject({
       state: "cancelled",
       receivedBytes: 0,
@@ -256,11 +282,8 @@ describe("SQL ResourceStore contract", () => {
     expect(fs.existsSync(second.blobs.filePath(imageRef.sha256.slice(7)))).toBe(false);
   });
 
-  it("keeps sensitive names/content checks for attachments and rejects short or oversized streams", async () => {
+  it("admits credential-named and credential-shaped attachments exactly; size checks remain (INV-146)", async () => {
     const f = await fixture();
-    expect(() => f.resources.create({ ...uploadRequest, name: ".env" }, "sensitive-name")).toThrow(
-      /sensitive/,
-    );
     const bad = f.resources.create(uploadRequest, "short");
     await expect(f.resources.write(bad.uploadId, chunks("x"))).rejects.toMatchObject({
       code: "upload_size_mismatch",
@@ -271,29 +294,27 @@ describe("SQL ResourceStore contract", () => {
       code: "upload_size_exceeded",
     });
     const text = "OPENAI_API_KEY=sk-proj-" + "a".repeat(70);
-    const secret = f.resources.create(
-      { kind: "file", mime: "text/plain", name: "x.txt", sizeBytes: text.length },
+    const upload = f.resources.create(
+      { kind: "file", mime: "text/plain", name: ".env", sizeBytes: text.length },
       "content",
     );
-    await f.resources.write(secret.uploadId, chunks(text));
-    expect(() => f.resources.finalize(secret.uploadId, undefined, "secret-finalize")).toThrow(
-      /sensitive/,
-    );
-    await f.resources.drainCleanup();
-    expect(f.resources.status(secret.uploadId).state).toBe("cancelled");
-    expect(fs.existsSync(join(f.store.paths.uploads, `${secret.uploadId}.part`))).toBe(false);
+    await f.resources.write(upload.uploadId, chunks(text));
+    const resource = f.resources.finalize(upload.uploadId, undefined, "fixture-finalize");
+    const [attachment] = f.resources.resolve([{ resourceId: resource.resourceId }]);
+    expect(attachment?.name).toBe(".env");
+    expect(fs.readFileSync(attachment!.path, "utf8")).toBe(text);
   });
 
-  it("commits chunk progress, observes cancellation during the stream and closes before protected unlink", async () => {
+  it("answers status during a stream without a per-chunk receipt, then cancels and unlinks", async () => {
     const f = await fixture();
     const initial = f.resources.create(uploadRequest, "progress");
     async function* stream() {
       yield Buffer.from("te");
       expect(f.resources.status(initial.uploadId)).toMatchObject({
         state: "uploading",
-        receivedBytes: 2,
+        receivedBytes: 0,
       });
-      expect(readUploadRow(f.store, initial.uploadId)?.status.receivedBytes).toBe(2);
+      expect(readUploadRow(f.store, initial.uploadId)?.status.receivedBytes).toBe(0);
       expect(f.resources.cancel(initial.uploadId).state).toBe("cancelled");
       expect(fs.existsSync(join(f.store.paths.uploads, `${initial.uploadId}.part`))).toBe(true);
       yield Buffer.from("st");

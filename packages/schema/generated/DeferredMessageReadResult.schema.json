@@ -1,0 +1,437 @@
+{
+  "$ref": "#/definitions/DeferredMessageReadResult",
+  "definitions": {
+    "DeferredMessageReadResult": {
+      "type": "object",
+      "properties": {
+        "draft": {
+          "type": "object",
+          "properties": {
+            "draftId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            "revision": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "waiting",
+                "held",
+                "dispatched",
+                "cleared"
+              ]
+            },
+            "predecessorJobId": {
+              "$ref": "#/definitions/DeferredMessageReadResult/properties/draft/properties/draftId"
+            },
+            "predecessorRunId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReadResult/properties/draft/properties/draftId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Non-empty identifier string."
+            },
+            "predecessorResult": {
+              "type": "string",
+              "description": "Existing addressed run-detail/result path; no duplicate result store."
+            },
+            "hold": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "predecessor_failed",
+                        "predecessor_cancelled",
+                        "predecessor_interrupted",
+                        "predecessor_needs_input",
+                        "predecessor_incomplete",
+                        "predecessor_facts_unavailable",
+                        "predecessor_work_unverified",
+                        "predecessor_checks_failed",
+                        "predecessor_review_blocked",
+                        "predecessor_output_unavailable",
+                        "settlement_unknown",
+                        "stop_requested",
+                        "shutdown",
+                        "restart_requires_controller",
+                        "partition_retired",
+                        "admission_refused"
+                      ]
+                    },
+                    "problem": {
+                      "type": "object",
+                      "properties": {
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable refusal message."
+                        },
+                        "code": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null,
+                          "description": "Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code."
+                        },
+                        "retryable": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
+                        },
+                        "required_actions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 512
+                          },
+                          "maxItems": 16,
+                          "default": [],
+                          "description": "Bounded user actions that may make an exact retry succeed."
+                        },
+                        "context": {
+                          "type": "object",
+                          "additionalProperties": {},
+                          "default": {},
+                          "description": "Bounded typed recovery context; never arbitrary provider or environment output."
+                        }
+                      },
+                      "required": [
+                        "message"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Typed, sanitized problem for a thread turn that could not start."
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+            },
+            "resumed": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "$ref": "#/definitions/DeferredMessageReadResult/properties/draft/properties/hold/anyOf/0/properties/code"
+                    },
+                    "problem": {
+                      "$ref": "#/definitions/DeferredMessageReadResult/properties/draft/properties/hold/anyOf/0/properties/problem"
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ],
+                  "additionalProperties": false,
+                  "description": "The hold the draft was returned from."
+                },
+                "reason": {
+                  "type": "string",
+                  "const": "process_scope_settled",
+                  "description": "A later settlement of the predecessor's run proved its processes gone; the draft was unchanged, not cleared, replaced or stopped."
+                },
+                "at": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "ISO-8601 timestamp string."
+                }
+              },
+              "required": [
+                "from",
+                "reason",
+                "at"
+              ],
+              "additionalProperties": false,
+              "description": "Why this draft left its hold automatically. It then took the existing revision and admission path; any other reason holds it again."
+            },
+            "dispatchedRevision": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReadResult/properties/draft/properties/revision"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "successorJobId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReadResult/properties/draft/properties/draftId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Non-empty identifier string."
+            },
+            "successorRunId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/DeferredMessageReadResult/properties/draft/properties/draftId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Non-empty identifier string."
+            }
+          },
+          "required": [
+            "draftId",
+            "revision",
+            "state",
+            "predecessorJobId",
+            "predecessorRunId",
+            "predecessorResult",
+            "hold",
+            "dispatchedRevision",
+            "successorJobId",
+            "successorRunId"
+          ],
+          "additionalProperties": false,
+          "description": "Compact addressed draft state, with exact predecessor result and successor handles. A terminal predecessor does not imply the draft has resolved."
+        },
+        "promptPreview": {
+          "type": "string"
+        },
+        "promptBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omittedPromptBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "resourceId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Immutable daemon resource id returned by upload finalize."
+              }
+            },
+            "required": [
+              "resourceId"
+            ],
+            "additionalProperties": false,
+            "description": "Reference to an immutable daemon-owned uploaded resource."
+          },
+          "maxItems": 32
+        },
+        "omittedAttachments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "controls": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "capturedAt": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Draft creation; edits never recapture controls."
+                },
+                "inherited": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "description": "Continuation-inherited groups from the predecessor's accepted request (mode, scope, execution, harness and model groups, promptCacheTtl); omitted per-harness models were completed from Settings at creation."
+                },
+                "resolved": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "description": "Create-time controls as captured: explicit draft controls, otherwise ordinary new-run defaults at creation, never the predecessor's value. An omitted access is the project's default access at creation, not the predecessor's."
+                },
+                "settings": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "harnesses": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "default_model": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "default": null,
+                                "description": "Per-harness default model; null = the harness's own default, or no model on a route whose request must name one."
+                              },
+                              "effort": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 32,
+                                    "pattern": "^[a-z0-9]+(?:[_-][a-z0-9]+)*$",
+                                    "description": "Cross-harness reasoning-effort level as a lowercase slug (open vocabulary, mirroring the vendor contract); adapters advertise the levels they accept per model, ordered weakest to strongest by the vendor itself, and a shared normalizer passes advertised levels through, clamps inside the vendor order, places a word the vendor order lacks by the shared preference order (none < minimal < low < medium < high < xhigh < max < ultra) onto an advertised level, and refuses words neither order places."
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "Default reasoning effort for the harness; null = harness default.",
+                                "default": null
+                              },
+                              "max_turns": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "default": null,
+                                "description": "Default max agent turns; null = no limit."
+                              },
+                              "max_rounds": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "default": null,
+                                "description": "Default max convergence rounds; null = engine default."
+                              },
+                              "fallback_model": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "default": null,
+                                "description": "Model to fall back to on typed fallback signals; null = none."
+                              },
+                              "web": {
+                                "type": "string",
+                                "enum": [
+                                  "off",
+                                  "auto",
+                                  "cached",
+                                  "live"
+                                ],
+                                "description": "Default web policy for this harness.",
+                                "default": "auto"
+                              },
+                              "auth_preference": {
+                                "type": "string",
+                                "enum": [
+                                  "subscription",
+                                  "api_key",
+                                  "auto"
+                                ],
+                                "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
+                                "default": "auto"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "Per-harness settings."
+                          }
+                        },
+                        "eligibleHarnesses": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "description": "User-supplied string that must contain visible content, not just whitespace."
+                          }
+                        },
+                        "primaryHarness": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/DeferredMessageReadResult/properties/controls/anyOf/0/properties/settings/anyOf/0/properties/eligibleHarnesses/items"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "User-supplied string that must contain visible content, not just whitespace."
+                        },
+                        "authPreference": {
+                          "$ref": "#/definitions/DeferredMessageReadResult/properties/controls/anyOf/0/properties/settings/anyOf/0/properties/harnesses/additionalProperties/properties/auth_preference"
+                        }
+                      },
+                      "required": [
+                        "harnesses",
+                        "eligibleHarnesses",
+                        "primaryHarness",
+                        "authPreference"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Settings execution preferences captured at creation (per-harness defaults, eligible and primary harness, auth preference), used at dispatch instead of current values."
+                }
+              },
+              "required": [
+                "capturedAt",
+                "inherited",
+                "resolved",
+                "settings"
+              ],
+              "additionalProperties": false,
+              "description": "Frozen effective controls. Dispatch reads tool permissions, account and harness enablement, trust, quota, capabilities, paid-fallback policy and other settings afresh; a refusal holds the draft."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Null after clear."
+        },
+        "detailPath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "draft",
+        "promptPreview",
+        "promptBytes",
+        "omittedPromptBytes",
+        "attachments",
+        "omittedAttachments",
+        "controls",
+        "detailPath"
+      ],
+      "additionalProperties": false,
+      "description": "Bounded editable-content snapshot. Read the exact predecessorResult path (or claudexor_run_result for its job/run handle) for predecessor output; output is never duplicated here. Terminal predecessor observation does not imply draft resolution."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

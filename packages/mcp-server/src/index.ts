@@ -1,12 +1,12 @@
 import { mcpToolFailure } from "./tool-failure.js";
-import { accountResourceTools } from "./account-resource-tools.js";
+import { attachmentRefsSchema } from "./attachment-ref-schema.js";
+import { uploadTools } from "./upload-tools.js";
+import { catalogTools } from "./catalog-tools.js";
 import { runExecutionSchema } from "./run-execution-schema.js";
+import { idempotencyKeySchema } from "./idempotency-key-schema.js";
 import { isAbsolute } from "node:path";
-import agentCapabilityCatalogSchemaRaw from "@claudexor/schema/generated/AgentCapabilityCatalog.schema.json" with { type: "json" };
-import accountsQuerySchemaRaw from "@claudexor/schema/generated/McpAccountsToolResult.schema.json" with { type: "json" };
 import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
 import mcpRunHandleResultSchemaRaw from "@claudexor/schema/generated/McpRunHandleResult.schema.json" with { type: "json" };
-import paidBudgetSchemaRaw from "@claudexor/schema/generated/PaidBudget.schema.json" with { type: "json" };
 import testCommandInvocationSchemaRaw from "@claudexor/schema/generated/TestCommandInvocation.schema.json" with { type: "json" };
 import type { Readable, Writable } from "node:stream";
 import { McpServer as SdkMcpServer, fromJsonSchema } from "@modelcontextprotocol/server";
@@ -16,23 +16,27 @@ import {
   type ServeStdioOptions,
 } from "@modelcontextprotocol/server/stdio";
 import {
-  effortJsonSchema,
-  AccessProfile,
-  ExternalContextPolicy,
   type ModeKind,
-  ProviderFamily,
   runControlApplicability,
   validateOptionalNonEmptyString,
   validateSurfaceRunControls,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 import { journalRecoveryTools } from "./recovery-tools.js";
 import { formatRunResult, structuredRunResult } from "./run-result-format.js";
 import { assertNoPluginArtifactSkew } from "./plugin-skew.js";
-import { accountsTool } from "./accounts-tool.js";
 import { threadTools } from "./thread-tools.js";
+import { runControlTools } from "./run-control-tools.js";
+import { runObservationTools } from "./run-observation-tools.js";
+import { runStatusTool } from "./run-status-tool.js";
 import { inlineJsonSchemaRefs } from "./inline-json-schema-refs.js";
-import { reviewerPanelEntrySchema, processingPreferenceSchema } from "./reviewer-panel-schema.js";
+import { processingPreferenceSchema } from "./reviewer-panel-schema.js";
+import {
+  accessAndLimitProperties,
+  externalContextProperties,
+  reviewProperties,
+  scalarEffortProperty,
+  taskGroupProperties,
+} from "./run-control-properties.js";
 const mcpRunToolResultSchema = inlineJsonSchemaRefs(
   mcpRunToolResultSchemaRaw as Record<string, unknown>,
 );
@@ -40,11 +44,6 @@ const mcpRunHandleResultSchema = inlineJsonSchemaRefs(
   mcpRunHandleResultSchemaRaw as Record<string, unknown>,
 );
 const testCommandInvocationSchema = inlineJsonSchemaRefs(testCommandInvocationSchemaRaw);
-const paidBudgetSchema = inlineJsonSchemaRefs(paidBudgetSchemaRaw);
-const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
-  agentCapabilityCatalogSchemaRaw as Record<string, unknown>,
-);
-const accountsQuerySchema = inlineJsonSchemaRefs(accountsQuerySchemaRaw as Record<string, unknown>);
 const RUN_STRATEGY_PROPERTIES = {
   ask: {
     deepScan: {
@@ -73,7 +72,7 @@ const RUN_STRATEGY_PROPERTIES = {
  */
 
 export interface McpToolContext {
-  /** Host cancellation aborts the underlying run, exactly like CLI Ctrl-C. */
+  /** Host cancellation; each controller defines whether it aborts a run or just its request. */
   signal?: AbortSignal;
 }
 
@@ -206,29 +205,13 @@ function validateToolArguments(tool: McpTool, args: unknown): string | null {
   const runControlError = validateSurfaceRunControls(
     tool.runMode ? { ...obj, mode: tool.runMode } : obj,
   );
-  if (runControlError) return runControlError;
-  return validateNoInlineSecrets(obj, "MCP tool arguments");
-}
-
-const PROVIDER_FAMILIES = ProviderFamily.options;
-
-function validateNoInlineSecrets(value: unknown, context: string): string | null {
-  try {
-    assertNoInlineSecretValues(value, "$", context);
-    return null;
-  } catch (err) {
-    // MCP tool failures are text results (until structured outputs land):
-    // prefix the machine-readable class so hosts can branch on it.
-    const code = errorCode(err);
-    const message = err instanceof Error ? err.message : String(err);
-    return code ? `${code}: ${message}` : message;
-  }
+  return runControlError;
 }
 
 export interface RunnerHooks {
   /** Interactive question surface; resolve with answers or null to decline. */
   onInteraction?: (ctx: any) => Promise<any | null>;
-  /** Cooperative cancellation: host `notifications/cancelled` aborts the run. */
+  /** Cooperative cancellation; live-message controllers abort only their HTTP request. */
   signal?: AbortSignal;
 }
 
@@ -236,19 +219,13 @@ export type RunnerFn = (params: any, hooks?: RunnerHooks) => Promise<unknown>;
 
 /** Default Claudexor MCP tool surface: three canonical modes plus strategy controls. */
 export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
-  const reviewerModelProperties = Object.fromEntries(
-    PROVIDER_FAMILIES.map((family) => [family, { type: "string", minLength: 1 }]),
-  );
-  const reviewerEffortProperties = Object.fromEntries(
-    PROVIDER_FAMILIES.map((family) => [
-      family,
-      effortJsonSchema(`Reviewer effort for the ${family} family.`),
-    ]),
-  );
   const promptSchema = (minN = 1, mode: "ask" | "plan" | "agent" = "agent") => ({
     type: "object",
     additionalProperties: false,
     properties: {
+      idempotencyKey: idempotencyKeySchema,
+      attachments: attachmentRefsSchema,
+      ...taskGroupProperties(),
       prompt: {
         type: "string",
         minLength: 1,
@@ -270,18 +247,9 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         minLength: 1,
         description: "Optional model override for the primary harness.",
       },
-      effort: effortJsonSchema("Optional effort override for the primary harness."),
+      effort: scalarEffortProperty(),
       processingPreference: processingPreferenceSchema,
-      web: {
-        type: "string",
-        enum: ExternalContextPolicy.options,
-        description: "External context policy for this run.",
-      },
-      externalContextPolicy: {
-        type: "string",
-        enum: ExternalContextPolicy.options,
-        description: "Alias of web for control-api parity.",
-      },
+      ...externalContextProperties(),
       n: {
         type: "integer",
         minimum: minN,
@@ -290,54 +258,12 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       ...RUN_STRATEGY_PROPERTIES[mode],
       repoPath: {
         type: "string",
-        description: "Absolute path of the target project. Defaults to the MCP server cwd.",
+        description:
+          "Absolute path of the target project. Defaults to the MCP server cwd; required with idempotencyKey.",
       },
       execution: runExecutionSchema,
-      paidBudget: paidBudgetSchema,
-      credentialProfileId: {
-        type: "string",
-        minLength: 1,
-        pattern: "\\S",
-        description: "Strict credential profile for this run; never falls back to another account.",
-      },
-      access: {
-        type: "string",
-        enum: AccessProfile.options,
-        description: "Optional access profile for this run.",
-      },
-      ...(runControlApplicability({ mode }).reviewerPanel.applicable
-        ? {
-            review: {
-              type: "boolean",
-              description:
-                "Enable internal model review. Ordinary Agent defaults to false; true selects reviewers automatically. An explicit reviewer panel or reviewer overrides also enable review. Best-of and until-clean retain review.",
-            },
-            reviewerPanel: {
-              type: "array",
-              minItems: 1,
-              description:
-                "Enable review with explicit panel entries, preserving order and duplicates; no additional review flag is needed.",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: reviewerPanelEntrySchema,
-                required: ["harness"],
-              },
-            },
-            reviewerModels: {
-              type: "object",
-              additionalProperties: false,
-              properties: reviewerModelProperties,
-              description: "Enable review with per-provider reviewer model overrides.",
-            },
-            reviewerEfforts: {
-              type: "object",
-              additionalProperties: false,
-              properties: reviewerEffortProperties,
-              description: "Enable review with per-provider reviewer effort overrides.",
-            },
-          }
-        : {}),
+      ...accessAndLimitProperties(),
+      ...(runControlApplicability({ mode }).reviewerPanel.applicable ? reviewProperties() : {}),
       ...(runControlApplicability({ mode }).protectedPathApprovals.applicable
         ? {
             protectedPathApprovals: {
@@ -454,43 +380,10 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       },
     ),
     ...threadTools(runner),
-    {
-      name: "claudexor_status",
-      description:
-        "Return doctor-backed Claudexor runtime status: per-harness verdicts with enabled/disabled intents, doctor reasons and checks, and the configured model.",
-      inputSchema: { type: "object", additionalProperties: false, properties: {} },
-      annotations: { readOnlyHint: true },
-      handler: async () => {
-        const result = await runner({ mode: "__status" });
-        return {
-          text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<
-            string,
-            unknown
-          >,
-        };
-      },
-    },
-    {
-      name: "claudexor_capabilities",
-      description:
-        "Return the derived AgentCapabilityCatalog: per-harness live capabilities (doctor-backed), canonical modes, the mutability matrix, run-control keys, CLI verbs, and the run-apply-state vocabulary.",
-      inputSchema: { type: "object", additionalProperties: false, properties: {} },
-      outputSchema: agentCapabilityCatalogSchema,
-      annotations: { readOnlyHint: true },
-      handler: async () => {
-        const result = await runner({ mode: "__capabilities" });
-        return {
-          text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<
-            string,
-            unknown
-          >,
-        };
-      },
-    },
-    accountsTool(runner, accountsQuerySchema),
-    ...accountResourceTools(runner),
+    ...uploadTools(runner),
+    ...runControlTools(runner),
+    ...runObservationTools(runner),
+    ...catalogTools(runner),
     // Read-only daemon projections let hosts recover lost run handles.
     {
       name: "claudexor_runs",
@@ -526,23 +419,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         };
       },
     },
-    {
-      name: "claudexor_run_status",
-      description: "Read the current daemon-acknowledged state of a durable Claudexor run.",
-      inputSchema: runIdSchema,
-      outputSchema: mcpRunHandleResultSchema,
-      annotations: { readOnlyHint: true },
-      handler: async (args) => {
-        const result = await runner({ mode: "__run_status", runId: String(args?.runId ?? "") });
-        return {
-          text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<
-            string,
-            unknown
-          >,
-        };
-      },
-    },
+    runStatusTool(runner, runIdSchema, mcpRunHandleResultSchema),
     {
       name: "claudexor_run_result",
       description:
@@ -564,7 +441,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     {
       name: "claudexor_run_cancel",
       description:
-        "Request cancellation of a daemon-owned run; success is returned only after the control API acknowledges the durable command.",
+        "Request cancellation of a daemon-owned run; success is returned only after the control API acknowledges the durable command. The same call holds the run's next message (claudexor_next_message) that is not accepted yet, also after the run ended; an already accepted successor fails next_message_dispatched with its job handle and keeps running. If that hold cannot be saved, the call fails next_message_hold_failed (retryable) after any cancel was applied; the next message is still not sent, and a retried cancel records the hold.",
       inputSchema: runIdSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
       handler: async (args) => {
@@ -580,7 +457,8 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     },
     {
       name: "claudexor_run_interactions",
-      description: "List daemon-persisted questions that are still awaiting answers for a run.",
+      description:
+        "List the complete daemon-persisted questions still awaiting answers for a run, including bodies claudexor_run_wait omitted; the text content carries the same JSON.",
       inputSchema: runIdSchema,
       annotations: { readOnlyHint: true },
       handler: async (args) => {
@@ -588,30 +466,26 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
           mode: "__run_interactions",
           runId: String(args?.runId ?? ""),
         });
-        return {
-          text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<
-            string,
-            unknown
-          >,
-        };
+        const structured = (result && typeof result === "object" ? result : {}) as Record<
+          string,
+          unknown
+        >;
+        return { text: JSON.stringify(structured), structured };
       },
     },
     {
       name: "claudexor_answer_interaction",
       description:
-        "Answer a daemon-persisted run interaction; success is reported only after the control API acknowledges the journal mutation.",
+        "Answer a daemon-persisted run interaction; success (status delivered) is reported only after the control API acknowledges the journal mutation. Refusals keep their typed status as the failure code: not_found, already_resolved (never proof that this answer landed) or rejected. Answers have no replay key and are not retried.",
       inputSchema: interactionAnswerSchema,
       annotations: { readOnlyHint: false, destructiveHint: false },
       handler: async (args) => {
         const result = await runner({ mode: "__run_answer", ...args });
-        return {
-          text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<
-            string,
-            unknown
-          >,
-        };
+        const structured = (result && typeof result === "object" ? result : {}) as Record<
+          string,
+          unknown
+        >;
+        return { text: JSON.stringify(structured), structured };
       },
     },
     {

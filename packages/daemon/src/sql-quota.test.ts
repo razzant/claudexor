@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/index.js";
 import {
   ControlQuotaResponse,
@@ -17,6 +17,7 @@ import { EngineStore } from "./store/store.js";
 import { createPartition, currentGeneration } from "./store/partitions.js";
 import { insertEventInTx, restoreEventSequenceInTx } from "./store/retention.js";
 import { decodeJournalCursor } from "./store/cursors.js";
+import { afterEachClosed } from "../../cli/src/test-support/after-each-closed.js";
 
 const START = Date.parse("2026-10-10T12:00:00.000Z");
 const at = (delta = 0) => new Date(START + delta).toISOString();
@@ -38,11 +39,13 @@ beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "sql-quota-")));
   time = START;
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   for (const j of journals.splice(0)) j.close();
   for (const store of opened.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 function snapshot(freshness: QuotaFreshness = "fresh"): QuotaSnapshot {

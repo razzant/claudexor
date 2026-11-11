@@ -15,11 +15,14 @@ export interface HarnessStatus {
   available: boolean;
   status: "ok" | "degraded" | "unavailable";
   manifest: HarnessManifest | null;
+  /** Intents an EXPLICIT selection of this harness may run: capability intents
+   * the doctor enables. A degraded harness keeps the intents its doctor still
+   * enables, with its reasons; an unavailable one has none (#133). */
   enabledIntents: Intent[];
-  /** Intents this harness is ACTUALLY routable for right now: enabledIntents
-   * gated by doctor readiness (BIBLE §2 — doctor decides; a degraded or
-   * unauth'd harness routes NOTHING). The server-side availability truth: UI
-   * surfaces read this field instead of re-deriving business logic (R8). */
+  /** Intents the AUTO pool may route here: `enabledIntents` only while the
+   * doctor reports ok, so a degraded harness is never automatically eligible.
+   * Explicit-selection surfaces read `enabledIntents` instead; neither field
+   * is re-derived by clients (R8). */
   routableIntents: Intent[];
   disabledIntents: Intent[];
   checks: ConformanceCheck[];

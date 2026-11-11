@@ -1,5 +1,6 @@
 import { loadConfig } from "@claudexor/config";
 import {
+  accountResourceSourceHarnesses,
   harnessHasDefaultCredentialStore,
   quotaRefreshDemandHarnesses,
   type QuotaSubject,
@@ -10,13 +11,17 @@ import { readAccountsMigrationFile } from "./accounts-unified-migration.js";
 /** The refresh-demand universe for every enabled primary-capable harness:
  * its enabled native credential plus every enabled config-directory profile.
  * Source traits own the harness list, so adding a primary quota source cannot
- * silently miss this subject projection. */
+ * silently miss this subject projection. API-key resource sources refresh only
+ * on request, so their harnesses add no subject and no `no_source` absence. */
 export function quotaSubjectUniverseFromConfig(): QuotaSubject[] {
   const global = loadConfig(noProjectRepoRoot()).global;
   const profiles = global.credential_profiles;
   const subjects: QuotaSubject[] = [];
   const migrated = readAccountsMigrationFile();
-  for (const harness of quotaRefreshDemandHarnesses()) {
+  for (const harness of new Set([
+    ...quotaRefreshDemandHarnesses(),
+    ...accountResourceSourceHarnesses("account"),
+  ])) {
     const settings = global.harnesses[harness];
     if (settings?.enabled === false) continue;
     // agy has no unprofiled default subject (PLAN Л-4): its universe is

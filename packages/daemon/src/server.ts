@@ -1,15 +1,16 @@
-import { rpcProblem } from "./rpc-problem.js";
+import { rpcProblem, storageOnlyFailure } from "./rpc-problem.js";
+import { RunTimeLimits } from "./run-time-limits.js";
+import type { RunTimeLimit } from "./run-time-limit.js";
 import { type Server, type Socket, createServer } from "node:net";
 
 import {
-  ControlRunStartRequest,
   TurnEnqueueProblem,
   type TurnEnqueueProblem as TurnEnqueueProblemValue,
   delegatedParentOf,
-  resolveRunReviewRequested,
   normalizeCancelReasonCode,
   isTerminalLifecycle,
   type CancelReasonCode,
+  type DeferredMessageStopReport,
   type RuntimeConcurrencyCaps,
   type DaemonStoreFacts,
   type ConcurrencyLimit,
@@ -17,29 +18,16 @@ import {
 } from "@claudexor/schema";
 import { daemonHealth, daemonConcurrencyCaps } from "./daemon-health.js";
 import { RpcFollowers } from "./rpc-followers.js";
-import { assertNoInlineSecretValues, newId, nowIso, pathExists } from "@claudexor/util";
-import {
-  commandStoreForId,
-  commandStoreForRequest,
-  type CommandBackend,
-} from "./command-authority.js";
-import {
-  commandAcceptanceReceipt,
-  admitCommandRequest,
-  findAcceptedCommand,
-  publicAcceptedCommand,
-} from "./command-rpc.js";
+import { nowIso, pathExists } from "@claudexor/util";
+import { DeferredMessages, type DeferredStartPreparation } from "./deferred-messages.js";
+import { enqueueStaged } from "./enqueue-command.js";
+import { commandStoreForId, type CommandBackend } from "./command-authority.js";
+import { publicAcceptedCommand } from "./command-rpc.js";
 import { parseCommandListQuery } from "./command-list-select.js";
 import { clearStaleUnixSocketPath, listenOnDaemonEndpoint } from "./daemon-listen.js";
 import { type DelegationAdmissionAuthority } from "./delegation-admission.js";
-import {
-  jobStateFromResult,
-  publicJobRecord,
-  resultReason,
-  resultSummary,
-  type JobRecord,
-} from "./job-record.js";
-import { settleJobError } from "./job-settlement.js";
+import { jobStateFromResult, publicJobRecord, type JobRecord } from "./job-record.js";
+import { settleJobError, settledJobPatch } from "./job-settlement.js";
 import {
   admissionActivity,
   admissionJob,
@@ -61,6 +49,7 @@ export { jobStateFromResult, socketAlive, type JobRecord };
 export interface RunContext {
   jobId: string;
   signal: AbortSignal;
+  registerTimeLimit?: (timer: RunTimeLimit) => void;
   onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
 }
 
@@ -75,6 +64,7 @@ export interface DaemonOptions extends RuntimeReplacementAuthority {
   runtimeConcurrencyCaps?: RuntimeConcurrencyCaps;
   storeFacts?: () => DaemonStoreFacts;
   commands: CommandBackend;
+  deferredStart?: () => DeferredStartPreparation | undefined;
   delegationAuthority?: DelegationAdmissionAuthority;
   maxHistory?: number;
   idempotencyRetentionMs?: number;
@@ -110,9 +100,11 @@ export class DaemonServer {
   private readonly activeJobs = new Map<string, AdmissionJob>();
   private readonly cancelled = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
+  private readonly timeLimits = new RunTimeLimits();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly taskFailures: unknown[] = [];
   private readonly commands: CommandBackend;
+  readonly deferred: DeferredMessages;
   private get active(): number {
     return this.activeJobs.size;
   }
@@ -128,6 +120,13 @@ export class DaemonServer {
   constructor(private readonly opts: DaemonOptions) {
     this.concurrency = daemonConcurrencyCaps(opts);
     this.commands = opts.commands;
+    this.deferred = new DeferredMessages({
+      commands: this.commands,
+      preparation: () => this.opts.deferredStart?.(),
+      active: (id) => this.activeJobs.has(id),
+      stopped: (id) => this.cancelled.has(id),
+      publish: (record) => this.publishQueued(record),
+    });
   }
 
   async start(): Promise<void> {
@@ -188,6 +187,8 @@ export class DaemonServer {
   }
 
   private async stopOnce(recoverStore = false): Promise<void> {
+    // Unsaved next-message holds join the drain report; they never block the abort.
+    const unsaved = this.deferred.shutdown();
     for (const controller of this.controllers.values()) {
       try {
         controller.abort("host_cancelled" satisfies CancelReasonCode);
@@ -196,11 +197,11 @@ export class DaemonServer {
       }
     }
 
-    const settled = await Promise.allSettled([...this.activeTasks]);
+    const settled = await Promise.allSettled([...this.activeTasks, this.deferred.drained()]);
     const rejected = settled.filter(
       (entry): entry is PromiseRejectedResult => entry.status === "rejected",
     );
-    const failures = [...rejected.map((entry) => entry.reason), ...this.taskFailures];
+    const failures = [...rejected.map((entry) => entry.reason), ...this.taskFailures, ...unsaved];
     if (
       this.active !== 0 ||
       failures.some((error) => !recoverStore || !storageOnlyFailure(error))
@@ -208,6 +209,7 @@ export class DaemonServer {
       const first =
         rejected[0]?.reason ??
         this.taskFailures[0] ??
+        unsaved[0] ??
         new Error(`daemon still owns ${this.active} active runner(s)`);
       throw Object.assign(
         new Error(
@@ -314,54 +316,21 @@ export class DaemonServer {
     // one typed refusal; health above and the shutdown RPCs stay reachable.
     if (servingMode !== "normal") throw recoveryOnlyRefusal(method);
     switch (method) {
-      case "claudexor.enqueue": {
-        if (this.stopping) {
-          throw Object.assign(new Error("daemon is stopping; retry after reconnect"), {
-            code: "daemon_stopping",
-            status: 503,
-          });
-        }
-        const envelope = params as {
-          request?: unknown;
-          idempotencyKey?: unknown;
-          clientId?: unknown;
-          idempotencyRequest?: unknown;
-          operation?: unknown;
-        };
-        const rawRequest = envelope?.request;
-        const operation = typeof envelope.operation === "string" ? envelope.operation : undefined;
-        const idempotencyKey = String(envelope?.idempotencyKey ?? "");
-        const clientId = String(envelope?.clientId ?? "daemon-client");
-        assertNoInlineSecretValues(rawRequest, "$", "daemon job params");
-        // Idempotency precedes Delegate admission: replaying the exact command
-        // must keep returning its durable job even after the parent is fenced
-        // or its monotonic eight-child allowance is full. A different request
-        // under the same key still conflicts inside find().
-        const replay = findAcceptedCommand(this.commands, envelope);
-        if (replay) return commandAcceptanceReceipt(replay, true);
-        // Journal-owned belt admission spans retries/processes; ordinary
-        // parentRunId alone never establishes delegated lineage.
-        const request = admitCommandRequest(
-          this.commands,
-          rawRequest,
-          operation,
-          this.opts.delegationAuthority,
-        );
-        const delegatedFrom = delegatedParentOf(request);
-        const accepted = this.acceptCommand(
-          request,
-          idempotencyKey,
-          clientId,
-          envelope.idempotencyRequest,
-          operation,
-        );
-        if (!accepted.reused && delegatedFrom) {
-          this.opts.delegationAuthority!.noteChildAccepted(delegatedFrom, accepted.record.id);
-        }
-        if (!accepted.reused) this.queue.push(admissionJob(accepted.record));
-        void this.drain();
-        return commandAcceptanceReceipt(accepted.record, accepted.reused);
-      }
+      case "claudexor.enqueue":
+        return enqueueStaged(params, {
+          commands: this.commands,
+          stopping: () => this.stopping,
+          delegation: this.opts.delegationAuthority,
+          publish: (record) => this.publishQueued(record),
+        });
+      case "claudexor.deferredMessage":
+        return this.deferred.mutate(params);
+      case "claudexor.deferredMessageRead":
+        return this.deferred.read(String(params?.draftId), params);
+      case "claudexor.deferredMessageProjection":
+        return this.deferred.projection(String(params?.predecessorId), params);
+      case "claudexor.deferredMessageStop":
+        return this.deferred.stop(String(params?.predecessorId), params);
       case "claudexor.status": {
         const rec = this.getRecord(String(params?.id));
         if (!rec) throw new Error(`no such job: ${params?.id}`);
@@ -375,6 +344,8 @@ export class DaemonServer {
       case "claudexor.cancel": {
         return this.cancelJob(String(params?.id), normalizeCancelReasonCode(params?.reason_code));
       }
+      case "claudexor.runTimeLimit":
+        return this.timeLimits.dispatch(params, (id) => this.getRecord(id));
       case "claudexor.delegationFence": {
         const runId = String(params?.runId ?? "");
         const rec = this.commands.queries.getByRunId(runId);
@@ -413,7 +384,10 @@ export class DaemonServer {
 
   /** Daemon-owned cancellation primitive used by RPC and the Delegate drain
    * barrier. It is safe to repeat and preserves queued-admission cleanup. */
-  cancelJob(jid: string, reasonCode?: CancelReasonCode): { id: string; cancelled: true } {
+  cancelJob(
+    jid: string,
+    reasonCode?: CancelReasonCode,
+  ): { id: string; cancelled: true; deferredMessageStop: DeferredMessageStopReport } {
     const rec = this.getRecord(jid);
     if (!rec) throw new Error(`no such job: ${jid}`);
     this.cancelled.add(jid);
@@ -429,11 +403,25 @@ export class DaemonServer {
     // the terminal writers. Only enum members reach this parameter: RunControl
     // validates the HTTP boundary, normalizeCancelReasonCode the raw RPC.
     this.controllers.get(jid)?.abort(reasonCode || undefined);
-    return { id: jid, cancelled: true };
+    // The ordinary stop above never waits on this write. If the hold cannot be
+    // saved, its typed failure follows the stop and the fences keep the next
+    // message unsent.
+    return { id: jid, cancelled: true, deferredMessageStop: this.deferred.stop(rec.id) };
   }
 
   private stoppingError(message: string): Error & { code: string; status: number } {
     return Object.assign(new Error(message), { code: "daemon_stopping", status: 503 });
+  }
+
+  private publishQueued(record: JobRecord): void {
+    if (
+      record.state !== "queued" ||
+      this.activeJobs.has(record.id) ||
+      this.queue.some((job) => job.id === record.id)
+    )
+      return;
+    this.queue.push(admissionJob(record));
+    if (!this.stopping) void this.drain();
   }
 
   /** Age/cap and params-byte command retention: at normal admission and after every terminal. */
@@ -444,30 +432,6 @@ export class DaemonServer {
       (this.opts.now ?? (() => new Date()))().getTime(),
     );
     for (const id of removed) this.cancelled.delete(id);
-  }
-
-  private acceptCommand(
-    params: unknown,
-    idempotencyKey: string,
-    clientId: string,
-    idempotencyParams?: unknown,
-    operation?: string,
-  ) {
-    const store = commandStoreForRequest(this.commands, params);
-    const parsed = ControlRunStartRequest.safeParse(params);
-    const acceptedParams =
-      parsed.success && parsed.data.mode === "agent"
-        ? { ...(params as Record<string, unknown>), review: resolveRunReviewRequested(parsed.data) }
-        : params;
-    return store.accept({
-      id: newId("job"),
-      params: acceptedParams,
-      idempotencyKey,
-      clientId,
-      // Resolved defaults belong to accepted execution, never the wire digest.
-      idempotencyParams: idempotencyParams ?? params,
-      operation,
-    });
   }
 
   private getRecord(id: string): JobRecord | undefined {
@@ -527,22 +491,16 @@ export class DaemonServer {
       const result = await this.opts.runner(rec.params, {
         jobId: id,
         signal: controller.signal,
+        registerTimeLimit: (timer) =>
+          this.timeLimits.register(id, timer, () => !controller.signal.aborted),
         onRunStart: (info) => {
           rec = this.updateRecord(rec, info);
         },
       });
-      const state = jobStateFromResult(result, controller.signal.aborted);
-      if (state === "failed" || state === "interrupted") {
-        const reason = resultReason(result);
-        rec = this.updateRecord(rec, {
-          state,
-          result,
-          error: resultSummary(result) ?? `run ended ${state}${reason ? ` (${reason})` : ""}`,
-          finishedAt: nowIso(),
-        });
-      } else {
-        rec = this.updateRecord(rec, { state, result, finishedAt: nowIso() });
-      }
+      const patch = settledJobPatch(jobStateFromResult(result, controller.signal.aborted), result);
+      // The verdict is fixed above; only the result's large bodies are written off the loop.
+      await commandStoreForId(this.commands, id)?.stageUpdate?.(id, patch);
+      rec = this.updateRecord(rec, patch);
     } catch (thrown) {
       rec = settleJobError({
         thrown,
@@ -552,6 +510,7 @@ export class DaemonServer {
         update: (record, patch) => this.updateRecord(record, patch),
       });
     } finally {
+      this.timeLimits.close(id);
       this.controllers.delete(id);
       this.activeJobs.delete(id);
       // An admitted child can fail before the orchestrator attaches its
@@ -590,16 +549,14 @@ export class DaemonServer {
           }
         }
       }
-      this.pruneHistory();
-      if (!this.stopping) this.drain();
+      try {
+        this.pruneHistory();
+        if (!this.stopping) this.drain();
+      } finally {
+        // The freed slot is reused before the next message's asynchronous
+        // dispatch validation; an accepted successor joins the same queue.
+        await this.deferred.settled(id);
+      }
     }
   }
-}
-
-function storageOnlyFailure(error: unknown): boolean {
-  if (error instanceof AggregateError)
-    return error.errors.length > 0 && error.errors.every(storageOnlyFailure);
-  return ["store_corrupt", "store_flush_unavailable"].includes(
-    (error as { code?: string })?.code ?? "",
-  );
 }

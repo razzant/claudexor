@@ -1,0 +1,104 @@
+{
+  "snapshots": [
+    {
+      "subject": {
+        "harness": "codex",
+        "credential_route": "vendor_native",
+        "plan_label": null,
+        "subject_id": "fixture"
+      },
+      "constraints": [
+        {
+          "id": "default:primary",
+          "label": "default primary",
+          "applies_to_request_kinds": ["text"],
+          "used_ratio": 0.4,
+          "window_seconds": 18000,
+          "resets_at": "2026-10-15T14:00:00.000Z",
+          "cooldown_until": null,
+          "freshness": "fresh"
+        },
+        {
+          "id": "reset_credits",
+          "label": "2 reset credits available",
+          "used_ratio": null,
+          "window_seconds": null,
+          "resets_at": null,
+          "cooldown_until": null,
+          "freshness": "fresh"
+        }
+      ],
+      "source": "codex_app_server",
+      "observed_at": "2026-10-15T13:00:00.000Z",
+      "freshness": "fresh",
+      "snapshot_id": "codex\u0000vendor_native\u0000fixture\u0000codex_app_server",
+      "availability": {
+        "state": "available",
+        "blocking_constraints": [],
+        "resets_at": null,
+        "model_scoped_exhaustions": []
+      }
+    }
+  ],
+  "absences": [],
+  "refreshed_at": null,
+  "resources": [
+    {
+      "target": {
+        "harness": "codex",
+        "profile_id": "fixture"
+      },
+      "balances": {
+        "value": null,
+        "source": null,
+        "observed_at": null,
+        "freshness": "unknown",
+        "last_attempt_at": null,
+        "last_error": null
+      },
+      "spending": {
+        "value": null,
+        "source": null,
+        "observed_at": null,
+        "freshness": "unknown",
+        "last_attempt_at": null,
+        "last_error": null
+      },
+      "resets": {
+        "value": [
+          {
+            "id": "codex_granted",
+            "kind": "granted_reset",
+            "label": "Granted reset",
+            "description": "Resets Codex rate limits.",
+            "available_count": 2,
+            "eligible": null,
+            "usable_now": null,
+            "reason": null,
+            "resets_at": null,
+            "weekly_limit_applies": false,
+            "grants": null
+          }
+        ],
+        "source": "codex_app_server",
+        "observed_at": "2026-10-15T13:00:00.000Z",
+        "freshness": "fresh",
+        "last_attempt_at": "2026-10-15T13:00:00.000Z",
+        "last_error": null
+      },
+      "diagnostics": {
+        "value": null,
+        "source": null,
+        "observed_at": null,
+        "freshness": "unknown",
+        "last_attempt_at": null,
+        "last_error": null
+      }
+    }
+  ],
+  "availability_scope": {
+    "basis": "quota_block",
+    "model": null,
+    "requestKind": "text"
+  }
+}

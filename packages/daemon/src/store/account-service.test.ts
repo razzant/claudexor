@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CredentialProfile } from "@claudexor/schema";
 import { createAccountEvidence } from "../account-evidence.js";
 import { createPartition } from "./partitions.js";
@@ -15,6 +15,7 @@ import {
 import { createSqlDaemonServices } from "./sql-daemon-services.js";
 import { EngineStore } from "./store.js";
 import { builtWorker } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -115,13 +116,19 @@ CREATE TABLE unclassified(pid INTEGER NOT NULL, seq INTEGER NOT NULL, type TEXT 
 const V1_TABLES = [...V1_DDL.matchAll(/CREATE TABLE (\w+)\(/g)].map((match) => match[1]!);
 
 const cleanups: Array<() => Promise<void> | void> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "cx-account-service-"));
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -136,13 +143,13 @@ async function openGraph(root: string, now?: () => Date) {
   if (!global)
     store.transaction(() => setGlobalGenerationInTx(store, createPartition(store, "global").pid));
   const graph = createSqlDaemonServices(store, { purgeFiles: async () => [root] });
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    await graph.close();
-    await store.close();
-  };
+  let closing: Promise<void> | undefined;
+  /** One close: a later caller gets its outcome, not a success it never saw (#376). */
+  const close = () =>
+    (closing ??= (async () => {
+      await graph.close();
+      await store.close();
+    })());
   cleanups.push(close);
   return { store, graph, close };
 }
@@ -182,7 +189,7 @@ function dump(db: { prepare(sql: string): { all(): unknown[] } }, tables: readon
 }
 
 describeStore("durable last-served facts (engine store schema v2)", () => {
-  it("upgrades a real v1 store in place: every existing row kept, only the new table added", async () => {
+  it("upgrades a real v1 store to the current version: keeps every row and adds only expected schema objects", async () => {
     const root = tempRoot();
     mkdirSync(join(root, "daemon"), { recursive: true });
     const { DatabaseSync } = await import("node:sqlite");
@@ -211,21 +218,49 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
     `);
     const before = dump(v1, V1_TABLES);
     v1.close();
-    // Version 2 only ADDS one table to the shipped v1 DDL.
-    expect([...ENGINE_TABLES].sort()).toEqual([...V1_TABLES, "account_last_service"].sort());
+    // Version 2 adds account_last_service; version 3 adds task-group indexes.
+    // Version 4 adds deferred_message and its four indexes; v5 adds turn_plan_answer.
+    // Version 6 moves task-group membership into a column and rebuilds both group
+    // indexes on it. Version 8 adds the question-delivery column and its covering
+    // pending index.
+    expect([...ENGINE_TABLES].sort()).toEqual(
+      [...V1_TABLES, "account_last_service", "deferred_message", "resource_use"].sort(),
+    );
 
     const upgraded = await openGraph(root);
     expect(readSchemaIdentity(upgraded.store.db)).toMatchObject({
       applicationId: ENGINE_APPLICATION_ID,
       userVersion: ENGINE_SCHEMA_VERSION,
     });
-    expect(ENGINE_SCHEMA_VERSION).toBe(2);
+    expect(ENGINE_SCHEMA_VERSION).toBe(8);
+    expect(
+      upgraded.store
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name",
+        )
+        .all()
+        .map((row) => (row as { name: string }).name),
+    ).toEqual(
+      [
+        ...[...V1_DDL.matchAll(/CREATE (?:UNIQUE )?INDEX (\w+)/g)].map((match) => match[1]!),
+        "turn_plan_answer",
+        "command_task_group",
+        "command_task_group_state",
+        "deferred_message_slot",
+        "deferred_message_predecessor",
+        "deferred_message_successor",
+        "deferred_message_body",
+        "resource_use_owner",
+        "resource_use_sha",
+        "interaction_pending_delivery",
+      ].sort(),
+    );
     const after = dump(upgraded.store.db, V1_TABLES);
     const metaAfter = Object.fromEntries(
       (after["meta"] as Array<{ key: string; value: string }>).map((row) => [row.key, row.value]),
     );
     expect(metaAfter).toEqual({
-      schema_version: "2",
+      schema_version: String(ENGINE_SCHEMA_VERSION),
       store_id: "11111111-1111-4111-8111-111111111111",
       created_at: "2026-10-01T00:00:00.000Z",
       global_pid: "1",
@@ -236,9 +271,9 @@ describeStore("durable last-served facts (engine store schema v2)", () => {
     expect(order(services, "M", [profile("a")])).toEqual({ a: 1 });
     await upgraded.close();
 
-    // A newer file is still refused before any write.
+    // A newer version than this engine is refused before any write.
     const newer = new DatabaseSync(join(root, "daemon", "engine.sqlite"));
-    newer.exec("PRAGMA user_version=3");
+    newer.exec(`PRAGMA user_version=${ENGINE_SCHEMA_VERSION + 1}`);
     const rows = () =>
       (newer.prepare("SELECT count(*) AS n FROM account_last_service").get() as { n: number }).n;
     expect(rows()).toBe(1);

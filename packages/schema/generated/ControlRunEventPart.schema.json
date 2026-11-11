@@ -1,0 +1,142 @@
+{
+  "$ref": "#/definitions/ControlRunEventPart",
+  "definitions": {
+    "ControlRunEventPart": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical run id."
+        },
+        "seq": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Durable seq of the event (its event-stream id)."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "run.created",
+            "task.contract.created",
+            "context.pack.created",
+            "project.git.initialized",
+            "project.claude_bridge.created",
+            "budget.lease.created",
+            "budget.observation",
+            "budget.cash",
+            "policy.web.upgraded",
+            "harness.started",
+            "harness.event",
+            "harness.completed",
+            "route.fallback.started",
+            "route.fallback.completed",
+            "route.fallback.exhausted",
+            "route.transient.detected",
+            "route.transient.retry_scheduled",
+            "route.profile.headroom_exceeded",
+            "route.profile.rotated",
+            "route.profile.rotation_exhausted",
+            "route.profile.credential_unusable",
+            "route.account.pool_selected",
+            "route.account.lane_switch",
+            "route.account.pool_exhausted",
+            "route.transient.exhausted",
+            "route.fallback.auth_switched",
+            "route.primary.diverged",
+            "route.pool.degraded",
+            "session.continuity",
+            "interaction.requested",
+            "interaction.answered",
+            "interaction.timeout",
+            "interaction.answer_discarded",
+            "interaction.withdrawn",
+            "message.accepted",
+            "message.delivered",
+            "message.refused",
+            "plan.progress",
+            "plan.questions",
+            "plan.brief.materialized",
+            "council.started",
+            "council.draft",
+            "council.member.failed",
+            "council.merged",
+            "budget.quota_pressure",
+            "delegation.belt.unavailable",
+            "delegation.belt.degraded",
+            "output.ready",
+            "gate.started",
+            "gate.completed",
+            "review.preflight",
+            "review.started",
+            "review.skipped",
+            "reviewer.started",
+            "reviewer.first_event",
+            "reviewer.auth_switched",
+            "reviewer.completed",
+            "reviewer.timed_out",
+            "reviewer.failed",
+            "finding.revalidated",
+            "synthesis.started",
+            "arbitration.completed",
+            "work_product.emitted",
+            "work_product.adopted",
+            "control.requested",
+            "control.applied",
+            "control.rejected",
+            "run.blocked",
+            "run.completed",
+            "run.failed",
+            "run.continuation",
+            "run.continuation.denied",
+            "run.continuity",
+            "workspace.retained",
+            "workspace.prepared",
+            "workspace.settlement_failed"
+          ],
+          "description": "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs."
+        },
+        "totalBytes": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "UTF-8 byte length of the event's complete stream serialization: the stored JSON line the run event stream delivers."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of all totalBytes; verify the reassembled text before parsing it."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "UTF-8 byte offset where this part starts."
+        },
+        "nextOffset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Where the next part starts; equal to totalBytes when this part ends the event."
+        },
+        "text": {
+          "type": "string",
+          "description": "Bytes [offset, nextOffset) decoded as UTF-8; a boundary never splits a character."
+        }
+      },
+      "required": [
+        "runId",
+        "seq",
+        "type",
+        "totalBytes",
+        "sha256",
+        "offset",
+        "nextOffset",
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "One bounded part of a single validated run event, read from the run's own event log by run id and seq. Concatenate parts in offset order until nextOffset equals totalBytes; only then is the event consumed."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

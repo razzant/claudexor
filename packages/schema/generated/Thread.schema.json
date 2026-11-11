@@ -270,6 +270,47 @@
           ],
           "default": null,
           "description": "Lifecycle state restored while the trash retention window remains open."
+        },
+        "retirement": {
+          "type": "object",
+          "properties": {
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The caller's durable release intent."
+            },
+            "exportId": {
+              "type": "string",
+              "description": "The manifest identity the caller transferred."
+            },
+            "closureDigest": {
+              "type": "string",
+              "description": "The engine-record identity at acceptance."
+            },
+            "contentDigest": {
+              "type": "string",
+              "description": "Every exported byte, re-hashed by the engine."
+            },
+            "laneDigest": {
+              "type": "string",
+              "description": "The lane bytes acceptance named for removal."
+            },
+            "acceptedAt": {
+              "type": "string",
+              "minLength": 1,
+              "description": "When the purge decision committed."
+            }
+          },
+          "required": [
+            "operationId",
+            "exportId",
+            "closureDigest",
+            "contentDigest",
+            "laneDigest",
+            "acceptedAt"
+          ],
+          "additionalProperties": false,
+          "description": "Present on a thread purged through conditional retirement; absent otherwise."
         }
       },
       "required": [

@@ -13,9 +13,11 @@ const roots: string[] = [];
 const logs: EventLog[] = [];
 
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const log of logs.splice(0)) log.dispose();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 function log(runId: string, taskId: string): { eventLog: EventLog; path: string } {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cx-root-ledger-")));
@@ -118,6 +120,7 @@ describe("root ledger cash and valuation disclosure", () => {
         valuation_usd: 0.6,
         estimated: false,
         cash_knowledge: "exact",
+        controllable_cash_knowledge: "exact",
         valuation_knowledge: "estimated",
       },
       {
@@ -125,6 +128,7 @@ describe("root ledger cash and valuation disclosure", () => {
         valuation_usd: 0.6,
         estimated: false,
         cash_knowledge: "exact",
+        controllable_cash_knowledge: "exact",
         valuation_knowledge: "estimated",
       },
     ]);
@@ -134,6 +138,7 @@ describe("root ledger cash and valuation disclosure", () => {
         valuation_usd: 0,
         estimated: false,
         cash_knowledge: "exact",
+        controllable_cash_knowledge: "exact",
         valuation_knowledge: "unknown",
       },
     ]);
@@ -205,5 +210,62 @@ describe("root ledger cash and valuation disclosure", () => {
       provenance: ["fixture"],
     });
     expect(parent.cashKnowledge()).toBe("unknown");
+  });
+
+  it("discloses an unobserved allowance debit without making a finite family unverifiable", () => {
+    const parentLog = log("run-parent", "task-parent");
+    const childLog = log("run-child", "task-child");
+    const authority = new DelegationBudgetAuthority({ cancelAdmission: () => {} });
+    const finite = {
+      task_id: "task-parent",
+      budget: { paid_budget: { kind: "finite", maxUsd: 0 } },
+    } as TaskContract;
+    const parent = createRootLedger({
+      input: { runId: "run-parent" } as RunInput,
+      contract: finite,
+      log: parentLog.eventLog,
+      authority,
+      quotaSnapshots: [],
+    });
+    authority.registerParent("run-parent", parent);
+    authority.noteChildAccepted("run-parent", "job-child");
+    const child = createRootLedger({
+      input: {
+        runId: "run-child",
+        delegatedFromRunId: "run-parent",
+        delegationAdmissionId: "job-child",
+      } as RunInput,
+      contract: contract("task-child"),
+      log: childLog.eventLog,
+      authority,
+      quotaSnapshots: [],
+    });
+    const lease = child.reserve({
+      taskId: "task-child",
+      intent: "implement",
+      harnessId: "codex",
+      cost: routeCostEvidence({
+        billing: "subscription_entitlement",
+        knowledge: "exact",
+        source: "fixture",
+        provenance: ["fixture"],
+      }),
+    }).lease!;
+    child.settle(lease.lease_id, {
+      knowledge: "exact",
+      cashKnowledge: "exact",
+      cashUsd: 0,
+      allowanceDebitUnobserved: true,
+      source: "codex-subscription",
+      provenance: ["fixture"],
+    });
+    expect(parent.terminal()).toBeNull();
+    for (const path of [parentLog.path, childLog.path])
+      expect(events(path).at(-1)?.payload).toMatchObject({
+        cash_spend_usd: 0,
+        estimated: true,
+        cash_knowledge: "unknown",
+        controllable_cash_knowledge: "exact",
+      });
   });
 });

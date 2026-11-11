@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { verifyWin32ConptyHelperCustody } from "./lib/win32-conpty-artifact.mjs";
 
@@ -126,8 +126,49 @@ const nodeRuntime = {
   comment: "Node executable bundled to run the Claudexor daemon and setup helper offline.",
 };
 
-const runtimeComponents = [browserDependency, processIdentity, win32Conpty, nodeRuntime];
-const packages = [product, ...dependencies, processIdentity, win32Conpty, nodeRuntime];
+// The pinned publication scanner (INV-146), one component per bundled darwin
+// architecture, each with its upstream source and the packaged file's digest.
+const scanners = ["darwin-arm64", "darwin-x64"].map((key) => {
+  const scannerDir = join(resources, "native", "betterleaks", key);
+  if (!existsSync(join(scannerDir, "provenance.json")))
+    fail(`the app bundle lacks the bundled ${key} publication scanner`);
+  const provenance = readJson(join(scannerDir, "provenance.json"));
+  if (
+    provenance.name !== "betterleaks" ||
+    provenance.platform !== key ||
+    provenance.license !== "MIT"
+  )
+    fail(`bundled ${key} publication scanner provenance is not the pinned Betterleaks build`);
+  return {
+    SPDXID: spdxId(`betterleaks-${key}`, provenance.version),
+    name: `Betterleaks publication scanner (${key})`,
+    versionInfo: provenance.version,
+    downloadLocation: provenance.source,
+    filesAnalyzed: false,
+    licenseConcluded: "MIT",
+    licenseDeclared: "MIT",
+    copyrightText: "NOASSERTION",
+    primaryPackagePurpose: "APPLICATION",
+    ...packagedFile(appBundle, join(scannerDir, "betterleaks")),
+    externalRefs: [
+      {
+        referenceCategory: "PACKAGE-MANAGER",
+        referenceType: "purl",
+        referenceLocator: `pkg:github/betterleaks/betterleaks@v${encodeURIComponent(provenance.version)}`,
+      },
+    ],
+    comment: `Pinned upstream archive ${provenance.archiveSha256}; upstream binary ${provenance.upstreamBinarySha256}.`,
+  };
+});
+
+const runtimeComponents = [
+  browserDependency,
+  processIdentity,
+  win32Conpty,
+  nodeRuntime,
+  ...scanners,
+];
+const packages = [product, ...dependencies, processIdentity, win32Conpty, nodeRuntime, ...scanners];
 packages.sort((a, b) => a.name.localeCompare(b.name) || a.versionInfo.localeCompare(b.versionInfo));
 
 const sha = process.env.GITHUB_SHA ?? "local";

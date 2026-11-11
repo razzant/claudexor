@@ -72,6 +72,6 @@ describe("CLI and MCP account wire parity", () => {
     expect(await tool.handler({ refresh: true, target }, {})).toMatchObject({ structured: rich });
     const calls = vi.mocked(controlApiFetch).mock.calls;
     expect(calls[0]?.slice(1)).toEqual(calls[1]?.slice(1));
-    expect(calls[1]?.[1]).toBe("/quota?view=resources");
+    expect(calls[1]?.[1]).toBe("/quota?view=resources&includeApiKeys=true");
   });
 });

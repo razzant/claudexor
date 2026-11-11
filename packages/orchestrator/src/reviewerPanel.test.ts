@@ -42,8 +42,10 @@ function reviewerAdapter(
         kind: "local_cli",
         provider_family: family,
         access_profiles_supported: ["readonly", "workspace_write"],
+        // A reviewer reads the candidate evidence itself, as every shipped one declares.
         capabilities: {
           review: true,
+          read_files: true,
           effort_levels: [...effortLevels],
           ...(extras.modelEffortLevels ? { model_effort_levels: extras.modelEffortLevels } : {}),
           ...(extras.knownModelEntries
@@ -726,3 +728,182 @@ it.each(["cursor-grok-4.6-xhigh", "gemini-3.7-flash-high"])(
     expect(ignored).toEqual([expect.stringContaining("declares no effort controls")]);
   },
 );
+
+/** A raw-api-shaped reviewer: authoritative, live on every route, with a TYPED
+ * catalog read (#393) and declared routing variants (#145). */
+describe("reviewer panels over a typed catalog read", () => {
+  type Read = Awaited<ReturnType<NonNullable<HarnessAdapter["modelCatalog"]>>>;
+  const typedAdapter = async (read: Read, calls: string[] = []): Promise<HarnessAdapter> => {
+    const adapter = reviewerAdapter("openrouter", "unknown", []);
+    const manifest = await adapter.discover();
+    manifest.capabilities.model_routing_variants = [{ suffix: ":nitro", billing: "service_tier" }];
+    manifest.capabilities.model_refused_variants = [
+      { suffix: ":online", reason: "provider_web_search" },
+    ];
+    adapter.discover = async () => manifest;
+    adapter.models = async () => (read.status === "listed" ? read.models : []);
+    adapter.modelCatalog = async () => {
+      calls.push("read");
+      return read;
+    };
+    return adapter;
+  };
+  const listed = (...ids: string[]): Read => ({
+    status: "listed",
+    models: ids.map((id) => ({ id, label: null, context_window: null, routes: null })),
+  });
+  const failed: Read = {
+    status: "unavailable",
+    failure: { cause: "timeout", httpStatus: null, detail: "no answer within 15s" },
+  };
+
+  it("forwards an explicit reviewer model its unavailable read cannot verify, after one retry, and says so (decision A)", async () => {
+    const calls: string[] = [];
+    const disclosed: string[] = [];
+    const specs = await resolveExplicitReviewerPanel(
+      { ...deps([await typedAdapter(failed, calls)]), onIgnoredSetting: (d) => disclosed.push(d) },
+      [{ harness: "openrouter", model: "vendor/m" }],
+    );
+    expect(specs[0]?.requestedModel).toBe("vendor/m");
+    expect(disclosed).toEqual([
+      "reviewer 'openrouter' model 'vendor/m': the live model catalog could not be read " +
+        '(timeout; no answer within 15s), so model "vendor/m" could not be verified; it is sent ' +
+        "unchanged on the same key and the provider accepts or refuses it",
+    ]);
+    expect(calls).toEqual(["read", "read"]);
+  });
+
+  it("refuses an explicit reviewer model, typed, when the endpoint rejected the key", async () => {
+    const rejected: Read = {
+      status: "unavailable",
+      failure: { cause: "auth_rejected", httpStatus: 401, detail: "invalid key" },
+    };
+    const resolution = resolveExplicitReviewerPanel(deps([await typedAdapter(rejected)]), [
+      { harness: "openrouter", model: "vendor/m" },
+    ]);
+    await expect(resolution).rejects.toMatchObject({
+      code: "model_catalog_unavailable",
+      category: "auth",
+      retryable: false,
+    });
+    await expect(resolution).rejects.toThrow(
+      "reviewer harness 'openrouter' refused requested model 'vendor/m': the live model catalog " +
+        'could not be read (auth_rejected; HTTP 401: invalid key), so model "vendor/m" cannot be ' +
+        "verified; the endpoint rejected the API key: replace it or check its access",
+    );
+  });
+
+  it("refuses an explicit reviewer model absent from a SUCCESSFUL empty catalog without retrying", async () => {
+    const calls: string[] = [];
+    await expect(
+      resolveExplicitReviewerPanel(deps([await typedAdapter(listed(), calls)]), [
+        { harness: "openrouter", model: "vendor/m" },
+      ]),
+    ).rejects.toThrow(
+      "reviewer harness 'openrouter' does not support requested model 'vendor/m' on the review route (available: )",
+    );
+    expect(calls).toEqual(["read"]);
+  });
+
+  it("admits a declared routing variant of a listed row and refuses :online", async () => {
+    const adapter = await typedAdapter(listed("vendor/m"));
+    const specs = await resolveExplicitReviewerPanel(deps([adapter]), [
+      { harness: "openrouter", model: "vendor/m:nitro" },
+    ]);
+    expect(specs[0]?.requestedModel).toBe("vendor/m:nitro");
+    for (const refusing of [adapter, await typedAdapter(failed)])
+      await expect(
+        resolveExplicitReviewerPanel(deps([refusing]), [
+          { harness: "openrouter", model: "vendor/m:online" },
+        ]),
+      ).rejects.toThrow(
+        "reviewer harness 'openrouter' refused requested model 'vendor/m:online': model " +
+          '"vendor/m:online" carries the :online variant, which this harness refuses',
+      );
+  });
+
+  it("the AUTO panel skips a family whose read failed, naming the failure, at zero cost", async () => {
+    const ignored: string[] = [];
+    const specs = await resolveAutoReviewerPanel(
+      {
+        ...deps([await typedAdapter(failed)]),
+        harnessSettings: { openrouter: { default_model: "vendor/m" } },
+        onIgnoredSetting: (detail) => ignored.push(detail),
+      },
+      {},
+    );
+    expect(specs).toEqual([]);
+    expect(ignored).toEqual([
+      "reviewer family 'openrouter' skipped: the live model catalog could not be read (timeout; no answer within 15s)",
+    ]);
+  });
+});
+
+describe("file reading among a panel's gates (INV-042)", () => {
+  const blind = (order: string[]): HarnessAdapter => {
+    const base = reviewerAdapter("blind", "openai", []);
+    return {
+      ...base,
+      async discover() {
+        order.push("discover");
+        const manifest = await base.discover();
+        return HarnessManifest.parse({
+          ...manifest,
+          capabilities: { ...manifest.capabilities, read_files: false },
+        });
+      },
+      async doctor(spec) {
+        order.push("doctor");
+        return base.doctor(spec);
+      },
+      async models() {
+        order.push("models");
+        return [];
+      },
+    };
+  };
+
+  it("the explicit panel resolves the account first, so an account refusal is what it reports", async () => {
+    const order: string[] = [];
+    await expect(
+      resolveExplicitReviewerPanel(
+        {
+          ...deps([blind(order)]),
+          resolveReviewerProfile: async () => {
+            order.push("account");
+            throw new HarnessUnavailableError("account refused");
+          },
+        },
+        [{ harness: "blind", credentialProfileId: "saved" }],
+      ),
+    ).rejects.toThrow("account refused");
+    expect(order).toEqual(["account"]);
+  });
+
+  it("past its account, the explicit panel refuses before any model check", async () => {
+    const order: string[] = [];
+    await expect(
+      resolveExplicitReviewerPanel(deps([blind(order)]), [{ harness: "blind", model: "m" }]),
+    ).rejects.toThrow("reviewer harness 'blind' cannot read the candidate evidence files itself");
+    // An unprofiled entry has already probed its doctor; that verdict is read after this test.
+    expect(order).toEqual(["discover", "doctor"]);
+  });
+
+  it("the automatic panel skips before it resolves an account, disclosing why", async () => {
+    const order: string[] = [];
+    const ignored: string[] = [];
+    const specs = await resolveAutoReviewerPanel({
+      ...deps([blind(order)]),
+      onIgnoredSetting: (detail) => ignored.push(detail),
+      resolveReviewerProfile: async () => {
+        order.push("account");
+        return null;
+      },
+    });
+    expect(specs).toEqual([]);
+    expect(order).toEqual(["discover"]);
+    expect(ignored.join("\n")).toContain(
+      "reviewer family 'blind' skipped: it cannot read the candidate evidence files itself",
+    );
+  });
+});

@@ -1,4 +1,5 @@
 import { isJournaledRunEvent } from "../journaled-run-events.js";
+import { assertUnexpiredRunFiles } from "../run-file-admission.js";
 import type { RunEvent, RunTelemetry } from "@claudexor/schema";
 import type { CommandBackend } from "../command-authority.js";
 import {
@@ -11,9 +12,11 @@ import type { ProjectThreadPort } from "../store-contracts.js";
 import { SqlCommandQueries } from "./command-queries.js";
 import { SqlCommandPruner } from "./command-prune.js";
 import { SqlCommandStore } from "./commands.js";
+import { SqlDeferredMessages, deferredConflict } from "./deferred-messages.js";
 import { SqlEventLedger } from "./event-store.js";
 import { isServedPid } from "./generations.js";
 import { SqlInteractionStore } from "./interactions.js";
+import type { MaintenanceController } from "./maintenance.js";
 import type { Obligations } from "./obligations.js";
 import { SqlOperatorDecisionStore } from "./operator-decisions.js";
 import { partitionById, type PartitionGeneration } from "./partitions.js";
@@ -21,6 +24,7 @@ import { SqlProjectRouter } from "./project-router.js";
 import type { SqlProjectStore } from "./projects.js";
 import { SqlRunEventStore } from "./run-events.js";
 import type { SqlTerminalFiles } from "./terminal-files.js";
+import type { ThreadClosure } from "./thread-closure.js";
 
 /** One addressed router over current generations. These lightweight writers
  * carry no restored history or separate partition cache. */
@@ -35,10 +39,19 @@ export class SqlCommandRouter
       obligations: Obligations;
       terminalFiles: SqlTerminalFiles;
       pruner: SqlCommandPruner;
+      validateRefs?: ConstructorParameters<typeof SqlDeferredMessages>[4];
     },
+    /** The store's maintenance worker: its read-only snapshot answers closure observations. */
+    private readonly snapshots: Pick<MaintenanceController, "threadClosure">,
   ) {
     super(projects);
     this.queries = new SqlCommandQueries(this.store, projects.blobs);
+  }
+
+  /** An observation, read in that snapshot off the writer's thread. Retirement never
+   * trusts it: it reads the closure again inside its deciding transaction. */
+  threadClosure(id: string, signal?: AbortSignal): Promise<ThreadClosure | null> {
+    return this.snapshots.threadClosure(id, signal);
   }
 
   commandStore(generation: PartitionGeneration): SqlCommandStore {
@@ -56,6 +69,38 @@ export class SqlCommandRouter
   findById(id: string): SqlCommandStore | undefined {
     const generation = this.generationForCommand(id);
     return generation ? this.commandStore(generation) : undefined;
+  }
+  deferredFor(id: string): SqlDeferredMessages | undefined {
+    const row = this.store
+      .prepare(
+        `SELECT pid FROM deferred_message WHERE id=?
+      UNION ALL SELECT pid FROM command WHERE id=? OR run_id=? LIMIT 1`,
+      )
+      .get(id, id, id) as { pid: number } | undefined;
+    const generation =
+      row && isServedPid(this.store, row.pid) ? partitionById(this.store, row.pid) : null;
+    return generation ? this.deferredStore(generation) : undefined;
+  }
+  deferredStore(generation: PartitionGeneration): SqlDeferredMessages {
+    return new SqlDeferredMessages(
+      this.store,
+      this.projects.blobs,
+      generation,
+      this.commandStore(generation),
+      this.persistence.validateRefs,
+      (request) => {
+        const current = this.generationForRequest(request);
+        if (
+          current.pid !== generation.pid ||
+          current.epoch !== generation.epoch ||
+          current.name !== generation.name
+        )
+          throw deferredConflict(
+            "deferred_generation_changed",
+            "captured request no longer routes to its reserved generation",
+          );
+      },
+    );
   }
   pruneHistory(cap: number, retentionMs: number, now: number): string[] {
     return this.persistence.pruner.pruneHistory(cap, retentionMs, now);
@@ -103,6 +148,14 @@ export class SqlCommandRouter
     // filtered event cannot fail merely because its old project is unavailable.
     return event;
   }
+  /** Off-loop staging ahead of `persistTerminal` (best effort; it decides). */
+  async stageTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
+    try {
+      await this.findById(jobId)?.stageTerminal(jobId, event, telemetry);
+    } catch {
+      /* persistTerminal decides and reports */
+    }
+  }
   persistTerminal(jobId: string, event: RunEvent, telemetry: RunTelemetry | null) {
     const owner = this.findById(jobId);
     if (!owner) throw new Error(`terminal authority lost command ${jobId}`);
@@ -112,7 +165,11 @@ export class SqlCommandRouter
     params: unknown,
     input: { key: string; client: string; operation: string; request: unknown },
   ) {
-    return beginDeliveryCommand(this.forRequest(params), params, input);
+    return beginDeliveryCommand(this.forRequest(params), params, input, () => {
+      const request = input.request as { runId?: unknown; runIds?: unknown } | null;
+      for (const id of [request?.runId, ...(Array.isArray(request?.runIds) ? request.runIds : [])])
+        if (typeof id === "string") assertUnexpiredRunFiles(this.queries.select({ ids: [id] })[0]);
+    });
   }
   completeDelivery(id: string, result: unknown): void {
     completeDeliveryCommand(this.findById(id), id, result);

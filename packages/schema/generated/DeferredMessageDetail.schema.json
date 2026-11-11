@@ -1,0 +1,953 @@
+{
+  "$ref": "#/definitions/DeferredMessageDetail",
+  "definitions": {
+    "DeferredMessageDetail": {
+      "type": "object",
+      "properties": {
+        "draftId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "revision": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "held",
+            "dispatched",
+            "cleared"
+          ]
+        },
+        "predecessorJobId": {
+          "$ref": "#/definitions/DeferredMessageDetail/properties/draftId"
+        },
+        "predecessorRunId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DeferredMessageDetail/properties/draftId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-empty identifier string."
+        },
+        "predecessorResult": {
+          "type": "string",
+          "description": "Existing addressed run-detail/result path; no duplicate result store."
+        },
+        "hold": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "predecessor_failed",
+                    "predecessor_cancelled",
+                    "predecessor_interrupted",
+                    "predecessor_needs_input",
+                    "predecessor_incomplete",
+                    "predecessor_facts_unavailable",
+                    "predecessor_work_unverified",
+                    "predecessor_checks_failed",
+                    "predecessor_review_blocked",
+                    "predecessor_output_unavailable",
+                    "settlement_unknown",
+                    "stop_requested",
+                    "shutdown",
+                    "restart_requires_controller",
+                    "partition_retired",
+                    "admission_refused"
+                  ]
+                },
+                "problem": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Human-readable refusal message."
+                    },
+                    "code": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null,
+                      "description": "Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code."
+                    },
+                    "retryable": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released."
+                    },
+                    "required_actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "maxItems": 16,
+                      "default": [],
+                      "description": "Bounded user actions that may make an exact retry succeed."
+                    },
+                    "context": {
+                      "type": "object",
+                      "additionalProperties": {},
+                      "default": {},
+                      "description": "Bounded typed recovery context; never arbitrary provider or environment output."
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Typed, sanitized problem for a thread turn that could not start."
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false,
+              "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stable hold. Editing, observation and readiness restoration never rearm it; inspect the predecessor result and clear before an ordinary continuation. One exception: an unchanged settlement_unknown draft returns by itself when a later settlement of the predecessor's run, by the live daemon that ran it, proves its processes gone (see resumed); a Stop first keeps it held."
+        },
+        "resumed": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/hold/anyOf/0/properties/code"
+                },
+                "problem": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/hold/anyOf/0/properties/problem"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false,
+              "description": "The hold the draft was returned from."
+            },
+            "reason": {
+              "type": "string",
+              "const": "process_scope_settled",
+              "description": "A later settlement of the predecessor's run proved its processes gone; the draft was unchanged, not cleared, replaced or stopped."
+            },
+            "at": {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO-8601 timestamp string."
+            }
+          },
+          "required": [
+            "from",
+            "reason",
+            "at"
+          ],
+          "additionalProperties": false,
+          "description": "Why this draft left its hold automatically. It then took the existing revision and admission path; any other reason holds it again."
+        },
+        "dispatchedRevision": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DeferredMessageDetail/properties/revision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "successorJobId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DeferredMessageDetail/properties/draftId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-empty identifier string."
+        },
+        "successorRunId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DeferredMessageDetail/properties/draftId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-empty identifier string."
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "resourceId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Immutable daemon resource id returned by upload finalize."
+              }
+            },
+            "required": [
+              "resourceId"
+            ],
+            "additionalProperties": false,
+            "description": "Reference to an immutable daemon-owned uploaded resource."
+          }
+        },
+        "capturedStart": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "prompt": {
+                  "type": "string",
+                  "default": "",
+                  "description": "The user's prompt for the run."
+                },
+                "instructions": {
+                  "type": "string",
+                  "description": "System-level instructions layered onto every task-producing lane; delivered natively (append-system-prompt-file / developer_instructions) or as a delimited prompt prefix."
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/DeferredMessageDetail/properties/attachments/items"
+                  },
+                  "description": "Immutable daemon resource ids returned by upload finalize; paths and inline bytes are not accepted."
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "plan",
+                    "agent"
+                  ],
+                  "description": "Canonical run mode: ask and plan are read-only, agent writes. Strategy controls are separate schema-owned fields, never modes.",
+                  "default": "agent"
+                },
+                "taskGroupId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Caller-generated UUID saved before launching the first member. Each job still needs its own idempotency key; the group grants no execution authority."
+                },
+                "scope": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "project"
+                        },
+                        "root": {
+                          "type": "string",
+                          "description": "Absolute path of the project root."
+                        },
+                        "context": {
+                          "type": "string",
+                          "enum": [
+                            "auto"
+                          ],
+                          "description": "Project context depth; auto is the only mode.",
+                          "default": "auto"
+                        },
+                        "ephemeral": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "Declare the root one-shot: it anchors this run only, is never entered into the durable project registry, and its commands/run events live in the global no-project partition."
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "root"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Run anchored to a project."
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "none"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Run with no project (pure ask)."
+                    }
+                  ],
+                  "description": "What the run operates on: a project (with root) or nothing.",
+                  "default": {
+                    "kind": "none"
+                  }
+                },
+                "execution": {
+                  "type": "object",
+                  "properties": {
+                    "isolation": {
+                      "type": "string",
+                      "enum": [
+                        "envelope",
+                        "live"
+                      ],
+                      "default": "envelope",
+                      "description": "Run isolation: envelope (isolated worktree in the external per-project runtime namespace, the default) or live (the project tree itself)."
+                    },
+                    "delegated": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Marks a run driven by an EXTERNAL orchestrator that owns the workspace, not by the operator at a surface. Such a run uses a scoped harness HOME even under isolation='live' (an in-place delegated attempt therefore cannot resume a native vendor session stored under the real HOME). Unrelated to the `delegate` belt flag and to `delegatedFromRunId` (belt-child provenance)."
+                    },
+                    "workspaceRoot": {
+                      "type": "string",
+                      "description": "Absolute existing execution workspace for a project-scoped delegated run: the live tree of an agent run (or the source of its directory execution), and the read-only tree of a delegated thread's Ask/Plan turn. The stable project identity remains scope.root."
+                    },
+                    "workspaceKind": {
+                      "type": "string",
+                      "enum": [
+                        "git",
+                        "directory"
+                      ],
+                      "description": "Explicit directory execution needs no Git initialization; omission preserves existing clients."
+                    },
+                    "scopePaths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "description": "Agent-selected input footprint. Directory copies materialize this entire selection; direct runs need no whole-tree baseline."
+                    },
+                    "auxiliaryWritableRoots": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "description": "Exact existing absolute directories, created by the caller, that an Agent run with effective workspace_write may also write (service caches or scratch outside the execution tree). [] grants nothing extra; so does omission, except that a continueFrom successor omitting execution inherits its predecessor's whole execution group. Requires a lane whose capability_profile.access_control.auxiliary_writable_roots is true; the files are never part of the project result."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Execution isolation and delegation settings for a run.",
+                  "default": {
+                    "isolation": "envelope"
+                  }
+                },
+                "harnesses": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "description": "User-supplied string that must contain visible content, not just whitespace."
+                  },
+                  "description": "Eligible harness pool for the run; omitted = engine auto-pools."
+                },
+                "primaryHarness": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items",
+                  "description": "Primary harness the run should prefer."
+                },
+                "routingGoal": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "quality",
+                    "economy"
+                  ],
+                  "description": "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend."
+                },
+                "model": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items",
+                  "description": "Scalar model convenience: expands to the resolved primary harness only (never the pool); rejected with a multi-harness pool and no primary — use models instead."
+                },
+                "models": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items"
+                  },
+                  "propertyNames": {
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "description": "Harness-scoped model map (harness id to model id); an entry here wins over the scalar model and over the per-harness settings default."
+                },
+                "effort": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "pattern": "^[a-z0-9]+(?:[_-][a-z0-9]+)*$",
+                  "description": "Requested reasoning effort."
+                },
+                "processingPreference": {
+                  "type": "string",
+                  "enum": [
+                    "standard",
+                    "fast",
+                    "economy"
+                  ],
+                  "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                },
+                "promptCacheTtl": {
+                  "type": "string",
+                  "enum": [
+                    "5m",
+                    "1h"
+                  ],
+                  "description": "Native prompt-cache lifetime for the main conversation and helper requests of a harness that declares it. Omission sends no override: native defaults, profile settings and the inherited environment stay in effect."
+                },
+                "efforts": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/effort"
+                  },
+                  "propertyNames": {
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "description": "Harness-scoped effort map (harness id to effort); an entry here wins over the scalar effort and the per-harness settings default."
+                },
+                "review": {
+                  "type": "boolean",
+                  "description": "Agent model review: ordinary runs default off; true selects an automatic panel. Explicit reviewer controls, best-of and untilClean request review. Capped attempts default to review unless explicitly false."
+                },
+                "reviewerModels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items"
+                  },
+                  "propertyNames": {
+                    "enum": [
+                      "openai",
+                      "anthropic",
+                      "google",
+                      "cursor",
+                      "opencode",
+                      "xai",
+                      "local",
+                      "unknown"
+                    ]
+                  },
+                  "description": "Per-provider-family reviewer model overrides (legacy; reviewerPanel wins when present)."
+                },
+                "reviewerEfforts": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/effort"
+                  },
+                  "propertyNames": {
+                    "enum": [
+                      "openai",
+                      "anthropic",
+                      "google",
+                      "cursor",
+                      "opencode",
+                      "xai",
+                      "local",
+                      "unknown"
+                    ]
+                  },
+                  "description": "Per-provider-family reviewer effort overrides (legacy; reviewerPanel wins when present)."
+                },
+                "n": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991,
+                  "exclusiveMinimum": 0,
+                  "description": "Race width: number of best-of-N candidates."
+                },
+                "attempts": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Cap on convergence attempts; null = engine default."
+                },
+                "untilClean": {
+                  "type": "boolean",
+                  "description": "Agent flag: iterate until the convergence predicate is clean (no fixed cap)."
+                },
+                "deepScan": {
+                  "type": "boolean",
+                  "description": "Ask flag: bounded multi-scout research sweep with synthesis."
+                },
+                "create": {
+                  "type": "boolean",
+                  "description": "Agent flag: create-from-scratch intent."
+                },
+                "council": {
+                  "type": "boolean",
+                  "description": "Plan strategy: N harnesses draft plans in parallel, the primary merges into one unified plan + one question set. Plan mode only."
+                },
+                "synthesis": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "always",
+                    "never"
+                  ],
+                  "description": "Best-of-N synthesis policy: auto only synthesizes an extra candidate when n>=3 and candidates genuinely complement; always/never force it."
+                },
+                "paidBudget": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "unlimited"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "finite"
+                        },
+                        "maxUsd": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "maxUsd"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "description": "Explicit incremental-cash budget for the run."
+                },
+                "access": {
+                  "type": "string",
+                  "enum": [
+                    "readonly",
+                    "workspace_write",
+                    "full",
+                    "inherit_native"
+                  ],
+                  "description": "Requested access profile; effective access is derived by the engine and never client-supplied."
+                },
+                "web": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "auto",
+                    "cached",
+                    "live"
+                  ],
+                  "description": "Web policy for the run (alias of externalContextPolicy; must match when both set)."
+                },
+                "externalContextPolicy": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/web",
+                  "description": "External web/context policy for the run."
+                },
+                "browser": {
+                  "type": "boolean",
+                  "description": "Request the agent-driven browser; preflight records per-lane effectiveness and refuses when no selected lane can receive it."
+                },
+                "tests": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "program": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S",
+                        "description": "Executable invoked directly without an implicit shell."
+                      },
+                      "args": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": [],
+                        "description": "Exact argv passed to the executable."
+                      },
+                      "cwd": {
+                        "type": "string",
+                        "description": "Optional project-relative working directory for the command."
+                      },
+                      "envAllowlist": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items"
+                        },
+                        "default": [],
+                        "description": "Non-secret parent environment names explicitly forwarded to the command."
+                      }
+                    },
+                    "required": [
+                      "program"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Canonical deterministic command invocation; no implicit shell parsing."
+                  },
+                  "description": "Typed-argv commands to run as deterministic gates."
+                },
+                "protectedPathApprovals": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S",
+                        "description": "Glob approved by the operator/user for this run; consumed only by the auto-protected gate/test path policy, not by built-in critical-path gates."
+                      },
+                      "reason": {
+                        "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items",
+                        "description": "Optional human-readable reason for the approval."
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Per-run typed operator approval allowing changes under an auto-protected gate/test path."
+                  },
+                  "description": "Typed per-run approvals for changing auto-protected gate/test paths; does not bypass built-in critical/security path human gates."
+                },
+                "threadId": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/draftId",
+                  "description": "Thread this run is a turn of."
+                },
+                "turnId": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/draftId",
+                  "description": "Internal daemon handoff only; rejected (400) when supplied by a client on POST /runs — use POST /threads/:id/turns instead."
+                },
+                "parentRunId": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/draftId",
+                  "description": "Server-owned parent/follow-up lineage; rejected on direct POST /runs."
+                },
+                "delegatedFromRunId": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/draftId",
+                  "description": "Internal belt-child provenance only; equals parentRunId and is rejected on direct POST /runs."
+                },
+                "retryOf": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/draftId",
+                  "description": "Server-owned Exact Retry lineage; direct POST /runs rejects it."
+                },
+                "continueFrom": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/draftId",
+                  "description": "Continue a terminal predecessor run owned by this daemon; one accepted successor per predecessor. Omitted mode, scope, execution, harness, model and promptCacheTtl come from the predecessor; prompt is the continuation text and may be empty."
+                },
+                "continueCarrier": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "packet"
+                  ],
+                  "description": "Carrier preference for continueFrom; omitted = auto."
+                },
+                "continueModelInherited": {
+                  "type": "boolean",
+                  "description": "Internal continuation model provenance; direct POST /runs rejects it."
+                },
+                "planRunId": {
+                  "$ref": "#/definitions/DeferredMessageDetail/properties/draftId",
+                  "description": "Internal daemon handoff only; rejected (400) on POST /runs. When set, the turn implements an approved plan from that run."
+                },
+                "planRef": {
+                  "type": "object",
+                  "properties": {
+                    "runId": {
+                      "$ref": "#/definitions/DeferredMessageDetail/properties/draftId"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "runId",
+                    "sha256",
+                    "path"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Internal daemon handoff only; rejected (400) on POST /runs. Frozen-plan reference delivered to the executor as a file."
+                },
+                "reviewerPanel": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "harness": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S",
+                        "description": "Explicit reviewer harness id; repeated harness ids are allowed so one provider can review through multiple requested models."
+                      },
+                      "model": {
+                        "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items",
+                        "description": "Per-reviewer model hint, passed to that harness only."
+                      },
+                      "effort": {
+                        "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/effort",
+                        "description": "Per-reviewer effort hint, passed to that harness only."
+                      },
+                      "credentialProfileId": {
+                        "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items",
+                        "description": "Per-reviewer credential profile id; explicit pins are strict and never fall back."
+                      },
+                      "processingPreference": {
+                        "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/processingPreference",
+                        "description": "Advisory service preference. Fast or Economy may use ordinary Standard service; fallback never introduces Fast. Omission preserves native defaults. Explicit native serviceTier takes precedence."
+                      }
+                    },
+                    "required": [
+                      "harness"
+                    ],
+                    "additionalProperties": false,
+                    "description": "One reviewer of an explicit reviewer panel — a harness plus optional model, effort, and strict credentialProfileId. Compact entries are unpinned; structured JSON carries pins."
+                  },
+                  "minItems": 1,
+                  "description": "Explicit Agent reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewer-panel`, unpinned) or structured `--reviewer-panel-json` with optional strict credentialProfileId. Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps."
+                },
+                "authPreference": {
+                  "type": "string",
+                  "enum": [
+                    "subscription",
+                    "api_key",
+                    "auto"
+                  ],
+                  "description": "Per-run auth route override."
+                },
+                "credentialProfileId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Explicit per-run credential profile id; null FORCES the engine-default ladder past a thread-sticky profile; unknown/disabled ids refuse, never default."
+                },
+                "delegate": {
+                  "type": "boolean",
+                  "description": "Agent-only: inject the Claudexor delegation belt so the harness can spawn bounded isolated sub-runs; non-agent modes refuse, while known belt or harness unavailability degrades before start to ordinary Agent with a durable warning."
+                },
+                "maxSeconds": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 604800,
+                  "description": "Wall-clock limit for the whole run (seconds, max seven days). Omission disables the clock. Explicit limits cancel by default; soft mode warns and continues."
+                },
+                "timeLimitMode": {
+                  "type": "string",
+                  "enum": [
+                    "soft",
+                    "hard"
+                  ],
+                  "description": "Initial timer mode: soft warns and continues; hard cancels. Omission is hard with maxSeconds and soft without it."
+                },
+                "denyPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": "Per-run globs no candidate may touch at all; envelope-only (in-place runs are refused), enforced by the engine post-diff gate, disclosed per lane via path_deny receipts. accept_risk may still deliver (INV-111)."
+                },
+                "outputSchema": {
+                  "type": "object",
+                  "additionalProperties": {},
+                  "description": "JSON Schema for the run's final answer; mandatory (incapable lane => preflight refusal), engine-validated into final/output.json with a typed outputConformance receipt."
+                },
+                "maxTurns": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "description": "Per-run turn cap (beats per-harness settings)."
+                },
+                "deferredDefaults": {
+                  "type": "object",
+                  "properties": {
+                    "harnesses": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "default_model": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null,
+                            "description": "Per-harness default model; null = the harness's own default, or no model on a route whose request must name one."
+                          },
+                          "effort": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/effort"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Default reasoning effort for the harness; null = harness default.",
+                            "default": null
+                          },
+                          "max_turns": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "exclusiveMinimum": 0
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Default max agent turns; null = no limit."
+                          },
+                          "max_rounds": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "exclusiveMinimum": 0
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Default max convergence rounds; null = engine default."
+                          },
+                          "fallback_model": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null,
+                            "description": "Model to fall back to on typed fallback signals; null = none."
+                          },
+                          "web": {
+                            "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/web",
+                            "default": "auto",
+                            "description": "Default web policy for this harness."
+                          },
+                          "auth_preference": {
+                            "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/authPreference",
+                            "default": "auto",
+                            "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret."
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "Per-harness settings."
+                      }
+                    },
+                    "eligibleHarnesses": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items"
+                      }
+                    },
+                    "primaryHarness": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/harnesses/items"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "User-supplied string that must contain visible content, not just whitespace."
+                    },
+                    "authPreference": {
+                      "$ref": "#/definitions/DeferredMessageDetail/properties/capturedStart/anyOf/0/properties/authPreference"
+                    }
+                  },
+                  "required": [
+                    "harnesses",
+                    "eligibleHarnesses",
+                    "primaryHarness",
+                    "authPreference"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false,
+              "description": "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and thread linkage."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Immutable execution controls captured once; null after clear. Completed envelopes may continue in a different_root under ordinary continueFrom custody."
+        },
+        "capturedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DeferredMessageDetail/properties/resumed/properties/at"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When capturedStart was frozen: draft creation. Edits never recapture; null after clear."
+        }
+      },
+      "required": [
+        "draftId",
+        "revision",
+        "state",
+        "predecessorJobId",
+        "predecessorRunId",
+        "predecessorResult",
+        "hold",
+        "dispatchedRevision",
+        "successorJobId",
+        "successorRunId",
+        "prompt",
+        "attachments",
+        "capturedStart",
+        "capturedAt"
+      ],
+      "additionalProperties": false,
+      "description": "Compact addressed draft state, with exact predecessor result and successor handles. A terminal predecessor does not imply the draft has resolved."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

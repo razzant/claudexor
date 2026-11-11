@@ -15,7 +15,10 @@ import { GitCapability } from "./git-capability.js";
 import { SetupLoginCapability } from "./readiness.js";
 import { WorkspaceKind } from "./files-manifest.js";
 import { ProcessingPreference } from "./processing.js";
+import { PromptCacheTtl } from "./prompt-cache.js";
 import { CatalogInputLimit } from "./harness-input.js";
+import { ControlProblem } from "./problem.js";
+import { RunDecisionAction } from "./control.js";
 
 /**
  * AgentCapabilityCatalog — the machine-readable answer to "what can this
@@ -84,6 +87,9 @@ export const CatalogModelSummary = z
       .describe(
         "Vendor CLI version the manifest hints were last verified against (null for api/none sources).",
       ),
+    problem: ControlProblem.optional().describe(
+      "Present only when the live catalog read failed: count is then 0 and is NOT an empty catalog.",
+    ),
   })
   .describe("Summary of a harness's model truth source (full list via the models endpoint/verb).");
 export type CatalogModelSummary = z.infer<typeof CatalogModelSummary>;
@@ -92,6 +98,12 @@ export const CatalogHarness = z
   .object({
     inputLimits: z.array(CatalogInputLimit).optional(),
     processingPreferences: z.array(ProcessingPreference).optional(),
+    promptCacheTtls: z
+      .array(PromptCacheTtl)
+      .optional()
+      .describe(
+        "Exact promptCacheTtl values this harness's adapter translates into native controls; empty when a requested value would be disclosed as ignored, omitted by engines without the run control.",
+      ),
     accountCatalog: z.boolean().optional(),
     id: z
       .string()
@@ -139,13 +151,25 @@ export const CatalogHarness = z
       .describe("Reasoning-effort ladder the adapter declares (normalized by the engine)."),
     accessProfilesSupported: z
       .array(AccessProfile)
-      .describe("Access profiles the adapter can enforce."),
+      .describe("Access profiles the adapter can translate to its harness."),
     readonlyMechanism: ReadonlyMechanism.describe(
-      "HOW read-only is enforced (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness.",
+      "HOW a harness applies read-only (fs_sandbox | permission_deny | tool_allowlist | none) — none means read-only intent is advisory for this harness.",
     ),
     writeMechanism: WriteMechanism.default("none").describe(
-      "HOW workspace_write is confined (fs_sandbox | tool_policy | none) — tool_policy means an allowed shell is unconfined (no FS/network fence); consumers choosing lanes by confinement read THIS field, never a harness name.",
+      "HOW workspace_write is confined (fs_sandbox | tool_policy | none) — fs_sandbox is the base sandbox; a native automatic reviewer may still admit individual actions outside it. tool_policy means an allowed shell is unconfined (no FS/network fence); consumers choosing lanes by confinement read THIS field, never a harness name.",
     ),
+    accessControl: z
+      .object({
+        auxiliaryWritableRoots: z
+          .boolean()
+          .describe(
+            "True when this harness applies execution.auxiliaryWritableRoots natively under workspace_write, and a later run whose effective execution carries no list (a new thread turn without one) keeps no earlier grant; false lanes refuse an explicit pool and drop from an auto pool.",
+          ),
+      })
+      .default({ auxiliaryWritableRoots: false })
+      .describe(
+        "Negotiated access-control grants beyond the access profile. Engines that predate this row omit it (= no auxiliary writable roots).",
+      ),
     delegation: DelegationCapability.describe(
       "Whether this installed runtime can offer Delegate through this harness.",
     ),
@@ -242,6 +266,11 @@ export const AgentCapabilityCatalog = z
       .array(z.string())
       .describe(
         "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these).",
+      ),
+    runDecisionActions: z
+      .array(RunDecisionAction)
+      .describe(
+        "Actions accepted by POST /runs/:id/decision; taken acknowledges a captured terminal patch result.",
       ),
     outputSchemaDialects: z
       .array(CatalogOutputSchemaDialect)

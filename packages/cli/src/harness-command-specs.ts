@@ -1,27 +1,8 @@
-/**
- * The `harness` command's surface, kept beside its installable set so ONE
- * array spells that set everywhere it is printed: the registry usage line,
- * the dispatcher's usage error (harness-command.ts) and the installer's own
- * refusal (harness-installer.ts). This module stays value-import-free on
- * purpose — harness-installer.ts reaches command-registry.ts through args.ts,
- * so owning the array there would close a runtime import cycle.
- */
+/** The public command surface; available programs come from the adapters. */
 import type { CliCommandSpec } from "./command-registry.js";
 
-/** Vendor CLIs `claudexor harness install` can fetch. harness-installer.ts
- * owns each one's install recipe and its test asserts this list is exhaustive. */
-export const INSTALLABLE_HARNESSES = [
-  "agy",
-  "claude",
-  "codex",
-  "copilot",
-  "cursor",
-  "opencode",
-] as const;
-
-/** The `harness` argument shape: rendered by `claudexor help` and reprinted by
- * the dispatcher when a verb is unknown. */
-export const HARNESS_USAGE_ARGS = `list [--all] | install <${INSTALLABLE_HARNESSES.join("|")}> [--target <local|remote>] [--dry-run] [--yes] | inspect [<id>] [--latest] | update <id> [--vendor-version <exact|latest>] [--yes]`;
+export const HARNESS_USAGE_ARGS =
+  "list [--all] | install <id> [--vendor-version <exact>] [--dry-run] [--yes] | inspect [<id>] [--latest] | update <id> [--vendor-version <exact>] [--yes]";
 
 export const HARNESS_COMMAND_SPECS: readonly CliCommandSpec[] = [
   {
@@ -34,11 +15,20 @@ export const HARNESS_COMMAND_SPECS: readonly CliCommandSpec[] = [
     ],
     usageArgs: HARNESS_USAGE_ARGS,
     summary:
-      "List harnesses, install one vendor CLI through the disclosed producer, or inspect/update an installed one",
-    flags: ["all", "target", "dry-run", "yes", "latest", "vendor-version", "json"],
+      "List harnesses, install a missing vendor program, or inspect/update the selected program",
+    flags: [
+      "all",
+      "target",
+      "dry-run",
+      "yes",
+      "latest",
+      "vendor-version",
+      "release-tested",
+      "json",
+    ],
     subcommandFlags: {
       list: ["all"],
-      install: ["target", "dry-run", "yes"],
+      install: ["target", "dry-run", "yes", "vendor-version", "release-tested"],
       inspect: ["latest"],
       update: ["vendor-version", "yes"],
     },

@@ -21,12 +21,14 @@
 import {
   MAX_DELEGATED_CHILDREN,
   ProcessingPreference,
+  PromptCacheTtl,
   WorkspaceKind,
   WorkspaceScopePath,
   type PaidBudget,
 } from "@claudexor/schema";
 import { DELEGATION_ENV, redactSecrets } from "@claudexor/util";
 import type { McpTool, McpToolAnnotations, McpToolOutput, RunnerFn } from "./index.js";
+import { attachmentRefsSchema } from "./attachment-ref-schema.js";
 
 /** Runtime policy the belt enforces, derived from the injected delegation env. */
 export interface DelegationPolicy {
@@ -47,6 +49,8 @@ export interface DelegationPolicy {
    * sub-run is bounded by what is left of it after prior sub-runs. */
   parentBudget: PaidBudget;
   processingPreference?: ProcessingPreference;
+  /** The parent run's captured prompt-cache lifetime; every child inherits it. */
+  promptCacheTtl?: PromptCacheTtl;
   workspaceKind?: WorkspaceKind;
   scopePaths?: string[];
 }
@@ -157,6 +161,9 @@ export function readDelegationPolicy(env: NodeJS.ProcessEnv): DelegationPolicy {
   const kind = WorkspaceKind.safeParse(env[DELEGATION_ENV.workspaceKind]);
   if (env[DELEGATION_ENV.processingPreference] !== undefined && !processing.success)
     throw new Error("invalid captured delegation processingPreference");
+  const promptCacheTtl = PromptCacheTtl.safeParse(env[DELEGATION_ENV.promptCacheTtl]);
+  if (env[DELEGATION_ENV.promptCacheTtl] !== undefined && !promptCacheTtl.success)
+    throw new Error("invalid captured delegation promptCacheTtl");
   if (env[DELEGATION_ENV.workspaceKind] !== undefined && !kind.success)
     throw new Error("invalid captured delegation workspaceKind");
   let scopePaths: string[] | undefined;
@@ -169,6 +176,7 @@ export function readDelegationPolicy(env: NodeJS.ProcessEnv): DelegationPolicy {
   }
   return {
     ...(processing.success ? { processingPreference: processing.data } : {}),
+    ...(promptCacheTtl.success ? { promptCacheTtl: promptCacheTtl.data } : {}),
     ...(kind.success ? { workspaceKind: kind.data } : {}),
     ...(scopePaths !== undefined ? { scopePaths } : {}),
     parentRunId:
@@ -272,6 +280,7 @@ export function beltClaudexorTools(
     type: "object",
     additionalProperties: false,
     properties: {
+      attachments: attachmentRefsSchema,
       prompt: {
         type: "string",
         minLength: 1,
@@ -381,11 +390,15 @@ export function beltClaudexorTools(
       // so the next draw sees the actual amount drawn. A terminal result whose
       // settled spend is unknowable (the post-terminal detail read degraded, so
       // spendUsd is null) commits the FULL reservation fail-closed — unknown
-      // spend must never widen the next draw's headroom.
-      const spendUsd =
+      // spend must never widen the next draw's headroom. An included
+      // subscription without a debit receipt leaves the total unknown but its
+      // cap-governed spend known; that is what the parent cap draws against.
+      const settled =
         result && typeof result === "object"
-          ? (result as { spendUsd?: unknown }).spendUsd
-          : undefined;
+          ? (result as { spendUsd?: unknown; controllableSpendUsd?: unknown })
+          : {};
+      const spendUsd =
+        typeof settled.spendUsd === "number" ? settled.spendUsd : settled.controllableSpendUsd;
       ledger.committedUsd += typeof spendUsd === "number" ? Math.max(0, spendUsd) : reservedUsd;
       const terminalFailure = failedChildTerminal(result);
       if (terminalFailure) throw terminalFailure;

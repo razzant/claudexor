@@ -30,7 +30,7 @@ afterEach(() => {
     else process.env[key] = value;
   }
   rmSync(base, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("defaultSocketPath", () => {
   it("builds a Unix socket path under the daemon dir on POSIX platforms", () => {

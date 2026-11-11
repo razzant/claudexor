@@ -3,11 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { assertCaptureComplete, runCaptureRaw, type CaptureProjection } from "@claudexor/core";
 import { incompleteWorkspaceCapture } from "./capture-failure.js";
 import type { CapturedWorkspaceDiff } from "./manager.js";
-import {
-  excludePlainDiffPathPrefix,
-  plainDiffFlaggedBinaries,
-  relativizePlainDiffHeaders,
-} from "./plain-diff.js";
+import { excludePlainDiffPathPrefix, relativizePlainDiffHeaders } from "./plain-diff.js";
 
 const PROJECTION_CHARS = 200_000; // Existing legacy non-Git preview contract.
 const TRUNCATED = "\n... [diff truncated]\n";
@@ -16,7 +12,7 @@ type Line = { text: string; newline: boolean; clipped: boolean; output?: string 
 /** Drain the entire diff but retain only the preview. Four-line lookahead keeps
  * structural header recognition and exact owned-directory exclusion intact;
  * even a single enormous hunk line is bounded before it becomes a string.
- * Binary stubs beyond the preview still receive the existing secret inspection. */
+ */
 export class PlainDiffProjection implements CaptureProjection {
   private decoder = new StringDecoder("utf8");
   private pending = "";
@@ -29,7 +25,6 @@ export class PlainDiffProjection implements CaptureProjection {
   get complete(): boolean {
     return !this.truncated;
   }
-  readonly binarySecretPaths = new Set<string>();
 
   constructor(
     private baseline: string,
@@ -93,9 +88,6 @@ export class PlainDiffProjection implements CaptureProjection {
         ) === "";
     } else if (line.text.startsWith("@@")) this.inHunk = true;
     if (!this.excluded) {
-      if (binary)
-        for (const path of plainDiffFlaggedBinaries(line.text, this.root))
-          this.binarySecretPaths.add(path);
       const text = line.text + (line.newline ? "\n" : "");
       const room = PROJECTION_CHARS - this.preview.length;
       this.preview += text.slice(0, room);
@@ -149,7 +141,6 @@ export async function capturePlainDiff(
       );
     return {
       diff: result.stdout,
-      binarySecretPaths: [...projection.binarySecretPaths],
       captureIncomplete: !projection.complete,
       ...(!projection.complete
         ? {

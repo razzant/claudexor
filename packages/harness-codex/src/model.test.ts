@@ -1,6 +1,11 @@
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { CredentialProfile, ModelCallRequest, ModelCallResult } from "@claudexor/schema";
+import {
+  CredentialProfile,
+  ModelCallRequest,
+  ModelCallResult,
+  ModelCatalogEntry,
+} from "@claudexor/schema";
 import { createCodexModelAdapter, parseCodexModelCatalog } from "./model.js";
 import {
   CODEX_HTTP_CLIENT_VERSION,
@@ -340,6 +345,49 @@ describe("processing on the physical Codex model request", () => {
       1,
     );
   });
+  it.each([
+    { tier: "flex", status: 400 },
+    { tier: "ultrafast", status: 200 },
+  ])(
+    "sends an exact $tier the account does not advertise unchanged, once",
+    async ({ tier, status }) => {
+      // Raw operations are the exact native interface. They have no paid policy,
+      // and catalog absence is not authoritative unsupported evidence, so the
+      // exact tier is sent unchanged and never substituted. No pre-dispatch
+      // known-unsupported refusal exists at this seam; a provider refusal stays
+      // the provider's typed problem, with no Claudexor claim about generation
+      // and no Standard follow-up.
+      const fixture = setup((init) => {
+        expect(JSON.parse(String(init?.body)).service_tier).toBe(tier);
+        return status === 200
+          ? terminal()
+          : Response.json(
+              { error: { code: "unsupported_parameter", param: "service_tier" } },
+              { status },
+            );
+      });
+      fixture.fetcher.mockResolvedValueOnce(
+        Response.json({
+          models: catalog.models.map((model) => ({
+            ...model,
+            service_tiers: [{ id: "priority" }],
+          })),
+        }),
+      );
+      fixture.request.options.serviceTier = tier;
+      const result = await fixture.adapter.invoke(fixture.request, fixture.context);
+      expect(fixture.fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(
+        1,
+      );
+      if (status === 200) {
+        expect(result.problem).toBeNull();
+      } else {
+        expect(result.problem?.code).not.toBe("processing_unavailable");
+        expect(result.problem?.context).not.toHaveProperty("generationStarted");
+        expect(result.problem?.context).not.toHaveProperty("processingFallback");
+      }
+    },
+  );
   it("keeps old serviceTier-only clients on the strict legacy response shape", async () => {
     const fixture = setup();
     fixture.request.options.serviceTier = "priority";
@@ -914,7 +962,7 @@ describe("single-generation Codex adapter", () => {
     );
     expect(result.outcome).toBe("failed");
     expect(result.problem).toMatchObject({
-      code: "model_unavailable",
+      code: "model_capability_refused",
       context: { vendorCode: "model_not_found", httpStatus: 404 },
     });
     expect(fixture.onDispatch).toHaveBeenCalledTimes(1);
@@ -1031,4 +1079,120 @@ describe("single-generation Codex adapter", () => {
     expect(result.problem?.code).toBe("auth_refresh_failed");
     expect(fixture.fetcher).toHaveBeenCalledTimes(2);
   });
+});
+
+describe("declared input modalities", () => {
+  const png = "data:image/png;base64,aGVsbG8=";
+  it.each([
+    { name: "image-capable list", declared: ["text", "image"], expected: ["text", "image"] },
+    { name: "text-only list", declared: ["text"], expected: ["text"] },
+    { name: "padded nonblank entry", declared: [" image "], expected: [" image "] },
+    {
+      name: "open vocabulary",
+      declared: ["text", "audio", "Image"],
+      expected: ["text", "audio", "Image"],
+    },
+    { name: "missing field", declared: undefined, expected: [] },
+    { name: "null", declared: null, expected: [] },
+    { name: "empty list", declared: [], expected: [] },
+    { name: "string", declared: "image", expected: [] },
+    { name: "map", declared: { text: true }, expected: [] },
+    { name: "list with an object entry", declared: ["text", { type: "image" }], expected: [] },
+    { name: "list with a null entry", declared: ["image", null], expected: [] },
+    { name: "list with an empty entry", declared: ["text", ""], expected: [] },
+    { name: "list with a blank entry", declared: ["text", " \t"], expected: [] },
+  ])("reads $name as $expected, never a filtered subset", ({ declared, expected }) => {
+    const [entry] = parseCodexModelCatalog({ models: [{ slug: "m", input_modalities: declared }] });
+    expect(ModelCatalogEntry.parse(entry).inputModalities).toEqual(expected);
+  });
+  it.each([
+    { name: "image-capable", modalities: ["text", "image"], expected: ["text", "image"] },
+    { name: "text-only", modalities: ["text"], expected: ["text"] },
+    { name: "missing", modalities: undefined, expected: [] },
+    { name: "empty", modalities: [], expected: [] },
+    { name: "mixed-invalid", modalities: ["text", { type: "image" }], expected: [] },
+    { name: "unlisted-model", modalities: ["text"], expected: ["text"], model: "unlisted" },
+  ])(
+    "sends user, tool and replayed images unchanged for a $name catalog",
+    async ({ modalities, expected, model = "model-one" }) => {
+      const fixture = setup();
+      fixture.fetcher.mockImplementation(async (_url, init) =>
+        init?.method === "POST"
+          ? terminal()
+          : Response.json({ models: [{ ...catalog.models[0], input_modalities: modalities }] }),
+      );
+      const discovered = await fixture.adapter.catalog(fixture.context);
+      expect(discovered.models.map((entry) => entry.id).includes(model)).toBe(
+        model === "model-one",
+      );
+      expect(discovered.models[0]?.inputModalities).toEqual(expected);
+      const replayed = [
+        { type: "reasoning", encrypted_content: "OPAQUE+/==" },
+        { type: "message", role: "user", content: [{ type: "input_image", image_url: png }] },
+      ];
+      const result = await fixture.adapter.invoke(
+        ModelCallRequest.parse({
+          ...fixture.request,
+          model,
+          messages: [
+            { role: "system", content: "Own SYSTEM and BIBLE" },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "what is in this image?" },
+                { type: "image_url", image_url: { url: png, detail: "original" } },
+              ],
+            },
+            {
+              role: "assistant",
+              content: "prior turn",
+              nativeContinuation: {
+                format: "codex.responses.v1",
+                route: {
+                  source: discovered.source,
+                  credentialProfileId: discovered.credentialProfileId,
+                  accountFingerprint: discovered.accountFingerprint,
+                  model,
+                },
+                payload: replayed,
+              },
+            },
+            {
+              role: "tool",
+              tool_call_id: "call_one",
+              content: [{ type: "image_url", image_url: { url: png, detail: "high" } }],
+            },
+            { role: "user", content: "next question" },
+          ],
+        }),
+        fixture.context,
+      );
+      expect(result.outcome).toBe("completed");
+      expect(fixture.onDispatch).toHaveBeenCalledTimes(1);
+      const sends = fixture.fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
+      expect(sends).toHaveLength(1);
+      expect(JSON.parse(sends[0][1]!.body as string).input).toEqual([
+        {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "Own SYSTEM and BIBLE" }],
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "what is in this image?" },
+            { type: "input_image", image_url: png, detail: "original" },
+          ],
+        },
+        ...replayed,
+        {
+          type: "function_call_output",
+          call_id: "call_one",
+          output: [{ type: "input_image", image_url: png, detail: "high" }],
+        },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "next question" }] },
+      ]);
+    },
+  );
 });

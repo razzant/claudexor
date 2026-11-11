@@ -1,7 +1,7 @@
 import type { ChildStdin, LiveMessageResult } from "@claudexor/core";
 import type { HarnessEvent } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
-import { isResultFrame, userMessageFrame } from "./interactive.js";
+import { nowIso, redactSecrets } from "@claudexor/util";
+import { isResultFrame, isSuccessResultFrame, userMessageFrame } from "./interactive.js";
 
 type Json = any;
 
@@ -22,14 +22,31 @@ type Json = any;
  *   second `result`, then exit. `closeStdinOn` therefore holds stdin open
  *   while a message is `queued|started` or a run-owned background task is open
  *   (`system/task_started` … `system/task_notification`), and the parser folds
- *   the second turn into the same run (one `started`, cost delta per result).
+ *   the second turn into the same run (one `started`, cost delta per result);
+ * - the initial prompt frame carries its own uuid (`onIo`'s `promptUuid`; the
+ *   recorded result lists it, its `completed` follows). Once Claude Code shows
+ *   it identifies commands by uuid (a lifecycle frame names the prompt, or a
+ *   result names only commands this session never sent: a resumed session's
+ *   earlier turn, #536, in either order), only a result naming the prompt or
+ *   its own terminal lifecycle state ends it, and stdin stays open until then.
+ *   An error result naming no command ends it as any first result did, and so
+ *   does the first result of a CLI that never shows such identity. A success
+ *   result naming no command does not end a prompt Claude Code identified; the
+ *   run's own time limits bound that wait;
+ * - a result that names only commands this session never sent, while the prompt
+ *   still runs, belongs to that other turn and decides nothing about this run.
+ *   Its spend stays on the run; everything else it reports becomes a
+ *   `foreign_result` status, never this run's error, answer or context limit.
+ *   A result naming the prompt or a live message keeps its meaning, and so does
+ *   one naming no command or arriving once the prompt has ended, which may be
+ *   this run's own later work.
  *
  * Receipts are typed from the adapter's own state, never from vendor prose
  * (INV-049): `accepted` = the `queued` lifecycle frame for this uuid;
  * `delivered` = the replay echo, `started`, `completed` or the result's
  * `user_message_uuids`; `delivery_unknown` = no `queued` within the acceptance
- * deadline (`response_timeout`; the production stdin handle swallows write
- * errors, so a dead pipe surfaces this way) or a session closed with the
+ * deadline (`response_timeout`; the message write is fire-and-forget, so a
+ * dead pipe surfaces this way) or a session closed with the
  * message still unreceipted (`transport_lost`); `rejected` = a
  * `cancelled|discarded|refused` lifecycle state before consumption. A message
  * never cancels or fails the run.
@@ -39,6 +56,8 @@ export const CLAUDE_LIVE_ACCEPT_DEADLINE_MS = 2_000;
 /** The one consumption receipt; the same code Codex emits for its steer echo. */
 export const LIVE_INPUT_DELIVERED = "live_input_delivered";
 export const LIVE_INPUT_REFUSED = "live_input_refused";
+/** The diagnostic status code of a result that answered another turn. */
+export const FOREIGN_RESULT = "foreign_result";
 
 type PendingState = "sent" | "queued" | "started" | "unknown" | "consumed" | "refused";
 /** Forward-only lifecycle: an echo that beats `queued` must not be downgraded by it.
@@ -61,20 +80,40 @@ interface Pending {
   announced: boolean;
 }
 
+/** The initial prompt this process answers: the uuid of its stdin frame. */
+interface CurrentPrompt {
+  uuid: string;
+  /** Claude Code identifies commands by uuid here (its lifecycle named the
+   * prompt, or a result named only foreign commands), so it will name this one. */
+  reported: boolean;
+  /** A result named it, its lifecycle reached a terminal state, or an error
+   * result named no command at all. */
+  ended: boolean;
+}
+
 interface LiveSession {
   io: ChildStdin | null;
   pending: Map<string, Pending>;
   resultsSeen: number;
   openBackgroundTasks: Set<string>;
+  prompt: CurrentPrompt | null;
 }
 
+/** Lifecycle states after which a stdin command runs no more. */
+const COMMAND_END_STATES = new Set(["completed", "cancelled", "discarded", "refused"]);
+
 export interface ClaudeLiveInput {
-  /** runloop `session.onIo` seam: the live handle after spawn, `null` once stdin closed. */
-  onIo(io: ChildStdin | null, sessionId: string): void;
+  /**
+   * runloop `session.onIo` seam: the live handle after spawn (the initial
+   * frames are written by then; `promptUuid` is the uuid of that prompt frame),
+   * `null` once stdin closed.
+   */
+  onIo(io: ChildStdin | null, sessionId: string, promptUuid?: string): void;
   /**
    * Stream observer (runs inside the adapter's parseEvent): correlates the
    * receipts and lifecycle facts of this session and appends the typed
-   * receipt/refusal status events to the parser's events.
+   * receipt/refusal status events to the parser's events. The events of a
+   * result that answered another turn come back rebuilt as diagnostics.
    */
   observe(obj: Json, events: HarnessEvent[] | null, sessionId: string): HarnessEvent[] | null;
   /** runloop `session.closeStdinOn`: true only when nothing keeps the session open. */
@@ -97,6 +136,24 @@ function lifecycleUuid(obj: Json): string | null {
 
 function taskId(obj: Json): string | null {
   return typeof obj?.task_id === "string" ? obj.task_id : null;
+}
+
+/** One event of a result that answered another turn: usage stays this run's
+ * accounting; the rest is rebuilt as a plain status, so no field of it can be
+ * read as this run's failure, answer, work report, retry class or context
+ * limit. An error's text is a diagnostic and stays masked (INV-146). */
+function foreignResultEvent(event: HarnessEvent, commands: string[]): HarnessEvent {
+  if (event.type === "usage") return event;
+  return {
+    type: "status",
+    session_id: event.session_id,
+    ts: event.ts,
+    text:
+      event.type === "error"
+        ? redactSecrets(event.error ?? event.text ?? "error result")
+        : (event.text ?? event.context?.cause ?? event.type),
+    payload: { code: FOREIGN_RESULT, event_type: event.type, user_message_uuids: commands },
+  };
 }
 
 export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): ClaudeLiveInput {
@@ -136,6 +193,9 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
   };
 
   const hasPendingTurnWork = (session: LiveSession): boolean => {
+    // The prompt is still running: a result that does not name it (a resumed
+    // session's earlier turn) is not its own result.
+    if (session.prompt?.reported && !session.prompt.ended) return true;
     for (const pending of session.pending.values()) {
       if (pending.state === "sent" || pending.state === "queued" || pending.state === "started")
         return true;
@@ -144,13 +204,14 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
   };
 
   return {
-    onIo(io, sessionId) {
+    onIo(io, sessionId, promptUuid) {
       if (io) {
         sessions.set(sessionId, {
           io,
           pending: new Map(),
           resultsSeen: 0,
           openBackgroundTasks: new Set(),
+          prompt: promptUuid ? { uuid: promptUuid, reported: false, ended: false } : null,
         });
         return;
       }
@@ -174,6 +235,11 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         const uuid = lifecycleUuid(obj);
         const pending = uuid ? session.pending.get(uuid) : undefined;
         const state = obj.state;
+        const prompt = session.prompt;
+        if (prompt && uuid === prompt.uuid) {
+          prompt.reported = true;
+          if (COMMAND_END_STATES.has(state)) prompt.ended = true;
+        }
         if (pending && uuid && pending.state !== "refused") {
           if (state === "queued") {
             if (advance(pending, "queued")) pending.settle({ outcome: "accepted" });
@@ -221,9 +287,18 @@ export function createClaudeLiveInput(options: ClaudeLiveInputOptions = {}): Cla
         const uuids: unknown[] = Array.isArray(obj.user_message_uuids)
           ? obj.user_message_uuids
           : [];
-        for (const uuid of uuids) {
-          if (typeof uuid === "string") consumed(session, sessionId, uuid, "consumed", receipts);
+        const named = uuids.filter((uuid): uuid is string => typeof uuid === "string");
+        const prompt = session.prompt;
+        if (prompt && !prompt.ended) {
+          if (named.includes(prompt.uuid)) prompt.ended = true;
+          // Only commands this session never sent: another turn's result, so
+          // none of them is pending and there is no receipt to add.
+          else if (named.length > 0 && !named.some((uuid) => session.pending.has(uuid))) {
+            prompt.reported = true;
+            return events && events.map((event) => foreignResultEvent(event, named));
+          } else if (named.length === 0 && !isSuccessResultFrame(obj)) prompt.ended = true;
         }
+        for (const uuid of named) consumed(session, sessionId, uuid, "consumed", receipts);
       }
       if (receipts.length === 0) return events;
       return [...(events ?? []), ...receipts];

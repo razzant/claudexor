@@ -12,11 +12,12 @@ import Foundation
 enum AccountReadiness: Int, Comparable {
     case unavailable = 0, unknown = 1, ready = 2
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+    /// The readiness DOT fill (trigger dot and row dot), never text.
     var color: Color {
         switch self {
-        case .ready: return Theme.status(.positive)
-        case .unknown: return Theme.status(.caution)
-        case .unavailable: return Theme.status(.negative)
+        case .ready: return Theme.statusFill(.positive)
+        case .unknown: return Theme.statusFill(.caution)
+        case .unavailable: return Theme.statusFill(.negative)
         }
     }
 }
@@ -54,6 +55,9 @@ struct AccountRowModel: Identifiable {
     /// The row's latest observed service per requested model: a routing
     /// observation, never a quota or authentication verdict.
     var lastService: [AccountLastService] = []
+    /// Live typed refusals of single models on this row (#200): dated evidence
+    /// in its refusal line, never its readiness, Enabled state or order.
+    var credentialUnusable: [AccountCredentialUnusableMark] = []
     /// Non-secret {email, plan} of this account (INV-067), projected
     /// daemon-side from the owning credential-profile probe. When present it
     /// drives the row's secondary line (`identityLine`); nil when the source
@@ -84,8 +88,9 @@ struct AccountRowModel: Identifiable {
     }
 
     /// The single worst account-wide text window across the account's quota
-    /// groups; drives the ONE compact quota line the popover shows per account.
-    /// Image and model-scoped windows stay in the detail rows.
+    /// groups. It alone feeds the trigger's quota percent (`worstPercent`) and,
+    /// when present, the row's compact quota line. Image and model-scoped
+    /// windows never become this account-wide value.
     var worstWindow: QuotaPresentation.Window? {
         quotaGroups
             .flatMap(\.windows)
@@ -94,6 +99,23 @@ struct AccountRowModel: Identifiable {
     }
     var worstPercent: Int? {
         worstWindow?.usedRatio.map { Int(($0 * 100).rounded()) }
+    }
+
+    /// The window behind the row's one compact quota line. An account-wide text
+    /// window always wins, even when its ratio is unknown. Only when the account
+    /// has no account-wide text window does the row expose its worst measured
+    /// model-scoped text window. This is row presentation only: the trigger,
+    /// readiness and routing continue to use the account-wide projection above.
+    var compactWindow: QuotaPresentation.Window? {
+        if let worstWindow { return worstWindow }
+        return quotaGroups
+            .flatMap(\.windows)
+            .filter {
+                $0.appliesToText
+                    && !($0.appliesToModels ?? []).isEmpty
+                    && $0.usedRatio != nil
+            }
+            .max { ($0.usedRatio ?? -1) < ($1.usedRatio ?? -1) }
     }
 
     /// Server-authored account-wide availability folded by QuotaPresentation.
@@ -113,7 +135,7 @@ struct AccountRowModel: Identifiable {
     var scopedQuotaLabel: String? {
         let labels = Set(quotaGroups.flatMap(\.scopedExhaustions).map(\.scopeLabel))
         if labels.count == 1 { return labels.first }
-        if !labels.isEmpty || quotaGroups.contains(where: \.hasOnlyScopedWindows) {
+        if !labels.isEmpty {
             return "Scoped limits"
         }
         return nil
@@ -127,7 +149,7 @@ enum AccountsPresentation {
     /// config-dir/HOME account row (the engine's config_dir_login set). Under
     /// the unified account model every one of their accounts — including a
     /// migrated legacy default-store login — is a named registry row.
-    static let configDirLoginHarnessIds = ["agy", "claude", "codex", "cursor"]
+    static let configDirLoginHarnessIds = ["agy", "claude", "codex", "cursor", "grok"]
 
     /// The families the add-account flow may register, DERIVED from the set
     /// above so a fifth family is one entry there and nothing else. The picker
@@ -267,6 +289,9 @@ enum AccountsPresentation {
                 lastService: model.accountsRoutingEvidence.lastService(
                     harnessId: entry.profile.harnessId, profileId: entry.profile.profileId,
                     at: model.activeExecutionLocation),
+                credentialUnusable: model.accountsRoutingEvidence.credentialUnusable(
+                    harnessId: entry.profile.harnessId, profileId: entry.profile.profileId,
+                    at: model.activeExecutionLocation),
                 identity: entry.identity
             )
         }
@@ -275,15 +300,32 @@ enum AccountsPresentation {
     /// The next-up badge copy: `next_up` is the configured default model's verdict.
     static let nextUpLabel = "Next up · default model"
 
-    /// "Recent refusal · <model>, …": which requested models this row refused
-    /// before progress (each mark orders the pool for its own model only).
-    static func refusalLine(_ marks: [AccountRefusalMark]) -> String? {
-        guard !marks.isEmpty else { return nil }
+    /// "Recent refusal · <model> (<reason>, <age>), <model>, …": first the
+    /// row's live typed refusals of single models, each with the vendor's
+    /// typed evidence (or the engine's code) and when it was observed, then the
+    /// requested models it refused before progress; a pre-progress mark of a
+    /// model already named folds into it. A typed refusal makes routing refuse
+    /// this row for that model; a pre-progress mark only orders the pool for
+    /// it. Both are observations of one model, never the row's readiness.
+    static func refusalLine(
+        _ marks: [AccountRefusalMark],
+        credentialUnusable: [AccountCredentialUnusableMark] = [],
+        now: Date = Date()
+    ) -> String? {
+        var entries: [String] = []
+        var named: Set<String> = []
+        for refusal in credentialUnusable where named.insert(refusal.model).inserted {
+            let reason = refusal.detail.flatMap { $0.isEmpty ? nil : $0 } ?? refusal.code
+            entries.append("\(refusal.model) (\(reason), \(age(refusal.observedAt, now: now)))")
+        }
         var models: [String] = []
-        for mark in marks where !models.contains(modelLabel(mark.requestedModel)) {
+        for mark in marks where !(mark.requestedModel.map(named.contains) ?? false)
+            && !models.contains(modelLabel(mark.requestedModel)) {
             models.append(modelLabel(mark.requestedModel))
         }
-        return "Recent refusal · \(models.joined(separator: ", "))"
+        entries += models
+        guard !entries.isEmpty else { return nil }
+        return "Recent refusal · \(entries.joined(separator: ", "))"
     }
 
     /// "Last served · <model> · <age>; …", most recent first.

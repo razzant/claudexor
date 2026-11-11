@@ -260,9 +260,10 @@ export const GlobalConfig = z
           .number()
           .int()
           .positive()
+          .nullable()
           .default(HARNESS_INACTIVITY_TIMEOUT_DEFAULT_MS)
           .describe(
-            "Inactivity watchdog for harness streams: no events for this window aborts the stream and fails the attempt with a typed timeout.",
+            "Inactivity watchdog for harness streams: no events for this window aborts the stream; null disables inactivity timing without changing cancellation or cleanup.",
           ),
         ...RuntimeConcurrencyCaps.shape,
       })
@@ -274,7 +275,7 @@ export const GlobalConfig = z
      * retention service deletes ONLY terminal, unreferenced run trees past
      * their age — active/queued/blocked runs, runs referenced by live
      * threads, and undelivered/applyable work products always survive, and
-     * the newest N runs per project survive regardless of age.
+     * the newest N runs survive for registered active/archived projects, not orphaned runtime namespaces.
      */
     retention: z
       .object({
@@ -295,7 +296,9 @@ export const GlobalConfig = z
           .int()
           .nonnegative()
           .default(20)
-          .describe("The newest N runs per project always survive, regardless of age."),
+          .describe(
+            "The newest N runs survive for active registrations (even with missing roots), archived registrations whose roots exist, and the built-in no-project scope. Orphaned namespaces have no keep-last protection.",
+          ),
       })
       .strict()
       .default({})
@@ -366,7 +369,9 @@ export const GlobalConfig = z
               .string()
               .nullable()
               .default(null)
-              .describe("Per-harness default model; null = the harness's own default."),
+              .describe(
+                "Per-harness default model; null = the harness's own default, or no model on a route whose request must name one.",
+              ),
             effort: EffortHint.nullable()
               .default(null)
               .describe("Default reasoning effort for the harness; null = harness default."),

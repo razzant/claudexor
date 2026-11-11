@@ -33,7 +33,7 @@ describe("plan CLI attachment transport", () => {
     vi.restoreAllMocks();
     vi.resetModules();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it("uploads the selected bytes, finalizes their digest, and enqueues only the resource ref", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-plan-attachment-"));

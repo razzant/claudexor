@@ -36,9 +36,24 @@ export const UsageCostSummary = z
   })
   .strict()
   .describe(
-    "Observed usage components. An amount of unknown meaning is not charged cash; separately proven included service can still establish exact zero incremental cash.",
+    "Observed usage components. An amount of unknown meaning is not charged cash; separately proven included service can still establish exact zero incremental cash unless its route reports no actual debit.",
   );
 export type UsageCostSummary = z.infer<typeof UsageCostSummary>;
+
+/** Run budget projection fields: the part of cash a finite cap governs and what
+ * remains of that cap. */
+export const ControllableSpendUsd = z
+  .number()
+  .nullable()
+  .default(null)
+  .describe(
+    "Cash governed by the finite cap: settled amounts on routes Claudexor controls; null when that cash is unknown. spendUsd can still be null when an included subscription reports no actual debit.",
+  );
+export const RemainingCapUsd = z
+  .number()
+  .nullable()
+  .default(null)
+  .describe("Remaining finite cap after controllableSpendUsd; null when no cap or unknown.");
 
 export const AuthMode = z
   .enum(["local_session", "api_key", "unknown"])
@@ -198,8 +213,12 @@ export const BudgetObservation = z
       .nullable()
       .optional()
       .describe(
-        "Canonical model ids/aliases this quota observation applies to; omitted/null means every model.",
+        "Canonical model ids/aliases this quota observation applies to; omitted/null (with no prefixes) means every model.",
       ),
+    applies_to_model_prefixes: z
+      .array(Id)
+      .optional()
+      .describe("Producer-declared model-family prefixes, carried with applies_to_models."),
     applies_to_unspecified_model: z
       .boolean()
       .optional()

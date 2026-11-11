@@ -1,12 +1,14 @@
 import { QUOTA_GAP_ABSENCE_REASONS, quotaSourceTraits } from "@claudexor/schema";
 import type {
-  AccountTarget,
+  AccountResourceTarget,
   AccountResourceObservation,
+  AccountResourceSnapshot,
   QuotaAbsence,
   QuotaSnapshot,
   QuotaSubject,
 } from "@claudexor/schema";
 import { QuotaPollPacer, type QuotaPacerStateStore } from "./quota-poll-pacer.js";
+import { resourceRefreshEvidence } from "./quota-resource-demand.js";
 import {
   earliestFreshRenewalAt,
   earliestQuotaRenewalAt,
@@ -33,7 +35,7 @@ export interface QuotaRefreshResult {
  * ignores the argument keeps the pre-existing contract. */
 export interface QuotaRefreshCycle {
   readonly foreground: boolean;
-  readonly target?: AccountTarget;
+  readonly target?: AccountResourceTarget;
   /** Background cycles fetch only due primary evidence. Explicit refreshes
    * still ask every eligible subject; floor and alias checks remain separate. */
   readonly shouldRefresh?: (subject: QuotaSubject) => boolean;
@@ -188,6 +190,7 @@ export function laneDemand(
   dueBefore: number,
   since: number,
   lanes: readonly PacingLane[] = [],
+  resources: readonly AccountResourceSnapshot[] = [],
 ): LaneDemand {
   // A paced subject contributes neither demand nor a renewal horizon until
   // its floor expires, so healthy siblings keep their ordinary cadence.
@@ -201,13 +204,22 @@ export function laneDemand(
       : snapshots.filter((snapshot) => snapshot.subject.harness === vendor);
   const laneSubjects =
     vendor === null ? subjects : subjects?.filter((subject) => subject.harness === vendor);
+  const laneResources =
+    vendor === null ? resources : resources.filter((row) => row.target.harness === vendor);
   const renewalAt =
-    earliestFreshRenewalAt(laneSnapshots, laneSubjects, since, now, dueBefore) ??
-    earliestQuotaRenewalAt(laneSnapshots, laneSubjects, dueBefore);
+    earliestFreshRenewalAt(laneSnapshots, laneSubjects, since, now, dueBefore, laneResources) ??
+    earliestQuotaRenewalAt(laneSnapshots, laneSubjects, dueBefore, laneResources);
   return {
-    remains: remainingQuotaRefreshDemand(laneSnapshots, laneSubjects, dueBefore).size > 0,
+    remains:
+      remainingQuotaRefreshDemand(laneSnapshots, laneSubjects, dueBefore, laneResources).size > 0,
     renewalNotBefore: renewalAt === null ? null : renewalAt - QUOTA_POLL_INTERVAL_MS,
-    renewalDueObservedAt: latestQuotaRenewalObservedAt(laneSnapshots, laneSubjects, now, dueBefore),
+    renewalDueObservedAt: latestQuotaRenewalObservedAt(
+      laneSnapshots,
+      laneSubjects,
+      now,
+      dueBefore,
+      laneResources,
+    ),
   };
 }
 
@@ -230,7 +242,8 @@ export function selectCycleEntries(
   isCurrent: () => boolean = () => true,
   subjects: readonly QuotaSubject[] = [],
   snapshots: readonly QuotaSnapshot[] = [],
-  target?: AccountTarget,
+  target?: AccountResourceTarget,
+  resources: readonly AccountResourceSnapshot[] = [],
 ): LaneCycleSelection {
   subjects = target
     ? subjects.filter(
@@ -292,6 +305,11 @@ export function selectCycleEntries(
                   ),
                   [subject],
                   nowMs + QUOTA_POLL_INTERVAL_MS,
+                  resources.filter(
+                    (row) =>
+                      row.target.harness === subject.harness &&
+                      row.target.profile_id === subject.subject_id,
+                  ),
                 ).size > 0,
           pacing: {
             bindCredentials: (bindings) => {
@@ -322,6 +340,7 @@ export function noteRefreshPacing(
   claims: readonly QuotaAbsence[],
   skipped: LaneCycleSelection["skipped"],
   now: number,
+  resources: readonly AccountResourceObservation[] = [],
 ): void {
   for (const snapshot of snapshots) {
     if (quotaSourceTraits(snapshot.source).refreshDemandHarness !== snapshot.subject.harness)
@@ -329,6 +348,18 @@ export function noteRefreshPacing(
     lanes
       .find((lane) => lane.vendor === snapshot.subject.harness)
       ?.pacer.noteSubjectSuccess(snapshot.subject);
+  }
+  // The same declared primary-resource evidence satisfies demand and resets
+  // the subject's retry ladder, without clearing an active Retry-After floor.
+  for (const { target } of resourceRefreshEvidence(resources)) {
+    lanes
+      .find((lane) => lane.vendor === target.harness)
+      ?.pacer.noteSubjectSuccess({
+        harness: target.harness,
+        subject_id: target.profile_id,
+        credential_route: "vendor_native",
+        plan_label: null,
+      });
   }
   for (const claim of claims) {
     const lane = lanes.find((item) => item.vendor === claim.subject.harness);

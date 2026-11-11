@@ -1,5 +1,15 @@
 import { DaemonTransportError } from "./client-errors.js";
-import type { CancelReasonCode, CommandListQuery } from "@claudexor/schema";
+import type {
+  CancelReasonCode,
+  CommandListQuery,
+  RunTimeLimitRequest,
+  RunTimeLimitSnapshot,
+  DeferredMessageCall,
+  DeferredMessageReceipt,
+  DeferredMessageDetail,
+  DeferredMessageProjection,
+  DeferredMessageStopReport,
+} from "@claudexor/schema";
 import { type Socket, connect } from "node:net";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -36,6 +46,20 @@ export abstract class DaemonRpcMethods {
 
   health() {
     return this.call("claudexor.health");
+  }
+  deferredMessage(input: DeferredMessageCall) {
+    return this.call<DeferredMessageReceipt>("claudexor.deferredMessage", input);
+  }
+  deferredMessageRead(draftId: string) {
+    return this.call<DeferredMessageDetail | null>("claudexor.deferredMessageRead", { draftId });
+  }
+  deferredMessageProjection(predecessorId: string) {
+    return this.call<DeferredMessageProjection | null>("claudexor.deferredMessageProjection", {
+      predecessorId,
+    });
+  }
+  deferredMessageStop(predecessorId: string) {
+    return this.call<DeferredMessageStopReport>("claudexor.deferredMessageStop", { predecessorId });
   }
   enqueue(
     request: unknown,
@@ -119,6 +143,9 @@ export abstract class DaemonRpcMethods {
   }
   cancel(id: string, reasonCode?: CancelReasonCode) {
     return this.call("claudexor.cancel", reasonCode ? { id, reason_code: reasonCode } : { id });
+  }
+  runTimeLimit(id: string, request: RunTimeLimitRequest) {
+    return this.call<RunTimeLimitSnapshot>("claudexor.runTimeLimit", { id, request });
   }
   fenceDelegationParent(runId: string) {
     return this.call<{ runId: string; fenced: boolean }>("claudexor.delegationFence", { runId });

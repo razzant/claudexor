@@ -1,7 +1,7 @@
 import { mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { journalPartitionDirectory } from "./test-support/fixtures/legacy/journal/index.js";
 import { readLogicalFixture, writeLogicalFixture } from "./test-support/fixture-loader.js";
 import { runLegacyImport } from "./importer.js";
@@ -9,14 +9,21 @@ import { EngineStore } from "./store.js";
 import { createSqlDaemonServices } from "./sql-daemon-services.js";
 import { SqlPartitionRecovery } from "./sql-recovery.js";
 import { sqlRecoveryProjections } from "./sql-validation.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
-afterEach(async () => {
+const removals: Array<() => void> = [];
+afterEachClosed(async () => {
+  // This test's removals, taken before its closes: a later test never runs them.
+  const ownedRemovals = removals.splice(0).reverse();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  return () => {
+    for (const remove of ownedRemovals) remove();
+  };
 });
 async function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "sql-validate-")));
-  cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
   const logical = readLogicalFixture(
     resolve(import.meta.dirname, "test-support/fixtures/global.json"),
   );
@@ -56,6 +63,7 @@ describe("SQL recovery uses canonical domain validators", () => {
     expect(result.status).toBe("ready");
     expect(result.projectionStatus.map((p) => p.name)).toEqual([
       "sqlite.integrity",
+      "deferred-messages",
       "commands",
       "threads",
       "interactions",

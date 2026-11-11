@@ -18,6 +18,7 @@ import { print, printJson, printUsageError } from "./cli-io.js";
 import { controlProblemError, renderCliFailure } from "./cli-error.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
+import { CONTROL_STORE_IDENTITY_HEADER } from "@claudexor/schema";
 
 export async function retryCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const runId = args._[1];
@@ -26,7 +27,10 @@ export async function retryCommand(args: ParsedArgs, json: boolean): Promise<num
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/retry`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        [CONTROL_STORE_IDENTITY_HEADER]: "1",
+      },
       body: "{}",
     });
     const data = (await response.json()) as Record<string, unknown>;
@@ -47,9 +51,7 @@ export async function runAgainCommand(args: ParsedArgs, json: boolean): Promise<
   if (!runId) return printUsageError(json, "usage: claudexor run-again <run_id>");
   try {
     const { addr } = await ensureDaemon();
-    const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/run-again`, {
-      headers: { Authorization: `Bearer ${addr.token}` },
-    });
+    const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/run-again`);
     const data = (await response.json()) as Record<string, unknown>;
     if (!response.ok) throw controlProblemError(response.status, data, `HTTP ${response.status}`);
     if (json) printJson(data);

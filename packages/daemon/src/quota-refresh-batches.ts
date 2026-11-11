@@ -2,15 +2,16 @@ import {
   AccountResourceObservation,
   QuotaSnapshot as QuotaSnapshotSchema,
   QuotaAbsence as QuotaAbsenceSchema,
+  accountResourceSourceHarnesses,
   type QuotaSnapshot,
   type QuotaAbsence,
-  type AccountTarget,
+  type AccountResourceTarget,
 } from "@claudexor/schema";
 import type { QuotaRefreshResult } from "./quota-poll-lanes.js";
 import { resourceKey } from "./quota-resources.js";
 export function validatedRefreshBatches(
   settled: PromiseSettledResult<QuotaRefreshResult>[],
-  target?: AccountTarget,
+  target?: AccountResourceTarget,
 ) {
   const batches: Array<{
     snapshots: QuotaSnapshot[];
@@ -70,7 +71,7 @@ export function refreshCoverage(
   batches: ReturnType<typeof validatedRefreshBatches>,
   skipped: ReadonlyArray<{ subject?: import("@claudexor/schema").QuotaSubject }>,
 ) {
-  return [
+  const subjects = [
     ...batches.flatMap((batch) => [
       ...(batch?.snapshots ?? []).map((value) => value.subject),
       ...(batch?.absences ?? []).map((value) => value.subject),
@@ -81,13 +82,20 @@ export function refreshCoverage(
       ? []
       : [resourceKey({ harness: subject.harness, profile_id: subject.subject_id })],
   );
+  return [
+    ...subjects,
+    ...batches.flatMap((batch) =>
+      (batch?.resources ?? []).map((value) => resourceKey(value.target)),
+    ),
+  ];
 }
 
 /** Exact management targets may be disabled and therefore absent from the
- * routing universe. Include them once without widening the source sweep. */
+ * routing universe. Include them once without widening the source sweep. An
+ * API-key target keeps the managed-key route its source paces it under. */
 export function refreshSubjects(
   subjects: readonly import("@claudexor/schema").QuotaSubject[] = [],
-  target?: AccountTarget,
+  target?: AccountResourceTarget,
 ) {
   if (!target) return subjects;
   return [
@@ -95,15 +103,21 @@ export function refreshSubjects(
     {
       harness: target.harness,
       subject_id: target.profile_id,
-      credential_route: "vendor_native" as const,
+      credential_route: accountResourceSourceHarnesses("api_key").has(target.harness)
+        ? ("managed_api_key" as const)
+        : ("vendor_native" as const),
       plan_label: null,
     },
   ];
 }
 
 export function refreshCycleCovers(
-  cycle: { target?: AccountTarget; scopeVendor: string | null; coveredTargets: readonly string[] },
-  target?: AccountTarget,
+  cycle: {
+    target?: AccountResourceTarget;
+    scopeVendor: string | null;
+    coveredTargets: readonly string[];
+  },
+  target?: AccountResourceTarget,
   scope?: { vendor: string | null },
 ): boolean {
   return target

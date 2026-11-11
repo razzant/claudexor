@@ -1,6 +1,11 @@
 import { closeSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { isLaunchableExecutable } from "./executable-inspection.js";
+import {
+  isLaunchableExecutable,
+  isProvenNonWindowsImage,
+  NOT_WINDOWS_IMAGE,
+} from "./executable-inspection.js";
+import { harnessSearchDirs } from "./launch-refusal.js";
 
 /** A vendor entry remains the identity. Its interpreter is only launch transport. */
 export interface HarnessInterpreter {
@@ -160,6 +165,50 @@ function npmShimTarget(path: string): { entrypoint: string; removesJsExtension: 
   }
 }
 
+/** Interpreters for a Node entry: a launcher's adjacent node.exe, then PATH's,
+ * read from the same directories as the resolver's own candidates. */
+function nodeCandidates(
+  path: string,
+  shim: boolean,
+  pathValue: string,
+  pathDelimiter: string,
+): string[] {
+  return [
+    ...(shim ? [join(dirname(path), "node.exe")] : []),
+    ...harnessSearchDirs(pathValue, "win32", pathDelimiter).map((dir) => join(dir, "node.exe")),
+  ];
+}
+
+/**
+ * Why `commandForFile` selected nothing for a win32 file, when the cause is a
+ * provable non-image it would otherwise hand to Windows: the file itself, a
+ * standard launcher's declared native target, or the only Node interpreters a
+ * declared script could run on. Null off win32 and for every other or unknown
+ * cause.
+ */
+export function windowsImageFault(
+  path: string,
+  pathValue: string,
+  pathDelimiter: string,
+  platform: NodeJS.Platform,
+): { image: string; reason: string } | null {
+  if (platform !== "win32") return null;
+  const shim = extname(path).toLowerCase() === ".cmd";
+  const entrypoint = shim ? npmShimTarget(path)?.entrypoint : path;
+  if (!entrypoint) return null;
+  if (isProvenNonWindowsImage(entrypoint)) {
+    const via = entrypoint === path ? "" : `launches ${entrypoint}, which `;
+    return { image: entrypoint, reason: `${via}${NOT_WINDOWS_IMAGE}` };
+  }
+  if (/\.(?:exe|com)$/i.test(entrypoint) || !nodeShebang(entrypoint)) return null;
+  const nodes = nodeCandidates(path, shim, pathValue, pathDelimiter);
+  if (nodes.some((node) => isLaunchableExecutable(node, "win32"))) return null;
+  const image = nodes.find((node) => isProvenNonWindowsImage(node));
+  return image
+    ? { image, reason: `runs ${entrypoint} with ${image}, which ${NOT_WINDOWS_IMAGE}` }
+    : null;
+}
+
 /** A selected file's physical invocation. PATH is already composed by its owner. */
 export function commandForFile(
   path: string,
@@ -181,14 +230,9 @@ export function commandForFile(
   }
   const shebang = nodeShebang(entrypoint);
   if (!shebang) return null;
-  const candidates = [
-    ...(shim ? [join(dirname(path), "node.exe")] : []),
-    ...pathValue
-      .split(pathDelimiter)
-      .filter(Boolean)
-      .map((dir) => join(dir, "node.exe")),
-  ];
-  const node = candidates.find((candidate) => isLaunchableExecutable(candidate, platform));
+  const node = nodeCandidates(path, shim, pathValue, pathDelimiter).find((candidate) =>
+    isLaunchableExecutable(candidate, platform),
+  );
   if (!node) return null;
   // npm's SETLOCAL shebang declarations expire at endLocal. The current
   // template applies only this PATHEXT edit AFTER endLocal; older forms do not.

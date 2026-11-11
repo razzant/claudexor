@@ -7,7 +7,7 @@ struct FindingCard: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            Rectangle().fill(finding.severity.color).frame(width: 4)
+            Rectangle().fill(Theme.statusFill(finding.severity.tone)).frame(width: 4)
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                 HStack(spacing: Theme.Spacing.sm) {
                     Label(finding.severity.label, systemImage: finding.severity.glyph)

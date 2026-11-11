@@ -11,6 +11,12 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  describeRemaining,
+  probeProcess,
+  remainingProcesses,
+  settleInAppOutcome,
+} from "./lib/win32-agy-acceptance-diagnostics.mjs";
 
 const EVIDENCE_FILE = ".claudexor-agy-fake-evidence.tsv";
 const BROWSER_SENTINEL = ".claudexor-agy-fake-browser-sentinel";
@@ -35,15 +41,29 @@ process.env.CLAUDEXOR_CONFIG_DIR = root;
 process.env.CLAUDEXOR_AGY_BIN = fixture;
 for (const key of PROVIDER_KEYS) process.env[key] = "must-be-scrubbed";
 
-const observedPids = new Set([process.pid]);
+// Every process the acceptance saw, with the role it was seen in, so a cleanup
+// failure can name what remained.
+const observedProcesses = [];
+const recordProcess = (pid, role) => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  if (!observedProcesses.some((entry) => entry.pid === pid && entry.role === role)) {
+    observedProcesses.push({ pid, role });
+  }
+};
+const processesFor = (pids) =>
+  pids.flatMap((pid) => {
+    const entries = observedProcesses.filter((entry) => entry.pid === pid);
+    return entries.length > 0 ? entries : [{ pid, role: "unrecorded" }];
+  });
+recordProcess(process.pid, "acceptance worker");
 let stage = "starting";
 let inAppDiagnostics;
-let summary = { ok: false, stage, workerPid: process.pid, observedPids: [...observedPids] };
+let summary = { ok: false, stage, workerPid: process.pid, observedProcesses };
 const checkpoint = (next) => {
   stage = next;
   writeFileSync(
     `${resultPath}.tmp`,
-    `${JSON.stringify({ ok: false, stage, workerPid: process.pid, observedPids: [...observedPids], inAppDiagnostics })}\n`,
+    `${JSON.stringify({ ok: false, stage, workerPid: process.pid, observedProcesses, inAppDiagnostics })}\n`,
     "utf8",
   );
   renameSync(`${resultPath}.tmp`, resultPath);
@@ -61,6 +81,7 @@ try {
     protocol,
     setupAttachCommand,
     setupJobSupport,
+    schema,
   ] = await Promise.all([
     importFromRepo("packages/core/dist/index.js"),
     importFromRepo("packages/config/dist/index.js"),
@@ -70,7 +91,12 @@ try {
     importFromRepo("packages/cli/dist/setup-login-protocol.js"),
     importFromRepo("packages/cli/dist/setup-attach-command.js"),
     importFromRepo("packages/cli/dist/setup-job-support.js"),
+    importFromRepo("packages/schema/dist/index.js"),
   ]);
+  const sidecarVocabulary = {
+    errorCodes: schema.SetupNativeCommandErrorCode.options,
+    stages: schema.SetupLoginRunnerState.shape.stage.options,
+  };
   checkpoint("imports_loaded");
 
   const homeA = join(root, "profiles", "agy-win-a");
@@ -105,7 +131,7 @@ try {
     maxBuffer: 64 * 1024,
   });
   assert(control.error === undefined, "console control fake failed to spawn");
-  if (Number.isSafeInteger(control.pid) && control.pid > 0) observedPids.add(control.pid);
+  recordProcess(control.pid, "console control fake");
   assert(control.status === 0, `console control fake exited ${String(control.status)}`);
   assert(control.signal === null, "console control fake exited by signal");
   assert(
@@ -145,9 +171,13 @@ try {
     `hanging print probe returned ${timeoutResult.reason}`,
   );
   const timeoutPids = parsePidLine(timeoutResult.stdout);
-  observedPids.add(timeoutPids.vendor);
-  observedPids.add(timeoutPids.descendant);
-  await expectPidsGone(timeoutPids, 5_000);
+  recordProcess(timeoutPids.vendor, "timeout vendor");
+  recordProcess(timeoutPids.descendant, "timeout descendant");
+  await expectProcessesGone(
+    processesFor([timeoutPids.vendor, timeoutPids.descendant]),
+    5_000,
+    "fake agy timeout tree cleanup",
+  );
   checkpoint("timeout_cleanup_complete");
 
   const browserSentinel = join(homeA, BROWSER_SENTINEL);
@@ -190,7 +220,7 @@ try {
   const loginRunner = spawn(invocation.command, invocation.args, invocation.options);
   if (!loginRunner.pid) throw new Error("client_pty runner PID was not assigned");
   const loginRunnerPid = loginRunner.pid;
-  observedPids.add(loginRunnerPid);
+  recordProcess(loginRunnerPid, "client_pty runner");
   const loginFinished = waitForChild(loginRunner);
   await Promise.race([
     waitFor(
@@ -280,7 +310,7 @@ try {
       codeEchoObserved: false,
     };
     inAppPids.add(inAppRunnerPid);
-    observedPids.add(inAppRunnerPid);
+    recordProcess(inAppRunnerPid, "in-app runner");
     checkpoint("in_app_runner_started");
     const inAppFinished = collectChild(inAppRunner, (observation) => {
       Object.assign(inAppDiagnostics, observation);
@@ -316,7 +346,7 @@ try {
       "in-app worker state contradicted its custody leader",
     );
     inAppPids.add(inAppWorkerPid);
-    observedPids.add(inAppWorkerPid);
+    recordProcess(inAppWorkerPid, "in-app worker");
     checkpoint("in_app_awaiting_permit");
 
     protocol.atomicPrivateJson(inAppManifest.permitPath, {
@@ -363,9 +393,7 @@ try {
     checkpoint("in_app_url_disclosed");
 
     const processSnapshot = readWindowsProcessSnapshot(inAppWorkerPid);
-    if (processSnapshot.observerPid > 0) {
-      observedPids.add(processSnapshot.observerPid);
-    }
+    recordProcess(processSnapshot.observerPid, "process snapshot observer");
     const helperProcess = exactChildProcess(
       processSnapshot.rows,
       inAppWorkerPid,
@@ -383,7 +411,14 @@ try {
     Object.assign(inAppDiagnostics, { helperPid: inAppHelperPid, vendorPid: inAppVendorPid });
     for (const processRow of descendantProcesses(processSnapshot.rows, inAppWorkerPid)) {
       inAppPids.add(processRow.pid);
-      observedPids.add(processRow.pid);
+      recordProcess(
+        processRow.pid,
+        processRow.pid === inAppHelperPid
+          ? "ConPTY helper"
+          : processRow.pid === inAppVendorPid
+            ? "in-app vendor"
+            : "in-app descendant",
+      );
     }
 
     const oneShotInput = "one-shot-win32-code-77";
@@ -395,16 +430,18 @@ try {
       submittedAt: new Date().toISOString(),
     });
     checkpoint("in_app_input_submitted");
-    const inAppProcess = await inAppFinished;
-    checkpoint("in_app_runner_exited");
-    const inAppReceipt = protocol.readRunnerResult(inAppManifest.resultPath);
-    assert(inAppProcess.code === 0, `in-app runner exited ${String(inAppProcess.code)}`);
-    assert(inAppProcess.signal === null, "in-app runner exited by signal");
-    assert(inAppReceipt?.commandStarted === true, "in-app receipt did not validate helper start");
-    assert(inAppReceipt?.exitCode === 0, "in-app receipt did not preserve native exit 0");
-    assert(inAppReceipt?.signal === null, "in-app receipt recorded a signal");
-    assert(inAppReceipt?.errorCode === undefined, "in-app receipt recorded a transport error");
-    assert(inAppReceipt?.outputTail === undefined, "successful in-app receipt retained output");
+    const { exit: inAppProcess, receipt: inAppReceipt } = await settleInAppOutcome({
+      finished: inAppFinished,
+      diagnostics: inAppDiagnostics,
+      paths: {
+        input: inAppManifest.inputPath,
+        state: inAppManifest.statePath,
+        receipt: inAppManifest.resultPath,
+      },
+      decodeReceipt: protocol.readRunnerResult,
+      vocabulary: sidecarVocabulary,
+      persist: () => checkpoint("in_app_runner_exited"),
+    });
 
     // The production runner intentionally treats stdout as an ignored sink;
     // this acceptance-only outer pipe proves URL capture and receipt custody,
@@ -423,7 +460,7 @@ try {
       "consumed input sidecar retained the secret",
     );
 
-    await expectExactPidsGone([...inAppPids], 5_000, "in-app ConPTY tree cleanup");
+    await expectProcessesGone(processesFor([...inAppPids]), 5_000, "in-app ConPTY tree cleanup");
 
     summary.inAppLogin = {
       exit: inAppProcess.code,
@@ -441,10 +478,10 @@ try {
     const finalWorkerPid = finalState?.processGroup?.pgid ?? 0;
     if (finalWorkerPid > 0) {
       inAppPids.add(finalWorkerPid);
-      observedPids.add(finalWorkerPid);
+      recordProcess(finalWorkerPid, "in-app worker");
     }
     for (const pid of [...inAppPids]) {
-      if (pid > 0 && pidAlive(pid)) core.killWindowsProcessTree(pid);
+      if (pid > 0 && probeProcess(pid).state !== "gone") core.killWindowsProcessTree(pid);
     }
     unlinkIfPresent(inAppManifest.deviceCodePath);
     unlinkIfPresent(inAppManifest.inputPath);
@@ -453,7 +490,10 @@ try {
 
   const controlEvidence = readEvidence(controlHome);
   const profileEvidence = readEvidence(homeA);
-  for (const row of [...controlEvidence, ...profileEvidence]) observedPids.add(row.pid);
+  for (const row of controlEvidence) {
+    recordProcess(row.pid, `console control ${row.mode} ${row.command}`);
+  }
+  for (const row of profileEvidence) recordProcess(row.pid, `fake agy ${row.mode} ${row.command}`);
   assert(
     controlEvidence.some((row) => row.mode === "interactive"),
     "control evidence is absent",
@@ -468,7 +508,7 @@ try {
     ok: true,
     stage: "complete",
     workerPid: process.pid,
-    observedPids: [...observedPids],
+    observedProcesses,
     paths: {
       config: configured.path,
       homeA,
@@ -503,7 +543,7 @@ try {
     ok: false,
     stage,
     workerPid: process.pid,
-    observedPids: [...observedPids],
+    observedProcesses,
     error: error instanceof Error ? error.message : String(error),
     inAppDiagnostics,
   };
@@ -594,17 +634,16 @@ function parsePidLine(output) {
   return { vendor: Number(match[1]), descendant: Number(match[2]) };
 }
 
-async function expectPidsGone(pids, timeoutMs) {
-  await waitFor(
-    () => !pidAlive(pids.vendor) && !pidAlive(pids.descendant),
-    timeoutMs,
-    "fake agy timeout tree cleanup",
-  );
-}
-
-async function expectExactPidsGone(pids, timeoutMs, label) {
-  const unique = [...new Set(pids.filter((pid) => pid > 0))];
-  await waitFor(() => unique.every((pid) => !pidAlive(pid)), timeoutMs, label);
+async function expectProcessesGone(processes, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const remaining = remainingProcesses(processes, probeProcess);
+    if (remaining.length === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`${label} timed out; remaining ${describeRemaining(remaining)}`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+  }
 }
 
 function readWindowsProcessSnapshot(rootPid) {
@@ -688,15 +727,6 @@ function descendantProcesses(rows, rootPid) {
 
 function sameWindowsPath(actual, expected) {
   return resolve(actual).toLowerCase() === resolve(expected).toLowerCase();
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code !== "ESRCH";
-  }
 }
 
 async function waitFor(predicate, timeoutMs, label) {

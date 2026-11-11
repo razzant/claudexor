@@ -42,6 +42,7 @@ async function gitEnv(
     timeoutMs: 60_000,
     env,
     input,
+    windowsConsole: "none",
   });
   assertCaptureComplete(result);
   return result;

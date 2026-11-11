@@ -61,7 +61,7 @@ describe("strict quota read negotiation", () => {
 
   it("accepts only the explicit supported selectors", () => {
     expect(ControlQuotaReadRequest.parse({})).toEqual({});
-    for (const view of ["constraint_freshness", "resources"] as const) {
+    for (const view of ["constraint_freshness", "resources", "resources_freshness"] as const) {
       expect(ControlQuotaReadRequest.parse({ view })).toEqual({ view });
       const image = { view, requestKind: "image", model: "gpt-image-2" };
       expect(ControlQuotaReadRequest.parse(image)).toEqual(image);

@@ -1,0 +1,22 @@
+{
+  "schema": "RunOutcomeFacts",
+  "value": {
+    "lifecycle": "succeeded",
+    "noChanges": false,
+    "checks": "not_configured",
+    "review": "not_run",
+    "review_requested": false,
+    "reason": "input_required",
+    "work_state": {
+      "state": "needs_input",
+      "source": "constrained",
+      "required_inputs": [
+        {
+          "kind": "file",
+          "locator": "fixtures/input.json",
+          "description": "The fixture the change needs."
+        }
+      ]
+    }
+  }
+}

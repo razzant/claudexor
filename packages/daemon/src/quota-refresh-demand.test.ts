@@ -25,7 +25,12 @@ const snapshot = (owner: QuotaSubject, source: QuotaSnapshot["source"]): QuotaSn
 
 describe("remainingQuotaRefreshDemand", () => {
   it("ignores subjects without a refresh-capable primary harness", () => {
-    expect(remainingQuotaRefreshDemand([], [subject("cursor", "work")])).toEqual(new Set());
+    expect(remainingQuotaRefreshDemand([], [subject("provider-without-source", "work")])).toEqual(
+      new Set(),
+    );
+    expect(remainingQuotaRefreshDemand([], [subject("cursor", "work")])).toEqual(
+      new Set(["cursor\0work"]),
+    );
   });
 
   it("requires matching primary evidence rather than reactive evidence", () => {

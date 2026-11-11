@@ -1,5 +1,3 @@
-import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { redactSecrets } from "@claudexor/util";
 import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
 
 /** Daemon job states that end a stream/wait (shared by both SSE surfaces).
@@ -7,35 +5,28 @@ import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
  * ONE projection-owned TERMINAL_LIFECYCLES — no local copy re-derives it. */
 export const TERMINAL_STATES: ReadonlySet<string> = TERMINAL_LIFECYCLES;
 
-/** One SSE data line: secrets redacted, JSON re-minified when parseable. */
-export function redactedSseLine(raw: string): string {
-  const redacted = redactSecrets(raw);
+/** One SSE data line: the exact event, JSON re-minified when parseable. */
+export function sseDataLine(raw: string): string {
   try {
-    return JSON.stringify(JSON.parse(redacted));
+    return JSON.stringify(JSON.parse(raw));
   } catch {
-    return redacted;
+    return raw;
   }
 }
-
-/** Incremental line reader for events.jsonl tails (rotation-tolerant). */
-export function readNewLines(
-  path: string,
-  offset: number,
-  carry: string,
-): { lines: string[]; nextOffset: number; rest: string } {
-  const size = statSync(path).size;
-  const start = size < offset ? 0 : offset; // file rotated/truncated; start over
-  const len = size - start;
-  if (len <= 0) return { lines: [], nextOffset: start, rest: carry };
-  const fd = openSync(path, "r");
+/**
+ * The run event stream's identity for one non-empty events.jsonl line, shared
+ * by the stream and the event-part reader: its persisted seq, else its 1-based
+ * non-empty line number (legacy lines, matching EventLog's counter init), and
+ * its SSE event name.
+ */
+export function streamLineIdentity(raw: string, lineNo: number): { seq: number; type: string } {
   try {
-    const buf = Buffer.allocUnsafe(len);
-    readSync(fd, buf, 0, len, start);
-    const text = carry + buf.toString("utf8");
-    const parts = text.split("\n");
-    const rest = parts.pop() ?? "";
-    return { lines: parts.filter(Boolean), nextOffset: size, rest };
-  } finally {
-    closeSync(fd);
+    const parsed = JSON.parse(raw) as { type?: unknown; seq?: unknown };
+    return {
+      seq: typeof parsed.seq === "number" && Number.isFinite(parsed.seq) ? parsed.seq : lineNo,
+      type: String(parsed.type ?? "run"),
+    };
+  } catch {
+    return { seq: lineNo, type: "malformed" };
   }
 }

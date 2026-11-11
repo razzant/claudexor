@@ -1,5 +1,361 @@
 # @claudexor/harness-claude
 
+## 6.0.0
+
+### Patch Changes
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- f4f8caf: Live messages and questions keep reaching a resumed Claude session while its
+  prompt is still running (#536). The adapter remembers the uuid of the prompt
+  frame it writes. Once Claude Code shows that it identifies commands by uuid (a
+  lifecycle frame names the prompt, or a result names only commands the session
+  never sent), the session's input stays open until a result names the prompt or
+  the prompt's own lifecycle ends. Previously the first result closed the input
+  whenever no message or background task was pending, so a result for an earlier
+  turn of a resumed session could close it while Claude kept working; later
+  messages were then refused with `not_active`/`no_live_session`. The input now
+  stays open whether that earlier result arrives before or after Claude Code
+  reports the prompt. An error result that names no command still ends the
+  prompt, as the first result always did, and a Claude Code build that names no
+  command keeps the close on the first result. An earlier result that names no
+  command and arrives before the prompt's lifecycle still closes the input, and a
+  success result that names no command leaves an identified prompt open until its
+  own result, its lifecycle end or the run's time limits. A finished run still
+  closes on its own result, queued messages and claimed background tasks still
+  hold it, and a Monitor task without that claim still does not.
+
+  A result for another turn also no longer decides the run's outcome. While the
+  prompt runs, a result naming only commands the session never sent keeps its
+  usage, and its failure, answer or context limit is kept as a `foreign_result`
+  status instead of this run's error or final answer, so an earlier failed turn
+  of a resumed session cannot fail a prompt that then succeeds. The prompt's own
+  result, a live message's result and a result naming no command keep their
+  meaning.
+
+- f4f8caf: A Claude question whose answer the adapter could not obtain or deliver is no
+  longer recorded as the user's decline (#622). An `AskUserQuestion` error result
+  is now a neutral record with the CLI's own detail ("returned an error instead
+  of answers") and the session input Claudexor held when it read the question.
+  Frames can arrive in batches, so that state does not say when the model asked.
+  When the adapter itself cannot obtain or send an answer, an
+  `interaction_answer_unavailable` status names the reason with the request and
+  tool-use ids: the run has no answer channel, the channel failed, the process
+  ended before an answer was sent, the response could not be written, or the
+  CLI's permission request was read after Claudexor had closed the session's
+  stdin. That late request carries its exact native input instead of counting as
+  a dropped frame. Only the no-channel and failed-channel denies tell the model
+  why it got no answer; in the other cases it sees at most the CLI's own error,
+  and a deny that cannot be written adds a second status. The stdin handle of a
+  bidirectional session gains `send`, which reports whether a frame reached the
+  child's pipe: nothing is written once the child has exited, even while a
+  descendant still holds its output pipes, and a refused write reports its error.
+  A declined or expired question keeps its benign decline and typed interaction
+  events, and none of these is a blocking tool error. A failure inside the
+  orchestrator's answer surface that it resolves as no answer is still sent as
+  the benign decline.
+- b9e88de: Interaction text reaches callers exactly (#651). The Codex access question
+  now quotes the worker's complete final output instead of silently cutting it
+  at 32,000 characters. A Codex approval refused for details over the
+  32,000-character review limit now says so, with the measured size, instead of
+  the generic "cannot grant" reason; readonly and workspace_write command refusals
+  keep their priority. The bounded display labels (a harness event's timeline
+  `title` and a Claude question's preview text) end in a visible "…" and never
+  split a character; the complete text still rides beside them.
+  `claudexor_run_wait` reports `wakeReason: "interactions"` when the next event is
+  a question too large for any page. Each ACP multi-select include/skip round
+  shows every option of the question with its description.
+- 7be23bd: A Codex usage refusal that names no reopening time (#558) now lasts until its
+  own five-minute recheck (#318). Before, any newer successful quota read, an
+  empty one included, cleared it, so a Refresh or the background poll let the
+  refused account be tried again at once. Reads no longer clear or extend it; a
+  generic cooldown and a vendor-dated window keep their existing behavior. After
+  the recheck the next requested run may try the account; nothing probes the
+  vendor in between, and runs requested at the same moment each start.
+
+  Claude's exact `oauth_not_allowed_for_organization` API error is now the
+  existing subscription refusal (`oauth_org_not_allowed`) instead of an untyped
+  failure, so the same request is no longer retried on the same account. The
+  vendor's own code and words stay in the failure record, and the account is set
+  aside for that refusal's existing period: up to an hour, or until a new sign-in
+  or a later success on it. A pinned run still never moves to another account or
+  an API key.
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/secrets@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 43b0491: The daemon's credential invalidation also drops the cached Claude model picker (#572). After a setup-job login, a profile created, toggled or removed, or a secret set, the next model listing that reads a profile's catalog probes it again, where it could previously answer with the earlier account's rows from the hour-long cache; a profile whose secret is missing, as after a delete, answers the hint rows without probing. The drop runs before the configuration and quota reads that can fail. A probe that started before the change still neither stores its answer nor displaces a newer probe. The same invalidation runs on every settings save, whatever it changed, and drops every scope including the credential-free binary one, so the next read of each scope spawns one prompt-free `initialize` probe again. The cache belongs to the daemon process and nothing re-reads it on a schedule: after a change the daemon does not observe, such as the CLI's direct Claude profile login or a vendor logout, `models()` keeps the earlier rows until its first call past the hour, an observed invalidation, a changed binary or a daemon restart, and no daemon models API offers a fresh picker read. The account view (`?view=accounts`) retains its own copy past that hour until an observed invalidation, harness maintenance, an Accounts refresh or a restart discards it, and a refresh inside the hour retains the adapter's cached rows again.
+- b9f57d9: Continuation packets and D-16d checkpoints no longer drop a run's own recorded output because the carried answer, report or prompt contains its words (#568). Only the carried final itself is left out, with its keyed fragments and exact adjacent repeats; other attempts, earlier tries and earlier turns keep their messages whatever their text. `final/retained-output.md` groups keyed text by its speech key and keeps each native turn's final separate. In a Claude `text_runs_joined` response, the one deferred frame of a run of text blocks names the keys it joins (`payload.joined_speech_keys`) and becomes their single block when its words are exactly theirs; otherwise every block stays as recorded. Limits: a represented try without a typed final is still left out whole, since its joined narration is the answer; more evidence now competes for the bounded evidence section, whose cut stays marked; when the represented try is unknown nothing is left out, so the answer can appear twice; the earlier carried-text argument and option are still accepted and ignored.
+- b63ceac: A credential refusal now keeps its actual scope (#609). A vendor model refusal on a run that named no model no longer marks the whole account failed or refuses other models on it for up to an hour: nothing is recorded as a hard mark, the run keeps its own failure diagnostics, and the existing pre-progress ordering mark applies only under its own conditions. A proven denial of subscription access, meaning the vendor's exact `oauth_org_not_allowed` code or its recorded organization-disabled result on a subscription route, now covers every model of that exact account and route even when the run named a model, and never another route, account or harness. Prose that only the parser's fallback files under that category proves nothing about other models: it keeps its diagnostics and retry class and restricts only the model the run named. A refusal of a known model stays exact, and success, expiry and credential-change clearing are unchanged.
+- 2be1a9c: Questions Claude Code asks through `AskUserQuestion` now reach every answering surface without the former length cuts (2,000 characters for a question, 100 for a header, 500 for an option label and 1,000 for a description), and a selected long label goes back unchanged (#560). Non-blank free text is sent as written; `claudexor follow` and the macOS card take one line per question. The daemon refuses an answer row that names a question the interaction does not list, repeats a question, or carries neither a label nor non-blank text (`rejected`), and the question stays pending; partial answers, the empty-set decline and selected labels are handled as before. A pending question that no live session holds is answered `not_found` instead of `delivered`, and `delivered` does not prove that the Claude process read the answer. In ACP, each permission prompt now also shows the question's header and option descriptions, a multi-select question with every option skipped is left out instead of sent as an empty row, and a turn-text message names every question left without an answer: with nothing chosen the run stays paused on the set until it is answered elsewhere or expires, and otherwise the message says the chosen answers will be submitted as a partial answer that closes the set once it is accepted. The macOS question card wraps long option labels and scrolls long questions inside a bounded area. No live Claude CLI was run for this change, and the cause of the incident reported in #560 is not established.
+- 8905c72: Add exact thread export (`claudexor thread export`, `GET /v2/threads/:id/export`) and conditional retirement against that export (`claudexor thread-retire`, `POST /v2/threads/:id/retire`), with `POST /v2/threads/:id/retire/abandon` to settle an unanswered operation and `GET /v2/threads/:id/retirement` (`claudexor thread retirement`) to read its outcome. A partial export names each gap and cannot retire. Retirement reaches only what a recorded real session proved, currently Claude 2.1.316 transcripts and spilled tool output on Darwin; any other host platform or session material is a named gap, exported byte-exact only where its harness declares its layout. A name the bundle's volume cannot hold is kept by item id, with the complete name in the manifest and the place in the receipt. `thread-retire` re-hashes and syncs every byte its bundle received, and the directories above it, before it sends a new operation, keeps that request in the bundle until an answer settles it, and names it in every unknown answer, so repeating the command repeats that operation. A purged thread admits no new work: a turn's create or retry, Exact Retry and decision rerun answer 409 `thread_purged`, while a command the thread accepted still answers its replay and a run's retained result can still be applied, discarded or reverted. Stop ends an export's journal or transcript read at its next chunk, and a restart's replay of an open retirement cleanup between lane entries. An export observes the thread's closure in the store maintenance worker's read-only snapshot, off the request thread, and an export read cancelled by Stop answers 503 `daemon_stopping` (retryable); the retirement decision still rereads the closure synchronously inside its transaction, at a cost that grows with the closure.
+- 2e8b440: A run stopped by its max-turns cap now ends `interrupted` with the new reason `turn_limit_reached` (label "Turn limit reached", ACP stop reason `max_turn_requests`), and the caller decides what happens next (#299). Claude Code ends a capped turn with an `error_max_turns` result and exits 1; Claudexor read that exit as a process crash, resumed the same session under the same cap until the retry budget ran out, and reported a generic harness failure. Claude and Grok now report the capped turn as one error carrying the typed `turn_limit` field, whatever the exit code, so consumers that only read errors (the thread summary pass, the auth capability smoke, the reviewer engine) never take the partial narration for an answer. Nothing re-runs the work implicitly: the attempt is not resumed, moved to another account or replayed under the same cap, and neither the Ask `fallback_model` replay nor the solo Plan fallback to the next harness runs after it. The partial output stays in `final/retained-output.md` and is never written as the answer. An Agent run keeps its unfinished tree where the run keeps stopped work, and Agent and Ask terminals carry `resumable.cause: turn_limit` for an explicit `continueFrom`; Plan reports the same reason without in-run continuation facts, and an interrupted Plan attempt with no error of its own is described in the same words as Agent and Ask. The macOS app names the stop "Turn limit reached". New wire values: `RunReason` `turn_limit_reached`, `ResumableCause` `turn_limit` and `HarnessEvent.turn_limit`, so strict readers of those enums need the additions. The read-only terminals now also report a typed limit on an attempt whose CLI exited non-zero: an Ask whose Claude context was exhausted ends `interrupted / context_capacity_exhausted` instead of `failed / harness_failed`. Verified through the core run loop with a stand-in process that prints Claude Code 2.1.316's capped frames; no live capped run was made, and the Grok mapping is tested on synthetic frames only.
+- 0d2d858: Run receipts now say what Web Off and an access profile actually did on each route, without changing either (#118, #413). Just before dispatching an adapter, the per-spawn gate records a `route_controls` receipt of what was prepared: the route's own web switch (`native`, `tools`, `uncontrolled` or `none`), the access profile, the vendor access arguments the adapter passes (for example Cursor `--force --sandbox enabled --trust --mode ask`, Codex `sandbox=read-only approvalPolicy=never approvalsReviewer=auto_review`) and the access mechanism, where only `fs_sandbox`, the vendor's own sandbox, declares an OS file boundary and `native_settings` (`inherit_native`) leaves it unknown. `native_session_started` reports whether the attempt's native session was reported started, so a pre-spawn refusal or a stop stays distinct from a launch; `false` never proves that no process ran. The gate checks Stop again after recording the receipt, so a stop that lands at the receipt keeps it and never dispatches the adapter. Agent attempts also carry their applied HOME fact, where `false` means the engine did not replace HOME; Ask and Plan record none, so none is claimed. The web evidence states its scope (`observation`: typed web tool calls and engine Browser calls; network traffic not measured), so `attempted: false` no longer reads as "no network". The run summary projects the distinct routes as `routeControls` together with `webEvidence.verification` and `webEvidence.observation`, and `claudexor inspect` prints `access route`, `web route`, `web retrieval` and `web scope` lines. Retrieval strength now says what came back. A verified result carries `verified_content`: Claude's WebFetch and a Browser navigation or snapshot of a loaded http(s) page are a `page`, while Claude's WebSearch is `search_results`, which is not a fetched page; its strength and the required-web gate are unchanged. A Browser page read that got an HTTP error status is `dispatched`, and a Browser call that read no web page (closing, clicking, listing tabs, an `about:blank` or `data:` page) carries no retrieval stamp: it still counts as completed web activity for the unchanged required-web gate, but the strength stays `none`. The Browser rule is checked against recorded replies of the pinned Browser MCP, and a denied or cancelled Claude web call is no longer stamped as a verified retrieval. The macOS run facts show "Web verified" for a verified page, "Web searched" for verified search results, "Web reached" for a web call without a typed result and "Web tools used" when completed web tools retrieved nothing or the engine sent no strength; for Web Off they show "Web tools off" only when a route reported a native session under the off switch, otherwise "Web Off requested"; and they describe access by its native setting and declared boundary instead of "enforced".
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/core@5.1.0
+  - @claudexor/secrets@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/core@5.0.2
+  - @claudexor/secrets@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/core@5.0.1
+- @claudexor/schema@5.0.1
+- @claudexor/secrets@5.0.1
+- @claudexor/util@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- fe7e2ae: Codex MCP tool results keep what the server returned. A completed call now carries the text of its result, or its structured content when no text came back, as the bounded `content_summary`, so a Browser navigation records the page URL and title it actually loaded instead of only the tool name. A failed call keeps the vendor's `error.message`, or the text of a result the server marked as an error, instead of a generic "mcp tool call failed". A completion with any other status is no longer reported as a success; it stays statusless. Tool names and the `server:tool` target that Browser and Delegate evidence match are unchanged. In both Codex and Claude, an MCP result's `content_summary` now keeps the line breaks of the server's text, so a Browser result's page fields, code and snapshot stay on their own lines; whitespace within a line still collapses, blank lines are dropped, and the 1,000-character bound is unchanged. The `error_summary`, the event text and the summaries of all other tools stay on one line.
+- 8bae6ae: Credential-shaped text in your own work is no longer refused or masked (#555, INV-146 retires INV-062). A review brief, prompt, instruction, output schema, test command, live or deferred message, interaction answer or attachment that contains a bearer header, an `sk-`/`ghp_`/`AKIA` key, a JWT or a PEM block now reaches the selected harness exactly; the typed `inline_secret_rejected` error is gone from the CLI, `POST /v2/runs`, thread turns, MCP and ACP. The task contract, command journal, served job params, thread history, events, SSE frames, answers, plans, reports, retained output, saved `patch.diff` copies, reviewer packets, reviewer workspaces, context packs and served artifacts keep the exact bytes, so Exact Retry, Run Again, continuation and later turns read back what was sent, and reviewers judge the same patch apply uses. Files named `.env`, `credentials.json`, `*.pem`, `*.key`, `secrets/…`, `.ssh/…` or `.claude/…` inside the project are ordinary project files for context, review, directory results, uploads and served outputs; Codex approval requests for them are offered instead of declined, and `review --diff` no longer refuses a diff. Claude `AskUserQuestion` text is shown exactly and answered by its native question text. Tool calls keep unmasked targets (command, path, query, URL) within each adapter's existing bounds, and tool results keep unmasked summaries of their output (`content_summary`, and a failed tool's own `error_summary`, within each adapter's existing bound and whitespace normalization) for every adapter, a Cursor shell command whose end is unconfirmed keeps its complete native result (`native_result`) exactly, a failed raw-API completion keeps the model's bounded partial output (`partial_output`) exact in its error event while it stays a failure, never becomes the answer and the provider's error report stays masked, a Copilot ACP answer keeps credential-shaped text exact (only the managed token Claudexor injected is removed), a work report's required inputs stay exact in telemetry and run facts, a planner's own `plans/<harness>.md` copy is its exact text, and the gate argv disclosed to a candidate is the argv the gate runner executes. Images are no longer withheld from `produced/` or from served outputs for their bytes; an image Claudexor did not save (over the per-image or total size cap, unreadable, a link, not a regular file or an unsafe path) is listed in the attempt's `produced_omitted` with its size and reason, and the run summary names it. Credentials Claudexor itself owns stay in their stores, outside every worktree, behind daemon authentication, grants, read-only and trust policy, root and symlink containment and digest checks; engine diagnostics (errors, stderr tails, probe output, vendor failure reports, also inside the run, attempt and reviewer event journals, which all pass through one masking step) are still masked. Claudexor never places its engine credentials into prompts, events or artifacts; a harness process can read the credential the engine hands it, and whatever the harness prints is ordinary output kept exactly in local run records, as in the vendor's own transcript. Importing an arbitrary host file still refuses credential-store paths, and review risk still rates credential-named paths critical. The historical release-attestation sealer no longer refuses a reviewer report or metadata file for credential-shaped text: it still requires strict UTF-8, the digest and exact-key bindings and its other checks, and the attestation carries digests and validated fields, never report text. A real key you put in working content is ordinary task material: it reaches the selected model and stays in local run records. Runs written by earlier versions keep their masked copies; their `persisted_patch: redacted` patches still apply only from the private exact object (`patch_exact_bytes_unavailable` when it is missing), and the MCP read tools still project their `secretLike` disclosure, which is `null` for new runs.
+
+  **Breaking:** `pr` delivery now needs the pinned open-source scanner Betterleaks 1.9.0 and checks what would leave the machine with it instead of Claudexor's own patterns; an npm-installed CLI bundles no scanner, so its `pr` refuses with `publication_scan_unavailable` until one is provided (below). Before any branch, index or ref changes, the exact outgoing commit, every earlier commit that a URL `git push origin` sends to (its push URL when one is set) does not already advertise, read with `git ls-remote` (a secret added and later deleted included, and a commit only the fetch URL or another remote holds still counts), what each merge in that range itself changed (Git's remerge view, Git 2.36 or newer: a conflict resolution or an "evil" merge, never content its parents already carried; an octopus merge has no such view and is scanned for what it adds over its first parent, which can re-flag content a non-first parent already published), the commit messages of that range, the branch name and the PR title and body are scanned with live validation off; the PR body `gh` reads is the scanned copy, and the push sends exactly the scanned commit object. A finding refuses typed (`publication_scan_findings`, rule and place only, never the matched text; a file name or label the scanner itself flags is shown as `withheld location (sha256 …)`, and every place is withheld when that check cannot run); a missing or unpinned scanner (`publication_scan_unavailable`) and a scan that fails, times out, writes no valid report or reads a Git history that Git's own trace2 record does not prove complete (every `git log` it ran exited 0 without a signal; a `git log` killed mid-stream otherwise looks clean) (`publication_scan_failed`) also refuse, and local apply, branch and commit stay available. The outgoing repository's own `.gitleaksignore`/`.betterleaksignore`, inline allow comments and scanner environment variables cannot suppress a finding. The macOS app and its update closure now bundle the darwin-arm64 and darwin-x64 builds and each SSH runtime archive bundles its own target's build, with the MIT license and provenance (the SBOMs list them). npm installs, and hosts on other platforms embedding the closure, bundle none for their platform: point `CLAUDEXOR_BETTERLEAKS_PATH` at the pinned build or provision it with `node scripts/provision-betterleaks.mjs`. Delivery never downloads it. Betterleaks skips some binary, archive and lockfile content by design, so a clean scan is not proof that nothing sensitive is present. Repository CI and release use the same adapter in place of the old `git grep` step, over the range's commits, merges and messages and the tracked tree; a release being published also scans its annotated tag's message.
+
+- 2d83b87: Claude quota families now reach newly released models of that family (#394). A weekly Opus limit, whether read from the usage endpoint, reported during a run or carried by a typed Opus rejection, applies to every `claude-opus-…` id, including ones newer than the built-in model list, and no longer applies to `best`, a run that names no model, or another family. A weekly limit the vendor does not name, and an Antigravity quota group the adapter does not recognize, no longer block the whole account: each such window's id, usage and reset are written to the daemon's `quota.observation` log instead, even when the reading held no other window, while known family and account-wide limits keep blocking. A reading that held only such windows counts as a failed refresh, never as an account with no limits. Quota records written by earlier versions are read back in the new form, so an old Opus limit stops refusing `best` and is replaced by the next reading of the same window; an old reading that held only such unknown windows is read back as unknown, so it is not shown as current and the account is still polled. Other accounts, routes and windows are untouched.
+
+  A short quota window that has reset no longer counts against an account, and no longer hides a weekly limit read at the same time (#457). Run admission judges each window separately at the moment it decides: within the five minutes a reading stays current, a weekly reserve still applies after the five-hour window resets. A reading never becomes fresher than when it was taken, and a reset window is not treated as new free quota. The next-account hint (both the ordinary Accounts read and an explicit refresh) and model operations make the same per-window decision as runs, so the hint never names an account a run would refuse. The quota display and the Accounts cards keep their existing whole-reading freshness.
+
+  A pinned account refused by quota now says why (#318). The refusal keeps the `subscription_window_exhausted` code and adds `quotaRefusal.basis` to the run's failure record, `refusal_basis` to the problem context and `basis` to the `route.profile.headroom_exceeded` event: `owner_reserve` when usage reached your saved `headroom_threshold` while the provider still reports quota left, `provider_window` when the provider reports the window spent, and `provider_cooldown` for a provider rate-limit cooldown or a limit hit by the pinned run itself, in Agent, Ask, `--attempts` and Plan runs. A pinned Plan stopped by a provider limit now ends with the same typed code, reset time and basis instead of a generic harness error; a limit the vendor recovered from, or a Plan that ended for another reason (context exhaustion, an empty plan, an invalid work report, an outdated Claude Code CLI, a Claude API error other than HTTP 429 such as a rejected login, a crash or cancellation), keeps its own cause. A provider limit is never labelled as your reserve, whatever the threshold, including a spent window whose reset time is unknown. The window, usage and reset time reported with a refusal all come from the limit that decided it, and a run whose candidates hit different windows reports only what they share. The saved reserve still applies to a pinned account and a pin still never moves to another account; the default threshold stays 100%. When every account stopped only at its saved reserve, the next-account hint says so. Authentication and billing failures are not quota refusals and are not covered by this change.
+
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [30caf39]
+- Updated dependencies [d16170f]
+- Updated dependencies [f428c0a]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/core@5.0.0
+  - @claudexor/util@5.0.0
+  - @claudexor/secrets@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+  - @claudexor/core@4.8.2
+  - @claudexor/secrets@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/core@4.8.1
+- @claudexor/schema@4.8.1
+- @claudexor/secrets@4.8.1
+- @claudexor/util@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies [6c31c44]
+- Updated dependencies [7dfbc42]
+- Updated dependencies
+  - @claudexor/schema@4.8.0
+  - @claudexor/core@4.8.0
+  - @claudexor/util@4.8.0
+  - @claudexor/secrets@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- 8a9c2f6: On Windows, never hand a `.exe`/`.com` without the PE minimum shape (`MZ`, then `PE\0\0`) to the OS. The harness resolver skips such a PATH candidate or standard npm launcher target, naming the file, and uses a later healthy candidate; a broken Node interpreter is passed over for a later healthy one and named only when none remains. When nothing is selected, a bare-name spawn is refused before any process starts with `EFTYPE` if the install was proven broken, or if the spawn's own search (the cwd first, then PATH) would reach such a file; the message leads with that file. This covers the placeholder `claude.exe` an npm install leaves when the package's postinstall did not run. Windows PATH is read as libuv reads it: a quoted entry may contain `;`, and a child env without PATH searches the daemon's own PATH. Relative PATH entries resolve at the daemon's cwd for runs and probes alike, and the selected file is spawned by its absolute path; an explicitly relative override resolves from the spawn's cwd.
+
+  Claude doctor and discovery report the unlaunchable file instead of "claude CLI not found on PATH", and the broken-install advisory shown by login and Codex doctor uses the same wording. The Claude auth-status probe treats a format failure (`EFTYPE`/`ENOEXEC`) as structural: one attempt, with no retry and no last-known-good fallback. Unreadable files, failed reads, busy or missing files and unknown loader errors keep their previous handling, and nothing about a refusal is remembered, so replacing the file recovers without a restart.
+
+- Updated dependencies [880081d]
+- Updated dependencies [30f8195]
+- Updated dependencies [8a9c2f6]
+  - @claudexor/schema@4.7.1
+  - @claudexor/core@4.7.1
+  - @claudexor/secrets@4.7.1
+  - @claudexor/util@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- 74fb275: Add `execution.auxiliaryWritableRoots`: exact caller-created service directories (a shared download cache, outside-Git scratch) an Agent run with effective `workspace_write` may also write. Admission records the canonical list in `TaskContract.access.auxiliary_writable_roots` and refuses unsafe, missing or conflicting grants with typed codes, including any overlap with the execution or source tree. Lanes negotiate it through `capability_profile.access_control.auxiliary_writable_roots` and the catalog's `accessControl.auxiliaryWritableRoots`: Codex applies it per turn through its native sandbox policy; a new turn with no roots drops the earlier grant, while `continueFrom` with no execution group inherits the predecessor's whole group. Other adapters refuse an explicit pool and drop from Auto. The CLI gains repeatable `--auxiliary-writable-root`; MCP run tools, `claudexor_thread_turn` and ACP carry the same member.
+- Updated dependencies [74fb275]
+  - @claudexor/schema@4.7.0
+  - @claudexor/core@4.7.0
+  - @claudexor/secrets@4.7.0
+  - @claudexor/util@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/core@4.6.2
+- @claudexor/schema@4.6.2
+- @claudexor/secrets@4.6.2
+- @claudexor/util@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/core@4.6.1
+- @claudexor/schema@4.6.1
+- @claudexor/secrets@4.6.1
+- @claudexor/util@4.6.1
+
+## 4.6.0
+
+### Minor Changes
+
+- a81897c: Choose the native prompt-cache lifetime of Claude Code sessions per run: `POST /v2/runs` and `POST /v2/threads/:id/turns` accept `promptCacheTtl: "5m" | "1h"` (CLI `--prompt-cache-ttl`, including plan answers the same command submits inline), and omission keeps native defaults, profile settings and the inherited environment. Adapters declare the values they translate in `capability_profile.prompt_cache_ttls`; `GET /v2/agent-capabilities` projects them as `harnesses[].promptCacheTtls` and lists the key in `runControlKeys`. The value is frozen into the task contract, inherited by a bare `continueFrom` (a successor cannot go back to Default; that takes a new run), re-injected by Exact Retry, and forwarded to task lanes, the continuity summary, reviewers and delegation-belt children on declaring harnesses. Elsewhere it is an `ignored_settings` disclosure, except in best-of synthesis, which emits no `harness.started`: an undeclared synthesis harness runs without the lifetime and without a disclosure. The deep-scan reducer's `harness.started` now discloses every route knob its harness ignores, including `max_turns` and tool lists. The Claude adapter sets `CLAUDE_CODE_PROMPT_CACHE_TTL` and `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`, keeps forcing and disabling controls, and discloses the ones known to govern instead (and a known older CLI). Each Claude attempt records `prompt_cache_ttl` in `final/telemetry.yaml` with the lifetime routed to its sessions (`requested`), the configured value and the observed split of the reported five-minute and one-hour cache-write tokens; an unreported split stays unknown.
+
+### Patch Changes
+
+- Updated dependencies [b344c39]
+- Updated dependencies [a81897c]
+- Updated dependencies [2593b90]
+  - @claudexor/core@4.6.0
+  - @claudexor/schema@4.6.0
+  - @claudexor/util@4.6.0
+  - @claudexor/secrets@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- Updated dependencies [032b44b]
+  - @claudexor/schema@4.5.0
+  - @claudexor/core@4.5.0
+  - @claudexor/secrets@4.5.0
+  - @claudexor/util@4.5.0
+
+## 4.4.0
+
+### Minor Changes
+
+- Declares its native sessions not pruned, because independent deletion safety is not proven, so engine retention leaves them in place (#477).
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/util@4.4.0
+  - @claudexor/schema@4.4.0
+  - @claudexor/core@4.4.0
+  - @claudexor/secrets@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- @claudexor/core@4.3.1
+- @claudexor/schema@4.3.1
+- @claudexor/secrets@4.3.1
+- @claudexor/util@4.3.1
+
+## 4.3.0
+
+### Patch Changes
+
+- A Claude `workspace_write` run pre-approves `Read`, `Glob` and `Grep` outside its working folder, as `readonly` already does (#469). File-tool edits still follow `acceptEdits`; the default pre-approved shell was already unconfined (`write_mechanism: tool_policy`). Narrowing or denying `Bash`, or denying only one bare read tool, does not confine the remaining read tools: use explicit path-scoped `Read(...)` rules or the vendor's working-directory read block when that boundary is required. An explicit read allow pattern keeps all three bare tools out; deny rules remain effective, and a bare deny skips its own tool. Other access profiles are unchanged. The corrected flags have source and deterministic-test evidence, not a qualified live vendor run.
+- Updated dependencies
+- Updated dependencies [23a74cb]
+  - @claudexor/core@4.3.0
+  - @claudexor/schema@4.3.0
+  - @claudexor/secrets@4.3.0
+  - @claudexor/util@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

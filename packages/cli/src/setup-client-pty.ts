@@ -49,12 +49,16 @@ export function awaitingSetupUserMessage(job: ControlSetupJob): string {
 }
 
 /**
- * Codex login remedies. The legacy Terminal handoff is macOS-only
- * (`startObservableLogin` refuses it elsewhere), so only macOS may be told to
- * use it — every other platform reaches these messages through the
- * daemon-hosted device-code flow.
+ * Codex login remedies. They name ChatGPT's device-code toggle and the codex
+ * Terminal flow, so they key on the codex harness, never on the `--device-auth`
+ * argv Grok's own login shares; another harness keeps its genuine cause. The
+ * legacy Terminal handoff is macOS-only (`startObservableLogin` refuses it
+ * elsewhere), so only macOS may be told to use it — every other platform
+ * reaches these messages through the daemon-hosted device-code flow.
  */
 export function deviceAuthUnsupportedMessage(harness: string, platform: string): string {
+  if (harness !== "codex")
+    return `${harness} login does not support device-code sign-in in the installed CLI.`;
   const terminal =
     platform === "darwin"
       ? ", or retry the legacy Terminal flow with `claudexor auth login codex --browser-redirect`"
@@ -62,7 +66,11 @@ export function deviceAuthUnsupportedMessage(harness: string, platform: string):
   return `${harness} does not expose typed device-code auth over its app-server (upgrade the codex CLI)${terminal}.`;
 }
 
-export function deviceCodeRejectionRemedy(platform: string): string {
+/** Keyed on the authorized codex flow (`--device-auth` Terminal or app-server
+ * device-code argv), never on the vendor's rejection prose; "" otherwise. */
+export function deviceCodeRejectionRemedy(job: ControlSetupJob, platform: string): string {
+  if (job.harness !== "codex") return "";
+  if (!job.authorization?.args.includes("--device-auth") && !isDeviceCodeSetupJob(job)) return "";
   const terminal =
     platform === "darwin" ? ", or use `claudexor auth login codex --browser-redirect`" : "";
   return (

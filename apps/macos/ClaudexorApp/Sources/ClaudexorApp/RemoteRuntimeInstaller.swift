@@ -206,19 +206,23 @@ actor RemoteRuntimeInstaller {
         return value
     }
 
-    private func currentPointerTarget(on connection: RemoteConnection) async throws -> String? {
-        let result = try await ssh.execute(
-            connection,
-            remoteCommand: """
-                set -eu
-                current="$HOME/.claudexor/remote/current"
-                if test -L "$current"; then
-                  readlink "$current"
-                elif test -e "$current"; then
-                  exit 73
-                fi
-                """)
-        let value = String(decoding: result.stdout, as: UTF8.self)
+    /// Reads the movable `current` pointer. Its validated `versions/<id>` target
+    /// names one immutable runtime closure; the harness installer confirms
+    /// through the same closure that produced its disclosure. A failed probe
+    /// reaches the app only through stderr, so exit 73 names its reason there.
+    static let currentPointerProbeCommand = """
+        set -eu
+        current="$HOME/.claudexor/remote/current"
+        if test -L "$current"; then
+          readlink "$current"
+        elif test -e "$current"; then
+          echo "$current exists but is not a symlink to an installed Claudexor runtime; move it aside and install the runtime again" >&2
+          exit 73
+        fi
+        """
+
+    static func currentPointerTarget(fromProbe stdout: Data) throws -> String? {
+        let value = String(decoding: stdout, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
         guard value.hasPrefix("versions/"),
@@ -228,6 +232,12 @@ actor RemoteRuntimeInstaller {
             throw SSHConnectionError.unavailable("remote runtime current pointer is unsafe")
         }
         return value
+    }
+
+    private func currentPointerTarget(on connection: RemoteConnection) async throws -> String? {
+        let result = try await ssh.execute(
+            connection, remoteCommand: Self.currentPointerProbeCommand)
+        return try Self.currentPointerTarget(fromProbe: result.stdout)
     }
 
     /// Snapshot the pointer around the probe so the install policy and the

@@ -2,8 +2,63 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { summaryFingerprint } from "./run-list-fingerprint.js";
+import {
+  resetRunListFingerprintProbeCountForTests,
+  runListFingerprintProbeCountForTests,
+  summaryFingerprint,
+} from "./run-list-fingerprint.js";
 import type { DaemonRunRecord } from "./run-record.js";
+
+describe("run-list fingerprint probe work", () => {
+  it("rechecks exactly four paths per unchanged terminal record (QA-052)", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-fingerprint-terminal-cost-"));
+    const records = [0, 1].map((index) => {
+      const runDir = join(root, String(index));
+      mkdirSync(runDir);
+      return {
+        id: `job-${index}`,
+        runId: `run-${index}`,
+        runDir,
+        state: "succeeded",
+        params: {},
+        finishedAt: "2026-07-29T00:00:00.000Z",
+      } as DaemonRunRecord;
+    });
+    try {
+      const previous = records.map((record) => summaryFingerprint(record));
+      expect(previous.map((fingerprint) => fingerprint.dependencies.length)).toEqual([4, 4]);
+      resetRunListFingerprintProbeCountForTests();
+      expect(summaryFingerprint(records[0]!, previous[0])).toBe(previous[0]);
+      expect(runListFingerprintProbeCountForTests()).toBe(4);
+      expect(summaryFingerprint(records[1]!, previous[1])).toBe(previous[1]);
+      expect(runListFingerprintProbeCountForTests()).toBe(8);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps all eighteen artifact paths for an active record (QA-052)", () => {
+    const runDir = mkdtempSync(join(tmpdir(), "claudexor-fingerprint-active-cost-"));
+    const record = {
+      id: "job-active",
+      runId: "run-active",
+      runDir,
+      state: "running",
+      params: {},
+    } as DaemonRunRecord;
+    try {
+      resetRunListFingerprintProbeCountForTests();
+      const previous = summaryFingerprint(record);
+      expect(previous.dependencies).toHaveLength(18);
+      expect(runListFingerprintProbeCountForTests()).toBe(18);
+      resetRunListFingerprintProbeCountForTests();
+      expect(summaryFingerprint(record, previous)).toBe(previous);
+      expect(runListFingerprintProbeCountForTests()).toBe(18);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("run-list delivery fingerprint", () => {
   it("detects a same-size atomic replacement with the same millisecond mtime", () => {

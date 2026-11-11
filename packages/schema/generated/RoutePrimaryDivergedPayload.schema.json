@@ -18,20 +18,29 @@
           "description": "The harness that actually ran first, or null when nothing remained routable."
         },
         "reason": {
-          "type": "string",
-          "enum": [
-            "quota_exhausted",
-            "money_exhausted",
-            "subscription_exhausted",
-            "rate_limited",
-            "harness_error",
-            "stall",
-            "web_evidence_unsatisfied",
-            "fallback_model",
-            "not_portable",
-            "auth_unavailable",
-            "readiness_preferred",
-            "manual"
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "quota_exhausted",
+                "money_exhausted",
+                "subscription_exhausted",
+                "rate_limited",
+                "harness_error",
+                "stall",
+                "web_evidence_unsatisfied",
+                "fallback_model",
+                "not_portable",
+                "auth_unavailable",
+                "readiness_preferred",
+                "manual"
+              ],
+              "description": "Typed reason an auto-fallback (route/auth switch) or session re-host happened, driven by typed budget/quota signals and events, never by regex over prose."
+            },
+            {
+              "type": "string",
+              "const": "capability_incompatible"
+            }
           ],
           "description": "Typed reason an auto-fallback (route/auth switch) or session re-host happened, driven by typed budget/quota signals and events, never by regex over prose.",
           "default": "quota_exhausted"

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { WorkspaceManager } from "./manager.js";
 import { applyWorkspaceFiles, readWorkspaceFilesManifest } from "./files-apply.js";
 import { readWorkspaceFile } from "./files-io.js";
+import { git } from "./git.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -230,5 +231,77 @@ describe("ordinary directory workspaces", () => {
     expect(captured.manifest.entries).toEqual([
       { path: "unselected.txt", before: "unknown", after: null },
     ]);
+  });
+});
+
+// A vendor state root (auth, config, sessions) inside a selected project folder
+// is ordinary project content (INV-146): it is copied, captured and published
+// like any other folder. The credential-store path class only guards imports
+// of arbitrary host files.
+describe("vendor state directories in a selected folder", () => {
+  it.each([".grok", ".claude"])(
+    "copies and captures a selected %s directory like any other project folder (INV-146)",
+    async (dir) => {
+      const f = await fixture();
+      await mkdir(join(f.source, dir, "sessions"), { recursive: true });
+      await writeFile(join(f.source, dir, "config.toml"), "[cli]\n");
+      await writeFile(join(f.source, dir, "sessions", "s.jsonl"), '{"role":"user"}\n');
+      const copied = await f.manager.create({
+        taskId: "t",
+        attemptId: "copy",
+        workspaceKind: "directory",
+        scopePaths: ["."],
+      });
+      expect(await readFile(join(copied.worktree_path, dir, "config.toml"), "utf8")).toBe(
+        "[cli]\n",
+      );
+      await writeFile(join(copied.worktree_path, dir, "config.toml"), "[cli]\nx = 1\n");
+      const captured = await f.manager.captureFiles(copied, join(f.root, "run-copy"));
+      expect(captured.changedPaths).toEqual([`${dir}/config.toml`]);
+      const live = await f.manager.create({
+        taskId: "t",
+        attemptId: "live",
+        workspaceKind: "directory",
+        inPlace: true,
+        scopePaths: ["."],
+      });
+      await writeFile(join(f.source, "src", "a.txt"), "live\r\n");
+      const direct = await f.manager.captureFiles(live, join(f.root, "run-live"));
+      expect(direct.changedPaths).toContain("src/a.txt");
+      expect(direct.manifest.entries.some((entry) => entry.path.startsWith(dir))).toBe(true);
+    },
+  );
+
+  it("copies an ordinary dot-directory in the same whole-folder scope (control)", async () => {
+    const f = await fixture();
+    await mkdir(join(f.source, ".github"));
+    await writeFile(join(f.source, ".github", "config.toml"), "[cli]\n");
+    const env = await f.manager.create({
+      taskId: "t",
+      attemptId: "a",
+      workspaceKind: "directory",
+      scopePaths: ["."],
+    });
+    expect(await readFile(join(env.worktree_path, ".github", "config.toml"), "utf8")).toBe(
+      "[cli]\n",
+    );
+    expect((await f.manager.captureFiles(env, f.run)).noChanges).toBe(true);
+  });
+
+  it("does not refuse a Git-backed run over a tracked .grok directory (control)", async () => {
+    const f = await fixture();
+    await mkdir(join(f.source, ".grok"));
+    await writeFile(join(f.source, ".grok", "config.toml"), "[cli]\n");
+    for (const args of [
+      ["init", "-b", "main"],
+      ["add", "-A"],
+      ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "base"],
+    ])
+      await git(f.source, args);
+    const manager = new WorkspaceManager(f.source, { runtimeRoot: f.runtime });
+    const env = await manager.create({ taskId: "t", attemptId: "git", baseRef: "HEAD" });
+    await writeFile(join(env.worktree_path, "src", "a.txt"), "after\n");
+    expect(await manager.diff(env)).toContain("src/a.txt");
+    await manager.dispose(env);
   });
 });

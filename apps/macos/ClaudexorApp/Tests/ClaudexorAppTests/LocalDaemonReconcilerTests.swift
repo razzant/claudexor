@@ -73,19 +73,51 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
     private let lock = NSLock()
     var busy: Bool? = false
     var targetIdentity: RuntimeClosureIdentity?
+    var servingIdentity: RuntimeClosureIdentity?
     var runningIdentity: RuntimeClosureIdentity?
+    /// Admission of `runningIdentity` once a started selected script answers.
+    var runningRecoveryOnly = false
+    /// Saved copies offered for a return, and what each script's probe names
+    /// (any other script probes as `targetIdentity`).
+    var savedScriptURLs: [URL] = []
+    var probeIdentities: [URL: RuntimeClosureIdentity] = [:]
+    /// What a started saved script answers; nil never answers.
+    var returnedIdentity: RuntimeClosureIdentity?
+    var returnedRecoveryOnly = false
+    /// The exact stop of `targetIdentity` refuses, as for an engine that may
+    /// still be starting.
+    var targetStopRefusal: RuntimeReplacementStopError?
+    /// What `operatorStopCommand()` reports; nil keeps the protocol's meaning.
+    var operatorStopCommandValue: String?
     var handshakeNilCount = 0
     var busyDelayNanoseconds: UInt64 = 0
     var busyGate: SuspendedReconciliationEffect?
+    var probeGate: SuspendedReconciliationEffect?
     var stopGate: SuspendedReconciliationEffect?
     var stopThrows = false
     var replacementStopRefusal: RuntimeReplacementStopError?
     var startThrows = false
+    /// Starts of these scripts throw, as a missing launch asset does.
+    var failingStartScripts: Set<URL> = []
+    /// Reads of a launch's `isRunning` that still report that script's child as
+    /// running, as for a child still booting when its exact stop passes.
+    var runningLaunchReads: [URL: Int] = [:]
     private(set) var busyProbes = 0
     private(set) var stops = 0
     private(set) var starts = 0
     private(set) var startedScripts: [URL] = []
     private(set) var stoppedIdentities: [RuntimeClosureIdentity] = []
+    private(set) var probedScripts: [URL] = []
+    /// Stops and starts in call order, e.g. "stop 3.1.2" or "start /saved".
+    private(set) var events: [String] = []
+    /// At each start, whether a spawn still queued from each earlier launch
+    /// would have been admitted by its permit. A real spawn presents it later.
+    private(set) var earlierSpawnAdmitted: [Bool] = []
+    private var earlierPermits: [LocalRuntimeLaunchPermit] = []
+    private var lastStarted: URL?
+    /// A change outside this port (the engine exits, or the app's outage
+    /// launcher starts one); a later start through this port replaces it.
+    private var external: RuntimeServingHandshake??
 
     func isBusy() async -> Bool? {
         let (delay, gate) = lock.withLock {
@@ -101,6 +133,8 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
         let gate = try lock.withLock {
             stops += 1
             stoppedIdentities.append(expectedIdentity)
+            events.append("stop \(expectedIdentity.version)")
+            if expectedIdentity == targetIdentity, let targetStopRefusal { throw targetStopRefusal }
             if let replacementStopRefusal { throw replacementStopRefusal }
             if stopThrows { throw ReconciliationTestError() }
             return stopGate
@@ -109,32 +143,95 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
     }
 
     func start() throws {
-        try start(scriptURL: URL(fileURLWithPath: "/unused"))
+        try recordStart(of: URL(fileURLWithPath: "/unused"), launchPermit: nil)
     }
 
-    func start(scriptURL: URL) throws {
+    func start(scriptURL: URL, launchPermit: LocalRuntimeLaunchPermit) throws -> RuntimeDaemonLaunch {
+        try recordStart(of: scriptURL, launchPermit: launchPermit)
+        return RuntimeDaemonLaunch(isRunning: { self.readLaunchRunning(scriptURL) })
+    }
+
+    private func recordStart(of scriptURL: URL, launchPermit: LocalRuntimeLaunchPermit?) throws {
         try lock.withLock {
             starts += 1
             startedScripts.append(scriptURL)
-            if startThrows { throw ReconciliationTestError() }
+            events.append("start \(scriptURL.path)")
+            if startThrows || failingStartScripts.contains(scriptURL) { throw ReconciliationTestError() }
+            earlierSpawnAdmitted += earlierPermits.map { $0.perform { true } }
+            if let launchPermit { earlierPermits.append(launchPermit) }
+            lastStarted = scriptURL
+            external = nil
         }
+    }
+
+    private func readLaunchRunning(_ scriptURL: URL) -> Bool {
+        lock.withLock {
+            guard let reads = runningLaunchReads[scriptURL], reads > 0 else { return false }
+            runningLaunchReads[scriptURL] = reads - 1
+            return true
+        }
+    }
+
+    func savedScripts(for identity: RuntimeClosureIdentity) -> [URL] {
+        lock.withLock { savedScriptURLs }
+    }
+
+    func operatorStopCommand() -> String? {
+        lock.withLock { operatorStopCommandValue }
     }
 
     func probeIdentity(scriptURL: URL) async -> RuntimeClosureIdentity? {
-        lock.withLock { targetIdentity }
+        let gate = lock.withLock {
+            probedScripts.append(scriptURL)
+            return probeGate
+        }
+        await gate?.wait()
+        return lock.withLock { probeIdentities[scriptURL] ?? targetIdentity }
     }
 
     func handshakeIdentity() async -> RuntimeClosureIdentity? {
-        lock.withLock {
-            if handshakeNilCount > 0 {
-                handshakeNilCount -= 1
-                return nil
-            }
-            return runningIdentity
+        await servingHandshake()?.identity
+    }
+
+    func servingHandshake() async -> RuntimeServingHandshake? {
+        lock.withLock { engine(consumingBootDelay: true) }
+    }
+
+    /// The engine a client handshake sees right now, for an app-side fixture.
+    func clientView() -> RuntimeServingHandshake? {
+        lock.withLock { engine(consumingBootDelay: false) }
+    }
+
+    /// The event log, read under the lock while a reconciliation still runs.
+    func recordedEvents() -> [String] {
+        lock.withLock { events }
+    }
+
+    func setExternalEngine(_ engine: RuntimeServingHandshake?) {
+        lock.withLock { external = .some(engine) }
+    }
+
+    private func engine(consumingBootDelay: Bool) -> RuntimeServingHandshake? {
+        if let external { return external }
+        if starts == 0 { return servingIdentity.map { .init(identity: $0, recoveryOnly: false) } }
+        guard let lastStarted else { return nil }
+        if handshakeNilCount > 0 {
+            if consumingBootDelay { handshakeNilCount -= 1 }
+            return nil
         }
+        if savedScriptURLs.contains(lastStarted) {
+            return returnedIdentity.map { .init(identity: $0, recoveryOnly: returnedRecoveryOnly) }
+        }
+        return runningIdentity.map { .init(identity: $0, recoveryOnly: runningRecoveryOnly) }
     }
 
     func setBusy(_ value: Bool?) { lock.withLock { busy = value } }
+    func setServingIdentity(_ value: RuntimeClosureIdentity?) {
+        lock.withLock { servingIdentity = value }
+    }
+    func setRunningIdentity(_ value: RuntimeClosureIdentity?) {
+        lock.withLock { runningIdentity = value }
+    }
 }
 
 @Suite(.serialized) struct LocalDaemonReconcilerTests {
@@ -153,7 +250,9 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
         pollInterval: TimeInterval = 0.001,
         pollTimeout: TimeInterval = 0.1
     ) -> LocalDaemonReconciler {
-        LocalDaemonReconciler(
+        // Pre-stop identity is independent of the simulated post-launch result.
+        if daemon.servingIdentity == nil { daemon.servingIdentity = old }
+        return LocalDaemonReconciler(
             daemon: daemon,
             lifecycleOwner: lifecycleOwner,
             targetClosure: {
@@ -181,6 +280,7 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
     @Test func exactIdentityIsANoop() async {
         let daemon = ReconciliationDaemonStub()
         daemon.targetIdentity = target
+        daemon.servingIdentity = target
 
         let result = await reconciler(daemon).reconcile(serving: target)
 
@@ -340,7 +440,7 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
 
         let result = await reconciler(daemon, pollTimeout: 0.01).reconcile(serving: old)
 
-        #expect(result == .failed(.postStartUnreachable(expected: target)))
+        #expect(result == .failed(.postStartUnreachable(expected: target, previous: .notSaved(old))))
         #expect(daemon.stops == 1)
         #expect(daemon.starts == 1)
     }
@@ -368,8 +468,8 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
             == .useCompatible(notice: "Could not verify the selected engine runtime; continuing with the compatible running engine."))
         #expect(LocalDaemonReconciliationPolicy(.failed(.servingIdentityUnavailable))
             == .useCompatible(notice: "Could not verify the running engine build; continuing with its compatible protocol."))
-        #expect(LocalDaemonReconciliationPolicy(.failed(.startFailed))
-            == .failOffline(notice: "Engine refresh stopped the previous engine but could not start the selected runtime. Reconnecting."))
+        #expect(LocalDaemonReconciliationPolicy(.failed(.startFailed(expected: target, previous: .notSaved(old))))
+            == .failOffline(notice: "Engine v3.2.0 could not be launched because its script or the app's Node is missing, and no saved copy of the previous engine v3.1.2 could be verified, so it was not restarted."))
         #expect(LocalDaemonReconciliationPolicy(.replaced(target)) == .reconnect)
         #expect(LocalDaemonReconciliationPolicy(.supersededBeforeLifecycle) == .retry)
     }
@@ -430,7 +530,7 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
 
         #expect(model.engineIdentity == nil)
         #expect(model.localDaemonReconciliationNotice
-            == "The refreshed engine identity did not match the selected runtime. Reconnecting.")
+            == "After the refresh, engine v3.1.2 answered instead of the selected v3.2.0.")
     }
 
     @MainActor
@@ -589,7 +689,7 @@ final class ReconciliationDaemonStub: RuntimeDaemonControl, @unchecked Sendable 
         daemon.targetIdentity = target
         let model = appModel(daemon)
         let lease = try! #require(
-            model.localRuntimeLifecycleOwner.claim(.installation))
+            model.localRuntimeLifecycleOwner.claim(.installation).lease)
         defer { model.localRuntimeLifecycleOwner.release(lease) }
         model.runtimeInstalling = true
         model.runtimeInstallStatus = "Installing…"

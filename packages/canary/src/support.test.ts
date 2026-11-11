@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Load Vite's native dependencies before a test changes the reported platform.
+import "vitest/config";
 import { CLI, cli, makeSandbox } from "./support.js";
 
 vi.mock("node:child_process", () => ({ execFileSync: vi.fn(), spawnSync: vi.fn() }));
@@ -22,7 +24,7 @@ vi.mock("node:fs", async (importOriginal) => ({
 }));
 
 const BASE = join(tmpdir(), "cx-unit-fixture");
-const LEASE_PATH = join(BASE, "config", "daemon", "claudexord.sock.writer", "active.writer");
+const LEASE_PATH = join(BASE, "c", "daemon", "claudexord.sock.writer", "active.writer");
 const ABSENT = { status: "absent", path: LEASE_PATH };
 const ACTIVE = {
   status: "owned",
@@ -74,7 +76,7 @@ describe("canary candidate and endpoint ownership", () => {
     const sb = makeSandbox();
     expect(sb.env.CLAUDEXOR_DAEMON_ENTRY).toBe(CLI.replace(/cli\.js$/, "claudexord.js"));
     expect(sb.env).not.toHaveProperty("CLAUDEXOR_DAEMON_SOCK");
-    expect(sb.env.CLAUDEXOR_CONFIG_DIR).toBe(join(BASE, "config"));
+    expect(sb.env.CLAUDEXOR_CONFIG_DIR).toBe(join(BASE, "c"));
     expect(sb.env.CLAUDEXOR_MAX_CONCURRENT).toBe("2");
     expect(sb.env.CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS).toBe("600000");
     cli(sb, ["agent", "fixture"], { env: { CLAUDEXOR_MAX_CONCURRENT: "3" } });
@@ -89,6 +91,38 @@ describe("canary candidate and endpoint ownership", () => {
 
 describe("canary cleanup custody", () => {
   it.each([
+    ["win32", 1],
+    ["win32", 2], // mcp-task-groups disposes its source and target in one hook.
+    ["linux", 1],
+    ["darwin", 1],
+  ] as const)(
+    "gives %s hooks time for %i actual disposal subprocess budgets",
+    async (platformName, sandboxCount) => {
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { ...platform, value: platformName });
+      try {
+        vi.resetModules();
+        const { default: config } = await import("../../../vitest.canary.config.js");
+        for (let i = 0; i < sandboxCount; i++) {
+          vi.mocked(spawnSync)
+            .mockReturnValueOnce(leaseResult(ACTIVE))
+            .mockReturnValueOnce(processResult())
+            .mockReturnValueOnce(leaseResult(ABSENT));
+          makeSandbox().dispose();
+        }
+        expect(spawnSync).toHaveBeenCalledTimes(3 * sandboxCount);
+        const subprocessBudget = vi
+          .mocked(spawnSync)
+          .mock.calls.reduce((total, [, , options]) => total + (options?.timeout ?? 0), 0);
+        expect(config.test?.hookTimeout).toBeGreaterThan(subprocessBudget);
+        if (platformName !== "win32") expect(config.test?.hookTimeout).toBe(60_000);
+      } finally {
+        Object.defineProperty(process, "platform", platform);
+        vi.resetModules();
+      }
+    },
+  );
+  it.each([
     ["never started or already stopped", ABSENT],
     ["a proven-stale prior owner", STALE],
   ])("removes a fixture with %s and makes repeated disposal a no-op", (_label, lease) => {
@@ -100,13 +134,29 @@ describe("canary cleanup custody", () => {
     const [node, args, options] = vi.mocked(spawnSync).mock.calls[0]!;
     expect(node).toBe(process.execPath);
     expect(args?.slice(0, 2)).toEqual(["--input-type=module", "--eval"]);
-    expect(options).toMatchObject({ env: sb.env, cwd: sb.repo, timeout: 10_000 });
+    expect(options).toMatchObject({
+      env: sb.env,
+      cwd: sb.repo,
+      timeout: process.platform === "win32" ? 65_000 : 10_000,
+    });
     expect(rmSync).toHaveBeenCalledExactlyOnceWith(BASE, {
       recursive: true,
       force: true,
       maxRetries: 10,
       retryDelay: 200,
     });
+  });
+
+  it("stops the daemon but keeps the fixture when asked to keep its files", () => {
+    vi.mocked(spawnSync)
+      .mockReturnValueOnce(leaseResult(ACTIVE))
+      .mockReturnValueOnce(processResult())
+      .mockReturnValueOnce(leaseResult(ABSENT));
+    const sb = makeSandbox();
+    sb.dispose({ keepFiles: true });
+    expect(spawnSync).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(spawnSync).mock.calls[1]?.[1]).toEqual([CLI, "daemon", "stop", "--json"]);
+    expect(rmSync).not.toHaveBeenCalled();
   });
 
   it.each([ABSENT, { ...STALE, pid: 202 }])(
@@ -122,7 +172,12 @@ describe("canary cleanup custody", () => {
       expect(vi.mocked(spawnSync).mock.calls[1]).toEqual([
         process.execPath,
         [CLI, "daemon", "stop", "--json"],
-        { env: sb.env, cwd: sb.repo, encoding: "utf8", timeout: 30_000 },
+        {
+          env: sb.env,
+          cwd: sb.repo,
+          encoding: "utf8",
+          timeout: process.platform === "win32" ? 95_000 : 30_000,
+        },
       ]);
       expect(rmSync).toHaveBeenCalledOnce();
       expect(
@@ -156,6 +211,43 @@ describe("canary cleanup custody", () => {
         ...("error" in stop ? { error: { code: "ETIMEDOUT", message: "timed out" } } : {}),
       },
     });
+  });
+
+  // Windows `daemon stop` pins its target with the strict inspection before any shutdown
+  // request, so a slow birth reader spends the allowance first. Durations are simulated
+  // against the timeout the stop receives; nothing sleeps.
+  it.each([
+    ["one capped birth read", 30_000 + 20_000, true],
+    ["two capped reads of a changing record", 2 * 30_000 + 20_000, true],
+    ["a stop that never returns", Number.POSITIVE_INFINITY, false],
+  ])("bounds a slow Windows birth reader before shutdown: %s", (_label, stopMs, completes) => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      const timedOut = Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" });
+      vi.mocked(spawnSync)
+        .mockReturnValueOnce(leaseResult(ACTIVE))
+        .mockImplementationOnce((_command, _args, options) =>
+          (options?.timeout ?? 0) >= stopMs
+            ? processResult()
+            : processResult({ status: null, signal: "SIGTERM", error: timedOut }),
+        )
+        .mockReturnValueOnce(leaseResult(ABSENT));
+      const sb = makeSandbox();
+      if (completes) {
+        sb.dispose();
+        expect(rmSync).toHaveBeenCalledOnce();
+      } else {
+        expect(() => sb.dispose()).toThrow(`Canary cleanup incomplete at ${BASE}`);
+        expect(rmSync).not.toHaveBeenCalled();
+        expect(cleanupReceipt()).toMatchObject({
+          before: ACTIVE,
+          stop: { error: { code: "ETIMEDOUT" } },
+        });
+      }
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 
   it("does not treat a missing-token CLI refusal as proof that the live lease is unused", () => {

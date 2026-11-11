@@ -1,3 +1,4 @@
+import { threadHistoryTools } from "./thread-history-tools.js";
 import mcpThreadTurnResultSchemaRaw from "@claudexor/schema/generated/McpThreadTurnResult.schema.json" with { type: "json" };
 import {
   AccessProfile,
@@ -6,6 +7,8 @@ import {
   effortJsonSchema,
 } from "@claudexor/schema";
 import { mcpToolFailure } from "./tool-failure.js";
+import { attachmentRefsSchema } from "./attachment-ref-schema.js";
+import { auxiliaryWritableRootsSchema } from "./run-execution-schema.js";
 import { formatRunResult } from "./run-result-format.js";
 import { inlineJsonSchemaRefs } from "./inline-json-schema-refs.js";
 import type { McpTool, McpToolOutput, RunnerFn } from "./index.js";
@@ -59,6 +62,7 @@ export function threadTools(runner: RunnerFn): McpTool[] {
     additionalProperties: false,
     properties: {
       threadId: nonBlankString,
+      attachments: attachmentRefsSchema,
       prompt: {
         type: "string",
         minLength: 1,
@@ -73,7 +77,15 @@ export function threadTools(runner: RunnerFn): McpTool[] {
       credentialProfileId: nonBlankString,
       access: { type: "string", enum: AccessProfile.options },
       web: { type: "string", enum: ExternalContextPolicy.options },
-      maxSeconds: { type: "integer", minimum: 1 },
+      maxSeconds: { type: "integer", minimum: 1, maximum: 604800 },
+      timeLimitMode: { type: "string", enum: ["soft", "hard"] },
+      execution: {
+        type: "object",
+        additionalProperties: false,
+        properties: { auxiliaryWritableRoots: auxiliaryWritableRootsSchema },
+        description:
+          "This turn's own auxiliary writable directories; the thread's project and execution tree stay fixed, and omitting the list grants nothing.",
+      },
       idempotencyKey: {
         ...nonBlankString,
         maxLength: 256,
@@ -98,6 +110,7 @@ export function threadTools(runner: RunnerFn): McpTool[] {
     }
   };
   return [
+    ...threadHistoryTools(runner),
     {
       name: "claudexor_thread_create",
       description:

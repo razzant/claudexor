@@ -56,6 +56,21 @@ function problemFrom(error: unknown): ControlProblem {
   });
 }
 
+/** A problem names the requested model: the bytes this execution parsed, or before
+ * it read them the params declaration (create's parsed bytes, or a raw enqueue's
+ * unverified claim). route.model keeps only a provider-observed model, so a
+ * failure never pretends one (#649). */
+function withRequestedModel(problem: ControlProblem, model: string | null): ControlProblem;
+function withRequestedModel(
+  problem: ControlProblem | null,
+  model: string | null,
+): ControlProblem | null;
+function withRequestedModel(problem: ControlProblem | null, model: string | null) {
+  return problem && model !== null
+    ? { ...problem, context: { ...problem.context, requestedModel: model } }
+    : problem;
+}
+
 export async function executeModelOperation(
   params: ModelOperationParams,
   ctx: RunContext,
@@ -66,6 +81,10 @@ export async function executeModelOperation(
   let evidence = emptyEvidence();
   let dispatchAttempted = false;
   let barrierProblem: ControlProblem | null = null;
+  // The params declaration (create's parsed bytes, or a raw enqueue's unverified
+  // claim), until this execution reads the digest-bound bytes: from then only
+  // they name it, and bytes that do not parse name none.
+  let requestedModel: string | null = params.requestedModel ?? null;
   try {
     const onDispatch: ModelAdapterContext["onDispatch"] = async (route) => {
       ctx.signal.throwIfAborted();
@@ -88,11 +107,14 @@ export async function executeModelOperation(
       try {
         await commandStoreForId(deps.commands, ctx.jobId)!.flushed();
       } catch (error) {
-        barrierProblem = ControlProblem.parse({
-          code: "store_flush_unavailable",
-          retryable: true,
-          message: redactSecrets(error instanceof Error ? error.message : String(error)),
-        });
+        barrierProblem = withRequestedModel(
+          ControlProblem.parse({
+            code: "store_flush_unavailable",
+            retryable: true,
+            message: redactSecrets(error instanceof Error ? error.message : String(error)),
+          }),
+          requestedModel,
+        );
         evidence = {
           ...evidence,
           dispatch: { ...dispatch, state: "not_started" },
@@ -108,7 +130,14 @@ export async function executeModelOperation(
         ctx.signal.throwIfAborted();
       }
     };
-    const result = await invokeModelOperation(params, deps, ctx.signal, onDispatch, ctx.jobId);
+    const result = await invokeModelOperation(
+      params,
+      deps,
+      ctx.signal,
+      onDispatch,
+      ctx.jobId,
+      (model) => (requestedModel = model),
+    );
     // An adapter may translate the callback rejection into its normal failed
     // response. The durable no-dispatch proof still owns this failure.
     if (barrierProblem)
@@ -117,8 +146,13 @@ export async function executeModelOperation(
         ...evidence,
         problem: barrierProblem,
       });
+    // Strict same-major clients keep the legacy receipt, detail and result shape.
+    if ("routing" in result && result.routing && params.captureRoutingEvidence === true)
+      evidence.routing = result.routing;
     evidence.usage = result.usage;
     evidence.cost = result.cost;
+    // Before publication: GET bytes, digest, receipt and detail carry one problem.
+    result.problem = withRequestedModel(result.problem, requestedModel);
     evidence.problem = result.problem;
     const notDelivered =
       result.outcome === "failed" &&
@@ -154,6 +188,7 @@ export async function executeModelOperation(
     // Freeze the negotiated shape BEFORE publication; GET must keep its digest-bound bytes.
     if ("effortResolution" in result && params.captureEffortEvidence !== true)
       delete result.effortResolution;
+    if ("routing" in result && params.captureRoutingEvidence !== true) delete result.routing;
     const ref = deps.resources().publishModel(Buffer.from(JSON.stringify(result), "utf8"));
     const ready = now();
     evidence.response = {
@@ -172,7 +207,7 @@ export async function executeModelOperation(
     return ModelOperationReceipt.parse({ lifecycle, ...evidence });
   } catch (error) {
     const sent = evidence.dispatch.state !== "not_started";
-    evidence.problem = barrierProblem ?? problemFrom(error);
+    evidence.problem = withRequestedModel(barrierProblem ?? problemFrom(error), requestedModel);
     if (sent && evidence.dispatch.state !== "response_received") {
       evidence.dispatch = { ...evidence.dispatch, state: "unknown" };
     }
@@ -183,14 +218,11 @@ export async function executeModelOperation(
   }
 }
 
-export function readModelPayload<T>(
-  resources: ModelPayloadStore,
-  ref: ModelPayloadRef,
+function parseModelPayload<T>(
+  bytes: Buffer,
   schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
   name: string,
 ): T {
-  // Preserve resource/digest/I/O failures; they are not invalid caller JSON.
-  const bytes = resources.readModel(ref);
   let parsed: { success: true; data: T } | { success: false } | undefined;
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -209,6 +241,43 @@ export function readModelPayload<T>(
   return parsed.data;
 }
 
+/** Result reads stay here: an async read would race acknowledgement. */
+export function readModelPayload<T>(
+  resources: ModelPayloadStore,
+  ref: ModelPayloadRef,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  name: string,
+): T {
+  // Preserve resource/digest/I/O failures; they are not invalid caller JSON.
+  return parseModelPayload(resources.readModel(ref), schema, name);
+}
+
+/** Create and dispatch. The same parse as `readModelPayload`, after an off-thread read. */
+export async function readModelPayloadAsync<T>(
+  resources: ModelPayloadStore,
+  ref: ModelPayloadRef,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  name: string,
+): Promise<T> {
+  return parseModelPayload(await resources.readModelAsync(ref), schema, name);
+}
+
+/** Execution's own read: once the bytes are read only they name the model, so a
+ * params claim never outlives them and bytes that do not parse name none (#649). */
+async function readOwnRequest<T extends { model: string }>(
+  deps: ModelOperationDependencies,
+  ref: ModelPayloadRef,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  name: string,
+  named: (model: string | null) => void,
+): Promise<T> {
+  const bytes = await deps.resources().readModelAsync(ref);
+  named(null);
+  const request = parseModelPayload(bytes, schema, name);
+  named(request.model);
+  return request;
+}
+
 /** Only request parsing and adapter invocation differ; dispatch, publication and
  * terminal custody have one owner for both payload kinds. */
 async function invokeModelOperation(
@@ -217,15 +286,17 @@ async function invokeModelOperation(
   signal: AbortSignal,
   onDispatch: ModelAdapterContext["onDispatch"],
   operationId: string,
+  named: (model: string | null) => void,
 ): Promise<ModelCallResult | ImageCallResult> {
   if (params.requestKind === "image") {
     if (params.request.sizeBytes > 144 * 1024 * 1024)
       throw operationError("image_request_too_large", "The image request exceeds 144 MiB", 413);
-    const request = readModelPayload(
-      deps.resources(),
+    const request = await readOwnRequest(
+      deps,
       params.request,
       ImageCallRequest,
       "ImageCallRequest",
+      named,
     );
     signal.throwIfAborted();
     if (!deps.resolveImage)
@@ -247,14 +318,15 @@ async function invokeModelOperation(
       }),
     );
   }
-  const request = readModelPayload(
-    deps.resources(),
+  const request = await readOwnRequest(
+    deps,
     params.request,
     ModelCallRequest,
     "ModelCallRequest",
+    named,
   );
   signal.throwIfAborted();
-  const { adapter, profile } = await deps.resolve(request, signal);
+  const { adapter, profile } = await deps.resolve(request, signal, operationId);
   signal.throwIfAborted();
   return ModelCallResult.parse(
     await adapter.invoke(request, {

@@ -6,6 +6,7 @@ import type { RecordedControlRunStartRequest } from "./control.js";
  * Historical malformed values remain readable by the consumer's safe parsers. */
 export const COMMAND_SUMMARY_PARAM_KEYS = [
   "mode",
+  "taskGroupId",
   "routingGoal",
   "access",
   "reviewerPanel",

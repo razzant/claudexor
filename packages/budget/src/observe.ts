@@ -1,5 +1,6 @@
 import type { BudgetObservation, HarnessEvent } from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
+import { reportedUsageCostUsd } from "./usage-evidence.js";
 
 const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -26,17 +27,19 @@ export function observationsFromEvent(harnessId: string, ev: HarnessEvent): Budg
     ...(ev.credential_route ? { credential_route: ev.credential_route } : {}),
     subject_id: ev.credential_profile_id ?? null,
   };
-  if (ev.type === "usage" && typeof ev.usage?.cost_usd === "number" && ev.usage.cost_usd > 0) {
+  const spendUsd = ev.type === "usage" ? reportedUsageCostUsd(ev) : undefined;
+  if (spendUsd !== undefined) {
     // Token-derived costs (e.g. codex) are honest estimates -> "observed"; only
-    // natively-reported costs (e.g. claude) are "exact".
-    const quality = ev.usage.estimated ? "observed" : "exact";
+    // natively-reported costs (e.g. claude) are "exact". A reported zero is spend
+    // evidence like any other amount; an event without one is not.
+    const quality = ev.usage?.estimated ? "observed" : "exact";
     out.push({
       harness_id: harnessId,
       ...subject,
       ts: nowIso(),
       quality,
       kind: "spend",
-      usd: ev.usage.cost_usd,
+      usd: spendUsd,
     });
   }
   if (ev.quota) {
@@ -48,10 +51,13 @@ export function observationsFromEvent(harnessId: string, ev: HarnessEvent): Budg
         quality: "native",
         kind: "quota_constraint",
         constraint_id: constraint.id,
-        // The scope travels as a PAIR: dropping the unspecified-model half
-        // here would silently widen a scoped window on this path.
+        // The scope travels whole: dropping the prefix or unspecified-model
+        // part here would silently narrow or widen a scoped window.
         ...(constraint.applies_to_models !== undefined
           ? { applies_to_models: constraint.applies_to_models }
+          : {}),
+        ...(constraint.applies_to_model_prefixes
+          ? { applies_to_model_prefixes: constraint.applies_to_model_prefixes }
           : {}),
         ...(constraint.applies_to_unspecified_model !== undefined
           ? { applies_to_unspecified_model: constraint.applies_to_unspecified_model }
@@ -88,6 +94,9 @@ function singleObservationFromEvent(harnessId: string, ev: HarnessEvent): Budget
       ...(ev.rate_limit.constraint_id ? { constraint_id: ev.rate_limit.constraint_id } : {}),
       ...(ev.rate_limit.applies_to_models !== undefined
         ? { applies_to_models: ev.rate_limit.applies_to_models }
+        : {}),
+      ...(ev.rate_limit.applies_to_model_prefixes
+        ? { applies_to_model_prefixes: ev.rate_limit.applies_to_model_prefixes }
         : {}),
       ...(ev.rate_limit.applies_to_request_kinds
         ? { applies_to_request_kinds: ev.rate_limit.applies_to_request_kinds }

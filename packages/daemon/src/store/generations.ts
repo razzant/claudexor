@@ -82,6 +82,9 @@ export function setGlobalGenerationInTx(sql: SqlWriteContext, pid: number): void
     .run(String(pid));
   // Global registry replacement also hides all previously registered projects.
   sql.prepare("UPDATE command SET live = 0 WHERE live = 1 AND pid <> ?").run(pid);
+  sql
+    .prepare(`UPDATE deferred_message SET state='held',hold=? WHERE pid<>? AND state='waiting'`)
+    .run(Buffer.from(JSON.stringify({ code: "partition_retired" })), pid);
   reconcileLiveInTx(sql);
 }
 
@@ -99,6 +102,10 @@ export function reconcileLiveInTx(sql: SqlWriteContext): void {
 export function setGenerationStatusInTx(sql: SqlWriteContext, pid: number, status: string): void {
   requireTransaction(sql);
   sql.prepare("UPDATE partition SET status = ? WHERE id = ?").run(status, pid);
+  if (status !== "ready")
+    sql
+      .prepare("UPDATE deferred_message SET state='held',hold=? WHERE pid=? AND state='waiting'")
+      .run(Buffer.from(JSON.stringify({ code: "partition_retired" })), pid);
   if (globalGeneration(sql)?.pid === pid) {
     reconcileLiveInTx(sql);
   } else {

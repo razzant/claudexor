@@ -1,4 +1,5 @@
 import type { CommandStorePort, CommandQueries } from "./store-contracts.js";
+import type { DeferredMessageOwner } from "./deferred-message-owner.js";
 
 export interface CommandAuthority {
   current?(): CommandStorePort;
@@ -8,6 +9,7 @@ export interface CommandAuthority {
 
 /** A complete command boundary; SQL never supplies a legacy enumeration fallback. */
 export interface CommandBackend extends CommandAuthority {
+  deferredFor?(id: string): DeferredMessageOwner | undefined;
   readonly queries: CommandQueries;
   pruneHistory(cap: number, retentionMs: number, now: number): string[];
 }

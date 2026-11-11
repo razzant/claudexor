@@ -6,9 +6,11 @@ import type {
   ToolKind,
   ToolRef,
 } from "@claudexor/schema";
-import { InputTokenUsage } from "@claudexor/schema";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { commandOutcomeLabel, InputTokenUsage } from "@claudexor/schema";
+import { nowIso } from "@claudexor/util";
+import { CursorBackgroundShells } from "./background-shells.js";
 import { applyCursorVendorLimit } from "./retry-signals.js";
+import { classifyCursorToolResult } from "./tool-result.js";
 
 type Json = any;
 
@@ -48,12 +50,14 @@ function argsTarget(args: Json): string | undefined {
   const found = candidates.find(
     (v: unknown) => typeof v === "string" && (v as string).trim().length > 0,
   );
-  return found ? redactSecrets(String(found)).slice(0, 500) : undefined;
+  // The agent's own tool input (INV-146): bounded for display, never masked.
+  return found ? String(found).slice(0, 500) : undefined;
 }
 
+/** Bounded tool result text: the tool output the model saw and the only copy
+ * Claudexor keeps, so it is never masked (INV-146). */
 function resultSummary(result: Json): string {
-  if (typeof result === "string")
-    return redactSecrets(result).trim().replace(/\s+/g, " ").slice(0, 1000);
+  if (typeof result === "string") return result.trim().replace(/\s+/g, " ").slice(0, 1000);
   if (result && typeof result === "object") {
     const rec = result as Record<string, unknown>;
     const text =
@@ -64,8 +68,8 @@ function resultSummary(result: Json): string {
           : typeof rec["text"] === "string"
             ? rec["text"]
             : "";
-    if (text) return redactSecrets(text).trim().replace(/\s+/g, " ").slice(0, 1000);
-    return redactSecrets(JSON.stringify(result)).slice(0, 300);
+    if (text) return text.trim().replace(/\s+/g, " ").slice(0, 1000);
+    return JSON.stringify(result).slice(0, 300);
   }
   return "";
 }
@@ -84,6 +88,8 @@ interface CursorParserState {
    * (applies_to_models): the run's REQUESTED model when the caller passed it,
    * else the init frame's observed model. Null = unknown → account-scoped. */
   scopeModel: string | null;
+  /** Background handoffs a later completion notification refines (#546). */
+  backgroundShells: CursorBackgroundShells;
 }
 
 /**
@@ -131,6 +137,7 @@ export function createCursorParser(
     lastCompleteAssistant: null,
     fallbackPlan: null,
     scopeModel: requestedModel ?? null,
+    backgroundShells: new CursorBackgroundShells(),
   };
   return (obj: Json, sessionId: string): HarnessEvent[] | null => {
     const out = parseCursorEventStateful(
@@ -164,6 +171,7 @@ export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] |
     lastCompleteAssistant: null,
     fallbackPlan: null,
     scopeModel: null,
+    backgroundShells: new CursorBackgroundShells(),
   });
 }
 
@@ -207,6 +215,9 @@ function parseCursorEventStateful(
       },
     ];
   }
+
+  if (type === "system" && obj.subtype === "task_notification")
+    return state.backgroundShells.completion(obj, sessionId, ts);
 
   if (type === "user") {
     const content = obj.message?.content;
@@ -296,29 +307,9 @@ function parseCursorEventStateful(
     const origin = callId ? state.pending.get(callId) : undefined;
     if (callId) state.pending.delete(callId);
     const result = inner?.result ?? obj.result;
-    const rejected = Boolean(
-      result && typeof result === "object" && "rejected" in result && result.rejected,
-    );
-    const permissionDenied = Boolean(
-      result &&
-      typeof result === "object" &&
-      "permissionDenied" in result &&
-      result.permissionDenied,
-    );
-    const nativeFailure =
-      result &&
-      typeof result === "object" &&
-      "failure" in result &&
-      result.failure &&
-      typeof result.failure === "object" &&
-      ("exitCode" in result.failure || "error" in result.failure);
-    const failed =
-      subtype === "failed" ||
-      nativeFailure ||
-      (result && typeof result === "object" && "error" in result && result.error);
+    // Denial/failure status plus, for the shell, the command outcome (#450).
+    const { status, facts, payload } = classifyCursorToolResult(subtype, variant, result);
     const detail = resultSummary(result);
-    const status: ToolRef["status"] =
-      rejected || permissionDenied ? "denied" : failed ? "error" : "ok";
     const kind = origin?.kind ?? toolKindFor(variant);
     // Plan mode is READ-ONLY exploration: a read/search that misses (a probed
     // path that does not exist) is speculative negative information, never a
@@ -354,15 +345,21 @@ function parseCursorEventStateful(
       status,
       error_summary: status === "error" ? detail || "tool call failed" : undefined,
       content_summary: detail || undefined,
+      ...facts,
     };
+    state.backgroundShells.observe(tool, obj.session_id);
+    const outcomeLabel = commandOutcomeLabel(tool.command_outcome);
     const events: HarnessEvent[] = [
       {
         type: "tool_result",
         session_id: sessionId,
         ts,
         text:
-          status !== "ok" ? `tool_result: ${status}${detail ? `: ${detail}` : ""}` : "tool_result",
+          status !== "ok"
+            ? `tool_result: ${status}${detail ? `: ${detail}` : ""}`
+            : `tool_result${outcomeLabel ? `: ${outcomeLabel}` : ""}`,
         tool,
+        ...(payload ? { payload } : {}),
       },
     ];
     // cursor's `createPlan` is the plan-mode DELIVERABLE tool. Its authored plan

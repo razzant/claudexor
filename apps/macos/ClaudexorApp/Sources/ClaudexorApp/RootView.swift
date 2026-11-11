@@ -15,26 +15,22 @@ struct RootView: View {
     /// Never auto-reset; Settings → Harness Doctor is the way back in.
     @AppStorage("claudexor.onboardingDismissed") private var onboardingDismissed = false
 
+    /// The engine placeholder replaces the thread screen only while there is no
+    /// local connection, remote connection or cached remote thread to show.
+    static func showsEnginePlaceholder(for model: AppModel) -> Bool {
+        model.health != .connected && model.remoteConnections.isEmpty && model.remoteThreadCache.isEmpty
+    }
+
     var body: some View {
         @Bindable var model = model
         ZStack {
             GlassBackground()
                 .ignoresSafeArea()
             Group {
-                if model.health == .connected
-                    || !model.remoteConnections.isEmpty
-                    || !model.remoteThreadCache.isEmpty
-                {
-                    ThreadsScreen()
+                if Self.showsEnginePlaceholder(for: model) {
+                    EnginePlaceholder()
                 } else {
-                    ContentUnavailableView(
-                        model.health == .connecting ? "Connecting to engine" : "Engine offline",
-                        systemImage: model.health == .connecting ? "dot.radiowaves.left.and.right" : "wifi.slash",
-                        description: Text(model.health == .connecting
-                            ? "Operational data will appear after the local engine handshake completes."
-                            : "Claudexor is reconnecting automatically. Run and thread mutations stay unavailable while offline.")
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ThreadsScreen()
                 }
             }
                 .inspector(isPresented: Bindable(model).inspectorPresented) {
@@ -117,6 +113,48 @@ struct RootView: View {
             .labelStyle(.iconOnly)
             .help("New thread — pick a project and the first message starts it")
         }
+    }
+}
+
+/// Connecting/Offline in place of the thread screen. The sidebar's update chip
+/// is not mounted here, so the same lifecycle notice names a cause such as a
+/// refused engine lifecycle lock. After a replacement left no engine, Offline
+/// makes the shared `LocalEngineRetry` offer.
+struct EnginePlaceholder: View {
+    @Environment(AppModel.self) private var model
+    /// About the description's own column, which a long notice must not widen.
+    private static let noticeMaxWidth: CGFloat = 360
+
+    var body: some View {
+        let notice = UpdateChip.notice(for: model)
+        let offersRetry = LocalEngineRetry.isOffered(for: model)
+        ContentUnavailableView {
+            Label(
+                model.health == .connecting ? "Connecting to engine" : "Engine offline",
+                systemImage: model.health == .connecting ? "dot.radiowaves.left.and.right" : "wifi.slash")
+        } description: {
+            Text(model.health == .connecting
+                ? "Operational data will appear after the local engine handshake completes."
+                : offersRetry
+                    ? "\(LocalEngineRetry.explanation) Run and thread mutations stay unavailable while offline."
+                    : "Claudexor is reconnecting automatically. Run and thread mutations stay unavailable while offline.")
+        } actions: {
+            // This slot lays its children out side by side; a reason and its
+            // action read as one centered column instead.
+            if notice != nil || offersRetry {
+                VStack(spacing: Theme.Spacing.md) {
+                    if let notice {
+                        // Its ideal height: this slot would otherwise truncate
+                        // a reason that has no hover fallback here.
+                        LocalEngineNoticeLine(notice: notice, lineLimit: nil)
+                            .frame(maxWidth: Self.noticeMaxWidth)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if offersRetry { LocalEngineRetryButton() }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

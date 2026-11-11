@@ -7,6 +7,10 @@ import {
   safeProblemRequiredActions,
 } from "@claudexor/util";
 
+/** The engine's refusal of a reference to a released managed resource (#249). Other
+ * replay refusals leave a turn replayable; no replay of these params can ever pass. */
+export const RESOURCE_RELEASED = "resource_released";
+
 export function errStatus(err: unknown, fallback = 400): number {
   return err && typeof err === "object" && "status" in err
     ? Number((err as { status: number }).status)

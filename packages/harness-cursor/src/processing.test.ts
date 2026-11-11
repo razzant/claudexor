@@ -244,3 +244,30 @@ describe("Cursor effort selects the listed variant of the model's family (one pr
     });
   });
 });
+
+describe("Cursor preparation hands its own catalog read to the per-spawn gate", () => {
+  it("returns exactly the rows it selected from, out of the same single read", async () => {
+    // Synthetic Cursor-style rows; no recorded real catalog/init pair exists.
+    const labelled = [
+      HarnessModel.parse({ id: "gpt-5.5-high", label: "GPT-5.5 High" }),
+      HarnessModel.parse({ id: "gpt-5.5-high-fast", label: "GPT-5.5 High Fast" }),
+    ];
+    let listed = 0;
+    const adapter = adapterCapturing(
+      async () => {
+        listed += 1;
+        return labelled;
+      },
+      () => undefined,
+    );
+    const prepared = await adapter.prepareProcessing!({
+      cwd: "/repo",
+      authPreference: "api_key",
+      model: "gpt-5.5-high",
+      effort: null,
+    });
+    expect(listed).toBe(1);
+    expect(prepared.model).toBe("gpt-5.5-high");
+    expect(prepared.catalog).toEqual(labelled);
+  });
+});

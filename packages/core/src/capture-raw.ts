@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { registerChildProcess, unregisterChildProcess } from "./process-registry.js";
 import { composeSpawnEnv } from "./env-scope.js";
-import { prepareHarnessCommand } from "./runtime-env.js";
+import { backgroundSpawnShape, prepareHarnessCommand } from "./runtime-env.js";
 import { runScopeMarkerOf } from "./process-scope.js";
 import { killWindowsProcessTree, resolveKillTreeStrategy } from "./process-tree.js";
 import { defaultProcessGroupService, type ProcessGroupHandle } from "./process-group.js";
@@ -15,6 +15,8 @@ export interface CaptureProjection {
 }
 interface RawCaptureOptions extends SpawnOptions {
   stdoutProjection?: CaptureProjection;
+  /** Called for every chunk of output, buffered or projected: the child is working. */
+  onOutput?: () => void;
 }
 
 /**
@@ -30,14 +32,19 @@ export async function runCaptureRaw(
   args: string[],
   opts: RawCaptureOptions = {},
 ): Promise<CaptureResult> {
-  const invocation = prepareHarnessCommand(cmd, args, composeSpawnEnv(opts.inheritEnv, opts.env));
+  const invocation = prepareHarnessCommand(
+    cmd,
+    args,
+    composeSpawnEnv(opts.inheritEnv, opts.env),
+    process.platform,
+    opts.cwd,
+  );
   const env = invocation.env;
   const child = spawn(invocation.binary, invocation.args, {
     cwd: opts.cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    detached: true,
+    ...backgroundSpawnShape(process.platform, opts.windowsConsole),
   });
   if (typeof child.pid === "number") registerChildProcess(child.pid, cmd, runScopeMarkerOf(env));
   child.once("exit", (code, signal) => opts.onExit?.(code, signal));
@@ -59,7 +66,7 @@ export async function runCaptureRaw(
   // then, so the PID cannot have been recycled).
   const captureGroupService = opts.processGroups ?? defaultProcessGroupService;
   let captureGroupHandle: ProcessGroupHandle | undefined;
-  if (typeof child.pid === "number") {
+  if (process.platform !== "win32" && typeof child.pid === "number") {
     const capture = captureGroupService.captureLeader(child.pid);
     if (capture.status === "known") captureGroupHandle = capture.handle;
   }
@@ -104,6 +111,7 @@ export async function runCaptureRaw(
   };
   const collect = (stream: "stdout" | "stderr", chunk: Buffer): void => {
     if (captureFailed) return;
+    opts.onOutput?.();
     try {
       if (stream === "stdout" && opts.stdoutProjection) opts.stdoutProjection.write(chunk);
       else buffers.append(stream, chunk);

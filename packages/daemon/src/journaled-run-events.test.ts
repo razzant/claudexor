@@ -27,6 +27,7 @@ describe("journaled run events (owner decision D1: no per-token deltas in the jo
         "interaction.requested",
         "interaction.answered",
         "interaction.timeout",
+        "interaction.withdrawn",
         "message.accepted",
         "message.delivered",
         "message.refused",

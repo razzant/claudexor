@@ -315,6 +315,13 @@ static int run_fake_agy(int argc, wchar_t **argv) {
  * The profile-local marker is mandatory, so no ordinary fixture invocation
  * changes meaning. This executable never performs network or auth work. */
 static int run_fake_cursor(int argc, wchar_t **argv) {
+  /* The adapter's global child switch precedes status; version is a public,
+     account-independent observation and must not enter the login protocol. */
+  if (argc > 1 && wcscmp(argv[1], L"--disable-auto-update") == 0) { argc--; argv++; }
+  if (argc == 2 && wcscmp(argv[1], L"--version") == 0) {
+    printf("2026.11.10-abc123\n");
+    return 0;
+  }
   int login = argc == 2 && wcscmp(argv[1], L"login") == 0;
   int status = argc == 4 && wcscmp(argv[1], L"status") == 0 &&
                wcscmp(argv[2], L"--format") == 0 &&

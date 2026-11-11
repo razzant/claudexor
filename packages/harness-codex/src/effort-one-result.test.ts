@@ -75,6 +75,32 @@ async function execRun(spec: HarnessRunSpec) {
 }
 
 describe("codex: the vendor order first, the shared order only for words no model lists", () => {
+  it("does not spawn codex when the run is stopped at its effort receipt", async () => {
+    let spawned = false;
+    const adapter = createCodexAdapter({
+      ...stubs,
+      runCliHarness: async function* (options): AsyncGenerator<HarnessEvent> {
+        spawned = true;
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-10-05T00:00:00Z",
+        };
+      },
+    });
+    const stop = new AbortController();
+    const spec = runSpec("v-stopped", "gpt-5.5", "high");
+    spec.extra["abortSignal"] = stop.signal;
+    const events: HarnessEvent[] = [];
+    // A consumer that keeps reading after Stop (to drain teardown evidence).
+    for await (const event of adapter.run(spec)) {
+      events.push(event);
+      if (event.effort_resolution) stop.abort();
+    }
+    expect(events.some((event) => event.effort_resolution)).toBe(true);
+    expect(spawned).toBe(false);
+  });
+
   it("gpt-5.5 + ultra clamps to xhigh inside the VENDOR order — no shared placement is claimed", async () => {
     const { cliArgs, receipt, events } = await execRun(runSpec("v-ultra", "gpt-5.5", "ultra"));
     expect(receipt).toMatchObject({

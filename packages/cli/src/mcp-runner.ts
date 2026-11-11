@@ -1,40 +1,41 @@
+import { threadHistoryQuery } from "./thread-history.js";
 import { accountResourceQuery } from "./account-resource-query.js";
 import {
   ControlProblem,
-  isTerminalLifecycle,
+  ControlRunControlResponse,
   ModeKind,
   RunExecution,
+  ResourceAttachmentRef,
   type ProcessingPreference,
+  type PromptCacheTtl,
   normalizeCancelReasonCode,
-  type RunOutcomeFacts,
+  taskGroupLaunchMetadata,
 } from "@claudexor/schema";
-import {
-  connectDaemonIfRunning,
-  daemonOutcomeSummary,
-  ensureDaemon,
-  enqueueAndAwait,
-  fetchRunDetail,
-} from "./daemon-run.js";
-import {
-  describeRunDetailProblem,
-  presentRunPrimaryOutput,
-  projectRunFailure,
-  projectRunPrimaryOutput,
-} from "./run-detail-projections.js";
-import { primaryOutputForCli } from "./primary-output.js";
+import { connectDaemonIfRunning, ensureDaemon, enqueueAndAwait } from "./daemon-run.js";
 import { controlProblemError } from "./cli-error.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
+import { makeInteractionBridge } from "./interaction-bridge.js";
 import { absentDaemonRecovery, daemonUnavailableError } from "./mcp-daemon-unavailable.js";
 import {
   isRecoverableRunDetailIntegrityProblem,
   projectDegradedRecoveryRunDetail,
-  projectImmediateRunDetail,
   projectRecoveryRunDetail,
 } from "./mcp-run-projections.js";
+import { keyedLaunchNeedsProject, projectLaunchHandle } from "./mcp-launch-handle.js";
+import { answerInteraction, projectRunInteractions } from "./mcp-run-interactions.js";
 import { readRunDetailResponse } from "./run-detail-response.js";
 import { catalogQuery } from "./mcp-catalog-query.js";
 import { threadQuery } from "./mcp-thread-query.js";
+import { runTimeLimitQuery } from "./mcp-run-time-limit.js";
+import { runMessageQuery } from "./mcp-run-message.js";
+import { runContinueQuery } from "./mcp-run-continue.js";
+import { runWaitQuery } from "./mcp-run-wait.js";
+import { runsWaitQuery } from "./mcp-runs-wait.js";
+import { taskGroupRunsQuery } from "./task-group-runs.js";
+import { runEventReadQuery } from "./mcp-run-event-read.js";
 import { journalRecoveryQuery } from "./mcp-journal-recovery.js";
+import { uploadQuery } from "./upload-query.js";
+import { deferredMessageQuery } from "./mcp-deferred-message.js";
 
 export interface SurfaceRunnerHooks {
   onEvent?: (event: any) => void;
@@ -51,6 +52,8 @@ export interface McpSurfaceRunnerOptions {
   /** Original project root from the engine descriptor, never from child arguments. */
   delegationRepoRoot?: string | null;
   delegationProcessingPreference?: ProcessingPreference;
+  /** Belt-only: the parent run's captured lifetime; the generic MCP run has no such argument. */
+  delegationPromptCacheTtl?: PromptCacheTtl;
   delegationExecution?: Pick<RunExecution, "workspaceKind" | "scopePaths">;
   /** ACP-aware bridges inject this; the packaged belt does not initialize ACP. */
   acpSessionQuery?: (
@@ -70,6 +73,35 @@ export interface McpSurfaceRunnerOptions {
 export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
     const beltContext = Boolean(options.delegationParentRunId);
+    if (p?.mode === "__thread_history" || p?.mode === "__thread_prompt") {
+      const { mode, ...input } = p;
+      return threadHistoryQuery(input, mode === "__thread_prompt", beltContext, hooks?.signal);
+    }
+    if (typeof p?.mode === "string" && p.mode.startsWith("__upload_")) {
+      const { mode, ...input } = p;
+      return uploadQuery(mode.slice("__upload_".length), input, beltContext, hooks?.signal);
+    }
+    if (p?.mode === "__next_message" || p?.mode === "__next_message_read")
+      return deferredMessageQuery(p, beltContext, hooks?.signal);
+    if (p?.mode === "__task_group_runs") {
+      const { mode: _mode, ...input } = p;
+      return taskGroupRunsQuery(input, beltContext, hooks?.signal);
+    }
+    if (p?.mode === "__runs_wait") {
+      const { mode: _mode, ...input } = p;
+      return runsWaitQuery(input, beltContext, hooks?.signal);
+    }
+    if (p?.mode === "__run_wait") {
+      const { mode: _mode, ...input } = p;
+      return runWaitQuery(input, beltContext, hooks?.signal);
+    }
+    if (p?.mode === "__run_event_read") {
+      const { mode: _mode, ...input } = p;
+      return runEventReadQuery(input, beltContext, hooks?.signal);
+    }
+    if (p?.mode === "__run_message") return runMessageQuery(p, beltContext, hooks?.signal);
+    if (p?.mode === "__run_continue") return runContinueQuery(p, beltContext);
+    if (p?.mode === "__run_time_limit") return runTimeLimitQuery(p, beltContext);
     if (p?.mode === "__account_resources")
       return accountResourceQuery(
         "resources",
@@ -124,6 +156,14 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       });
     }
     const mode = ModeKind.parse(p?.mode ?? "agent");
+    const attachments =
+      p?.attachments === undefined ? undefined : ResourceAttachmentRef.array().parse(p.attachments);
+    const metadata = taskGroupLaunchMetadata(p, beltContext);
+    // A replayable launch key names one stable project; it never follows
+    // whatever directory this server process happens to run in.
+    const explicitRoot = typeof p?.repoPath === "string" && p.repoPath.trim().length > 0;
+    if (p?.idempotencyKey !== undefined && !options.delegationRepoRoot && !explicitRoot)
+      throw keyedLaunchNeedsProject();
     const connection = options.requireExistingDaemon
       ? await connectDaemonIfRunning()
       : await ensureDaemon();
@@ -136,7 +176,9 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       ? options.delegationProcessingPreference
       : p?.processingPreference;
     const body: Record<string, unknown> = {
+      ...metadata,
       prompt: String(p?.prompt ?? ""),
+      ...(attachments !== undefined ? { attachments } : {}),
       mode,
       scope: { kind: "project", root: repoRoot },
       execution: options.delegationParentRunId
@@ -154,6 +196,8 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       ...(p?.council === true ? { council: true } : {}),
       ...(Array.isArray(p?.tests) ? { tests: p.tests } : {}),
       ...(p?.paidBudget ? { paidBudget: p.paidBudget } : {}),
+      ...(p?.maxSeconds !== undefined ? { maxSeconds: p.maxSeconds } : {}),
+      ...(p?.timeLimitMode !== undefined ? { timeLimitMode: p.timeLimitMode } : {}),
       ...(p?.credentialProfileId ? { credentialProfileId: String(p.credentialProfileId) } : {}),
       ...(p?.access ? { access: String(p.access) } : {}),
       // `externalContextPolicy` is the control-api-parity alias of `web`; the
@@ -167,6 +211,9 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
       ...(p?.model ? { model: String(p.model) } : {}),
       ...(p?.effort ? { effort: String(p.effort) } : {}),
       ...(processingPreference !== undefined ? { processingPreference } : {}),
+      ...(options.delegationParentRunId && options.delegationPromptCacheTtl !== undefined
+        ? { promptCacheTtl: options.delegationPromptCacheTtl }
+        : {}),
       ...(typeof p?.review === "boolean" ? { review: p.review } : {}),
       ...(Array.isArray(p?.reviewerPanel) ? { reviewerPanel: p.reviewerPanel } : {}),
       ...(p?.reviewerModels && typeof p.reviewerModels === "object"
@@ -186,7 +233,7 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
         : {}),
     };
     const interactionBridge = hooks?.onInteraction
-      ? makeInteractionBridge(addr, hooks.onInteraction)
+      ? makeInteractionBridge(addr, hooks.onInteraction, hooks.signal)
       : undefined;
     // Host cancellation (MCP notifications/cancelled -> ctx signal) becomes
     // the same TYPED daemon cancel the CLI's Ctrl-C path posts; the wait loop
@@ -199,75 +246,20 @@ export function mcpSurfaceRunner(options: McpSurfaceRunnerOptions = {}) {
             await interactionBridge?.(info);
           }
         : undefined;
-    const out = await enqueueAndAwait(client, addr, body, {
-      waitForTerminal: p?.deferred !== true,
-      ...(options.delegationParentRunId ? { internalDaemonEnqueue: true } : {}),
-      ...(onPollTick ? { onPollTick } : {}),
-    });
+    let out: Awaited<ReturnType<typeof enqueueAndAwait>>;
     try {
-      let detail: Record<string, unknown> | null = null;
-      let canonicalPrimary: ReturnType<typeof projectRunPrimaryOutput> = null;
-      let detailProjection = projectImmediateRunDetail(null, { runId: out.runId });
-      let detailProblem: ReturnType<typeof describeRunDetailProblem> | null = null;
-      if (p?.deferred !== true || isTerminalLifecycle(out.status)) {
-        try {
-          detail = await fetchRunDetail(addr, out.runId);
-          detailProjection = projectImmediateRunDetail(detail, {
-            runId: out.runId,
-            ...(isTerminalLifecycle(out.status)
-              ? { lifecycle: out.status as RunOutcomeFacts["lifecycle"] }
-              : {}),
-          });
-          canonicalPrimary = projectRunPrimaryOutput(detail);
-        } catch (error) {
-          detail = null;
-          detailProblem = describeRunDetailProblem(error);
-          detailProjection = projectImmediateRunDetail(null, { runId: out.runId });
-        }
-      }
-      // Local artifacts remain only the established soft-absence fallback.
-      const localFallback =
-        (p?.deferred !== true || isTerminalLifecycle(out.status)) &&
-        !detail &&
-        !detailProblem &&
-        out.runDir
-          ? primaryOutputForCli(out.runDir, mode, {
-              failure: projectRunFailure(detail),
-              lifecycle: isTerminalLifecycle(out.status)
-                ? (out.status as RunOutcomeFacts["lifecycle"])
-                : undefined,
-            })
-          : null;
-      const primary = canonicalPrimary ?? localFallback;
-      const presented = presentRunPrimaryOutput(primary);
-      const reason = daemonOutcomeSummary({
-        ...out,
-        outcomeFacts: detailProjection.outcomeFacts ?? undefined,
+      out = await enqueueAndAwait(client, addr, body, {
+        waitForTerminal: p?.deferred !== true,
+        ...(p?.deferred === true ? { acceptUnbound: true } : {}),
+        ...(p?.idempotencyKey !== undefined ? { idempotencyKey: p.idempotencyKey } : {}),
+        ...(options.delegationParentRunId ? { internalDaemonEnqueue: true } : {}),
+        ...(onPollTick ? { onPollTick } : {}),
       });
-      const summary =
-        presented ??
-        detailProjection.outcomeBanner ??
-        reason ??
-        (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`);
-      return {
-        runId: out.runId,
-        runDir: out.runDir,
-        status: out.status,
-        summary,
-        ...detailProjection,
-        ...(detailProblem ? { detailProblem } : {}),
-      };
-    } catch (error) {
-      // The run's terminal is already durable at this point: mark the throw so
-      // the delegation belt keeps the child's slot consumed and reconciles its
-      // spend fail-closed instead of treating the child as never-started.
-      if (error && typeof error === "object") {
-        Object.assign(error, {
-          delegationChildTerminal: { runId: out.runId, status: out.status },
-        });
-      }
-      throw error;
+    } finally {
+      // The run is no longer observed here: close prompts it left open.
+      interactionBridge?.close();
     }
+    return projectLaunchHandle(addr, out, { deferred: p?.deferred === true, mode });
   };
 }
 
@@ -288,9 +280,7 @@ async function recoveryQuery(
   if (!conn) return absentDaemonRecovery(mode, context.beltContext);
   const { addr } = conn;
   const get = async (path: string, runDetail = false): Promise<Record<string, unknown>> => {
-    const res = await controlApiFetch(addr, path, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
+    const res = await controlApiFetch(addr, path);
     if (res.ok) {
       return runDetail
         ? readRunDetailResponse(res)
@@ -369,7 +359,7 @@ async function recoveryQuery(
   if (mode === "__run_cancel") {
     const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
       method: "POST",
-      headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         control: {
           kind: "cancel",
@@ -379,56 +369,28 @@ async function recoveryQuery(
       }),
     });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) {
-      throw new Error(
-        typeof body["message"] === "string"
-          ? (body["message"] as string)
-          : `run cancel failed (HTTP ${res.status})`,
-      );
-    }
-    return { summary: `cancellation acknowledged for run ${runId}`, runId, acknowledged: true };
+    // Typed refusal: an already accepted next message names its successor job.
+    if (!res.ok)
+      throw controlProblemError(res.status, body, `run cancel failed (HTTP ${res.status})`);
+    const control = ControlRunControlResponse.safeParse(body).data;
+    const deferred = control?.deferredMessage;
+    return {
+      summary: deferred
+        ? `${control?.message ?? "cancel applied"} (run ${runId})`
+        : `cancellation acknowledged for run ${runId}`,
+      runId,
+      acknowledged: true,
+      ...(deferred ? { deferredMessage: deferred } : {}),
+    };
   }
   if (mode === "__run_interactions") {
-    const detail = await get(`/runs/${encodeURIComponent(runId)}`);
-    const interactions = Array.isArray(detail["pendingInteractions"])
-      ? detail["pendingInteractions"]
-      : [];
-    return {
-      summary: `${interactions.length} pending interaction(s) for run ${runId}`,
-      runId,
-      interactions,
-    };
+    return projectRunInteractions(runId, await get(`/runs/${encodeURIComponent(runId)}`));
   }
-  if (mode === "__run_answer") {
-    const interactionId = String(input["interactionId"] ?? "");
-    if (!interactionId) throw new Error("interactionId is required");
-    const res = await controlApiFetch(
-      addr,
-      `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ answers: input["answers"] }),
-      },
-    );
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) {
-      throw new Error(
-        typeof body["message"] === "string"
-          ? (body["message"] as string)
-          : `interaction answer failed (HTTP ${res.status})`,
-      );
-    }
-    return {
-      summary: `answer acknowledged for interaction ${interactionId}`,
-      runId,
-      interactionId,
-    };
-  }
+  if (mode === "__run_answer") return answerInteraction(addr, runId, input);
   // __apply_check: the server-side dry gate + patch check (no mutation).
   const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/apply/check`, {
     method: "POST",
-    headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({}),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -446,8 +408,17 @@ async function recoveryQuery(
       typeof body["stderr"] === "string" && body["stderr"].trim()
         ? `: ${body["stderr"].trim()}`
         : "";
+    // A Git result's typed refusal (#535) names its reason; it is not a patch conflict.
+    const refusal = (body["refusal"] ?? {}) as { code?: unknown; pathCount?: unknown };
+    const paths =
+      typeof refusal.pathCount === "number" && refusal.pathCount > 0
+        ? ` (${refusal.pathCount} path(s))`
+        : "";
     return {
-      summary: `apply check failed: the patch does NOT apply cleanly${stderr}`,
+      summary:
+        typeof refusal.code === "string"
+          ? `apply check refused: ${refusal.code}${paths}${stderr}`
+          : `apply check failed: the patch does NOT apply cleanly${stderr}`,
       runId,
       eligible: false,
       check: body,
@@ -477,7 +448,7 @@ export function makeCancelBridge(
     try {
       const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           control: {
             kind: "cancel",
@@ -495,88 +466,4 @@ export function makeCancelBridge(
   };
 }
 
-/**
- * Poll-tick bridge: watch the run's pendingInteractions on the control API and
- * forward each NEW interaction to the caller's hook exactly once; answers go
- * back through the typed answer endpoint. A stale answer (engine already
- * timed out and declined) is the endpoint's problem to refuse — the bridge
- * never fakes delivery.
- */
-export function makeInteractionBridge(
-  addr: ControlApiAddress,
-  onInteraction: (ctx: any) => Promise<any | null>,
-): (info: { runId: string }) => Promise<void> {
-  const delivered = new Set<string>();
-  const answerCache = new Map<string, any | null>();
-  let lastCheck = 0;
-  let handling = false;
-  return async ({ runId }) => {
-    if (handling || Date.now() - lastCheck < 1_000) return;
-    lastCheck = Date.now();
-    let pending: Array<{
-      interactionId?: string;
-      questions?: unknown[];
-      timeoutAt?: string | null;
-    }> = [];
-    try {
-      const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-        headers: { Authorization: `Bearer ${addr.token}` },
-        signal: AbortSignal.timeout(2_000),
-      });
-      if (!res.ok) return;
-      const detail = (await res.json()) as { pendingInteractions?: typeof pending };
-      pending = detail.pendingInteractions ?? [];
-    } catch {
-      return; // transient control-api hiccup: the next tick retries
-    }
-    for (const pi of pending) {
-      const id = typeof pi.interactionId === "string" ? pi.interactionId : "";
-      if (!id || delivered.has(id)) continue;
-      handling = true;
-      try {
-        const result = answerCache.has(id)
-          ? answerCache.get(id)
-          : await onInteraction({
-              run_id: runId,
-              request: {
-                interaction_id: id,
-                questions: Array.isArray(pi.questions) ? pi.questions : [],
-              },
-              ...(Object.hasOwn(pi, "timeoutAt") ? { timeoutAt: pi.timeoutAt } : {}),
-            });
-        answerCache.set(id, result);
-        const answers = result && Array.isArray(result.answers) ? result.answers : null;
-        if (answers) {
-          const response = await controlApiFetch(
-            addr,
-            `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(id)}/answer`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${addr.token}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                answers: answers.map((a: any) => ({
-                  questionId: a.question_id,
-                  selectedLabels: a.selected_labels ?? [],
-                  ...(a.free_text ? { freeText: a.free_text } : {}),
-                })),
-              }),
-            },
-          ).catch(() => null);
-          if (response?.ok) {
-            delivered.add(id);
-            answerCache.delete(id);
-          }
-        } else {
-          // A deliberate decline has no answer mutation to acknowledge.
-          delivered.add(id);
-          answerCache.delete(id);
-        }
-      } finally {
-        handling = false;
-      }
-    }
-  };
-}
+export { makeInteractionBridge };

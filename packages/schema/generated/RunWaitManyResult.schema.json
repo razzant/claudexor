@@ -1,0 +1,140 @@
+{
+  "$ref": "#/definitions/RunWaitManyResult",
+  "definitions": {
+    "RunWaitManyResult": {
+      "type": "object",
+      "properties": {
+        "wakeReason": {
+          "type": "string",
+          "enum": [
+            "attention",
+            "problems",
+            "timeout",
+            "aborted"
+          ]
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999
+          },
+          "maxItems": 1000
+        },
+        "summaries": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "queued",
+                      "running",
+                      "succeeded",
+                      "failed",
+                      "cancelled",
+                      "interrupted"
+                    ],
+                    "description": "Control-plane run state = the run LIFECYCLE (D8): queued/running while live, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks/review/delivery) is orthogonal — see outcomeFacts."
+                  },
+                  "pending": {
+                    "type": "boolean"
+                  },
+                  "token": {
+                    "type": "string",
+                    "minLength": 43,
+                    "maxLength": 43,
+                    "pattern": "^[A-Za-z0-9_-]{43}$"
+                  },
+                  "problem": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "status",
+                  "pending",
+                  "token",
+                  "problem"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "$ref": "#/definitions/RunWaitManyResult/properties/summaries/items/anyOf/0/properties/status"
+                  },
+                  "pending": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "token": {
+                    "$ref": "#/definitions/RunWaitManyResult/properties/summaries/items/anyOf/0/properties/token"
+                  },
+                  "problem": {
+                    "$ref": "#/definitions/RunWaitManyResult/properties/summaries/items/anyOf/0/properties/problem"
+                  },
+                  "blocking": {
+                    "type": "boolean",
+                    "description": "true while any pending question holds its agent until answered, or its kind is unknown; false when every pending question is async and the agent keeps working."
+                  }
+                },
+                "required": [
+                  "status",
+                  "pending",
+                  "token",
+                  "problem",
+                  "blocking"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "null"
+                  },
+                  "pending": {
+                    "type": "null"
+                  },
+                  "token": {
+                    "type": "null"
+                  },
+                  "problem": {
+                    "type": "string",
+                    "enum": [
+                      "not_found",
+                      "snapshot_unavailable",
+                      "not_observed"
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "pending",
+                  "token",
+                  "problem"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        }
+      },
+      "required": [
+        "wakeReason",
+        "attention",
+        "summaries"
+      ],
+      "additionalProperties": false,
+      "description": "Lifecycle and pending attention only, at most 131072 UTF-8 JSON bytes; output readiness is a separate addressed read."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

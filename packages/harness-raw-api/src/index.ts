@@ -2,10 +2,11 @@ import type {
   ConformanceReport,
   HarnessEvent,
   HarnessManifest,
-  HarnessModel,
   HarnessRunSpec,
+  ModelRoutingVariant,
   ProviderFamily,
   RawGitPatchEnvelope,
+  RefusedModelVariant,
 } from "@claudexor/schema";
 import {
   ConformanceReport as ConformanceReportSchema,
@@ -16,10 +17,12 @@ import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   HarnessUnavailableError,
   abortSignalFromSpec,
+  catalogRowFor,
+  chosenModel,
+  dispatchModelCatalog,
+  missingRouteModel,
   parseUnifiedDiff,
-  readVerifiedAttachmentBytes,
 } from "@claudexor/core";
-import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
 import {
   CLAUDEXOR_VERSION,
   normalizeRetryDelayMs,
@@ -27,60 +30,44 @@ import {
   redactSecrets,
   sha256,
 } from "@claudexor/util";
-import { parseChatCompletion, parseModelsList } from "./parse.js";
-import { isTerminalProviderCompletion, providerCompletionErrorEvent } from "./providerError.js";
+import { instanceApiKey, readCatalogWithKey, readRawApiCatalog, requestKeyFor } from "./catalog.js";
+export {
+  KEY_ALLOWANCE_SOURCE,
+  instanceKeyCredentials,
+  parseKeyAllowance,
+  readKeyAllowance,
+  type KeyCredential,
+} from "./key-allowance.js";
+import { parseChatCompletion } from "./parse.js";
+import {
+  isTerminalProviderCompletion,
+  providerCompletionErrorEvent,
+  redactAndBound,
+} from "./providerError.js";
+import {
+  estimateMessageTokens,
+  finalWindowRefusal,
+  imageInputDisclosure,
+  patchIntent,
+  rawApiMessages,
+  rawApiRequestCapacity,
+  rawContextDisclosure,
+} from "./request.js";
 
 /** A stalled remote endpoint must not hang a run forever. */
 const RAW_API_TIMEOUT_MS = 180_000;
-/** Model enumeration is interactive (a picker waits on it): keep it snappy. */
-const RAW_API_MODELS_TIMEOUT_MS = 15_000;
 const RAW_API_TRANSIENT_STATUS = new Set([408, 502, 503, 504]);
-const RAW_API_ENABLED_INTENTS = [
-  "implement",
-  "plan",
-  "spec",
+// A remote endpoint reads no files, so no change review (INV-042): `plan`/`spec`
+// stay for work that claims no project; run admission refuses a project (#137).
+const RAW_API_ENABLED_INTENTS = ["implement", "plan", "spec", "synthesize", "explain"] as const;
+const RAW_API_DISABLED_INTENTS = [
+  "create_from_scratch",
+  "repair",
   "review",
-  "synthesize",
-  "explain",
+  "verify",
+  "audit",
 ] as const;
-const RAW_API_DISABLED_INTENTS = ["create_from_scratch", "repair", "verify", "audit"] as const;
 const ALL_RAW_API_INTENTS = [...RAW_API_ENABLED_INTENTS, ...RAW_API_DISABLED_INTENTS] as const;
-
-/**
- * Build the chat-completions content from digest-bound immutable resources.
- */
-function rawApiUserContent(spec: HarnessRunSpec): string | Array<Record<string, unknown>> {
-  let prompt = spec.prompt;
-  if ((spec.intent === "implement" || spec.intent === "synthesize") && spec.raw_context_packet) {
-    prompt = [
-      prompt,
-      "",
-      'Produce the requested change only by returning one JSON object: {"patch":"<complete textual git unified diff>"}.',
-      "Touch existing files only from editable_paths. New paths are allowed only below creatable_roots.",
-      "Do not calculate hashes or preimage evidence; the trusted local adapter derives them. Do not use Markdown fences or add prose. Binary patches are unsupported.",
-      "RAW_CONTEXT_PACKET:",
-      JSON.stringify(spec.raw_context_packet),
-    ].join("\n");
-  }
-  const attachments = spec.attachments ?? [];
-  if (attachments.length === 0) return prompt;
-  const parts: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
-  for (const a of attachments) {
-    const bytes = readVerifiedAttachmentBytes(a);
-    if (a.kind === "image") {
-      parts.push({
-        type: "image_url",
-        image_url: { url: `data:${a.mime};base64,${bytes.toString("base64")}` },
-      });
-    } else {
-      parts.push({
-        type: "text",
-        text: `Attached file ${a.name || a.resource_id} (${a.mime}, ${a.sha256}):\n${bytes.toString("utf8")}`,
-      });
-    }
-  }
-  return parts.length > 1 ? parts : prompt;
-}
 
 function buildPatchEnvelope(
   text: string,
@@ -126,7 +113,16 @@ export interface RawApiConfig {
   providerUsageCostUnit?: "usd";
   baseUrl?: string;
   keyEnv?: string;
+  /** The operator's model for this instance when a run and Settings name none. */
   defaultModel?: string;
+  /** The variable that can make that choice: each instance reads only its own, the
+   * default instance `CLAUDEXOR_RAWAPI_MODEL`. Nothing is chosen on its behalf (#395). */
+  modelEnv?: string;
+  /** Request-time routing suffixes this provider accepts on a listed id (#145);
+   * declared by the registry instance, surfaced as `model_routing_variants`. */
+  routingVariants?: readonly ModelRoutingVariant[];
+  /** Suffixes this instance refuses on any id (#393): `model_refused_variants`. */
+  refusedVariants?: readonly RefusedModelVariant[];
 }
 
 /**
@@ -142,28 +138,24 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
     config.baseUrl ?? process.env.CLAUDEXOR_RAWAPI_BASE_URL ?? "https://api.openai.com/v1";
   const keyEnv =
     config.keyEnv ?? (process.env.CLAUDEXOR_RAWAPI_KEY ? "CLAUDEXOR_RAWAPI_KEY" : "OPENAI_API_KEY");
-  const defaultModel = config.defaultModel ?? process.env.CLAUDEXOR_RAWAPI_MODEL ?? "gpt-4o-mini";
-
-  function apiKey(
-    env: Record<string, string | null | undefined> = process.env,
-  ): string | undefined {
-    const value = env[keyEnv];
-    if (value) return value;
-    // Secret fallback is INSTANCE-SCOPED so a key for one provider is never sent
-    // to another (e.g. an OpenAI "raw" key must not reach openrouter.ai). The
-    // default OpenAI-compatible instance owns the managed "raw" (and "openai")
-    // secret; every named instance (openrouter, …) resolves ONLY its own slot.
-    if (id === "raw-api") {
-      return (
-        resolveSecret("raw") ??
-        (keyEnv === "OPENAI_API_KEY" ? (resolveSecret("openai") ?? undefined) : undefined)
-      );
-    }
-    return resolveSecret(id) ?? undefined;
-  }
+  const modelEnv = config.modelEnv ?? (id === "raw-api" ? "CLAUDEXOR_RAWAPI_MODEL" : undefined);
+  const configuredModel = chosenModel(config.defaultModel);
+  const envModel = modelEnv ? chosenModel(process.env[modelEnv]) : null;
+  const instanceChoice = configuredModel
+    ? { model: configuredModel, source: "the instance configuration" }
+    : envModel && modelEnv
+      ? { model: envModel, source: modelEnv }
+      : null;
+  const requestModel = (spec: HarnessRunSpec) =>
+    chosenModel(spec.model_hint) ?? instanceChoice?.model ?? null;
+  const routingVariants = config.routingVariants ?? [];
+  const refusedVariants = config.refusedVariants ?? [];
+  const instance = { id, baseUrl, keyEnv };
+  const apiKey = (env?: Record<string, string | null | undefined>) => instanceApiKey(instance, env);
 
   const adapter: HarnessAdapter = {
     id,
+    modelRequirement: { instanceChoice, ...(modelEnv ? { env: modelEnv } : {}) },
 
     async discover(): Promise<HarnessManifest> {
       if (!apiKey()) {
@@ -187,7 +179,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           implement: true,
           implementation_transport: "git_patch_envelope",
           create_from_scratch: false,
-          review: true,
+          review: false,
           verify: false,
           synthesize: true,
           read_files: false,
@@ -199,6 +191,8 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           // The chat-completions request sends no `reasoning_effort` field
           // (body is {model, messages} only) -> effort is not a tunable surface.
           effort_levels: [],
+          ...(routingVariants.length > 0 ? { model_routing_variants: [...routingVariants] } : {}),
+          ...(refusedVariants.length > 0 ? { model_refused_variants: [...refusedVariants] } : {}),
         },
         capability_profile: {
           auth: {
@@ -208,7 +202,11 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
               { source: "api_key_env", kind: "http_header", relocatable_by: ["ENV"] },
             ],
           },
-          access_control: { readonly_mechanism: "none", write_mechanism: "none" },
+          access_control: {
+            readonly_mechanism: "none",
+            write_mechanism: "none",
+            auxiliary_writable_roots: false,
+          },
           isolation: { supported_containment: ["env_or_file_injection"] },
           attachment_inputs: [
             {
@@ -292,6 +290,17 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
             detail: "key available (unproven without isolated smoke)",
           },
           { id: "isolated_smoke", status: "skip", detail: "doctor does not spend paid API calls" },
+          instanceChoice
+            ? {
+                id: "instance_model",
+                status: "pass",
+                detail: `model ${instanceChoice.model} from ${instanceChoice.source}`,
+              }
+            : {
+                id: "instance_model",
+                status: "skip",
+                detail: `no instance model: a run or harness.${id}.default_model must name one`,
+              },
         ],
         enabled_intents: RAW_API_ENABLED_INTENTS,
         disabled_intents: RAW_API_DISABLED_INTENTS,
@@ -300,93 +309,50 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
       });
     },
 
-    // The REAL enumeration producer (ADP4): an OpenAI-compatible endpoint
-    // exposes `GET <baseURL>/models`. Fails SOFT — a picker must never see a
-    // throw, so network/auth/parse errors collapse to an empty list.
-    async models(): Promise<HarnessModel[]> {
-      const key = apiKey();
-      if (!key) return [];
-      try {
-        const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
-          method: "GET",
-          headers: { accept: "application/json", authorization: `Bearer ${key}` },
-          signal: AbortSignal.timeout(RAW_API_MODELS_TIMEOUT_MS),
-        });
-        if (!res.ok) return [];
-        const json = await res.json();
-        return parseModelsList(json).map((m) => ({
-          id: m.id,
-          label: m.label,
-          context_window: m.context_window,
-          // A live enumeration reflects the credentials it ran under; route
-          // scoping is a manifest-annotation concept (W11), not an API fact.
-          routes: null,
-        }));
-      } catch {
-        return [];
-      }
+    // The typed catalog read (#393): the credential identity run() would use,
+    // and a failed or partial read is never an (apparently complete) list.
+    modelCatalog: (spec) => readRawApiCatalog(instance, spec),
+    // Fail-soft display projection of the same read; consumers that decide
+    // anything read `modelCatalog` through core's `readModelCatalog`.
+    async models(spec) {
+      const read = await readRawApiCatalog(instance, spec);
+      return read.status === "listed" ? read.models : [];
+    },
+
+    rawRequestCapacity: (spec, catalog) => {
+      const model = requestModel(spec);
+      return model ? rawApiRequestCapacity(spec, model, routingVariants, catalog) : null;
     },
 
     async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-      // INV-135 strict profile routing: a raw-api profile is exactly its
-      // secret-ref API key; other kinds and missing secrets refuse typed.
+      // INV-135 strict profile routing: one resolution with the catalog read
+      // (catalog.ts); other kinds, fenced refs and missing secrets refuse typed.
+      // The key this spawn's dispatch read checked is the one sent.
       const profile = spec.credential_profile;
-      let key: string | undefined;
-      if (profile) {
-        if (profile.credential_kind !== "api_key") {
-          yield {
-            type: "error",
-            session_id: spec.session_id,
-            ts: nowIso(),
-            error: `credential profile "${profile.profile_id}": ${id} supports only the api_key transport`,
-          };
-          yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-          return;
-        }
-        // The instance secret fence holds for profiles too (release wave
-        // round-11 BLOCK): the default instance may reference raw/openai
-        // slots; a NAMED instance only its own — a profile must never route
-        // one provider's key to another provider's base URL. The ref must be
-        // NAMESPACED (round-15 #5): a bare ref would alias the engine-default
-        // slot, and profiles are additive identities.
-        const ref = profile.secret_ref ?? "";
-        const base = namespacedSecretRefBase(ref);
-        const allowed = id === "raw-api" ? ["raw", "openai"] : [id];
-        if (!base || !allowed.includes(base)) {
-          yield {
-            type: "error",
-            session_id: spec.session_id,
-            ts: nowIso(),
-            error: `credential profile "${profile.profile_id}": secret "${ref || "(missing ref)"}" is outside ${id}'s instance fence (namespaced base:profile refs only; allowed bases: ${allowed.join(", ")})`,
-          };
-          yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-          return;
-        }
-        key = (profile.secret_ref ? resolveSecret(profile.secret_ref) : null) ?? undefined;
-        if (!key) {
-          yield {
-            type: "error",
-            session_id: spec.session_id,
-            ts: nowIso(),
-            error: `credential profile "${profile.profile_id}": secret "${profile.secret_ref ?? "(missing ref)"}" is not stored`,
-          };
-          yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-          return;
-        }
-      } else {
-        key = apiKey({ ...process.env, ...spec.env });
-      }
-      if (!key) {
+      const credential = requestKeyFor(instance, profile, spec.env, dispatchModelCatalog(spec));
+      if ("refusal" in credential) {
         yield {
           type: "error",
           session_id: spec.session_id,
           ts: nowIso(),
-          error: `${id}: ${keyEnv} not set`,
+          error: credential.refusal,
         };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
         return;
       }
-      const model = spec.model_hint ?? defaultModel;
+      const { key } = credential;
+      const model = requestModel(spec);
+      // The engine refuses a missing model first; a direct dispatch stops here too.
+      if (!model) {
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          error: missingRouteModel(adapter, null) ?? `${id} needs a model`,
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+        return;
+      }
       // The model is only REQUESTED here; the observed model comes from the response.
       yield {
         type: "started",
@@ -397,24 +363,59 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         ...(profile ? { credential_profile_id: profile.profile_id } : {}),
         payload: { requested_model: model },
       };
+      const packet = spec.raw_context_packet;
+      if (patchIntent(spec) && !packet) {
+        // Nothing can come back as a patch without its packet: not worth a request.
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          error: `${id} ${spec.intent} requires a RawContextPacket`,
+          refusal_code: "raw_patch_missing_evidence",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+        return;
+      }
       try {
         const specSignal = abortSignalFromSpec(spec);
         const timeoutSignal = AbortSignal.timeout(RAW_API_TIMEOUT_MS);
         const signal = specSignal ? AbortSignal.any([specSignal, timeoutSignal]) : timeoutSignal;
+        const messages = rawApiMessages(spec);
+        const budget = packet?.budget;
+        if (budget && patchIntent(spec)) {
+          // #147 backstop: the packet was sized for this request; a request that
+          // grew past that KNOWN window afterwards is refused before sending.
+          const estimated = estimateMessageTokens(messages);
+          const refusal = finalWindowRefusal(budget, model, estimated);
+          if (refusal) {
+            yield {
+              type: "error",
+              session_id: spec.session_id,
+              ts: nowIso(),
+              error: refusal,
+              refusal_code: "raw_context_exceeds_window",
+            };
+            yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+            return;
+          }
+          const text = rawContextDisclosure(budget, model, estimated);
+          // The same facts typed, so no consumer reads them from the sentence.
+          const raw_context = { model, estimated_request_tokens: estimated, budget };
+          yield { type: "status", session_id: spec.session_id, ts: nowIso(), text, raw_context };
+        }
+        if (spec.attachments.some((a) => a.kind === "image")) {
+          // The dispatch gate's read of this key's catalog when it made one,
+          // else one read with the key this request sends.
+          const read = dispatchModelCatalog(spec) ?? (await readCatalogWithKey(instance, key));
+          const row =
+            read.status === "listed" ? catalogRowFor(model, read.models, routingVariants) : null;
+          const text = imageInputDisclosure(model, row);
+          if (text) yield { type: "status", session_id: spec.session_id, ts: nowIso(), text };
+        }
         const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-          body: JSON.stringify({
-            model,
-            messages: [
-              // Per-run instructions ride the OpenAI-style `system` role (the
-              // engine already withheld them from synthesis/reviewers).
-              ...(spec.instructions && spec.instructions.trim()
-                ? [{ role: "system", content: spec.instructions }]
-                : []),
-              { role: "user", content: rawApiUserContent(spec) },
-            ],
-          }),
+          body: JSON.stringify({ model, messages }),
           signal,
         });
         if (!res.ok) {
@@ -443,9 +444,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
                 }
               : {}),
             payload:
-              res.status === 429
-                ? { resets_at: resetsAt }
-                : { body: redactSecrets(body.slice(0, 500)) },
+              res.status === 429 ? { resets_at: resetsAt } : { body: redactAndBound(body).value },
           };
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
           return;
@@ -486,41 +485,44 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           };
           return;
         }
-        if (spec.intent === "implement" || spec.intent === "synthesize") {
-          if (!spec.raw_context_packet) {
+        if (packet && patchIntent(spec)) {
+          let patchEnvelope: RawGitPatchEnvelope | null = null;
+          try {
+            patchEnvelope = buildPatchEnvelope(parsed.text, packet);
+          } catch {
+            // A provider stop at its output limit is the typed truncation cause.
+            const cut = parsed.finish_reason === "length";
             yield {
               type: "error",
               session_id: spec.session_id,
               ts: nowIso(),
-              error: `${id} ${spec.intent} requires a RawContextPacket`,
-              refusal_code: "raw_patch_missing_evidence",
+              error: `${id} ${spec.intent} response was not a complete Git patch proposal JSON object${cut ? " (the provider stopped at its output limit: finish_reason length)" : ""}`,
+              refusal_code: "raw_patch_truncated",
+              ...(cut ? { payload: { finish_reason: "length" } } : {}),
             };
-          } else {
-            let patchEnvelope: RawGitPatchEnvelope | null = null;
-            try {
-              patchEnvelope = buildPatchEnvelope(parsed.text, spec.raw_context_packet);
-            } catch {
-              yield {
-                type: "error",
-                session_id: spec.session_id,
-                ts: nowIso(),
-                error: `${id} ${spec.intent} response was not a complete Git patch proposal JSON object`,
-                refusal_code: "raw_patch_truncated",
-              };
-            }
-            if (patchEnvelope) {
-              // INV-062: secret-like content in the proposal is not a refusal;
-              // the engine keeps the bytes and masks only its saved copies.
-              yield {
-                type: "patch_produced",
-                session_id: spec.session_id,
-                ts: nowIso(),
-                patch_envelope: patchEnvelope,
-              };
-            }
+          }
+          if (patchEnvelope) {
+            // INV-146: secret-like content in the proposal is not a refusal;
+            // the engine keeps and saves the exact bytes.
+            yield {
+              type: "patch_produced",
+              session_id: spec.session_id,
+              ts: nowIso(),
+              patch_envelope: patchEnvelope,
+            };
           }
         } else if (parsed.text) {
           yield { type: "message", session_id: spec.session_id, ts: nowIso(), text: parsed.text };
+          // An answer cut at the provider's output limit stays an answer (#144)
+          // and says so, typed in the payload, instead of reading as complete.
+          if (parsed.finish_reason === "length")
+            yield {
+              type: "status",
+              session_id: spec.session_id,
+              ts: nowIso(),
+              text: "the provider stopped this answer at its output limit (finish_reason length); it may be incomplete",
+              payload: { finish_reason: "length" },
+            };
         }
         yield {
           type: "usage",

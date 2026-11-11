@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AnswerAssembly } from "./answer-assembly.js";
+import { AnswerAssembly, acceptedTryOutput } from "./answer-assembly.js";
 
 describe("AnswerAssembly (F2.5 W-C1 typed finality)", () => {
   it("prefers the typed final message verbatim over joined narration", () => {
@@ -108,5 +108,46 @@ describe("AnswerAssembly (F2.5 W-C1 typed finality)", () => {
     expect(a.hasFinal()).toBe(true);
     expect(a.text()).toBe("");
     expect(a.machineText()).toBe(raw);
+  });
+
+  it("#628: an async-delivered message is visible evidence, never answer material", () => {
+    // A question the agent asked while it kept working, and no other text.
+    const only = new AnswerAssembly();
+    only.observe({
+      type: "message",
+      text: "Who should receive the update?\n- Customers",
+      payload: { delivery: "async", item_id: "q" },
+    });
+    expect(only.hasFinal()).toBe(false);
+    expect(only.text()).toBe("");
+    expect(only.machineText()).toBe("");
+    expect(acceptedTryOutput(only, false)).toBe("");
+
+    // Beside ordinary narration and typed finals, only those stay answer material.
+    const mixed = new AnswerAssembly();
+    mixed.observe({ type: "message", text: "Drafted the update." });
+    mixed.observe({
+      type: "message",
+      text: "Who should receive it?",
+      payload: { delivery: "async" },
+    });
+    expect(mixed.text()).toBe("Drafted the update.");
+    mixed.observe({ type: "message", text: "Here it is.", final: true });
+    mixed.observe({
+      type: "message",
+      text: "Anything else?",
+      final: true,
+      payload: { delivery: "async" },
+    });
+    expect(mixed.text()).toBe("Here it is.");
+    expect(mixed.machineText()).toBe("Here it is.");
+  });
+
+  it("#628: only the exact async marker is excluded; other narration is unchanged", () => {
+    const a = new AnswerAssembly();
+    a.observe({ type: "message", text: "no marker" });
+    a.observe({ type: "message", text: "another value", payload: { delivery: "blocking" } });
+    a.observe({ type: "message", text: "not the string", payload: { delivery: ["async"] } });
+    expect(a.text()).toBe("no marker\nanother value\nnot the string");
   });
 });

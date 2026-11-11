@@ -1,5 +1,108 @@
 # @claudexor/synthesis
 
+## 6.0.0
+
+### Patch Changes
+
+- @claudexor/arbitration@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- @claudexor/arbitration@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- @claudexor/arbitration@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/arbitration@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- @claudexor/arbitration@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- @claudexor/arbitration@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/arbitration@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- @claudexor/arbitration@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- @claudexor/arbitration@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- @claudexor/arbitration@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/arbitration@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/arbitration@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- @claudexor/arbitration@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- @claudexor/arbitration@4.5.0
+
+## 4.4.0
+
+### Patch Changes
+
+- @claudexor/arbitration@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- @claudexor/arbitration@4.3.1
+
+## 4.3.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/arbitration@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

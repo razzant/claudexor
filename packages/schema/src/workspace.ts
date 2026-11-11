@@ -39,7 +39,7 @@ export const WorkspaceEnvelope = z
     policy_profile: z
       .string()
       .default("workspace_write")
-      .describe("Access profile the envelope enforces."),
+      .describe("Access profile recorded for the envelope."),
     dirty_policy: DirtyPolicy.default("refuse"),
     created_at: IsoTimestamp.describe("When the envelope was created."),
   })

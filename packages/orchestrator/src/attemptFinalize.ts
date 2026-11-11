@@ -16,8 +16,39 @@
  * finalizer read one contract (`WorkReportEnvelopeMode` / `UnwrappedAnswer`).
  */
 import type { RunReason, WorkReport, WorkReportSource, WorkState } from "@claudexor/schema";
-import type { ToolErrorRecord, WebEvidenceState } from "./attemptTelemetry.js";
+import type { AttemptTelemetry, ToolErrorRecord, WebEvidenceState } from "./attemptTelemetry.js";
 import type { UnverifiedWorkReport } from "./workReportEnvelope.js";
+
+/** A typed vendor limit that ended an attempt's work before it completed. */
+export type AttemptInterruption = Extract<
+  RunReason,
+  "context_capacity_exhausted" | "turn_limit_reached"
+>;
+
+/**
+ * The one owner of WHICH typed limit interrupted an attempt, read from its
+ * telemetry: terminal context exhaustion, else the max-turns cap (#299). Every
+ * lane terminal reports this reason instead of naming one limit itself.
+ */
+export function attemptInterruption(
+  t: Pick<AttemptTelemetry, "contextExhausted" | "turnLimitReached"> | null | undefined,
+): AttemptInterruption | null {
+  if (t?.contextExhausted) return "context_capacity_exhausted";
+  return t?.turnLimitReached ? "turn_limit_reached" : null;
+}
+
+/** Plain wording of an interruption for failure records and summaries (INV-141). */
+export const INTERRUPTION_DETAIL: Record<AttemptInterruption, string> = {
+  context_capacity_exhausted: "context capacity exhausted before the work completed",
+  turn_limit_reached: "the max-turns limit ended the work before it completed",
+};
+
+/** The wording of a finalizer's `interrupted` reason; context when it names no cap. */
+export function interruptionDetail(reason: RunReason | null): string {
+  return INTERRUPTION_DETAIL[
+    reason === "turn_limit_reached" ? "turn_limit_reached" : "context_capacity_exhausted"
+  ];
+}
 
 /**
  * QA-036: the terminal outcome facts for a read-only run that produced NO
@@ -59,8 +90,8 @@ export interface FinalizeAttemptInput {
    * disclosed as an unverified work_state with this reason, never a failure.
    * Ignored when a valid report is present. */
   workReportUnverified?: UnverifiedWorkReport | null;
-  /** A terminal capacity_exhausted context signal was observed this attempt. */
-  contextTerminalExhausted: boolean;
+  /** The typed limit that ended this attempt (`attemptInterruption`), or null. */
+  interruption: AttemptInterruption | null;
 }
 
 /** Outcome class the run-level terminal maps onto lifecycle/facts. */
@@ -79,25 +110,28 @@ export interface FinalizeAttemptResult {
 
 /**
  * The unified finalizer. Precedence (hardest signal wins):
- *   1. terminal context exhaustion with no completed report ⇒ interrupted;
+ *   1. terminal context exhaustion or the max-turns cap with no completed
+ *      report ⇒ interrupted, with that limit as the reason;
  *   2. a broken WorkReport contract on a NATIVE route ⇒ hard failure
  *      (never prose-success);
  *   3. a valid needs_input/incomplete report ⇒ veto (lifecycle stays, run is
  *      non-applyable, exit non-zero) — a `completed` claim NEVER overrides a
  *      harness error / failed gate / missing evidence;
- *   4. otherwise the disclosed work_state: completed, or unverified — with the
- *      route's own source and the typed reason when an INSTRUCTED footer was
- *      missing or broken, `absent` when the route carries no transport.
+ *   4. otherwise the disclosed work_state: completed, or unverified — always
+ *      with the route's own source (`absent` only when the route carries no
+ *      transport), plus the typed reason when an INSTRUCTED footer was missing
+ *      or broken. An errored attempt with no accepted final keeps its route's
+ *      source and gets no footer reason (`unwrapAttemptAnswer`).
  */
 export function finalizeAttempt(input: FinalizeAttemptInput): FinalizeAttemptResult {
   const completed = input.workReport?.state === "completed";
 
-  if (input.contextTerminalExhausted && !completed) {
+  if (input.interruption && !completed) {
     return {
       deliverablePresent: input.deliverableEvidence,
       harnessErrored: input.harnessErrored,
       workState: { state: "unverified", source: input.workReportSource },
-      reason: "context_capacity_exhausted",
+      reason: input.interruption,
       outcomeClass: "interrupted",
     };
   }
@@ -135,7 +169,7 @@ export function finalizeAttempt(input: FinalizeAttemptInput): FinalizeAttemptRes
     harnessErrored: input.harnessErrored,
     workState: {
       state: report?.state === "completed" ? "completed" : "unverified",
-      source: report || unverified ? input.workReportSource : "absent",
+      source: input.workReportSource,
       ...(unverified ? { unverified_reason: unverified.reason } : {}),
     },
     reason: null,

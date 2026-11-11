@@ -54,6 +54,18 @@ const StoreCommitFacts = z.object({
   failures: count.describe("COMMIT calls that threw."),
   last_ms: ms.nullable().describe("Duration of the latest COMMIT call; null before the first."),
   max_ms: ms.nullable().describe("Longest COMMIT call; null before the first."),
+  p50_ms: ms
+    .nullable()
+    .optional()
+    .describe(
+      "Lifetime COMMIT p50, microsecond histogram with two significant digits; absent on older engines.",
+    ),
+  p99_ms: ms
+    .nullable()
+    .optional()
+    .describe(
+      "Lifetime COMMIT p99, microsecond histogram with two significant digits; absent on older engines.",
+    ),
 });
 
 /** Missing on old engines; null metrics mean the SQL runtime is not open yet. */

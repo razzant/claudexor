@@ -72,6 +72,21 @@ struct TranscriptView: View, Equatable {
                         remoteFileScope: remoteFileScope)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .opacity(0.7)
+                case .notice(_, let notice):
+                    // Engine-authored (not the model's words, not a tool):
+                    // the warning tint marks nothing copied or a selected path
+                    // not found; every path is in the text, selectable.
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(notice.title,
+                              systemImage: notice.warning ? "exclamationmark.triangle.fill" : "info.circle")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(notice.warning ? Theme.status(.caution) : .secondary)
+                        Text(TranscriptPresentation.chatNotice(notice.text))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -100,24 +115,58 @@ struct TranscriptView: View, Equatable {
 /// One tool call/result row (W-C6/W4.4): a kind icon + short humane title
 /// lead — ONE line, no chevron; the full output lives in the run inspector.
 /// A FAILED tool carries its error summary as a second dimmed line (its
-/// status is the information); everything else stays a single quiet row.
+/// status is the information); an UNCONFIRMED command (#450/#546: handed to a
+/// background shell, timed out, a completion reported without an exit code,
+/// or unknown) carries its typed state as a secondary line under the caution
+/// glyph; everything else stays a single quiet row.
 struct ToolRow: View {
     let tool: ToolBlock
 
     var body: some View {
         if tool.status == .error, let error = errorLine {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                header
-                Text(error)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Theme.status(.negative).opacity(0.85))
-                    .lineLimit(3)
-                    .textSelection(.enabled)
-                    .padding(.leading, Theme.Spacing.lg)
-            }
+            secondLine(error, font: .caption.monospaced(),
+                       style: Theme.status(.negative).opacity(0.85))
+        } else if tool.status == .unconfirmed {
+            secondLine(Self.commandNote(tool.commandOutcome), font: .caption, style: .secondary)
         } else {
             header
         }
+    }
+
+    private func secondLine(_ text: String, font: Font, style: some ShapeStyle) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            header
+            Text(text)
+                .font(font)
+                .foregroundStyle(style)
+                .lineLimit(3)
+                .textSelection(.enabled)
+                .padding(.leading, Theme.Spacing.lg)
+        }
+    }
+
+    /// The typed command state in the engine's words (schema
+    /// `commandOutcomeLabel`, the ACP/timeline owner): one vocabulary. A
+    /// handoff never claims the command is still running; a reported
+    /// completion keeps the exit code unknown and the handoff as history (#546).
+    static func commandNote(_ outcome: ToolBlock.CommandOutcome?) -> String {
+        guard let outcome, [.timedOut, .backgrounded, .completionReported].contains(outcome.state) else {
+            return "Command outcome not reported"
+        }
+        let handle = [outcome.shellId.map { "shell \($0)" }, outcome.pid.map { "pid \($0)" }].compactMap { $0 }
+        let seconds = outcome.timeoutMs.map { TurnCard.durationLabel(seconds: ($0 + 500) / 1000) }
+        if outcome.state == .timedOut {
+            return ([seconds.map { "Timed out after \($0)" } ?? "Timed out", "exit status unknown"] + handle)
+                .joined(separator: " · ")
+        }
+        let after = outcome.backgroundReason == .timeout && outcome.timeoutMs != 0
+            ? seconds.map { " after its \($0) timeout" } ?? " after its timeout" : ""
+        if outcome.state == .backgrounded {
+            return (["Handed off to background\(after); completion not observed"] + handle).joined(separator: " · ")
+        }
+        let vendor = outcome.completionStatus.flatMap { $0 == .success ? nil : " (\($0.rawValue))" } ?? ""
+        return (["Completion reported\(vendor); exit code unknown", "handed off to background\(after)"] + handle)
+            .joined(separator: " · ")
     }
 
     /// The failed tool's honest reason (bounded by the reducer upstream).
@@ -187,18 +236,25 @@ struct ToolRow: View {
         }
     }
 
-    private var statusGlyph: String {
-        switch tool.status {
+    private var statusGlyph: String { Self.statusGlyph(tool.status) }
+    private var statusColor: Color { Self.statusColor(tool.status) }
+
+    /// Unconfirmed reuses the app's warning mark and caution tone: neither the
+    /// success check, the failure cross, nor a spinner that never stops.
+    nonisolated static func statusGlyph(_ status: ToolBlock.Status) -> String {
+        switch status {
         case .running: return "circle.dotted"
         case .ok: return "checkmark.circle.fill"
         case .error: return "xmark.circle.fill"
+        case .unconfirmed: return "exclamationmark.triangle.fill"
         }
     }
-    private var statusColor: Color {
-        switch tool.status {
+    nonisolated static func statusColor(_ status: ToolBlock.Status) -> Color {
+        switch status {
         case .running: return .secondary
         case .ok: return Theme.status(.positive)
         case .error: return Theme.status(.negative)
+        case .unconfirmed: return Theme.status(.caution)
         }
     }
 }

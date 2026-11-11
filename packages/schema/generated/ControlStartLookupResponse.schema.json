@@ -1,0 +1,278 @@
+{
+  "$ref": "#/definitions/ControlStartLookupResponse",
+  "definitions": {
+    "ControlStartLookupResponse": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "found"
+            },
+            "storeId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Identity of the durable engine store this read answered from, stable across restarts. A lookup without a store identity is refused as unavailable instead of answering."
+            },
+            "handle": {
+              "type": "object",
+              "properties": {
+                "jobId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The accepted daemon job."
+                },
+                "runId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Non-empty identifier string."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Run bound to the job at this read; null while none is bound, or for a job that ended before a run."
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "description": "The job's lifecycle state at this read."
+                },
+                "runDir": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Run artifact directory; null before a run."
+                },
+                "taskId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Task id; null before it is allocated."
+                },
+                "threadId": {
+                  "$ref": "#/definitions/ControlStartLookupResponse/anyOf/0/properties/handle/properties/runId/anyOf/0",
+                  "description": "Thread of an accepted turn."
+                },
+                "turnId": {
+                  "$ref": "#/definitions/ControlStartLookupResponse/anyOf/0/properties/handle/properties/runId/anyOf/0",
+                  "description": "The accepted turn."
+                },
+                "problem": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Recorded failure message; null when none was kept."
+                    },
+                    "code": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Recorded machine code; null for an untyped failure."
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 400,
+                          "maximum": 599
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "HTTP status the start route answers for this failure; null when none is recorded."
+                    },
+                    "retryable": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "The recorded retryability; null when the producer made no claim."
+                    },
+                    "requiredActions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "description": "Bounded actions recorded with the failure."
+                    },
+                    "context": {
+                      "type": "object",
+                      "additionalProperties": {},
+                      "description": "Bounded recorded context; store and task-group identity are not repeated here."
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "code",
+                    "status",
+                    "retryable",
+                    "requiredActions",
+                    "context"
+                  ],
+                  "additionalProperties": false,
+                  "description": "The refusal or failure an accepted job records. A lookup returns it with HTTP 200; it is the job's outcome, not a failure of the read."
+                }
+              },
+              "required": [
+                "jobId",
+                "runId",
+                "state"
+              ],
+              "additionalProperties": false,
+              "description": "Durable handle of the job a start request created, read without waiting for it."
+            }
+          },
+          "required": [
+            "status",
+            "storeId",
+            "handle"
+          ],
+          "additionalProperties": false,
+          "description": "The store retains the job this exact key and request created."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "turn_only"
+            },
+            "storeId": {
+              "$ref": "#/definitions/ControlStartLookupResponse/anyOf/0/properties/storeId"
+            },
+            "threadId": {
+              "$ref": "#/definitions/ControlStartLookupResponse/anyOf/0/properties/handle/properties/runId/anyOf/0"
+            },
+            "turnId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The turn this exact key and request recorded."
+            },
+            "runId": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlStartLookupResponse/anyOf/0/properties/handle/properties/runId/anyOf/0"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Run bound to the turn; observe exactly this run. Null when no run is bound."
+            },
+            "enqueueError": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "description": "Human-readable refusal message."
+                    },
+                    "code": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null,
+                      "description": "Machine-readable refusal code; remedies key on it, never on the message text."
+                    },
+                    "retryable": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "False when no recorded job exists to replay — surfaces offer a new message instead of a doomed retry."
+                    },
+                    "requiredActions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      },
+                      "maxItems": 16,
+                      "default": [],
+                      "description": "Bounded user actions that may make an exact retry succeed."
+                    },
+                    "context": {
+                      "type": "object",
+                      "additionalProperties": {},
+                      "default": {},
+                      "description": "Bounded typed recovery context for exact retry."
+                    },
+                    "failedAt": {
+                      "type": "string",
+                      "description": "When the enqueue failed."
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "failedAt"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Why this turn has no run (enqueue/preflight refusal); null once a run binds."
+            }
+          },
+          "required": [
+            "status",
+            "storeId",
+            "threadId",
+            "turnId",
+            "runId"
+          ],
+          "additionalProperties": false,
+          "description": "The store retains the turn this exact key and request recorded, but no command bound to them: the enqueue failed or never happened, or retention removed the command. Nothing is enqueued for it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "not_found"
+            },
+            "storeId": {
+              "$ref": "#/definitions/ControlStartLookupResponse/anyOf/0/properties/storeId"
+            }
+          },
+          "required": [
+            "status",
+            "storeId"
+          ],
+          "additionalProperties": false,
+          "description": "This store's current partition retains no binding for this key and request. It never proves that the original request was not accepted and never authorizes a new start."
+        }
+      ],
+      "description": "Read-only lookup of an accepted run or thread-turn start by its original request and Idempotency-Key."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

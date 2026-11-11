@@ -11,9 +11,11 @@ import { remainingQuotaRefreshDemand } from "./quota-refresh-demand.js";
 const roots: string[] = [];
 const journals: DurableJournal[] = [];
 afterEach(() => {
+  // This test's folders, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const journal of journals.splice(0)) journal.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+  for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 const NOW = Date.parse("2026-10-04T00:00:00Z");
 const subject = {
   harness: "claude",

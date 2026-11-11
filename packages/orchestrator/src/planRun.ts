@@ -17,7 +17,7 @@ import { cancelledResult, writeFailure } from "./runTerminals.js";
 import { requestRefusalFailure } from "./runTerminalResults.js";
 import { unanimousDeclaredFailure } from "./candidateEvidence.js";
 import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
-import { attemptVendorFailure } from "./harnessFailure.js";
+import { attemptCauseLines, attemptVendorFailure } from "./harnessFailure.js";
 import { dominantHarnessFailureCategory, harnessFailureNextActions } from "./harnessFailure.js";
 import {
   buildCouncilProjection,
@@ -361,9 +361,8 @@ export function writePlanHarnessFailure(
       ? classifyBudgetFailure({ denial: ctx.budgetDenial ?? null, terminal: ledger.terminal() })
       : null;
   // QA-047: successful drafts remain preserved evidence, never failure lines.
-  const failedLines = planAttempts
-    .filter((p) => p.status !== "success")
-    .map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`);
+  const failed = planAttempts.filter((p) => p.status !== "success");
+  const failedLines = attemptCauseLines(failed, ctx.attemptTelemetries);
   const preserved =
     ctx.preservedDrafts ??
     planAttempts.filter((p) => p.status === "success").map((p) => `${p.attemptId}/${p.harnessId}`);
@@ -414,10 +413,10 @@ export function writePlanHarnessFailure(
       ctx.attemptTelemetries.flatMap((attempt) => attempt.telemetry.transientFailures),
     );
     writeFailure(store, paths, {
+      // The typed provenance the attempt declared (code, reset, refusals) speaks.
+      ...declared,
       phase: "harness",
       category: blocked ? "policy" : (declared?.category ?? "harness_error"),
-      code: declared?.code,
-      requestRefusal: declared?.requestRefusal,
       vendorFailure: ctx.aggregateFailure
         ? null
         : attemptVendorFailure(ctx.attemptTelemetries, planAttempts.at(-1)?.attemptId),
@@ -429,8 +428,8 @@ export function writePlanHarnessFailure(
       ),
     });
   }
-  // D-16: context exhaustion stays interrupted after policy/budget precedence.
-  const anyInterrupted = planAttempts.some((p) => p.outcomeClass === "interrupted");
+  // D-16/#299: a typed limit stays interrupted after policy/budget precedence.
+  const limit = planAttempts.find((p) => p.interruption !== null)?.interruption;
   // No canonical plan: the read-only owner must not promote discarded raw output.
   const noPlanTerminal = readOnlyNoSuccessTerminal({
     webBlocked: blocked,
@@ -439,8 +438,8 @@ export function writePlanHarnessFailure(
     attemptsCount: planAttempts.length,
   });
   const planFailFacts =
-    !blocked && !budgetMapping && anyInterrupted
-      ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" })
+    !blocked && !budgetMapping && limit
+      ? makeOutcomeFacts("interrupted", { reason: limit })
       : budgetMapping
         ? makeOutcomeFacts("failed", { reason: budgetMapping.reason })
         : makeOutcomeFacts(noPlanTerminal.lifecycle, { reason: noPlanTerminal.reason });

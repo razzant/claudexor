@@ -486,7 +486,7 @@ describe("operator owner-review sealer", () => {
       );
       write(privateKeyPath, keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString());
       chmodSync(privateKeyPath, 0o600);
-      const runSealer = (output: string, receipt = gatePath) =>
+      const runSealer = (output: string, receipt = gatePath, base64Out?: string) =>
         spawnSync(
           process.execPath,
           [
@@ -503,6 +503,7 @@ describe("operator owner-review sealer", () => {
             authorityPath,
             "--out",
             output,
+            ...(base64Out ? ["--base64-out", base64Out] : []),
           ],
           { cwd: candidate, encoding: "utf8" },
         );
@@ -669,12 +670,40 @@ describe("operator owner-review sealer", () => {
       expect(extraKeyRefused.stderr).toContain("metadata shape is invalid");
       write(solMetadataPath, json(metadataFor("sol")));
 
-      // A secret-like token in a report refuses before any signing.
-      write(solReportPath, `${reports.sol}\nsk-ant-api03-${"a".repeat(93)}\n`);
-      const secretRefused = runSealer(join(root, "secret-refused.json"));
-      expect(secretRefused.status).toBe(1);
-      expect(secretRefused.stderr).toContain("secret-like token");
+      // A report quoting credential-shaped synthetic fixtures (review evidence
+      // about auth code; assembled at runtime) seals exactly (INV-146): its
+      // digest is bound and signed, and neither output carries any report text.
+      const fixtureBearer = ["fixture", "token", "not", "a", "credential"].join("-");
+      const fixtureKey = `${["sk", "ant", "api03"].join("-")}-${"a".repeat(93)}`;
+      const fixtureReport =
+        `${reports.sol}\nQuoted fixtures:\n` +
+        `- Authorization: ${["Bear", "er"].join("")} ${fixtureBearer}\n- ${fixtureKey}\n`;
+      write(solReportPath, fixtureReport);
+      write(solMetadataPath, json({ ...metadataFor("sol"), report_sha256: hash(fixtureReport) }));
+      const fixtureOut = join(root, "fixture-report-attestation.json");
+      const fixtureBase64 = join(root, "fixture-report-attestation.b64");
+      const fixtureSealed = runSealer(fixtureOut, gatePath, fixtureBase64);
+      expect(fixtureSealed.stderr).toBe("");
+      expect(fixtureSealed.status).toBe(0);
+      const sealedJson = readFileSync(fixtureOut, "utf8");
+      expect(JSON.parse(sealedJson).payload.reviews[1]).toMatchObject({
+        slot: "reviewer-2",
+        reportSha256: hash(fixtureReport),
+      });
+      const sealedBase64 = Buffer.from(readFileSync(fixtureBase64, "utf8").trim(), "base64");
+      for (const published of [sealedJson, sealedBase64.toString("utf8")])
+        for (const fragment of ["Quoted fixtures", fixtureBearer, fixtureKey])
+          expect(published).not.toContain(fragment);
+
+      // Strict UTF-8 still refuses report bytes that are not text, even bound.
+      const invalidUtf8 = Buffer.concat([Buffer.from(reports.sol), Buffer.from([0xc3, 0x28])]);
+      write(solReportPath, invalidUtf8);
+      write(solMetadataPath, json({ ...metadataFor("sol"), report_sha256: hash(invalidUtf8) }));
+      const invalidUtf8Refused = runSealer(join(root, "invalid-utf8-refused.json"));
+      expect(invalidUtf8Refused.status).toBe(1);
+      expect(invalidUtf8Refused.stderr).toContain("reviewer report is not valid UTF-8");
       write(solReportPath, reports.sol);
+      write(solMetadataPath, json(metadataFor("sol")));
 
       // A missing report file refuses: both artifacts are mandatory.
       rmSync(join(reviewerDirs.fable, "report.md"));

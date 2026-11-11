@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { ChildProcess } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +28,20 @@ import {
   type CodexEffortCatalog,
 } from "./effort-probe.js";
 import { rmSync as __rmSyncReap } from "node:fs";
+
+/** Pass-through spawn recorder: the real children the probe started. */
+const spawned = vi.hoisted(() => [] as ChildProcess[]);
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: ((...args: Parameters<typeof actual.spawn>) => {
+      const child = actual.spawn(...args);
+      spawned.push(child);
+      return child;
+    }) as typeof actual.spawn,
+  };
+});
 import { afterAll as __afterAllReap } from "vitest";
 
 // W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
@@ -38,7 +53,18 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+
+// These cache tests inject the model/list transport; give the synthetic program
+// a known identity too. Real program changes are covered by program-observation tests.
+vi.mock("@claudexor/core", async (original) => ({
+  ...(await original<typeof import("@claudexor/core")>()),
+  observeHarnessProgram: vi.fn(async (_program, _env, bin) => ({
+    selection: null,
+    program: { path: bin ?? "/fixture/codex", version: "1.0.0" },
+    key: `${bin ?? "codex"}:1.0.0`,
+  })),
+}));
 
 const base = {
   access: "workspace_write" as const,
@@ -146,10 +172,47 @@ describe("codex effort probe degrades gracefully", () => {
     expect(await probeCodexEfforts("claudexor-no-such-codex-binary")).toBeNull();
   });
 
-  it("returns null when the app-server never answers, bounded by the timeout", async () => {
-    // `sleep` speaks no JSON-RPC: the probe must time out, not hang the run.
-    expect(await probeCodexEfforts("sleep", { timeoutMs: 250 })).toBeNull();
-  });
+  it.skipIf(process.platform === "win32")(
+    "returns null when the app-server never answers, bounded by the timeout",
+    async () => {
+      // A silent child reads stdin, never writes and never exits, so only the
+      // probe's own timer can end it (`sleep app-server --stdio` exits at once
+      // and never reached that timer, #386).
+      const dir = reapMk(join(tmpdir(), "claudexor-codex-silent-"));
+      const bin = join(dir, "codex");
+      writeFileSync(bin, "#!/bin/sh\nexec /bin/cat >/dev/null\n");
+      chmodSync(bin, 0o755);
+      let guard: NodeJS.Timeout | undefined;
+      const outcome = await Promise.race([
+        probeCodexEfforts(bin, { timeoutMs: 250 }),
+        new Promise<string>((resolve) => {
+          guard = setTimeout(() => resolve("the probe did not settle within 5 s"), 5_000);
+        }),
+      ]);
+      clearTimeout(guard);
+      const child = spawned.find((candidate) => candidate.spawnfile === bin);
+      const ended = () => child?.exitCode !== null || child?.signalCode !== null;
+      try {
+        expect(outcome).toBeNull();
+        expect(child?.killed).toBe(true);
+        await vi.waitFor(() => expect(child?.signalCode).toBe("SIGKILL"), { timeout: 2_000 });
+      } finally {
+        // A child the probe did not end is stopped here and its exit awaited,
+        // so a failing run never leaves it alive past the test or its fixture.
+        if (child && !ended()) {
+          const exited = new Promise((resolve) => child.once("exit", resolve));
+          child.kill("SIGKILL");
+          let bound: NodeJS.Timeout | undefined;
+          await Promise.race([
+            exited,
+            new Promise((resolve) => (bound = setTimeout(resolve, 5_000))),
+          ]);
+          clearTimeout(bound);
+          if (!ended()) throw new Error(`silent child ${child.pid} still running after SIGKILL`);
+        }
+      }
+    },
+  );
 
   it("returns null — and raises NO unhandled error — when the child dies mid-handshake", async () => {
     // The regression: a broken pipe is delivered on the stream's `error` event,
@@ -227,7 +290,7 @@ describe("codex effort probe degrades gracefully", () => {
 
   it("the snapshot matches every visible model in the pinned CLI capture and keeps historical coverage", () => {
     const capture = JSON.parse(
-      readFileSync(new URL("../fixtures/models-0.156.1.json", import.meta.url), "utf8"),
+      readFileSync(new URL("../fixtures/models-0.162.1.json", import.meta.url), "utf8"),
     ) as { data: unknown[] };
     const recorded = readModelListEfforts(capture.data);
     expect(recorded).not.toBeNull();
@@ -297,7 +360,7 @@ describe("the effort probe is cached, not re-spawned per call", () => {
       "max",
       "ultra",
     ]);
-    expect(manifest.capabilities.effort_levels_verified_against).toBe("0.156.1");
+    expect(manifest.capabilities.effort_levels_verified_against).toBe("0.162.1");
     expect(manifest.capabilities.known_models_verified_against).toBe(CODEX_VENDOR_CLI_VERSION);
     expect(manifest.capabilities.known_models).toEqual(
       expect.arrayContaining(Object.keys(CODEX_EFFORT_SNAPSHOT.models)),
@@ -388,7 +451,7 @@ describe("the effort cache is keyed by the codex IDENTITY, not just the binary",
     // A FROZEN clock: nothing can expire, so only the entry cap can bound this.
     // Without it the map would hold all 500 keys.
     for (let run = 0; run < 500; run += 1) {
-      await codexEffortCapability(probe, () => 0, "codex", {
+      await codexEffortCapability(probe, () => 0, "/fixture/codex", {
         CODEX_HOME: `/tmp/claudexor-ephemeral-${run}`,
       });
     }
@@ -408,15 +471,15 @@ describe("the effort cache is keyed by the codex IDENTITY, not just the binary",
       };
     };
     const stable = { CODEX_HOME: "/tmp/claudexor-native-home" };
-    await codexEffortCapability(probe, () => 0, "codex", stable);
+    await codexEffortCapability(probe, () => 0, "/fixture/codex", stable);
     expect(calls).toBe(1);
     // Well inside the cap: the stable entry must survive ordinary churn.
     for (let run = 0; run < 10; run += 1) {
-      await codexEffortCapability(probe, () => 0, "codex", {
+      await codexEffortCapability(probe, () => 0, "/fixture/codex", {
         CODEX_HOME: `/tmp/claudexor-ephemeral-churn-${run}`,
       });
     }
-    await codexEffortCapability(probe, () => 0, "codex", stable);
+    await codexEffortCapability(probe, () => 0, "/fixture/codex", stable);
     expect(calls).toBe(11); // 1 stable + 10 ephemeral; the stable read was cached.
     clearCodexEffortCache();
   });
@@ -779,12 +842,20 @@ describe("an effort dropped AFTER preflight is disclosed on the run (INV-105)", 
 
 describe("the snapshot fallback drives arg emission ONLY on the version it was captured from (INV-105)", () => {
   it("snapshot trust is exact-version, and an unknown/unparseable version never vouches", () => {
-    expect(codexSnapshotTrustedForVersion("0.156.1")).toBe(true);
-    expect(codexSnapshotTrustedForVersion("codex-cli 0.156.1")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("0.162.1")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("codex-cli 0.162.1")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("codex-cli 0.156.1")).toBe(false);
     expect(codexSnapshotTrustedForVersion("codex-cli 0.98.0")).toBe(false);
     // A LONGER dotted token is a different version, not a prefix match.
     expect(codexSnapshotTrustedForVersion("0.156.1.1")).toBe(false);
     expect(codexSnapshotTrustedForVersion("0.156.10")).toBe(false);
+    // A pre-release or build of the same triple is another binary, not the stamp.
+    expect(
+      codexSnapshotTrustedForVersion(`codex-cli ${CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST}-rc.1`),
+    ).toBe(false);
+    expect(
+      codexSnapshotTrustedForVersion(`${CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST}+different`),
+    ).toBe(false);
     expect(codexSnapshotTrustedForVersion(null)).toBe(false);
     expect(codexSnapshotTrustedForVersion("codex (version unknown)")).toBe(false);
   });
@@ -865,6 +936,27 @@ describe("the snapshot fallback drives arg emission ONLY on the version it was c
     ]);
     expect(disclosure?.payload?.["ignored_settings"]).toEqual([
       expect.stringContaining(CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST),
+    ]);
+    clearCodexEffortCache();
+  });
+
+  it("a same-triple PRE-RELEASE snapshot fallback gets the vendor default and the drop disclosure", async () => {
+    clearCodexEffortCache();
+    let cliArgs: string[] | undefined;
+    const adapter = snapshotFallbackAdapter(
+      `codex-cli ${CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST}-rc.1`,
+      (args) => {
+        cliArgs = args;
+      },
+    );
+    const events: HarnessEvent[] = [];
+    for await (const ev of adapter.run(ultraSpec("codex-effort-snapshot-prerelease")))
+      events.push(ev);
+    expect(cliArgs).toBeDefined();
+    expect(cliArgs?.some((a) => a.startsWith("model_reasoning_effort="))).toBe(false);
+    const disclosure = events.find((ev) => Array.isArray(ev.payload?.["ignored_settings"]));
+    expect(disclosure?.payload?.["ignored_settings"]).toEqual([
+      expect.stringContaining("effort=ultra"),
     ]);
     clearCodexEffortCache();
   });

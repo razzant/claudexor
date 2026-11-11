@@ -25,7 +25,7 @@ export function accountResourceTools(runner: RunnerFn): McpTool[] {
     {
       name: "claudexor_account_resources",
       description:
-        "Read typed account balances, spending, reset offers and quota. refresh:true requests provider data; target selects one exact registered account, including a disabled portable profile. No login or spending-policy change.",
+        "Read typed account balances, spending, reset offers and quota, plus API-key spending limits (each API-key harness's default key with target.profile_id null, and its enabled registered API-key accounts). refresh:true requests provider data; target selects one exact registered account, including a disabled portable profile. No login or spending-policy change.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

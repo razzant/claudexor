@@ -19,7 +19,10 @@ import type { ControlSetupJob } from "@claudexor/schema";
 import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 
 let root: string;
-const job = (jobId: string, phase: ControlSetupJob["phase"] = "preparing"): ControlSetupJob => ({
+const job = (
+  jobId: string,
+  phase: ControlSetupJob["phase"] = "preparing",
+): ControlSetupJob & { harness: "codex" } => ({
   jobId,
   harness: "codex",
   action: "login",
@@ -60,7 +63,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("SetupJobStore global-journal authority", () => {
   it("rebuilds saved, binding and log records from mixed history without copying unrelated payloads", () => {

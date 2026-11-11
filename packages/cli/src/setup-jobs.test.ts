@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   AuthCapabilityVerifier,
@@ -31,6 +31,7 @@ import type {
 } from "@claudexor/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@claudexor/config";
+import { BlobFiles, EngineStore, SqlEventLedger, currentGeneration } from "@claudexor/daemon";
 import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
 import { defaultNativeCodexHome } from "@claudexor/harness-codex";
 import { noProjectRepoRoot } from "@claudexor/util";
@@ -48,6 +49,7 @@ import {
   resolveSetupLoginRunnerPath,
 } from "./setup-job-support.js";
 import { createSetupJobManager } from "./setup-jobs.js";
+import { SqlSetupJobStore } from "./sql-setup-store.js";
 import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/legacy/cli/setup-job-store.js";
 import { type SetupJobStorePort } from "./setup-job-projection.js";
 
@@ -233,6 +235,7 @@ function writeRunnerResultV2(
     errorCode?: SetupNativeCommandErrorCode;
     permitIssuedAt?: string | null;
     executionId?: string;
+    outputTail?: string;
   } = {},
 ): void {
   const manifest = readLoginManifest(manager._store.paths(jobId).manifest);
@@ -254,6 +257,7 @@ function writeRunnerResultV2(
     exitCode: input.exitCode === undefined ? 0 : input.exitCode,
     signal: input.signal === undefined ? null : input.signal,
     ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+    ...(input.outputTail ? { outputTail: input.outputTail } : {}),
     finishedAt: new Date().toISOString(),
   });
   if (!readRunnerResult(manager._store.paths(jobId).runnerResult)) {
@@ -346,7 +350,7 @@ afterEach(() => {
   if (oldConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
   else process.env.CLAUDEXOR_CONFIG_DIR = oldConfigDir;
   rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("setup jobs", () => {
   it("prefers an adjacent CommonJS app bundle and falls back to published ESM output", () => {
@@ -2645,6 +2649,24 @@ describe("setup jobs", () => {
 });
 
 describe("setup jobs for credential profiles (INV-135)", () => {
+  it("refuses Grok bootstrap login before registering a default account or starting a job", () => {
+    process.env.CLAUDEXOR_CONFIG_DIR = join(root, "cfg-grok");
+    const manager = createSetupJobManager({
+      store: new SetupJobStore(join(root, "store-grok")),
+      rootDir: join(root, "store-grok"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+    });
+    expect(resolveLoginProfileBinding("grok", "login", undefined)).toBeNull();
+    expect(() =>
+      manager.create({ harness: "grok", action: "login", authRequest: "subscription" }),
+    ).toThrow(/no default credential store/);
+    expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ harness_id: "grok" })]),
+    );
+  });
+
   it("refuses unknown profiles at create and seals the scoped home into the manifest; dedupe is per-target", () => {
     process.env.CLAUDEXOR_CONFIG_DIR = join(root, "cfg");
     const { profile } = registerConfigDirProfile({ harnessId: "codex", profileId: "work" });
@@ -3054,6 +3076,104 @@ describe("D-17 codex device-code login", () => {
     expect(done.nativeCommand?.commandStarted).toBe(false);
     await manager.shutdown();
   });
+});
+
+describe("Grok device login outcomes on the SQL setup store", () => {
+  // Grok's login argv also carries `--device-auth`. The toggle remedy and the
+  // old-CLI message name ChatGPT and the codex Terminal flow, so a Grok job never
+  // gets them. Both transports end in the same daemon consumer of the runner result.
+  const stores: EngineStore[] = [];
+  let oldGrokBin: string | undefined;
+
+  beforeEach(() => {
+    oldGrokBin = process.env.CLAUDEXOR_GROK_BIN;
+    const binary = join(root, "fake-grok");
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    chmodSync(binary, 0o700);
+    process.env.CLAUDEXOR_GROK_BIN = binary;
+    process.env.CLAUDEXOR_CONFIG_DIR = join(root, "cfg-grok");
+    registerConfigDirProfile({ harnessId: "grok", profileId: "work" });
+  });
+
+  afterEach(async () => {
+    for (const store of stores.splice(0)) await store.close();
+    if (oldGrokBin === undefined) delete process.env.CLAUDEXOR_GROK_BIN;
+    else process.env.CLAUDEXOR_GROK_BIN = oldGrokBin;
+  });
+
+  async function sqlSetupStore(dataRoot: string): Promise<SqlSetupJobStore> {
+    const store = await EngineStore.open({
+      daemonDir: dataRoot,
+      workerEntry: resolve(import.meta.dirname, "../../daemon/dist/store/flusher-worker.js"),
+      flusherHooks: { manualTick: true },
+    });
+    stores.push(store);
+    store.transaction(() => {
+      store
+        .prepare(
+          "INSERT INTO partition(id,name,epoch,status,next_seq,created_at) VALUES(1,'global','fixture','ready',1,?)",
+        )
+        .run(new Date().toISOString());
+      store.prepare("INSERT INTO meta(key,value) VALUES('global_pid','1')").run();
+    });
+    const generation = currentGeneration(store, "global")!;
+    return new SqlSetupJobStore(
+      dataRoot,
+      store,
+      new SqlEventLedger(store, new BlobFiles(store), generation),
+    );
+  }
+
+  const unsupported = "grok login does not support device-code sign-in in the installed CLI.";
+  it.each([
+    // A daemon-hosted login tees the vendor output; client_pty prints it in the terminal.
+    ["daemon", "failed", { exitCode: 1, outputTail: "Error: device code expired" }],
+    ["client_pty", "failed", { exitCode: 1 }],
+    ["daemon", "not_supported", { exitCode: null, errorCode: "device_auth_unsupported" }],
+    ["client_pty", "not_supported", { exitCode: null, errorCode: "device_auth_unsupported" }],
+  ] as const)(
+    "a %s Grok login that ends %s carries no Codex remedy",
+    async (transport, state, result) => {
+      const group = processGroupFixture();
+      const dir = join(root, `grok-${transport}-${state}`);
+      const manager = createSetupJobManager({
+        store: await sqlSetupStore(dir),
+        rootDir: dir,
+        platform: "darwin",
+        runnerPath: "/tmp/setup-login-runner.js",
+        openTerminal: fakeOpener,
+        spawn: (() => fakeOpener()) as unknown as typeof import("node:child_process").spawn,
+        monitorPollMs: 1,
+        processGroups: group.service,
+      });
+      await manager.start();
+      const job = manager.create({
+        harness: "grok",
+        action: "login",
+        authRequest: "subscription",
+        profileId: "work",
+        transport,
+      });
+      expect(job.authorization?.args).toEqual(["login", "--device-auth"]);
+      const observedAt = new Date().toISOString();
+      writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
+      await waitForPhase(manager, job.jobId, "awaiting_user");
+      writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+      writeRunnerResultV2(manager, job.jobId, {
+        ...result,
+        commandStarted: state === "failed",
+        permitIssuedAt: manager.status({ jobId: job.jobId }).execution?.permitIssuedAt ?? null,
+      });
+      expect(await waitForTerminal(manager, job.jobId)).toBe(state);
+      // Exact text: the genuine cause only, with nothing about ChatGPT or codex.
+      expect(manager.status({ jobId: job.jobId }).message).toBe(
+        state === "not_supported"
+          ? unsupported
+          : `grok login command failed.${"outputTail" in result ? ` Last output: ${result.outputTail}` : ""}`,
+      );
+      await manager.shutdown();
+    },
+  );
 });
 
 describe("one-shot sign-in input (url_disclosure_with_input, owner directive 2026-08-04)", () => {

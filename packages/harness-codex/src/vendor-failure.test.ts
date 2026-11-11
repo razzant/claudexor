@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,7 @@ beforeAll(() => {
   mkdirSync(day, { recursive: true });
   copyFileSync(FIXTURE, join(day, `rollout-2026-09-15T12-42-52-${THREAD}.jsonl`));
 });
-afterAll(() => rmSync(home, { recursive: true, force: true }));
+afterAll(() => rmSync(home, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(SPAWN_MS);
@@ -120,6 +120,41 @@ describe("withCodexVendorFailure", () => {
     expect(await wrap(input)).toEqual(input);
   });
 
+  it.runIf(process.platform !== "win32")(
+    "attaches nothing from a rollout reached through a link (#336)",
+    async () => {
+      const linked = mkdtempSync(join(tmpdir(), "codex-vendor-failure-link-"));
+      const day = join(linked, "sessions", "2026", "09", "15");
+      mkdirSync(day, { recursive: true });
+      symlinkSync(FIXTURE, join(day, `rollout-2026-09-15T12-42-52-${THREAD}.jsonl`));
+      try {
+        const input = [started, error, completed({ exit_code: 1, harness_reported_error: true })];
+        expect(await wrap(input, { codexHome: linked })).toEqual(input);
+      } finally {
+        rmSync(linked, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("a readable rollout record replaces the app-server wire's; otherwise the wire's stays", async () => {
+    const wireRecord = {
+      code: "serverOverloaded",
+      message: "at capacity",
+      source: "codex_app_server",
+    };
+    const input = [
+      started,
+      error,
+      completed({ harness_reported_error: true, vendor_failure: wireRecord }),
+    ];
+    expect((await wrap(input)).at(-1)?.payload?.["vendor_failure"]).toEqual(VENDOR_FAILURE);
+    for (const quiet of [
+      await wrap(input, { codexHome: null }),
+      await wrap(input, { spec: spec({ evidence_policy: "stream_only" }) }),
+    ])
+      expect(quiet).toEqual(input);
+  });
+
   it("passes every other event through identical and in order", async () => {
     const usage: HarnessEvent = {
       type: "usage",
@@ -150,7 +185,7 @@ describe("codex adapter run (wiring)", () => {
   const profileHomes: string[] = [];
   afterAll(() => {
     for (const dir of profileHomes) rmSync(dir, { recursive: true, force: true });
-  });
+  }, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
   async function run(announceThread: boolean): Promise<HarnessEvent[]> {
     mkdirSync(ownedTmp, { recursive: true });

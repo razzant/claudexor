@@ -7,7 +7,7 @@ import {
   RUN_START_CLIENT_REJECTED_KEYS,
 } from "@claudexor/schema";
 import { CLI_COMMANDS } from "./command-registry.js";
-import { mcpToolNames } from "./capabilities.js";
+import { catalogAccessControl, mcpToolNames } from "./capabilities.js";
 
 describe("AgentCapabilityCatalog surfaces", () => {
   it("the catalog DTO is strict about its closed vocabularies", () => {
@@ -25,6 +25,7 @@ describe("AgentCapabilityCatalog surfaces", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
+      runDecisionActions: ["taken"],
       outputSchemaDialects: [
         {
           dialect: "draft-07",
@@ -126,6 +127,43 @@ describe("AgentCapabilityCatalog surfaces", () => {
     }
     // An invented channel is refused, never passed through as a capability.
     expect(() => CatalogHarness.parse({ ...row, liveInput: "interrupt" })).toThrow();
+  });
+
+  it("negotiates auxiliary writable roots from capability facts; omission reads unsupported", async () => {
+    const { createCodexAdapter } = await import("@claudexor/harness-codex");
+    const { createClaudeAdapter } = await import("@claudexor/harness-claude");
+    expect(catalogAccessControl(createCodexAdapter().capabilityProfile)).toEqual({
+      auxiliaryWritableRoots: true,
+    });
+    expect(catalogAccessControl(createClaudeAdapter().capabilityProfile)).toEqual({
+      auxiliaryWritableRoots: false,
+    });
+    expect(catalogAccessControl(undefined)).toEqual({ auxiliaryWritableRoots: false });
+    const { accessControl: _omitted, ...legacy } = CatalogHarness.parse({
+      id: "older-engine",
+      enabled: true,
+      displayName: "Older",
+      status: "ok",
+      providerFamily: "openai",
+      enabledIntents: [],
+      disabledIntents: [],
+      reasons: [],
+      configuredModel: null,
+      configuredModelValid: null,
+      models: { source: "none", count: 0, verifiedAgainst: null },
+      webPolicy: "none",
+      attachmentInputs: [],
+      effortLevels: [],
+      accessProfilesSupported: [],
+      readonlyMechanism: "none",
+      delegation: {
+        available: false,
+        reason: "manifest_unsupported",
+        remediation: "n/a",
+        requiresFullAccess: false,
+      },
+    });
+    expect(CatalogHarness.parse(legacy).accessControl).toEqual({ auxiliaryWritableRoots: false });
   });
 
   it("the MCP tool list includes the capabilities tool itself (self-describing surface)", () => {

@@ -80,6 +80,11 @@
                 },
                 "source": {
                   "$ref": "#/definitions/BudgetLease/properties/cost/properties/processing/properties/nativeMode/anyOf/0"
+                },
+                "debit": {
+                  "type": "string",
+                  "const": "unobserved",
+                  "description": "The route reports no actual cash or purchased-credit debit. Included service still admits the work, but its cash stays unknown instead of zero and is outside the finite cap; absence keeps proven ordinary inclusion as zero cash."
                 }
               },
               "required": [

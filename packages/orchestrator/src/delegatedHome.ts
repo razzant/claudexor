@@ -26,6 +26,9 @@ export interface ScopedHarnessHome {
   laneHomeFor?: (resolvedProfileId: string | null) => Record<string, string> | null;
   /** The account the live spec actually ran under, once resolved. */
   profileApplied?: string | null;
+  /** The Claudexor-owned HOME the adapter actually gave its child when it
+   * replaced this one with a named account's HOME (`HarnessAdapter.childHome`). */
+  childHome?: string | null;
 }
 
 /** Access profiles under which the harness can modify the filesystem. */
@@ -114,18 +117,24 @@ export function selectLaneHome(home: ScopedHarnessHome, resolvedProfileId: strin
 /**
  * The applied facts follow the LIVE spec: an in-run account hop moves the spec
  * into the next account's lane, so the recorded home and account move with it
- * on the success and failure paths alike (never profile B with home A).
+ * on the success and failure paths alike (never profile B with home A). An
+ * adapter that gives its child the account's own HOME instead names it, and
+ * that is the home recorded.
  */
-export function followSpecHome(
+export function followSpecHome<
+  S extends { env?: Record<string, string>; credential_profile?: { profile_id: string } | null },
+>(
   home: ScopedHarnessHome,
-  spec: { env?: Record<string, string>; credential_profile?: { profile_id: string } | null },
+  spec: S,
   requestedProfileId: string | null,
+  adapter?: { childHome?(spec: S): string | null },
 ): ScopedHarnessHome {
   home.profileApplied = spec.credential_profile?.profile_id ?? requestedProfileId;
   const specHome = spec.env?.["HOME"];
   if (home.laneHomeFor && spec.env && specHome && specHome !== home.homeDir) {
     Object.assign(home, { env: spec.env, homeDir: specHome });
   }
+  home.childHome = adapter?.childHome?.(spec) ?? null;
   return home;
 }
 
@@ -138,13 +147,24 @@ export function followSpecHome(
  * fact, so it is stated to the model in plain words rather than left in an
  * artifact it never reads.
  */
-export function outerBoundaryNotice(home: ScopedHarnessHome | null | undefined): string | null {
+export function outerBoundaryNotice(
+  home: ScopedHarnessHome | null | undefined,
+  auxiliaryWritableRoots: readonly string[] = [],
+): string | null {
   const reason = home?.outerBoundaryUnavailableReason;
-  if (!reason) return null;
+  // An explicit grant is named on every lane that receives it; project work
+  // still belongs in the execution workspace.
+  const grant = auxiliaryWritableRoots.length
+    ? `Caller-granted writable service directories outside the execution workspace (caches or scratch, never part of the project result): ${auxiliaryWritableRoots.join(", ")}.`
+    : null;
+  if (!reason) return grant;
   return [
     `Engine disclosure: ${reason}`,
     "The scoped HOME selects native state and credentials; it is not containment. Stay within",
-    "the execution workspace and do not access unrelated operator or Claudexor state.",
+    grant
+      ? "the execution workspace and the granted service directories below; do not access unrelated operator or Claudexor state."
+      : "the execution workspace and do not access unrelated operator or Claudexor state.",
+    ...(grant ? [grant] : []),
   ].join("\n");
 }
 
@@ -159,10 +179,12 @@ export function outerBoundaryNotice(home: ScopedHarnessHome | null | undefined):
 export interface AppliedAttemptFacts {
   /**
    * ABSENT when the attempt died before its home was decided (`wsm.create` or
-   * home selection failed). A literal `false` is a POSITIVE claim — this
-   * child ran in the operator's own HOME — and an attempt that never reached
-   * the decision made no such claim. Absence keeps it a gap in the record,
-   * which is what `appliedEvidenceComplete` already refuses on.
+   * home selection failed). A literal `false` is a POSITIVE claim — the engine
+   * did not replace HOME, so this child inherits the engine's own environment
+   * (the operator's HOME unless a host started the engine with another) — and
+   * an attempt that never reached the decision made no such claim. Absence
+   * keeps it a gap in the record, which is what `appliedEvidenceComplete`
+   * already refuses on.
    */
   harness_home_isolated?: boolean;
   harness_home_dir: string | null;
@@ -195,9 +217,11 @@ export function appliedAttemptFacts(
   access: AccessProfile,
   credentialProfileId: string | null,
 ): AppliedAttemptFacts {
+  // A child moved into an owned account HOME did not run in the operator's.
+  const childHome = home?.childHome ?? null;
   return {
-    ...(home ? { harness_home_isolated: home.isolated } : {}),
-    harness_home_dir: home?.homeDir ?? null,
+    ...(home ? { harness_home_isolated: childHome !== null || home.isolated } : {}),
+    harness_home_dir: childHome ?? home?.homeDir ?? null,
     access_applied: access,
     credential_profile_applied:
       home?.profileApplied !== undefined ? home.profileApplied : credentialProfileId,
@@ -231,19 +255,39 @@ export function appliedEvidenceComplete(
 }
 
 /**
+ * An attempt of THIS run that FAILED before its HOME was decided never reached
+ * its adapter: the catch that saw it marked it (`homeUndecided`) and wrote its
+ * block without a home, so no child ran whose reach the record must state. The
+ * gap stays in its record; its own failure, not missing evidence, is what that
+ * attempt reports (#648). Never inferred from a record's missing fields, so an
+ * older record without its disclosure stays unauditable.
+ */
+function failedBeforeHome(attempt: { errored?: boolean; homeUndecided?: boolean }): boolean {
+  return attempt.errored === true && attempt.homeUndecided === true;
+}
+
+/**
  * The terminal evidence gate, shared by every lane that assembles attempts.
  *
- * A delegated MUTATING run may only reach a terminal when EVERY attempt it ran
- * can state what it ran under, including the deliberate absence of an outer
- * boundary, so the rule lives here and both callers spend it.
+ * A delegated MUTATING run may only reach a terminal when EVERY attempt that
+ * reached its adapter can state what it ran under, including the deliberate
+ * absence of an outer boundary, so the rule lives here and both callers spend
+ * it. An attempt that failed before its HOME started no child (`failedBeforeHome`).
  */
 export function assertDelegatedEvidence(
   delegated: boolean,
   access: AccessProfile,
-  attempts: readonly { attemptId: string; applied?: AppliedAttemptFacts }[],
+  attempts: readonly {
+    attemptId: string;
+    applied?: AppliedAttemptFacts;
+    errored?: boolean;
+    homeUndecided?: boolean;
+  }[],
 ): void {
   if (!delegated || !isMutatingAccess(access)) return;
-  const unauditable = attempts.filter((attempt) => !appliedEvidenceComplete(attempt.applied));
+  const unauditable = attempts.filter(
+    (attempt) => !failedBeforeHome(attempt) && !appliedEvidenceComplete(attempt.applied),
+  );
   if (unauditable.length === 0) return;
   throw new DelegatedEvidenceIncompleteError(
     `delegated mutating run cannot terminalize: ${unauditable.length} attempt(s) state neither a historical proven boundary nor the deliberate no-outer-boundary reason (${unauditable.map((attempt) => attempt.attemptId).join(", ")})`,

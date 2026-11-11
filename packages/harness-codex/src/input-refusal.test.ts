@@ -4,7 +4,7 @@ import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { readFileSync } from "node:fs";
 const nativeError = JSON.parse(
   readFileSync(
-    new URL("../fixtures/app-server/input-too-large-error.jsonl", import.meta.url),
+    new URL("../fixtures/app-server/input-too-large-0.162.1.jsonl", import.meta.url),
     "utf8",
   ),
 );
@@ -107,7 +107,7 @@ describe("native input refusal", () => {
     expect(codexAppServerThreadParams(spec)["developerInstructions"]).toBe(spec.instructions);
   });
 
-  it.each(["codex-cli 0.156.1", "codex-cli 0.999.0"])(
+  it.each(["codex-cli 0.162.1", "codex-cli 0.156.1", "codex-cli 0.999.0"])(
     "publishes only version-bound capacity for %s",
     async (version) => {
       const adapter = createCodexAdapter({
@@ -118,7 +118,7 @@ describe("native input refusal", () => {
       });
       const manifest = await adapter.discover();
       expect(manifest?.capability_profile.input_limits).toEqual(
-        version === CODEX_TURN_INPUT_LIMIT.verified_against ? [CODEX_TURN_INPUT_LIMIT] : undefined,
+        version === "codex-cli 0.162.1" ? [CODEX_TURN_INPUT_LIMIT] : undefined,
       );
     },
   );

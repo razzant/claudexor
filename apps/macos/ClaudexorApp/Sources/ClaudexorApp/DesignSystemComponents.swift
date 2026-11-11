@@ -23,6 +23,7 @@ struct GlassField: View {
     var accessibilityHintText: String?
     var maxLines: Int = 6
     var onSubmit: () -> Void = {}
+    var composerInput: ConversationComposerInput? = nil
     @FocusState private var focused: Bool
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -34,6 +35,7 @@ struct GlassField: View {
         let ringAlpha = scheme == .light ? 0.85 : 0.6
         let ringWidth: CGFloat = scheme == .light ? 1.75 : 1.5
         return TextField(placeholder, text: $text, axis: .vertical)
+            .background { if let composerInput { ComposerInputRegistration(input: composerInput) } }
             .textFieldStyle(.plain)
             .font(.body)
             .lineLimit(1...maxLines)
@@ -82,13 +84,13 @@ struct AccentButtonStyle: ButtonStyle {
 
 // MARK: - Project chip (composer: choose the working directory / project)
 
-/// The composer's project picker (issue #8). Shows the working directory and lets
+/// The composer's project picker (issue #8). Shows the selected project and lets
 /// you switch it from an MRU menu or Browse… A thread's repo is bound, so the chip
 /// is informational on an open thread and choosing another project starts a NEW
 /// draft thread there (the model owns that semantics).
 struct ProjectChip: View {
-    /// Display name (project folder, or a "Choose project" call-to-action).
-    let name: String
+    let context: ComposerSelectionContext
+    let metadataKnown: Bool
     /// True when showing an open thread's fixed repo (vs the draft Current Project).
     let bound: Bool
     let hasProject: Bool
@@ -102,17 +104,29 @@ struct ProjectChip: View {
     /// owner-locked project surface (INV-101); the destination Ask-only state
     /// already works — this is the missing way INTO it after a project was used.
     var onNoProject: () -> Void = {}
+    @State private var checkout: (context: ComposerSelectionContext, status: ProjectCheckoutStatus)?
+    @State private var checkoutRefresh = 0
 
     var body: some View {
-        ChipMenu(
+        let remote = remoteConnections.first { ExecutionLocationID.remote($0.id).rawValue == context.locationID }
+        let labelRecents = context.locationID == ExecutionLocationID.local.rawValue ? recent : remote?.savedProjects ?? []
+        let probe = ProjectCheckoutProbe(context: context, refresh: checkoutRefresh)
+        // Until this selection's probe publishes, a previous selection's result reads as not yet checked.
+        let observed = checkout?.context == context ? checkout : nil
+        let presentation = ProjectCheckoutPresentation(
+            context: context, observedContext: observed?.context, status: observed?.status,
+            metadataKnown: metadataKnown, recent: labelRecents, connectionName: remote?.displayName)
+        return ChipMenu(
             tint: hasProject ? Color.secondary : Theme.accent,
             fill: .outlined(stroke: hasProject ? Theme.separator : Theme.accent.opacity(0.5)),
-            help: bound
-                ? "Project for this thread (bound). Pick another to start a new thread there."
-                : "Working directory for the new thread — pick a recent project or Browse…"
+            help: presentation.chipHelp
         ) {
-            Image(systemName: hasProject ? "folder.fill" : "folder.badge.questionmark").imageScale(.small)
-            Text(name).lineLimit(1)
+            // Constant glyph in the chip's tint: checkout topology lives only in help and the AX value.
+            Image(systemName: hasProject ? "folder.fill" : "folder.badge.questionmark")
+                .imageScale(.small)
+                .frame(width: 14, height: 14)
+                .accessibilityHidden(true)
+            Text(presentation.name).lineLimit(1)
         } menu: {
             // A stable row (above the MRU) so no-project stays reachable even with
             // no recents; disabled when already scopeless so it never no-ops.
@@ -126,8 +140,9 @@ struct ProjectChip: View {
                 Section(bound ? "Switch project — starts a new thread" : "Recent projects") {
                     ForEach(recent, id: \.self) { path in
                         Button { onPick(path) } label: {
-                            Label(URL(fileURLWithPath: path).lastPathComponent, systemImage: "folder")
+                            Label(ProjectPathSelection.recentProjectLabel(path, among: recent), systemImage: "folder")
                         }
+                        .help(path)
                     }
                 }
                 Divider()
@@ -141,9 +156,10 @@ struct ProjectChip: View {
                                     onPickRemote(connection.id, path)
                                 } label: {
                                     Label(
-                                        URL(fileURLWithPath: path).lastPathComponent,
+                                        ProjectPathSelection.recentProjectLabel(path, among: connection.savedProjects),
                                         systemImage: "folder")
                                 }
+                                .help(path)
                             }
                             if !connection.savedProjects.isEmpty { Divider() }
                             Button {
@@ -162,6 +178,42 @@ struct ProjectChip: View {
                 Label("Browse This Mac…", systemImage: "folder.badge.plus")
             }
         }
+        .accessibilityLabel("Project")
+        .accessibilityValue(presentation.accessibilityValue)
+        .onHover { inside in
+            guard inside, probe.localPath != nil else { return }
+            // Refresh on inspection, including a folder removed since selection. No lasting cache.
+            checkout = nil
+            checkoutRefresh &+= 1
+        }
+        // A new selection restarts only this probe, never the chip, so focus stays on the menu after a pick.
+        .task(id: probe) {
+            // Cleared for every selection, so a remote or no-project hop cannot resurrect older evidence.
+            checkout = nil
+            guard let path = probe.localPath else { return }
+            let worker = Task.detached(priority: .utility) {
+                ProjectPathSelection.checkoutStatus(for: path, isLocal: true)
+            }
+            let status = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled else { return }
+            checkout = (probe.context, status)
+        }
+    }
+}
+
+/// The chip's checkout-probe identity: the complete selection plus an explicit refresh.
+struct ProjectCheckoutProbe: Equatable {
+    let context: ComposerSelectionContext
+    let refresh: Int
+
+    /// Only a local selected folder is observed; remote hosts and no-project selections never are.
+    var localPath: String? {
+        context.locationID == ExecutionLocationID.local.rawValue && !context.repoRoot.isEmpty
+            ? context.repoRoot : nil
     }
 }
 

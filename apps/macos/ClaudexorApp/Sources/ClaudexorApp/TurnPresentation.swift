@@ -29,18 +29,52 @@ enum TurnPresentation {
         var tone: OutcomePresentation.Tone
     }
 
-    /// The ONE loud chip, driven by the honest v3 axes: a pending question, a
-    /// review gate awaiting your decision, or a failure-shaped terminal (named
-    /// by its typed reason when present). Quiet states return nil.
+    /// The ONE loud chip, driven by the honest v3 axes: a pending blocking
+    /// question, unfinished work the model attested (`unfinishedWork`, the run's
+    /// `unfinishedWorkLabel`; it leads a review gate as in the engine's label
+    /// and required actions), a review gate awaiting your decision, or a
+    /// failure-shaped terminal (named by its typed reason when present). Quiet
+    /// states return nil. `asyncQuestionsOnly` = every pending question is async:
+    /// the agent keeps working and its questions wait on their own cards, so
+    /// they raise no chip. `refusal` = the chip of a request the engine refused
+    /// before sending (typed `RunFailure.code`, see `RunFacts.refusal`): the
+    /// generic failed reason would misname it.
     static func attention(
-        phase: RunPhase, reason: String?, reviewNeedsDecision: Bool, waitingOnUser: Bool
+        phase: RunPhase, reason: String?, reviewNeedsDecision: Bool, waitingOnUser: Bool,
+        asyncQuestionsOnly: Bool = false, unfinishedWork: String?, refusal: String? = nil
     ) -> Attention? {
-        if waitingOnUser { return Attention(text: "Needs your answer", tone: .warning) }
+        if waitingOnUser && !asyncQuestionsOnly { return Attention(text: "Needs your answer", tone: .warning) }
+        if let unfinishedWork { return Attention(text: unfinishedWork, tone: .warning) }
         if reviewNeedsDecision { return Attention(text: "Needs you", tone: .warning) }
         if phase.isFailureShaped {
+            if let refusal { return Attention(text: refusal, tone: .failure) }
             return Attention(text: RunReasonLabel.label(reason) ?? phase.label, tone: .failure)
         }
         return nil
+    }
+
+    /// The receipt row's chip for `run`, from the run's own facts. A question
+    /// counts only while it can be answered (`TaskRun.awaitingAnswer`).
+    static func attention(for run: TaskRun) -> Attention? {
+        attention(
+            phase: run.phase, reason: run.outcomeFacts?.reason,
+            reviewNeedsDecision: run.reviewNeedsDecision, waitingOnUser: run.awaitingAnswer,
+            asyncQuestionsOnly: run.asyncQuestionsOnly,
+            unfinishedWork: run.unfinishedWorkLabel,
+            refusal: RunFacts.refusal(run)?.chip)
+    }
+
+    /// The receipt row's line for `run`, from the run's own facts.
+    static func statusLine(for run: TaskRun) -> StatusLine {
+        statusLine(
+            phase: run.phase, reason: run.outcomeFacts?.reason,
+            harnesses: run.harnesses, n: run.n,
+            isRace: run.mode == .bestOfN,
+            retryLabel: run.phase.isActive ? run.retryStatus?.label : nil,
+            reviewNeedsDecision: run.reviewNeedsDecision,
+            waitingOnUser: run.awaitingAnswer,
+            asyncQuestionsOnly: run.asyncQuestionsOnly,
+            unfinishedWork: run.unfinishedWorkLabel)
     }
 
     static func statusLine(
@@ -51,7 +85,9 @@ enum TurnPresentation {
         isRace: Bool,
         retryLabel: String?,
         reviewNeedsDecision: Bool,
-        waitingOnUser: Bool
+        waitingOnUser: Bool,
+        asyncQuestionsOnly: Bool = false,
+        unfinishedWork: String?
     ) -> StatusLine {
         let identity: String?
         let family: HarnessFamily?
@@ -67,10 +103,12 @@ enum TurnPresentation {
         }
         // The attention chip IS the state fact (W4.1 caps the line at four
         // facts): whenever a chip exists the quiet word yields — including a
-        // waiting-active run, where "Needs your answer" outranks "Working…".
+        // run held on a blocking question, where "Needs your answer" outranks
+        // "Working…". Async questions leave the agent working: the word stays.
         let stateWord: String?
         if attention(phase: phase, reason: reason, reviewNeedsDecision: reviewNeedsDecision,
-                     waitingOnUser: waitingOnUser) != nil {
+                     waitingOnUser: waitingOnUser, asyncQuestionsOnly: asyncQuestionsOnly,
+                     unfinishedWork: unfinishedWork) != nil {
             stateWord = nil
         } else if phase.isActive {
             stateWord = retryLabel ?? "Working…"
@@ -94,10 +132,11 @@ enum TurnPresentation {
             case .tool(_, let tool):
                 tools += 1
                 if tool.kind == "file" { files += 1 }
-            case .message: break
+            case .message, .notice: break
             }
         }
         var parts: [String] = []
+        if let warning = noticeSummary(blocks: blocks) { parts.append(warning) }
         if thinkingSeconds >= 1 { parts.append("Thinking \(Int(thinkingSeconds))s") }
         if tools > 0 { parts.append("\(tools) tool\(tools == 1 ? "" : "s")") }
         if files > 0 { parts.append("\(files) file\(files == 1 ? "" : "s")") }
@@ -120,10 +159,24 @@ enum TurnPresentation {
                 return String(line.prefix(140))
             case .thinking(_, _, let seconds):
                 return seconds >= 1 ? "Thinking · \(Int(seconds))s" : "Thinking"
-            case .message:
+            case .message, .notice:
                 continue
             }
         }
         return nil
+    }
+
+    /// Whether the transcript holds anything the executor produced: an engine
+    /// notice alone does not hide a failed turn's reason card.
+    static func hasExecutorActivity(blocks: [TranscriptBlock]) -> Bool {
+        blocks.contains { if case .notice = $0 { false } else { true } }
+    }
+
+    /// "Input warning" on the receipt row when an engine receipt warns (e.g. an
+    /// isolated copy with nothing copied or a selected path not found), so a
+    /// collapsed or restored turn still says so; the text is one click away.
+    static func noticeSummary(blocks: [TranscriptBlock]) -> String? {
+        let warnings = blocks.filter { if case .notice(_, let notice) = $0 { notice.warning } else { false } }
+        return warnings.isEmpty ? nil : warnings.count == 1 ? "Input warning" : "\(warnings.count) input warnings"
     }
 }

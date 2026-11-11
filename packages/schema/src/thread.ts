@@ -110,6 +110,23 @@ export const ThreadWorkspace = z
   );
 export type ThreadWorkspace = z.infer<typeof ThreadWorkspace>;
 
+/**
+ * The durable acceptance of a thread's conditional retirement: the exact export
+ * it was bound to. Written with the purge decision and kept on the purged
+ * record, because the cleanup obligation is deleted once cleanup is proven.
+ */
+export const ThreadRetirementAcceptance = z
+  .object({
+    operationId: Id.describe("The caller's durable release intent."),
+    exportId: z.string().describe("The manifest identity the caller transferred."),
+    closureDigest: z.string().describe("The engine-record identity at acceptance."),
+    contentDigest: z.string().describe("Every exported byte, re-hashed by the engine."),
+    laneDigest: z.string().describe("The lane bytes acceptance named for removal."),
+    acceptedAt: IsoTimestamp.describe("When the purge decision committed."),
+  })
+  .strict();
+export type ThreadRetirementAcceptance = z.infer<typeof ThreadRetirementAcceptance>;
+
 /** The Claudexor-owned conversation. SSOT for lineage; vendor sessions are caches. */
 export const Thread = z
   .object({
@@ -192,6 +209,9 @@ export const Thread = z
       .nullable()
       .default(null)
       .describe("Lifecycle state restored while the trash retention window remains open."),
+    retirement: ThreadRetirementAcceptance.optional().describe(
+      "Present on a thread purged through conditional retirement; absent otherwise.",
+    ),
   })
   .describe(
     "The Claudexor-owned conversation about a project; runs are turns inside it. SSOT for lineage; vendor sessions are caches.",
@@ -265,13 +285,13 @@ export const TurnEnqueueProblem = z
       ),
     /** Whether retry can REPLAY this turn: true when a job was recorded before
      * the failure (the registry holds the params to replay); false when the
-     * enqueue itself threw and no job exists — surfaces then offer "send a new
-     * message" instead of a doomed Retry. */
+     * enqueue itself threw and no job exists, or a managed resource it names was
+     * released — surfaces then offer "send a new message" instead of a doomed Retry. */
     retryable: z
       .boolean()
       .default(true)
       .describe(
-        "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay.",
+        "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay or a managed resource it names was released.",
       ),
     required_actions: z
       .array(z.string().min(1).max(512))

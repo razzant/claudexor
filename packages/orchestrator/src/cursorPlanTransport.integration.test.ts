@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { runCapture, type CliRunLoopOptions, type HarnessAdapter } from "@claudexor/core";
 import type { HarnessEvent } from "@claudexor/schema";
+import { ArtifactStore } from "@claudexor/artifact-store";
 import { createCursorAdapter } from "../../harness-cursor/src/index.js";
 import { Orchestrator } from "./orchestrator.js";
 
@@ -19,7 +20,7 @@ afterAll(() => {
   for (const path of temporaryDirectories.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 async function initializedRepository(): Promise<string> {
   const root = temporaryDirectory("claudexor-cursor-plan-");
@@ -157,5 +158,77 @@ describe("Cursor Plan validated transport composition", () => {
     expect(events).not.toContain("route.fallback.started");
     expect(events).not.toContain("work_report contract");
     expect((await runCapture("git", ["-C", repo, "status", "--porcelain"])).stdout).toBe("");
+  });
+
+  it("records the profile HOME a Cursor agent child actually received", async () => {
+    const repo = temporaryDirectory("claudexor-cursor-home-");
+    writeFileSync(join(repo, "README.md"), "fixture\n");
+    const configDir = temporaryDirectory("claudexor-cursor-home-config-");
+    const profileHome = join(configDir, "profiles", "cursor-work");
+    mkdirSync(profileHome, { recursive: true });
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: work",
+        "    harness_id: cursor",
+        "    display_name: Work",
+        "    credential_kind: config_dir_login",
+        `    isolation_locator: '${profileHome}'`,
+        "",
+      ].join("\n"),
+    );
+    let captured: CliRunLoopOptions | undefined;
+    const adapter = createCursorAdapter({
+      detectVersion: async () => "cursor-test",
+      nativeAuthOk: async () => ({ kind: "authenticated" }),
+      cursorApiKey: () => null,
+      listCursorModels: async () => [],
+      smokeIsolatedApiKey: async () => ({ ok: false, detail: "not needed" }),
+      runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        captured = opts;
+        const answer = [
+          "Done.",
+          "```json",
+          '{"work_report":{"state":"completed","required_inputs":[]}}',
+          "```",
+        ].join("\n");
+        for (const frame of [
+          { type: "system", subtype: "init", model: "cursor-test" },
+          { type: "assistant", message: { content: [{ text: answer }] } },
+          { type: "result", subtype: "success", result: answer },
+        ])
+          for (const event of opts.parseEvent?.(frame, opts.spec.session_id) ?? []) yield event;
+        yield { type: "completed", session_id: opts.spec.session_id, ts: new Date().toISOString() };
+      },
+    });
+    const previousConfig = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    let result;
+    try {
+      result = await new Orchestrator({
+        registry: new Map<string, HarnessAdapter>([["cursor", adapter]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        workspaceKind: "directory",
+        inPlace: true,
+        prompt: "Reply Done.",
+        mode: "agent",
+        harnesses: ["cursor"],
+        credentialProfileId: "work",
+        review: false,
+      });
+    } finally {
+      if (previousConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfig;
+    }
+    expect(result.lifecycle, result.summary).toBe("succeeded");
+    const childHome = captured?.env?.["HOME"];
+    expect(childHome).toBe(realpathSync(profileHome));
+    const attempt = new ArtifactStore(repo).readYaml<Record<string, unknown>>(
+      join(result.runDir, "attempts", "a01", "attempt.yaml"),
+    );
+    expect(attempt).toMatchObject({ harness_home_isolated: true, harness_home_dir: childHome });
   });
 });

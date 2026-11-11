@@ -2,6 +2,7 @@ import type { AdapterRegistry, HarnessAdapter } from "@claudexor/core";
 import {
   Attachment,
   ControlRunStartRequest,
+  HarnessCapabilityProfile,
   HarnessManifest,
   type AttachmentInputClass,
 } from "@claudexor/schema";
@@ -28,17 +29,26 @@ const textInput: AttachmentInputClass = {
 
 function adapter(
   id: string,
-  options: { attachments?: AttachmentInputClass[]; browser?: boolean } = {},
+  options: {
+    attachments?: AttachmentInputClass[];
+    browser?: boolean;
+    auxiliaryWritableRoots?: boolean;
+  } = {},
 ): HarnessAdapter {
+  const capabilityProfile = HarnessCapabilityProfile.parse({
+    attachment_inputs: options.attachments ?? [],
+    access_control: { auxiliary_writable_roots: options.auxiliaryWritableRoots ?? false },
+  });
   return {
     id,
+    capabilityProfile,
     async discover() {
       return HarnessManifest.parse({
         id,
         display_name: id,
         kind: "local_cli",
         provider_family: "local",
-        capability_profile: { attachment_inputs: options.attachments ?? [] },
+        capability_profile: capabilityProfile,
         capabilities: { implement: true, browser_tool: options.browser ?? false },
         access_profiles_supported: ["readonly", "workspace_write", "full"],
       });
@@ -408,5 +418,56 @@ describe("run request requirements preflight", () => {
       ),
     ).rejects.toMatchObject({ code: "browser_unavailable" });
     expect(probes).toBe(0);
+  });
+
+  it("requires every explicit lane to apply auxiliary roots, filters Auto, refuses empty", async () => {
+    const capable = adapter("capable", { auxiliaryWritableRoots: true });
+    const plain = adapter("plain");
+    // A static capability fact: no doctor/readiness probe for a roots-only request.
+    const statusAll = async (): Promise<never> => {
+      throw new Error("auxiliary roots must not add a readiness probe");
+    };
+    const preflight = (
+      accessDefault: "readonly" | "workspace_write" = "workspace_write",
+      adapters = registry(capable, plain),
+    ) =>
+      createRunRequirementsPreflight(resources, "/no-project", {
+        registry: adapters,
+        statusAll,
+        accessDefault: () => accessDefault,
+        gitCapability: gitAvailable,
+      });
+    const request = (extra: Record<string, unknown>) =>
+      ControlRunStartRequest.parse({
+        prompt: "bootstrap",
+        mode: "agent",
+        scope: { kind: "project", root: "/project", context: "auto" },
+        execution: { auxiliaryWritableRoots: ["/srv/cache"] },
+        ...extra,
+      });
+    await expect(preflight()(request({}))).resolves.toBeUndefined();
+    await expect(preflight()(request({ harnesses: ["capable"] }))).resolves.toBeUndefined();
+    await expect(preflight()(request({ harnesses: ["capable", "plain"] }))).rejects.toMatchObject({
+      code: "auxiliary_writable_roots_unsupported",
+      status: 400,
+      retryable: false,
+    });
+    await expect(preflight()(request({ harnesses: ["plain"] }))).rejects.toMatchObject({
+      code: "auxiliary_writable_roots_unsupported",
+    });
+    await expect(preflight("workspace_write", registry(plain))(request({}))).rejects.toMatchObject({
+      code: "auxiliary_writable_roots_unsupported",
+    });
+    await expect(preflight()(request({ harnesses: ["missing"] }))).rejects.toMatchObject({
+      code: "harness_unavailable",
+    });
+    // The project trust default is the effective access of an omitted Agent request.
+    await expect(preflight("readonly")(request({}))).rejects.toMatchObject({
+      code: "auxiliary_writable_roots_access_conflict",
+    });
+    // Omission never consults lane capability.
+    await expect(
+      preflight()(request({ harnesses: ["plain"], execution: {} })),
+    ).resolves.toBeUndefined();
   });
 });

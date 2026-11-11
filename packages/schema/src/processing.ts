@@ -45,6 +45,12 @@ export const ProcessingCostBasis = z
     nativeMode: NonBlankString.nullable(),
     kind: z.enum(["included", "paid_credits", "cash", "valuation", "unknown"]),
     source: NonBlankString,
+    debit: z
+      .literal("unobserved")
+      .optional()
+      .describe(
+        "The route reports no actual cash or purchased-credit debit. Included service still admits the work, but its cash stays unknown instead of zero and is outside the finite cap; absence keeps proven ordinary inclusion as zero cash.",
+      ),
   })
   .strict()
   .describe(
@@ -62,3 +68,20 @@ export const UsageCostBasis = z
     "Observed meaning of this usage.cost_usd amount, separate from prospective processing billing. List-price valuation is not a cash or credit debit receipt. Native paid-credit consumption remains unknown when the vendor exposes no amount evidence.",
   );
 export type UsageCostBasis = z.infer<typeof UsageCostBasis>;
+
+/** `context/processing_intent.yaml`: the speed each routed harness lane chose
+ * without a preference, frozen at its first routing. */
+export const RunProcessingIntent = z
+  .object({
+    schema_version: z.literal(1),
+    harnesses: z
+      .record(NonBlankString, ProcessingReceipt)
+      .describe(
+        "Routing-time receipt per routed harness; its source keeps the original provenance (for example codex.managed_config).",
+      ),
+  })
+  .strict()
+  .describe(
+    "Speed each routed harness chose without a processing preference, written once at its first routing. Exact Retry keeps it instead of a changed or different account's native setting, and a retry records the intent it kept, so a retry chain keeps the original even after an ordinary fallback.",
+  );
+export type RunProcessingIntent = z.infer<typeof RunProcessingIntent>;

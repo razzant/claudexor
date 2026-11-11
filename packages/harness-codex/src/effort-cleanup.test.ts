@@ -8,7 +8,7 @@ const homes: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 it.each(
   (["profile", "default"] as const).flatMap((route) =>

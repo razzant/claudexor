@@ -14,9 +14,8 @@
  */
 import { logPath, type AccountEvidence, type QuotaRegistry } from "@claudexor/daemon";
 import { Orchestrator, createCredentialExecutionObserver } from "@claudexor/orchestrator";
-import type { normalizeRunStartRequest } from "@claudexor/control-api";
 import { buildRegistry } from "./registry.js";
-import type { RuntimeConcurrencyCaps } from "@claudexor/schema";
+import type { RuntimeConcurrencyCaps, CapturedRunStart } from "@claudexor/schema";
 import { logLine } from "./log-line.js";
 import { daemonRunScopeIndex } from "./run-scope-index.js";
 
@@ -39,7 +38,7 @@ function refusalMemory(
 export function buildRunOrchestrator(args: {
   /** The store's account evidence graph (required: never a private fallback). */
   accounts: AccountEvidence;
-  p: ReturnType<typeof normalizeRunStartRequest>;
+  p: CapturedRunStart;
   delegationBudgetAuthority: OrchestratorDeps["delegationBudgetAuthority"];
   quotaStore: () => QuotaRegistry;
   /** Typed per-harness refusal while a unified-accounts migration is
@@ -51,10 +50,12 @@ export function buildRunOrchestrator(args: {
   const credentialUnusableLedger = args.accounts.unusable;
   return new Orchestrator({
     registry: buildRegistry(),
+    executionDefaults: p.deferredDefaults,
     delegationBudgetAuthority: args.delegationBudgetAuthority,
     accountsMigrationGate: args.accountsMigrationGate,
     routingGoal: p.routingGoal,
-    quotaSnapshots: () => quotaStore().read().snapshots,
+    // Admission ages each window at the deciding reader (#457); display keeps read().
+    quotaSnapshots: () => quotaStore().readAdmission().snapshots,
     // The absence half of the SAME projection: `auth_revoked` is how the
     // poller reports a vendor rejecting a profile's credential, and run
     // admission is the surface that has to act on it.

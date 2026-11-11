@@ -3,6 +3,7 @@
  * trailer an MCP host renders and its structured machine mirror. Kept out of
  * index.ts so the tool wiring stays within the readability ratchet.
  */
+import { acceptedReceiptMetadata } from "@claudexor/schema";
 
 /**
  * Render a run result for an MCP host: the human-readable summary FIRST, then
@@ -23,9 +24,19 @@ export function formatRunResult(result: unknown): string {
       }
     }
     const trailer: string[] = [];
+    for (const [key, value] of Object.entries(acceptedReceiptMetadata(r)))
+      trailer.push(`${key}: ${value}`);
     if (typeof r["runId"] === "string" && r["runId"]) trailer.push(`runId: ${r["runId"]}`);
+    // A queued launch has no run yet: its job id is the recovery handle.
+    if (typeof r["jobId"] === "string" && r["jobId"] && r["jobId"] !== r["runId"])
+      trailer.push(`jobId: ${r["jobId"]}`);
     if (typeof r["runDir"] === "string" && r["runDir"]) trailer.push(`artifacts: ${r["runDir"]}`);
     if (typeof r["status"] === "string" && r["status"]) trailer.push(`status: ${r["status"]}`);
+    const objectResult = r["objectResult"] as Record<string, unknown> | null | undefined;
+    if (objectResult?.["patchView"] === "unavailable")
+      trailer.push(
+        `result: kept exactly as Git objects (${String(objectResult["digest"])}); no patch view (${String(objectResult["reason"])}, ${String(objectResult["changedFiles"] ?? "?")} changed files) — it can still be applied and reverted`,
+      );
     if (!summary && trailer.length === 0) return JSON.stringify(result);
     return trailer.length > 0 ? `${summary ? `${summary}\n\n` : ""}${trailer.join("\n")}` : summary;
   }
@@ -45,9 +56,11 @@ export function structuredRunResult(result: unknown): Record<string, unknown> {
     if (!summary && typeof v === "string" && v.trim()) summary = v.trim();
   }
   return {
+    ...acceptedReceiptMetadata(r),
     ...(Array.isArray(r["attemptExecution"]) ? { attemptExecution: r["attemptExecution"] } : {}),
     summary,
     runId: typeof r["runId"] === "string" && r["runId"] ? r["runId"] : null,
+    jobId: typeof r["jobId"] === "string" && r["jobId"] ? r["jobId"] : null,
     runDir: typeof r["runDir"] === "string" && r["runDir"] ? r["runDir"] : null,
     // `status` carries the run LIFECYCLE (D8); the axes ride alongside as facts.
     status: typeof r["status"] === "string" && r["status"] ? r["status"] : null,
@@ -74,5 +87,7 @@ export function structuredRunResult(result: unknown): Record<string, unknown> {
     delegatedFromRunId:
       typeof r["delegatedFromRunId"] === "string" ? r["delegatedFromRunId"] : null,
     delegation: r["delegation"] && typeof r["delegation"] === "object" ? r["delegation"] : null,
+    objectResult:
+      r["objectResult"] && typeof r["objectResult"] === "object" ? r["objectResult"] : null,
   };
 }

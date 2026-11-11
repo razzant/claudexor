@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent } from "@claudexor/schema";
 import {
   countsAsAgentProgress,
@@ -7,6 +7,8 @@ import {
 } from "./inactivity.js";
 
 const tick = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+afterEach(() => vi.useRealTimers());
 
 /**
  * A source that models the runCliHarness/spawnProcess shape: it yields one
@@ -245,6 +247,256 @@ describe("countsAsAgentProgress", () => {
 });
 
 describe("withInactivityWatchdog useful-progress window", () => {
+  it("allows a silent source to finish when the inactivity window is disabled", async () => {
+    async function* quiet(): AsyncGenerator<string> {
+      yield "started";
+      await tick(40);
+      yield "finished";
+    }
+    const seen: string[] = [];
+    let timeouts = 0;
+    for await (const value of withInactivityWatchdog(quiet(), {
+      timeoutMs: null,
+      countsAsProgress: () => {
+        throw new Error("progress policy should not run without a timer");
+      },
+      onTimeout: () => {
+        timeouts += 1;
+      },
+      isSuspended: () => {
+        throw new Error("suspension policy should not run without a timer");
+      },
+      suspensionVersion: () => {
+        throw new Error("suspension version should not run without a timer");
+      },
+    }))
+      seen.push(value);
+
+    expect(seen).toEqual(["started", "finished"]);
+    expect(timeouts).toBe(0);
+  });
+
+  it("still awaits source cleanup when the caller breaks with timing disabled", async () => {
+    let cleaned = false;
+    async function* source(): AsyncGenerator<string> {
+      try {
+        yield "first";
+        yield "second";
+      } finally {
+        await tick(10);
+        cleaned = true;
+      }
+    }
+
+    const seen: string[] = [];
+    for await (const value of withInactivityWatchdog(source(), {
+      timeoutMs: null,
+      countsAsProgress: () => false,
+      onTimeout: () => {
+        throw new Error("unexpected timeout");
+      },
+    })) {
+      seen.push(value);
+      break;
+    }
+    expect(seen).toEqual(["first"]);
+    expect(cleaned).toBe(true);
+  });
+
+  it("preserves source cancellation and cleanup with timing disabled", async () => {
+    const controller = new AbortController();
+    let cleaned = false;
+    async function* source(): AsyncGenerator<string> {
+      try {
+        yield "started";
+        await new Promise<void>((resolve) => {
+          if (controller.signal.aborted) resolve();
+          else controller.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      } finally {
+        cleaned = true;
+      }
+    }
+
+    const seen: string[] = [];
+    for await (const value of withInactivityWatchdog(source(), {
+      timeoutMs: null,
+      countsAsProgress: () => false,
+      onTimeout: () => {
+        throw new Error("unexpected timeout");
+      },
+    })) {
+      seen.push(value);
+      controller.abort();
+    }
+    expect(seen).toEqual(["started"]);
+    expect(cleaned).toBe(true);
+  });
+
+  it("preserves source errors and cleanup with timing disabled", async () => {
+    let cleaned = false;
+    async function* source(): AsyncGenerator<string> {
+      try {
+        yield "started";
+        throw new Error("source failed");
+      } finally {
+        cleaned = true;
+      }
+    }
+
+    const seen: string[] = [];
+    let thrown: unknown;
+    try {
+      for await (const value of withInactivityWatchdog(source(), {
+        timeoutMs: null,
+        countsAsProgress: () => false,
+        onTimeout: () => {
+          throw new Error("unexpected timeout");
+        },
+      }))
+        seen.push(value);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(seen).toEqual(["started"]);
+    expect(thrown).toEqual(new Error("source failed"));
+    expect(cleaned).toBe(true);
+  });
+
+  it("drains what a stopped source reports during teardown when the caller keeps consuming", async () => {
+    const stop = new AbortController();
+    async function* source(): AsyncGenerator<string> {
+      yield "started";
+      await new Promise<void>((resolve) => {
+        if (stop.signal.aborted) resolve();
+        else stop.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      yield "teardown-warning";
+      yield "completed";
+    }
+
+    const seen: string[] = [];
+    for await (const value of withInactivityWatchdog(source(), {
+      timeoutMs: null,
+      countsAsProgress: () => false,
+      onTimeout: () => {
+        throw new Error("unexpected timeout");
+      },
+      stopSignal: stop.signal,
+    })) {
+      seen.push(value);
+      stop.abort();
+    }
+    expect(seen).toEqual(["started", "teardown-warning", "completed"]);
+  });
+
+  it("bounds the Stop drain by the cleanup deadline even with timing disabled", async () => {
+    const stop = new AbortController();
+    async function* wedged(): AsyncGenerator<string> {
+      try {
+        yield "started";
+        yield "teardown-warning";
+        await new Promise<void>(() => {});
+      } finally {
+        await new Promise<void>(() => {});
+      }
+    }
+
+    const seen: string[] = [];
+    let stoppedAt = 0;
+    for await (const value of withInactivityWatchdog(wedged(), {
+      timeoutMs: null,
+      countsAsProgress: () => false,
+      onTimeout: () => {
+        throw new Error("unexpected timeout");
+      },
+      stopSignal: stop.signal,
+      cleanupDeadlineMs: 400,
+    })) {
+      seen.push(value);
+      if (!stop.signal.aborted) stoppedAt = performance.now();
+      stop.abort();
+    }
+    expect(seen).toEqual(["started", "teardown-warning"]);
+    // ONE cleanup allowance across the drain and the wedged return(), not a
+    // drain deadline followed by a second full return grace.
+    const elapsed = performance.now() - stoppedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(350);
+    expect(elapsed).toBeLessThan(750);
+  });
+
+  it("preserves a configured window longer than one Node timer delay", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    async function* source(): AsyncGenerator<string> {
+      yield "started";
+      await new Promise<void>((resolve) => {
+        if (controller.signal.aborted) resolve();
+        else controller.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }
+    const timeoutMs = 2_147_483_647 + 1_000;
+    let timeouts = 0;
+    let thrown: unknown;
+    const consumed = (async () => {
+      try {
+        for await (const _value of withInactivityWatchdog(source(), {
+          timeoutMs,
+          countsAsProgress: () => true,
+          onTimeout: () => {
+            timeouts += 1;
+            controller.abort();
+          },
+          cleanupDeadlineMs: 10,
+        })) {
+          // drain
+        }
+      } catch (error) {
+        thrown = error;
+      }
+    })();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(timeouts).toBe(0);
+    await vi.advanceTimersByTimeAsync(timeoutMs - 1_001);
+    expect(timeouts).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(timeouts).toBe(1);
+    await vi.runAllTimersAsync();
+    await consumed;
+    expect(thrown).toBeInstanceOf(HarnessInactivityTimeoutError);
+    expect((thrown as HarnessInactivityTimeoutError).timeoutMs).toBe(timeoutMs);
+  });
+
+  it("keeps zero as an active inactivity window", async () => {
+    const controller = new AbortController();
+    async function* source(): AsyncGenerator<string> {
+      yield "started";
+      await new Promise<void>((resolve) => {
+        if (controller.signal.aborted) resolve();
+        else controller.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }
+    let timeouts = 0;
+    let thrown: unknown;
+    try {
+      for await (const _value of withInactivityWatchdog(source(), {
+        timeoutMs: 0,
+        countsAsProgress: () => true,
+        onTimeout: () => {
+          timeouts += 1;
+          controller.abort();
+        },
+        cleanupDeadlineMs: 100,
+      })) {
+        // drain
+      }
+    } catch (error) {
+      thrown = error;
+    }
+    expect(timeouts).toBe(1);
+    expect(thrown).toBeInstanceOf(HarnessInactivityTimeoutError);
+  });
+
   it("times out retry chatter even while the source keeps emitting it", async () => {
     const controller = new AbortController();
     async function* chatter(): AsyncGenerator<HarnessEvent> {
@@ -323,6 +575,7 @@ describe("withInactivityWatchdog useful-progress window", () => {
         interaction: {
           interaction_id: "i1",
           source_tool: "AskUserQuestion",
+          delivery: "blocking",
           questions: [],
         },
       } as HarnessEvent;

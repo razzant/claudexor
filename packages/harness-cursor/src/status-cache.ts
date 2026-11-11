@@ -1,10 +1,31 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CURSOR_PROGRAM } from "./program.js";
 import { uptime } from "node:os";
 import { performance } from "node:perf_hooks";
-import { credentialMutationWindowOpen } from "@claudexor/core";
-import { probeCursorNativeAuth, type CursorStatusObservation } from "./auth.js";
+import {
+  credentialMutationWindowOpen,
+  withoutRunScopeMarkers,
+  type CredentialProfileProbeOptions,
+} from "@claudexor/core";
+import {
+  CURSOR_STATUS_TIMEOUT_MS,
+  probeCursorNativeAuth,
+  type CursorStatusObservation,
+} from "./auth.js";
 
 type EnvMap = Record<string, string | null | undefined>;
-type StatusProbe = (env?: EnvMap, abortSignal?: AbortSignal) => Promise<CursorStatusObservation>;
+/** One `cursor-agent status` child under `budgetMs`; it stops when `abortSignal` fires. */
+type StatusChild = (
+  env: EnvMap | undefined,
+  abortSignal: AbortSignal | undefined,
+  budgetMs: number,
+) => Promise<CursorStatusObservation>;
+/** One caller's read of a row store's sign-in status (`options.pinned`: #532). */
+export type CursorStatusRead = (
+  env?: EnvMap,
+  abortSignal?: AbortSignal,
+  options?: CredentialProfileProbeOptions,
+) => Promise<CursorStatusObservation>;
 type Authenticated = Extract<CursorStatusObservation, { kind: "authenticated" }>;
 
 /**
@@ -25,6 +46,16 @@ export const CURSOR_STATUS_REUSE_MS = 60_000;
  * unknown answer, a logged-out answer or a credential mutation never does.
  */
 export const CURSOR_STATUS_LAST_POSITIVE_MS = 5 * 60_000;
+
+/**
+ * How long an explicit pin waits for its row store's status answer (#532). A
+ * pin is never admitted on an unanswered or older answer (INV-135), so instead
+ * of deciding at the ordinary `CURSOR_STATUS_TIMEOUT_MS` it keeps waiting for
+ * the same status child until that child answers, the caller cancels, or this
+ * bound passes; then it refuses because Cursor did not confirm sign-in in time.
+ * It is also the lifetime bound of every shared status child.
+ */
+export const CURSOR_PINNED_STATUS_WAIT_MS = 120_000;
 
 /** True only when the supplied env explicitly selects the vendor FILE store
  * (an account row's HOME, `AGENT_CLI_CREDENTIAL_STORE=file`). Any other env
@@ -59,21 +90,22 @@ function supersededProbe(): CursorStatusObservation {
   };
 }
 
-/** Wait for a shared probe without letting one caller's cancel kill it for all. */
-async function awaitShared(
-  shared: Promise<CursorStatusObservation>,
-  signal?: AbortSignal,
-): Promise<CursorStatusObservation> {
-  if (!signal) return shared;
-  if (signal.aborted) return abortedProbe();
-  return new Promise((resolve) => {
-    const onAbort = () => resolve(abortedProbe());
-    signal.addEventListener("abort", onAbort, { once: true });
-    void shared.then((result) => {
-      signal.removeEventListener("abort", onAbort);
-      resolve(signal.aborted ? abortedProbe() : result);
-    });
-  });
+/** This caller's own wait ended first: the vendor has not answered it (#532). */
+function unansweredProbe(waitMs: number): CursorStatusObservation {
+  return {
+    kind: "unknown",
+    error: `cursor-agent status did not answer within ${waitMs / 1000}s; login state unknown`,
+    timedOut: true,
+  };
+}
+
+/** One owned status child per store and the callers still waiting for it. */
+interface SharedProbe {
+  controller: AbortController;
+  fenced: boolean;
+  answer: Promise<CursorStatusObservation>;
+  /** Each waiter's exit; the child lives only while this set is not empty. */
+  waiters: Set<(observation: CursorStatusObservation) => void>;
 }
 
 /**
@@ -81,16 +113,25 @@ async function awaitShared(
  * (#363). Run admission, pool readiness, the adapter's spawn-time route check
  * and rotation readiness ask the SAME row store within seconds, and concurrent
  * runs ask at once; on a loaded host every extra child raises the chance that
- * the probe's own budget kills one and a signed-in account reads as not ready.
- * So concurrent callers share one child per store, and a positive answer is
- * reused for `CURSOR_STATUS_REUSE_MS`. An unanswered probe is re-asked every
- * time — it never becomes a logout and never becomes a pass; while the store's
- * last positive answer is younger than `CURSOR_STATUS_LAST_POSITIVE_MS`, the
- * timed-out answer stays unknown but carries it as `lastPositive`. A logged-out
- * answer drops the store's positive entirely. `clear()` (credential mutations)
- * drops every positive and stops an in-flight probe from repopulating it; that
- * probe answers the callers already waiting on it unknown: its verdict may
- * describe the store before the change.
+ * a signed-in account reads as not ready. So concurrent callers share one child
+ * per store, and a positive answer is reused for `CURSOR_STATUS_REUSE_MS`.
+ *
+ * Each caller's wait is its own (#532): an ordinary caller decides after
+ * `CURSOR_STATUS_TIMEOUT_MS`, an explicit pin keeps waiting for the same child
+ * up to `CURSOR_PINNED_STATUS_WAIT_MS`, and a caller's abort ends only its own
+ * wait. The child belongs to the coordinator, is bounded by the pinned wait,
+ * and is stopped as soon as no caller still waits for it, so it never outlives
+ * its waiters; if such a stopped child still answers, only a logged-out answer
+ * is kept. It is spawned without the run scope marker of the caller that
+ * happened to start it, so that run's terminal never ends a child another run
+ * still waits for; the host's own markers stay on it. A wait that ends
+ * unanswered is unknown, never a logout and never a pass; while the store's
+ * last positive answer is younger than `CURSOR_STATUS_LAST_POSITIVE_MS`, that
+ * unknown carries it as `lastPositive`.
+ * A logged-out answer drops the store's positive entirely. `clear()`
+ * (credential mutations) drops every positive, stops every in-flight child and
+ * answers its waiters unknown at once: a verdict from that child may describe
+ * the store before the change.
  *
  * Every age is MONOTONIC (`monotonicMs`): a wall-clock step can neither keep
  * an answer alive nor expire it early. The wall clock only stamps the instant
@@ -101,13 +142,14 @@ async function awaitShared(
  * nor for one that ends inside it.
  */
 export function createCursorStatusCoordinator(options: {
-  probe: StatusProbe;
+  probe: StatusChild;
+  programKey?: (env?: EnvMap) => Promise<string>;
   monotonicMs?: () => number;
   wallMs?: () => number;
   mutating?: () => boolean;
   reuseMs?: number;
   lastPositiveMs?: number;
-}): { status: StatusProbe; clear(): void } {
+}): { status: CursorStatusRead; clear(): void } {
   // Linux performance.now() excludes suspend. libuv's uptime uses /proc/uptime
   // or CLOCK_BOOTTIME, both suspend-inclusive; its fallback truncates seconds.
   // Use an upper age bound there (less than two seconds early expiry), never
@@ -126,7 +168,7 @@ export function createCursorStatusCoordinator(options: {
     string,
     { observation: Authenticated; atMonotonicMs: number; observedAt: string }
   >();
-  const pending = new Map<string, Promise<CursorStatusObservation>>();
+  const pending = new Map<string, SharedProbe>();
   let generation = 0;
   const livePositive = (key: string, withinMs: number) => {
     const entry = positives.get(key);
@@ -136,78 +178,123 @@ export function createCursorStatusCoordinator(options: {
     if (ageMs >= lastPositiveMs) positives.delete(key);
     return null;
   };
+  // Only an unanswered wait may lean on the last positive answer, and only
+  // outside a mutation window; it stays unknown and never refreshes that age.
+  const withLastPositive = (
+    key: string,
+    observation: CursorStatusObservation,
+    settled: boolean,
+  ): CursorStatusObservation => {
+    if (observation.kind !== "unknown" || !observation.timedOut || !settled) return observation;
+    const stale = livePositive(key, lastPositiveMs);
+    return stale
+      ? { ...observation, lastPositive: { observedAt: stale.entry.observedAt, ageMs: stale.ageMs } }
+      : observation;
+  };
+  const share = (key: string, env: EnvMap, fenced: boolean): SharedProbe => {
+    const startedGeneration = generation;
+    const controller = new AbortController();
+    const answer = options
+      .probe(withoutRunScopeMarkers(env), controller.signal, CURSOR_PINNED_STATUS_WAIT_MS)
+      .catch((err: unknown): CursorStatusObservation => ({
+        kind: "unknown",
+        error: err instanceof Error ? err.message : String(err),
+      }))
+      .then((observation): CursorStatusObservation => {
+        if (pending.get(key) === shared) pending.delete(key);
+        if (startedGeneration !== generation) return supersededProbe();
+        // An answer read inside a mutation window is the vendor's live
+        // answer for its callers only; it seeds and consumes nothing.
+        const settled = !fenced && !mutating();
+        if (observation.kind === "loggedOut") {
+          positives.delete(key);
+          return observation;
+        }
+        if (observation.kind === "unknown") return withLastPositive(key, observation, settled);
+        const observedAt = new Date(wallMs()).toISOString();
+        const stamped = { ...observation, observedAt };
+        // A child stopped because no caller waited for it any more can still
+        // finish after a newer read answered, so its positive is never kept; a
+        // logged-out answer above revokes either way, failing closed.
+        if (settled && !controller.signal.aborted) {
+          positives.set(key, { observation: stamped, atMonotonicMs: monotonicMs(), observedAt });
+        }
+        return stamped;
+      });
+    const shared: SharedProbe = { controller, fenced, answer, waiters: new Set() };
+    pending.set(key, shared);
+    return shared;
+  };
+  const wait = (
+    key: string,
+    shared: SharedProbe,
+    abortSignal: AbortSignal | undefined,
+    waitMs: number,
+  ): Promise<CursorStatusObservation> =>
+    new Promise((resolve) => {
+      const leave = (observation: CursorStatusObservation) => {
+        if (!shared.waiters.delete(leave)) return;
+        clearTimeout(timer);
+        abortSignal?.removeEventListener("abort", onAbort);
+        // The child lives only while some caller still waits for it.
+        if (shared.waiters.size === 0 && pending.get(key) === shared) {
+          pending.delete(key);
+          shared.controller.abort();
+        }
+        resolve(observation);
+      };
+      const onAbort = () => leave(abortedProbe());
+      const timer = setTimeout(
+        () => leave(withLastPositive(key, unansweredProbe(waitMs), !shared.fenced && !mutating())),
+        waitMs,
+      );
+      shared.waiters.add(leave);
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+      void shared.answer.then((observation) =>
+        leave(abortSignal?.aborted ? abortedProbe() : observation),
+      );
+    });
   return {
-    async status(env, abortSignal) {
-      const key = statusStoreKey(env);
-      if (key === null) return options.probe(env, abortSignal);
+    async status(env, abortSignal, probeOptions) {
+      const waitMs =
+        probeOptions?.pinned === true ? CURSOR_PINNED_STATUS_WAIT_MS : CURSOR_STATUS_TIMEOUT_MS;
+      const startedGeneration = generation;
+      const initiallyFenced = mutating();
+      const storeKey = statusStoreKey(env);
+      const key =
+        storeKey === null
+          ? null
+          : JSON.stringify([storeKey, options.programKey ? await options.programKey(env) : null]);
+      if (startedGeneration !== generation) return supersededProbe();
+      if (env === undefined || key === null) return options.probe(env, abortSignal, waitMs);
       if (abortSignal?.aborted) return abortedProbe();
-      const fenced = mutating();
+      const fenced = initiallyFenced || mutating();
       const fresh = fenced ? null : livePositive(key, reuseMs);
       if (fresh) return fresh.entry.observation;
-      let shared = pending.get(key);
-      if (!shared) {
-        const startedGeneration = generation;
-        const probe = options
-          .probe(env)
-          .catch((err: unknown): CursorStatusObservation => ({
-            kind: "unknown",
-            error: err instanceof Error ? err.message : String(err),
-          }))
-          .then((observation): CursorStatusObservation => {
-            if (startedGeneration !== generation) return supersededProbe();
-            // An answer read inside a mutation window is the vendor's live
-            // answer for its callers only; it seeds and consumes nothing.
-            const settled = !fenced && !mutating();
-            if (observation.kind === "loggedOut") {
-              positives.delete(key);
-              return observation;
-            }
-            if (observation.kind === "unknown") {
-              // Only a probe that did not answer may lean on the last positive
-              // answer; it stays unknown and never refreshes that answer's age.
-              const stale =
-                settled && observation.timedOut ? livePositive(key, lastPositiveMs) : null;
-              return stale
-                ? {
-                    ...observation,
-                    lastPositive: { observedAt: stale.entry.observedAt, ageMs: stale.ageMs },
-                  }
-                : observation;
-            }
-            const observedAt = new Date(wallMs()).toISOString();
-            const stamped = { ...observation, observedAt };
-            if (settled) {
-              positives.set(key, {
-                observation: stamped,
-                atMonotonicMs: monotonicMs(),
-                observedAt,
-              });
-            }
-            return stamped;
-          })
-          .finally(() => {
-            if (pending.get(key) === probe) pending.delete(key);
-          });
-        shared = probe;
-        pending.set(key, shared);
-      }
-      return awaitShared(shared, abortSignal);
+      return wait(key, pending.get(key) ?? share(key, env, fenced), abortSignal, waitMs);
     },
     clear() {
       generation += 1;
       positives.clear();
+      const inFlight = [...pending.values()];
       pending.clear();
+      for (const shared of inFlight) {
+        shared.controller.abort();
+        for (const leave of [...shared.waiters]) leave(supersededProbe());
+      }
     },
   };
 }
 
 const processCoordinator = createCursorStatusCoordinator({
-  probe: (env, abortSignal) => probeCursorNativeAuth(env, abortSignal),
+  programKey: async (env) => (await observeHarnessProgram(CURSOR_PROGRAM, env)).key,
+  probe: (env, abortSignal, budgetMs) =>
+    probeCursorNativeAuth(env, abortSignal, undefined, budgetMs),
 });
 
-/** The adapter's default native status probe: coordinated per profile store. */
-export const coordinatedCursorNativeAuth: StatusProbe = (env, abortSignal) =>
-  processCoordinator.status(env, abortSignal);
+/** The adapter's default native status read: coordinated per profile store. */
+export const coordinatedCursorNativeAuth: CursorStatusRead = (env, abortSignal, options) =>
+  processCoordinator.status(env, abortSignal, options);
 
 /** Drop every reused answer (credential mutation / login / logout). */
 export function clearCursorStatusCache(): void {

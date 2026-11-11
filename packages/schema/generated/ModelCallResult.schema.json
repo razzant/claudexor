@@ -4,6 +4,61 @@
     "ModelCallResult": {
       "type": "object",
       "properties": {
+        "routing": {
+          "type": "object",
+          "properties": {
+            "selectionReason": {
+              "type": "string",
+              "enum": [
+                "listed",
+                "unlisted_fallback",
+                "marked_fallback",
+                "preferred",
+                "pinned",
+                "probe"
+              ]
+            },
+            "retryOfOperationId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            "differentialOutcome": {
+              "type": "string",
+              "enum": [
+                "provisional",
+                "confirmed",
+                "equivalent_refusal",
+                "inconclusive"
+              ]
+            },
+            "poolEvents": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "required": [
+                  "type",
+                  "payload"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "selectionReason",
+            "poolEvents"
+          ],
+          "additionalProperties": false
+        },
         "outcome": {
           "type": "string",
           "enum": [
@@ -53,8 +108,7 @@
                   "type": "string"
                 },
                 "tool_call_id": {
-                  "type": "string",
-                  "minLength": 1,
+                  "$ref": "#/definitions/ModelCallResult/properties/routing/properties/retryOfOperationId",
                   "description": "Non-empty identifier string."
                 },
                 "tool_calls": {
@@ -63,7 +117,7 @@
                     "type": "object",
                     "properties": {
                       "id": {
-                        "$ref": "#/definitions/ModelCallResult/properties/message/anyOf/0/properties/tool_call_id"
+                        "$ref": "#/definitions/ModelCallResult/properties/routing/properties/retryOfOperationId"
                       },
                       "type": {
                         "type": "string",
@@ -104,10 +158,10 @@
                       "type": "object",
                       "properties": {
                         "source": {
-                          "$ref": "#/definitions/ModelCallResult/properties/message/anyOf/0/properties/tool_call_id"
+                          "$ref": "#/definitions/ModelCallResult/properties/routing/properties/retryOfOperationId"
                         },
                         "credentialProfileId": {
-                          "$ref": "#/definitions/ModelCallResult/properties/message/anyOf/0/properties/tool_call_id"
+                          "$ref": "#/definitions/ModelCallResult/properties/routing/properties/retryOfOperationId"
                         },
                         "accountFingerprint": {
                           "type": [
@@ -280,6 +334,11 @@
                 },
                 "source": {
                   "$ref": "#/definitions/ModelCallResult/properties/message/anyOf/0/properties/tool_calls/items/properties/function/properties/name"
+                },
+                "debit": {
+                  "type": "string",
+                  "const": "unobserved",
+                  "description": "The route reports no actual cash or purchased-credit debit. Included service still admits the work, but its cash stays unknown instead of zero and is outside the finite cap; absence keeps proven ordinary inclusion as zero cash."
                 }
               },
               "required": [

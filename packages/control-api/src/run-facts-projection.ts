@@ -1,3 +1,4 @@
+import { projectionRead } from "./projection-context.js";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -13,6 +14,7 @@ import {
   type RunOutcomeFacts,
 } from "@claudexor/schema";
 import { parse as parseYaml } from "yaml";
+import { readFileUtf8BoundedSync } from "@claudexor/util";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 
 export interface RunFactsDetailProjection {
@@ -58,8 +60,9 @@ export function effectiveTerminalFacts(
   legacyOutcomeFacts: RunOutcomeFacts | null,
   legacyDecision: DecisionRecord | null = null,
   expected: ExpectedRunFacts = {},
+  maxBytes?: number,
 ): EffectiveTerminalFacts {
-  const runFacts = readRunFacts(runDir, expected);
+  const runFacts = readRunFacts(runDir, expected, maxBytes);
   const outcomeFacts = runFacts?.outcome ?? legacyOutcomeFacts;
   return {
     runFacts,
@@ -80,12 +83,14 @@ export function projectRunFactsForDetail(
   hasValidOperatorDecision: boolean,
   legacyApplyEligibility: () => ApplyEligibility | null,
   expected: ExpectedRunFacts = {},
+  maxBytes?: number,
 ): RunFactsDetailProjection {
   const { runFacts, outcomeFacts } = effectiveTerminalFacts(
     runDir,
     legacyOutcomeFacts,
     null,
     expected,
+    maxBytes,
   );
   if (runFacts) {
     // Delivery state and operator decisions are the two legitimate
@@ -110,8 +115,24 @@ export function projectRunFactsForDetail(
   };
 }
 
-/** RunFacts is already redacted; avoid a second presentation-redaction pass. */
-function readRunFacts(runDir: string | undefined, expected: ExpectedRunFacts): RunFacts | null {
+/** RunFacts is served exactly as validated (INV-146); no presentation pass. */
+function readRunFacts(
+  runDir: string | undefined,
+  expected: ExpectedRunFacts,
+  maxBytes?: number,
+): RunFacts | null {
+  return projectionRead(
+    runDir ?? "",
+    `run-facts:${maxBytes ?? "all"}:${JSON.stringify(expected)}`,
+    () => readRunFactsUncached(runDir, expected, maxBytes),
+  );
+}
+
+function readRunFactsUncached(
+  runDir: string | undefined,
+  expected: ExpectedRunFacts,
+  maxBytes?: number,
+): RunFacts | null {
   if (!runDir) return null;
   const root = safeArtifactRoot(runDir);
   if (!root) {
@@ -148,8 +169,11 @@ function readRunFacts(runDir: string | undefined, expected: ExpectedRunFacts): R
     // Shape + cross-axis invariants + identity binding live in the ONE shared
     // pure owner (@claudexor/schema); only YAML/file reading and the HTTP
     // problem mapping below are control-api's own.
-    return validateRunFactsReceipt(parseYaml(readFileSync(path, "utf8")), expected);
-  } catch {
+    const text =
+      maxBytes === undefined ? readFileSync(path, "utf8") : readFileUtf8BoundedSync(path, maxBytes);
+    return validateRunFactsReceipt(parseYaml(text), expected);
+  } catch (error) {
+    if (maxBytes !== undefined && (error as { status?: number }).status === 503) throw error;
     throw invalidRunFacts();
   }
 }

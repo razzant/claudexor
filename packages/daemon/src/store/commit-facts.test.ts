@@ -1,9 +1,10 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBusyError, StoreCorruptError } from "./errors.js";
 import { EngineStore, type EngineStoreOptions } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -23,10 +24,12 @@ const stores: EngineStore[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-commit-facts-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   vi.restoreAllMocks();
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 async function openStore(options: Partial<EngineStoreOptions> = {}): Promise<EngineStore> {
@@ -61,7 +64,7 @@ function thrownBy(fn: () => unknown): unknown {
   throw new Error("expected a throw");
 }
 
-const none = { attempts: 0, failures: 0, last_ms: null, max_ms: null };
+const none = { attempts: 0, failures: 0, last_ms: null, max_ms: null, p50_ms: null, p99_ms: null };
 
 describeStore("COMMIT facts of EngineStore.transaction", () => {
   it("start as a known zero and time only the native COMMIT of a successful transaction", async () => {
@@ -80,15 +83,32 @@ describeStore("COMMIT facts of EngineStore.transaction", () => {
     expect(result).toBe(value);
     expect(statements).toEqual(["BEGIN IMMEDIATE", "COMMIT"]);
     expect(fresh).toEqual(none);
-    expect(store.facts().commit).toEqual({ attempts: 1, failures: 0, last_ms: 7.25, max_ms: 7.25 });
+    expect(store.facts().commit).toMatchObject({
+      attempts: 1,
+      failures: 0,
+      last_ms: 7.25,
+      max_ms: 7.25,
+    });
 
     // A COMMIT below the clock's resolution is a measured zero, never unknown.
     costs.COMMIT = 0;
     store.transaction(() => void insert.run("second", "2"));
-    expect(store.facts().commit).toEqual({ attempts: 2, failures: 0, last_ms: 0, max_ms: 7.25 });
+    expect(store.facts().commit).toMatchObject({
+      attempts: 2,
+      failures: 0,
+      last_ms: 0,
+      max_ms: 7.25,
+    });
     costs.COMMIT = 12.0004;
     store.transaction(() => void insert.run("third", "3"));
-    expect(store.facts().commit).toEqual({ attempts: 3, failures: 0, last_ms: 12, max_ms: 12 });
+    expect(store.facts().commit).toMatchObject({
+      attempts: 3,
+      failures: 0,
+      last_ms: 12,
+      max_ms: 12,
+    });
+    expect(store.facts().commit.p50_ms!).toBeCloseTo(7.25, 1);
+    expect(store.facts().commit.p99_ms).toBe(12);
     expect(statements.filter((sql) => sql !== "BEGIN IMMEDIATE" && sql !== "COMMIT")).toEqual([]);
     expect(
       store.prepare("SELECT count(*) AS n FROM meta WHERE key IN ('first','second','third')").get(),
@@ -149,7 +169,7 @@ describeStore("COMMIT facts of EngineStore.transaction", () => {
     store.transaction(
       () => void store.prepare("INSERT INTO meta(key, value) VALUES('after', 'committed')").run(),
     );
-    expect(store.facts().commit).toEqual({ attempts: 1, failures: 0, last_ms: 3, max_ms: 3 });
+    expect(store.facts().commit).toMatchObject({ attempts: 1, failures: 0, last_ms: 3, max_ms: 3 });
   });
 
   it("counts a real failed COMMIT, rethrows the original error and still rolls back", async () => {
@@ -184,7 +204,12 @@ describeStore("COMMIT facts of EngineStore.transaction", () => {
     expect(store.inTransaction).toBe(false);
     expect(store.prepare("SELECT count(*) AS n FROM fixture_child").get()).toEqual({ n: 0 });
     // The schema transaction above committed in zero clock time; the failure is the latest call.
-    expect(store.facts().commit).toEqual({ attempts: 2, failures: 1, last_ms: 4.5, max_ms: 4.5 });
+    expect(store.facts().commit).toMatchObject({
+      attempts: 2,
+      failures: 1,
+      last_ms: 4.5,
+      max_ms: 4.5,
+    });
   });
 
   it("times a mapped COMMIT failure without its mapping, notification or ROLLBACK", async () => {

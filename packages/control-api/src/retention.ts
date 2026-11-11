@@ -8,18 +8,31 @@
  * both bugs. The CLI (`claudexor gc`) and the startup maintenance pass are
  * thin callers of this one owner.
  */
-import { existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { parse as yamlParse, stringify as yamlStringify } from "yaml";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { setImmediate as yieldToAdmission } from "node:timers/promises";
+import { dirname, join } from "node:path";
+import { stringify as yamlStringify } from "yaml";
 import {
   ControlGcReceipt,
   ControlGcRequest,
   type GcKeepCounts,
   type GcRunDeletion,
-  isTerminalLifecycle,
 } from "@claudexor/schema";
-import { readTextSafe, writeText } from "@claudexor/util";
-import { holdsRetainedSources } from "@claudexor/workspace";
+import { prunePatchObjects, redactSecrets } from "@claudexor/util";
+import { pruneProjectObjectStore } from "@claudexor/workspace";
+export { readRunTombstone } from "./run-tombstone.js";
+import { treeReclaimableBytes } from "./retention-bytes.js";
+import { ageStampOf, runKeepReason } from "./retention-candidates.js";
+import { survivingAnchorIds, pruneRunAnchors, retentionDeferral } from "./retention-anchors.js";
+import { pruneEmptyRuntimeDirectories } from "./retention-directories.js";
+import { scanDataRootUnrecognized, type DataRootMode } from "./retention-data-root.js";
+import {
+  pendingRetirements,
+  prepareRetirement,
+  RETIRING,
+  type Retirement,
+} from "./retention-removal.js";
 
 export interface RetentionPolicy {
   runsMaxAgeDays: number;
@@ -34,6 +47,12 @@ export interface RetentionProject {
   runsDir: string;
   /** Standalone diff-review trees dir (`<root>/.claudexor/reviews`); null = none. */
   reviewsDir: string | null;
+  /** False when inventory proves this namespace has no remaining project owner.
+   * Omitted by older embedders preserves their existing keep-last protection. */
+  keepLastRuns?: boolean;
+  /** False for a store that is not a namespace of its own (the folderless Ask store
+   * lives in the config root): its runs retire, its runtime is never pruned. */
+  namespaceMaintenance?: boolean;
 }
 
 export interface RetentionRunRecord {
@@ -42,17 +61,28 @@ export interface RetentionRunRecord {
   finishedAt?: string;
 }
 
-type DataRootMode = "default" | "override";
-
 export interface RetentionDeps {
+  /** Any skipped namespace makes cross-namespace anchor ownership unknown. */
+  anchorsHeld?: boolean;
+  signal?: AbortSignal;
   projects: () => RetentionProject[];
   /** The daemon's journal-projected command records (terminality truth). */
   records: () => RetentionRunRecord[];
   /** Every run id referenced by a non-purged thread (lineage, heads, turns). */
   referencedRunIds: () => Set<string>;
+  /** Fresh proof that asynchronous inventory still describes the SQL owners. */
+  referencesCurrent?: () => boolean;
+  /** The observer's latched reason for a failed current proof, when available. */
+  referencesHeld?: () => string | null;
+  /** Reread changed owners cooperatively before the synchronous final proof. */
+  refreshReferences?: () => Promise<void>;
+  /** Runtime namespaces whose registration changed during the pass: held, not deleted. */
+  deferredRuntimes?: () => ReadonlySet<string>;
   now?: () => number;
   /** Bounded batches: one pass deletes at most this many trees (disclosed). */
   maxDeletionsPerPass?: number;
+  /** Signals a real skipped candidate to the lifecycle scheduler. */
+  onTruncated?: () => void;
   /**
    * Absolute Claudexor-owned data root to scan for NOT-engine-owned top-level
    * entries (advisory disclosure only — the pass never deletes anything
@@ -75,94 +105,6 @@ export interface RetentionDeps {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOMBSTONE = "tombstone.yaml";
-/**
- * Exact top-level names the engine (or its documented operator surface) owns
- * in BOTH data-root modes. The default root retains these legacy top-level
- * names from pre-generation layouts; an explicit override is itself the
- * complete active root and owns the same direct names. Everything else is
- * foreign debris. Dotfiles are treated as config/service files and omitted.
- */
-const COMMON_ROOT_OWNED_ENTRIES = new Set([
-  // current engine + documented operator dirs
-  "node",
-  "profiles",
-  "runtime",
-  "cache",
-  "dogfood",
-  "keys",
-  "release-authority",
-  "planning",
-  "remote",
-  // legacy engine generations kept as the archive (owner decision, v3.0.0)
-  "daemon",
-  "projects",
-  "native",
-  "runs",
-  "trust",
-  "telemetry",
-  // config files
-  "config.yaml",
-]);
-/**
- * Mode-specific owned names. The default root owns the archived v2 generation
- * and active v3 generation. An explicit CLAUDEXOR_CONFIG_DIR override is the
- * complete active tree: it owns direct secrets/plugins/quota/workspaces but no
- * generation children. v1-era data was unversioned directly under the default
- * root, so neither mode owns a `v1` child.
- */
-const ROOT_OWNED_ENTRIES_BY_MODE: Record<DataRootMode, ReadonlySet<string>> = {
-  default: new Set([...COMMON_ROOT_OWNED_ENTRIES, "v2", "v3"]),
-  override: new Set([
-    ...COMMON_ROOT_OWNED_ENTRIES,
-    "secrets.json",
-    "plugins",
-    "quota",
-    "workspaces",
-  ]),
-};
-/** Owned names the engine expects as plain FILES; every other owned name is a directory. */
-const ENGINE_OWNED_FILE_ENTRIES = new Set(["config.yaml", "secrets.json"]);
-
-/**
- * Names of top-level data-root entries the engine does not own (the full
- * sorted list — advisory disclosure, never a deletion surface), classified
- * against the owned set for the injected root mode. An entry whose NAME the
- * engine owns but whose on-disk kind is wrong — a symbolic link of any owned
- * name (dirents are read WITHOUT following links), a non-directory where the
- * engine expects a directory, or a non-file where it expects a plain file —
- * is reported as `<name> (unexpected-kind)`. Throws on an unreadable root —
- * the caller degrades that to an errors[] entry and an ABSENT field, never a
- * misleading empty list and never a failed pass.
- */
-function scanDataRootUnrecognized(dataRoot: string, mode: DataRootMode): string[] {
-  const owned = ROOT_OWNED_ENTRIES_BY_MODE[mode];
-  const report: string[] = [];
-  for (const entry of readdirSync(dataRoot, { withFileTypes: true })) {
-    const name = entry.name;
-    if (name.startsWith(".")) continue;
-    if (!owned.has(name)) {
-      report.push(name);
-      continue;
-    }
-    const kindOk =
-      !entry.isSymbolicLink() &&
-      (ENGINE_OWNED_FILE_ENTRIES.has(name) ? entry.isFile() : entry.isDirectory());
-    if (!kindOk) report.push(`${name} (unexpected-kind)`);
-  }
-  return report.sort();
-}
-/** Daemon-record states with an operator or scheduler still attached. */
-/**
- * Run states whose tree is COMPLETE and may age out — an explicit allowlist,
- * mirroring ControlRunState's terminal half. A blocklist would fail OPEN: a
- * state added to the enum later (or an unrecognized string from a
- * newer/older daemon's records) would default to deletable, which is exactly
- * the "fail closed on unknown state" contract this service owes. Anything not
- * named here — live, unknown, or future — keeps its tree.
- */
-// Terminal set = the ONE projection-owned lifecycle terminals (D8). A
-// non-terminal (queued/running) or unrecognized state protects its tree.
-
 export async function runRetentionPass(
   policy: RetentionPolicy,
   request: ControlGcRequest,
@@ -189,100 +131,184 @@ export async function runRetentionPass(
   const deletedRuns: GcRunDeletion[] = [];
   const deletedReviews: { path: string; freed_bytes: number }[] = [];
   const errors: string[] = [];
+  const holds: ControlGcReceipt["holds"] = [];
   let examined = 0;
   let freedBytes = 0;
+  const plannedUnlinks = new Map<string, number>();
   let deletions = 0;
   let truncated = false;
-
-  for (const project of projects) {
-    const candidates: { runId: string; root: string; ageStamp: number }[] = [];
-    for (const runId of listSubdirs(project.runsDir)) {
-      const root = join(project.runsDir, runId);
-      if (existsSync(join(root, TOMBSTONE))) continue; // already reclaimed
-      examined += 1;
-      const record = recordsById.get(runId);
-      // A record that does not PROVE terminality protects its tree: live
-      // (queued/running) states, and anything this engine does not recognize
-      // as a finished lifecycle. Needs-decision runs have a SUCCEEDED (thus
-      // terminal) lifecycle and are kept by the actionable check below.
-      if (record && !isTerminalLifecycle(record.state)) {
-        kept.active += 1;
-        continue;
-      }
-      if (referenced.has(runId)) {
-        kept.referenced += 1;
-        continue;
-      }
-      // Needs-decision runs stay operator-visible; an undelivered/applyable
-      // patch (or a review-blocked / checks-failed delivery) is work the
-      // operator may still act on. The decision RECORDS themselves are
-      // journal-durable and survive independently of the tree.
-      // Stopped work kept for continueFrom (A9) is never cleaned automatically:
-      // its run tree holds the evidence a successor continues from. Capture
-      // sources kept for inspection hold it the same way; an unreadable or
-      // invalid pointer or custody record keeps the tree and is reported here,
-      // never read as nothing held (only explicit discard releases a source).
-      if (
-        hasActionableWorkProduct(root) ||
-        holdsRetainedSources(root, runId, (error) =>
-          errors.push(
-            `runs/${runId}: kept; its retained sources are unreadable: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        )
-      ) {
-        kept.actionable += 1;
-        continue;
-      }
-      // Terminality is evidence, never an assumption: without a daemon record
-      // the tree itself must prove it finished (a final summary / failure /
-      // work product). An unproven tree is protected, not deleted.
-      if (!record && !hasTerminalEvidence(root)) {
-        kept.unknown_state += 1;
-        continue;
-      }
-      const ageStamp = ageStampOf(root, record);
-      if (ageStamp > runCutoff) {
-        kept.young += 1;
-        continue;
-      }
-      candidates.push({ runId, root, ageStamp });
+  let invalidated = false;
+  let invalidationReason = "retention references changed during inventory";
+  // A committed finish that throws may already have removed part of its tree: the
+  // receipt then reports freed_bytes as a lower bound, never a measured total.
+  let effectsUnknown = false;
+  const finish = async (retirement: Retirement) => {
+    try {
+      return await retirement.finish();
+    } catch (error) {
+      effectsUnknown = true;
+      throw error;
     }
-    // The newest N per project survive regardless of age.
-    candidates.sort((a, b) => b.ageStamp - a.ageStamp);
-    const spared = candidates.slice(0, policy.keepLastRunsPerProject);
-    kept.recent += spared.length;
-    for (const candidate of candidates.slice(policy.keepLastRunsPerProject)) {
+  };
+  const proofCurrent = () => {
+    if (invalidated || deps.signal?.aborted) return false;
+    try {
+      if (deps.referencesCurrent?.() === false) {
+        invalidated = true;
+        invalidationReason = deps.referencesHeld?.() ?? invalidationReason;
+      }
+    } catch (error) {
+      invalidated = true;
+      invalidationReason = `retention reference recheck failed: ${String(error)}`;
+      errors.push(invalidationReason);
+    }
+    return !invalidated;
+  };
+  const refreshProof = async () => {
+    if (invalidated || deps.signal?.aborted) return;
+    try {
+      await deps.refreshReferences?.();
+    } catch (error) {
+      invalidated = true;
+      invalidationReason = `retention reference refresh failed: ${String(error)}`;
+      errors.push(invalidationReason);
+    }
+  };
+  const deferral = retentionDeferral(deps, holds, proofCurrent);
+  const { deferred, anchorsCurrent } = deferral;
+  const recoverPending = async (parent: string, kind: "runs" | "reviews", projectRoot: string) => {
+    for await (const retirement of pendingRetirements(parent, kind, dryRun, errors, deps.signal)) {
+      if (deps.signal?.aborted) break;
       if (deletions >= maxDeletions) {
         truncated = true;
         break;
       }
       try {
-        const bytes = treeBytes(candidate.root);
+        await retirement.recover();
+        const planned = new Map(dryRun ? plannedUnlinks : undefined);
+        const bytes = await retirement.reclaimableBytes(planned);
         if (!dryRun) {
-          rmSync(candidate.root, { recursive: true, force: true });
-          // The deletion is FACT once rmSync returns — a failed tombstone
-          // write must not erase it from the receipt (release wave round-15
-          // NIT); it degrades to an errors[] entry beside the recorded
-          // deletion instead.
-          try {
-            writeText(
-              join(candidate.root, TOMBSTONE),
-              yamlStringify({
-                run_id: candidate.runId,
-                deleted_at: new Date(now()).toISOString(),
-                reason: "retention",
-                policy: {
-                  runs_max_age_days: policy.runsMaxAgeDays,
-                  keep_last_runs_per_project: policy.keepLastRunsPerProject,
-                },
-              }),
-            );
-          } catch (tombstoneError) {
+          errors.push(...(await finish(retirement)));
+        } else for (const [key, value] of planned) plannedUnlinks.set(key, value);
+        if (kind === "runs")
+          deletedRuns.push({
+            run_id: retirement.intent.name,
+            project_root: projectRoot,
+            freed_bytes: bytes,
+          });
+        else
+          deletedReviews.push({ path: join(parent, retirement.intent.name), freed_bytes: bytes });
+        freedBytes += bytes;
+        deletions += 1;
+      } catch (error) {
+        errors.push(`${kind}/${retirement.intent.name}: retired cleanup pending: ${String(error)}`);
+      }
+    }
+  };
+
+  runProjects: for (const project of projects) {
+    if (deps.signal?.aborted) break;
+    await refreshProof();
+    if (!proofCurrent()) break;
+    if (deferred(project)) continue;
+    await recoverPending(project.runsDir, "runs", project.root);
+    if (truncated || deps.signal?.aborted) break;
+    const candidates: {
+      runId: string;
+      root: string;
+      ageStamp: number;
+      dev: number;
+      ino: number;
+    }[] = [];
+    for (const runId of await listSubdirs(project.runsDir)) {
+      const root = join(project.runsDir, runId);
+      // Already reclaimed: a compact receipt costs no proof refresh (most entries).
+      if (existsSync(join(root, TOMBSTONE))) continue;
+      await yieldToAdmission();
+      await refreshProof();
+      if (!proofCurrent()) break runProjects;
+      examined += 1;
+      const record = recordsById.get(runId);
+      const reason = runKeepReason(root, runId, record, referenced, runCutoff, (error) =>
+        errors.push(`runs/${runId}: kept; its retained sources are unreadable: ${String(error)}`),
+      );
+      if (reason) {
+        kept[reason] += 1;
+        continue;
+      }
+      const ageStamp = ageStampOf(root, record);
+      const identity = lstatSync(root);
+      if (!identity.isDirectory()) continue;
+      candidates.push({ runId, root, ageStamp, dev: identity.dev, ino: identity.ino });
+    }
+    // Recent history belongs to a still-owned project, not an orphan namespace.
+    candidates.sort((a, b) => b.ageStamp - a.ageStamp);
+    const keepLast = project.keepLastRuns === false ? 0 : policy.keepLastRunsPerProject;
+    const spared = candidates.slice(0, keepLast);
+    kept.recent += spared.length;
+    for (const candidate of candidates.slice(keepLast)) {
+      if (deps.signal?.aborted) break;
+      if (deletions >= maxDeletions) {
+        truncated = true;
+        break;
+      }
+      let retirement: Retirement | undefined;
+      try {
+        const planned = new Map(dryRun ? plannedUnlinks : undefined);
+        const bytes = await treeReclaimableBytes(candidate.root, planned, deps.signal);
+        if (!dryRun)
+          retirement = await prepareRetirement(
+            project.runsDir,
+            candidate.runId,
+            yamlStringify({
+              run_id: candidate.runId,
+              deleted_at: new Date(now()).toISOString(),
+              reason: "retention",
+              policy: {
+                runs_max_age_days: policy.runsMaxAgeDays,
+                keep_last_runs_per_project: policy.keepLastRunsPerProject,
+              },
+            }),
+          );
+        await refreshProof();
+        if (!proofCurrent()) break runProjects;
+        if (deferred(project)) continue runProjects;
+        // No await from here to commit: the proof just checked is the one that holds.
+        // Re-read every mutable filesystem guard after the asynchronous walk.
+        // SQL-backed callers reread changed owners; older embedders
+        // without that proof supply fresh references/records here instead.
+        const record = deps.referencesCurrent
+          ? recordsById.get(candidate.runId)
+          : deps.records().find((row) => row.runId === candidate.runId);
+        const liveReferences = deps.referencesCurrent ? referenced : deps.referencedRunIds();
+        const identity = lstatSync(candidate.root);
+        if (
+          !identity.isDirectory() ||
+          identity.dev !== candidate.dev ||
+          identity.ino !== candidate.ino ||
+          existsSync(join(candidate.root, TOMBSTONE))
+        )
+          continue;
+        const reason = runKeepReason(
+          candidate.root,
+          candidate.runId,
+          record,
+          liveReferences,
+          runCutoff,
+          (error) =>
             errors.push(
-              `runs/${candidate.runId}: tombstone write failed: ${tombstoneError instanceof Error ? tombstoneError.message : String(tombstoneError)}`,
-            );
-          }
+              `runs/${candidate.runId}: kept; its retained sources are unreadable: ${String(error)}`,
+            ),
+        );
+        if (reason) {
+          kept[reason] += 1;
+          continue;
         }
+        if (retirement) {
+          retirement.commit();
+          errors.push(...(await finish(retirement)));
+        }
+        if (dryRun) for (const [key, value] of planned) plannedUnlinks.set(key, value);
         deletedRuns.push({
           run_id: candidate.runId,
           project_root: project.root,
@@ -296,20 +322,30 @@ export async function runRetentionPass(
         errors.push(
           `runs/${candidate.runId}: ${error instanceof Error ? error.message : String(error)}`,
         );
+      } finally {
+        try {
+          await retirement?.abandon();
+        } catch (error) {
+          errors.push(`runs/${candidate.runId}: retirement cleanup: ${String(error)}`);
+        }
       }
     }
     // `truncated` is set ONLY where a real candidate was skipped (above), so
     // exhausting the cap on the very last deletable tree never makes the pass
     // claim "run gc again to continue" with nothing left to do.
-    if (truncated) break;
+    if (truncated || deps.signal?.aborted) break;
   }
 
   for (const project of projects) {
+    await yieldToAdmission();
+    await refreshProof();
+    if (!proofCurrent()) break;
+    if (deferred(project)) continue;
     // No reviews dir (the no-project root has none) — skip THIS project only.
     // Checked BEFORE the cap so a project with nothing to sweep never makes
     // the pass claim it was truncated.
     if (!project.reviewsDir) continue;
-    if (truncated) break;
+    if (truncated || deps.signal?.aborted) break;
     // `.claudexor/reviews` lives inside the USER repo: fence the PARENT before
     // ever walking it. A repo that ships `.claudexor` or `.claudexor/reviews`
     // as a symlink must not redirect readdir/rmSync outside the repo (a real
@@ -322,23 +358,44 @@ export async function runRetentionPass(
       continue;
     }
     const reviewsDir = fenced.path;
-    for (const name of listSubdirs(reviewsDir)) {
+    await recoverPending(reviewsDir, "reviews", project.root);
+    if (truncated || deps.signal?.aborted) break;
+    for (const name of await listSubdirs(reviewsDir)) {
+      if (deps.signal?.aborted) break;
       // Standalone diff-review trees only — `.claudexor/` in a user repo is
       // user-owned config; the engine deletes nothing there but its own
       // `diff-*` runtime debris, never following a symlinked leaf either.
       if (!name.startsWith("diff-")) continue;
       const path = join(reviewsDir, name);
+      let retirement: Retirement | undefined;
       try {
         if (lstatSync(path).isSymbolicLink()) continue;
         if (statSync(path).mtimeMs > reviewCutoff) continue;
         // The cap is checked once this IS a real deletion candidate, so a
         // truncation disclosure always means work was genuinely left behind.
+        if (deps.signal?.aborted) break;
         if (deletions >= maxDeletions) {
           truncated = true;
           break;
         }
-        const bytes = treeBytes(path);
-        if (!dryRun) rmSync(path, { recursive: true, force: true });
+        const planned = new Map(dryRun ? plannedUnlinks : undefined);
+        const bytes = await treeReclaimableBytes(path, planned, deps.signal);
+        if (!dryRun) retirement = await prepareRetirement(reviewsDir, name, null);
+        await refreshProof();
+        if (!proofCurrent() || deferred(project)) break;
+        const currentFence = canonicalInRepoReviewsDir(project);
+        if (
+          currentFence.verdict !== "ok" ||
+          currentFence.path !== reviewsDir ||
+          !lstatSync(path).isDirectory() ||
+          statSync(path).mtimeMs > reviewCutoff
+        )
+          continue;
+        if (retirement) {
+          retirement.commit();
+          errors.push(...(await finish(retirement)));
+        }
+        if (dryRun) for (const [key, value] of planned) plannedUnlinks.set(key, value);
         deletedReviews.push({ path, freed_bytes: bytes });
         freedBytes += bytes;
         deletions += 1;
@@ -347,12 +404,103 @@ export async function runRetentionPass(
         await new Promise<void>((resolve) => setImmediate(resolve));
       } catch (error) {
         errors.push(`reviews/${name}: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        try {
+          await retirement?.abandon();
+        } catch (error) {
+          errors.push(`reviews/${name}: retirement cleanup: ${String(error)}`);
+        }
       }
     }
   }
+  let namedAnchors: Set<string> | undefined;
+  if (!deps.anchorsHeld && proofCurrent()) {
+    try {
+      namedAnchors = await survivingAnchorIds(
+        projects,
+        new Set(
+          deletedRuns.flatMap((run) =>
+            projects
+              .filter((project) => project.root === run.project_root)
+              .map((project) => join(project.runsDir, run.run_id)),
+          ),
+        ),
+        deps.signal,
+      );
+    } catch (error) {
+      const example = `anchors kept: ${redactSecrets(String(error))}`;
+      holds.push({ class: "anchor_references_unreadable", count: 1, example });
+      errors.push(example);
+    }
+  }
+  for (const project of projects) {
+    try {
+      if (invalidated || deps.signal?.aborted) break;
+      await refreshProof();
+      if (!proofCurrent()) break;
+      if (project.namespaceMaintenance === false || deferred(project)) continue;
+      if (namedAnchors)
+        freedBytes += await pruneRunAnchors({
+          runtime: dirname(project.runsDir),
+          named: namedAnchors,
+          cutoff: runCutoff,
+          dryRun,
+          planned: plannedUnlinks,
+          current: anchorsCurrent,
+          signal: deps.signal,
+        });
+      freedBytes += await prunePatchObjects(
+        dirname(project.runsDir),
+        dryRun,
+        plannedUnlinks,
+        deps.signal,
+      );
+      // #535: objects live while a run, thread, envelope or anchor owning them
+      // exists; a run retired here (in a dry run too) owns nothing any more.
+      const retiredOwners = new Set(
+        deletedRuns
+          .filter((run) => run.project_root === project.root)
+          .map((run) => join(project.runsDir, run.run_id)),
+      );
+      freedBytes += (
+        await pruneProjectObjectStore(dirname(project.runsDir), {
+          dryRun,
+          retiredOwners,
+          retireEmpty: true,
+        })
+      ).freedBytes;
+      if (!dryRun && proofCurrent())
+        pruneEmptyRuntimeDirectories(
+          dirname(project.runsDir),
+          Date.parse(startedAt),
+          (path, error) =>
+            errors.push(
+              `runtime cleanup ${path}: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        );
+    } catch (error) {
+      // Its anchor, patch-object and object-store steps may already have deleted bytes.
+      if (!dryRun) effectsUnknown = true;
+      errors.push(`runtime cleanup: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await yieldToAdmission();
+  }
+
   if (truncated) {
+    deps.onTruncated?.();
     errors.push(
       `pass truncated at ${maxDeletions} deletions (bounded batch); run gc again to continue`,
+    );
+  }
+  if (invalidated) {
+    holds.push({
+      class: "references_changed",
+      count: 1,
+      example: invalidationReason,
+    });
+    deps.onTruncated?.();
+    errors.push(
+      "retention references changed during inventory; remaining candidates kept; retry with a fresh snapshot",
     );
   }
 
@@ -363,9 +511,9 @@ export async function runRetentionPass(
   // receipt byte-compatible with pre-feature engines, so an old strict
   // receipt schema never rejects the reply to a mutating verb it already ran.
   let dataRootUnrecognized: string[] | undefined;
-  if (request.data_root_report === true && deps.dataRoot) {
+  if (!deps.signal?.aborted && request.data_root_report === true && deps.dataRoot) {
     try {
-      dataRootUnrecognized = scanDataRootUnrecognized(
+      dataRootUnrecognized = await scanDataRootUnrecognized(
         deps.dataRoot,
         deps.dataRootMode ?? "default",
       );
@@ -374,6 +522,11 @@ export async function runRetentionPass(
         `data root scan (${deps.dataRoot}): ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  if (deps.signal?.aborted) {
+    deps.onTruncated?.();
+    errors.push("retention cancelled; pass truncated; run gc again to resume remaining work");
   }
 
   return ControlGcReceipt.parse({
@@ -389,31 +542,14 @@ export async function runRetentionPass(
     examined_runs: examined,
     deleted_runs: deletedRuns,
     kept,
+    holds,
+    truncated: truncated || deferral.anchorDeferral || invalidated || deps.signal?.aborted === true,
     deleted_reviews: deletedReviews,
     freed_bytes: freedBytes,
+    ...(effectsUnknown ? { effects: "unknown" } : {}),
     errors,
     ...(dataRootUnrecognized === undefined ? {} : { data_root_unrecognized: dataRootUnrecognized }),
   });
-}
-
-export interface RunTombstone {
-  run_id: string;
-  deleted_at: string;
-  reason: string;
-}
-
-/** The honest post-GC projection: why this run's artifacts are gone. */
-export function readRunTombstone(runDir: string): RunTombstone | null {
-  const text = readTextSafe(join(runDir, TOMBSTONE));
-  if (text === null) return null;
-  try {
-    const value = yamlParse(text) as Partial<RunTombstone> | null;
-    return value && typeof value.run_id === "string" && typeof value.deleted_at === "string"
-      ? { run_id: value.run_id, deleted_at: value.deleted_at, reason: String(value.reason ?? "") }
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -440,125 +576,12 @@ function canonicalInRepoReviewsDir(
   }
 }
 
-function listSubdirs(dir: string): string[] {
+async function listSubdirs(dir: string): Promise<string[]> {
   try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+    return (await readdir(dir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && entry.name !== RETIRING)
       .map((entry) => entry.name);
   } catch {
     return [];
   }
-}
-
-function hasTerminalEvidence(runRoot: string): boolean {
-  // Terminality is proven by TYPED terminal artifacts (D8/V8): the arbitration
-  // decision (carries facts), the typed failure record, or the work product —
-  // never the diagnostic summary.md (its authority role was retired).
-  return (
-    existsSync(join(runRoot, "arbitration", "decision.yaml")) ||
-    existsSync(join(runRoot, "final", "failure.yaml")) ||
-    existsSync(join(runRoot, "final", "work_product.yaml"))
-  );
-}
-
-/** True when the run's tree is still the operator's to act on (D8): an
- * undelivered/applyable patch, OR a needs-decision terminal (decision.facts
- * review blocked / checks failed) with a work product present. */
-function hasActionableWorkProduct(runRoot: string): boolean {
-  const delivery = readTextSafe(join(runRoot, "final", "delivery_state.yaml"));
-  if (delivery !== null) {
-    try {
-      if ((yamlParse(delivery) as { applyState?: unknown })?.applyState === "discarded")
-        return false;
-    } catch {
-      return true;
-    }
-  }
-  // Needs-decision keep: a succeeded terminal whose review is blocked or checks
-  // failed is actionable regardless of apply state.
-  const decisionText = readTextSafe(join(runRoot, "arbitration", "decision.yaml"));
-  if (decisionText !== null) {
-    try {
-      const facts = ((yamlParse(decisionText) ?? {}) as { facts?: Record<string, unknown> }).facts;
-      if (
-        facts &&
-        facts["lifecycle"] === "succeeded" &&
-        (facts["review"] === "blocked" || facts["checks"] === "failed")
-      ) {
-        return true;
-      }
-    } catch {
-      return true; // unreadable decision: fail closed, keep the tree
-    }
-  }
-  const text = readTextSafe(join(runRoot, "final", "work_product.yaml"));
-  if (text === null) return false;
-  try {
-    const doc = (yamlParse(text) ?? {}) as { kind?: unknown; meta?: unknown };
-    const meta = (doc.meta ?? {}) as Record<string, unknown>;
-    // The canonical discriminator is the TOP-LEVEL kind (release wave
-    // round-13): convergence writes kind: patch without meta.result_kind, and
-    // deleting its unapplied tree would destroy actionable work.
-    if (
-      doc.kind !== "patch" &&
-      doc.kind !== "files" &&
-      doc.kind !== "new_repo" &&
-      meta["result_kind"] !== "patch"
-    )
-      return false;
-    // Non-success Git drafts cannot be applied. Preserve their normal age and
-    // reference retention, not an action that can never be completed.
-    if (
-      doc.kind !== "files" &&
-      ["cancelled", "failed", "interrupted"].includes(String(meta["lifecycle"]))
-    )
-      return false;
-    // Delivery/apply state is the mutable overlay (final/delivery_state.yaml);
-    // fall back to the immutable work_product snapshot. An undelivered patch is
-    // still the operator's to act on; applied and reverted have completed.
-    const deliveryText = readTextSafe(join(runRoot, "final", "delivery_state.yaml"));
-    let applyState: unknown = meta["apply_state"];
-    if (deliveryText !== null) {
-      try {
-        applyState =
-          ((yamlParse(deliveryText) ?? {}) as { applyState?: unknown }).applyState ?? applyState;
-      } catch {
-        return true;
-      }
-    }
-    return applyState !== "applied" && applyState !== "reverted" && applyState !== "discarded";
-  } catch {
-    return true; // unreadable work product: fail closed, keep the tree
-  }
-}
-
-function ageStampOf(runRoot: string, record: RetentionRunRecord | undefined): number {
-  const finished = Date.parse(record?.finishedAt ?? "");
-  if (Number.isFinite(finished)) return finished;
-  try {
-    return statSync(runRoot).mtimeMs;
-  } catch {
-    return Date.now();
-  }
-}
-
-function treeBytes(root: string): number {
-  let total = 0;
-  const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      try {
-        if (entry.isDirectory()) walk(path);
-        else if (entry.isFile()) total += statSync(path).size;
-      } catch {
-        /* a racing unlink must not fail the measurement */
-      }
-    }
-  };
-  try {
-    walk(root);
-  } catch {
-    /* tree vanished mid-walk */
-  }
-  return total;
 }

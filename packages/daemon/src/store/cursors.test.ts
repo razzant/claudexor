@@ -6,16 +6,25 @@ import {
   JournalCursorError as LegacyCursorError,
 } from "./test-support/fixtures/legacy/journal/index.js";
 import { ControlJournalEvent } from "@claudexor/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { BlobFiles } from "./blob-files.js";
 import {
+  JOURNAL_PAGE_BYTES,
+  JOURNAL_PAGE_READ_SQL,
+  JOURNAL_PAGE_ROWS,
+  JOURNAL_PAGE_SIZE_SQL,
   JournalCursorError,
   decodeJournalCursor,
   encodeJournalCursor,
+  readJournalEventPage,
   readJournalEvents,
+  type JournalEventPage,
 } from "./cursors.js";
-import { createPartition } from "./partitions.js";
+import { SqlEventLedger } from "./event-store.js";
+import { createPartition, currentGeneration } from "./partitions.js";
 import { appendEvent } from "./retention.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 /** The store runs only where `node:sqlite` exists; elsewhere these cases are skipped, not failed. */
 const sqliteAvailable = await import("node:sqlite").then(
@@ -36,10 +45,12 @@ const journals: DurableJournal[] = [];
 beforeEach(() => {
   root = realpathSync.native(mkdtempSync(join(tmpdir(), "cx-cursors-")));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const journal of journals.splice(0)) journal.close();
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function openStore(): Promise<EngineStore> {
   const store = await EngineStore.open({
@@ -155,5 +166,156 @@ describeStore("journal cursors over partition generations (SYNTHESIS_R5 §5 rule
     expect(failure(() => readJournalEvents(store, "project:missing"))).toMatchObject({
       code: "journal_cursor_invalid",
     });
+  });
+});
+
+describeStore("bounded journal pages for global/project replay (#312)", () => {
+  const storedBytes = (event: ControlJournalEvent) =>
+    Buffer.byteLength(JSON.stringify(event.payload));
+  const walk = (store: EngineStore, blobs: BlobFiles, after?: string): JournalEventPage[] => {
+    const pages = [readJournalEventPage(store, "project:p", { after }, blobs)];
+    while (pages.at(-1)!.more) {
+      const { position, through } = pages.at(-1)!;
+      pages.push(readJournalEventPage(store, "project:p", { after: position, through }, blobs));
+    }
+    return pages;
+  };
+
+  it("pages by rows and stored bytes, keeps an oversized body whole, and replays every retained row", async () => {
+    const store = await openStore();
+    const blobs = new BlobFiles(store);
+    const generation = store.transaction(() => createPartition(store, "project:p"));
+    const ledger = new SqlEventLedger(store, blobs, generation);
+    // One thread's pings fold to the newest, leaving sparse retained sequences.
+    ledger.appendBatch(
+      Array.from({ length: 600 }, (_, i) =>
+        i % 3 === 0
+          ? { type: "thread.head.updated", payload: { thread_id: "t", revision: i + 1 } }
+          : { type: "history", payload: { i } },
+      ),
+    );
+    ledger.appendBatch(
+      Array.from({ length: 20 }, (_, i) => ({
+        type: "inline",
+        payload: { i, text: "x".repeat(60 * 1024) },
+      })),
+    );
+    const oversized = { text: "y".repeat(3 * JOURNAL_PAGE_BYTES) };
+    ledger.append("oversized", oversized);
+    ledger.appendBatch([1, 2, 3].map((tail) => ({ type: "history", payload: { tail } })));
+
+    const pages = walk(store, blobs);
+    const replayed = pages.flatMap((page) => page.events);
+    const nextSeq = currentGeneration(store, "project:p")!.nextSeq;
+    const seqOf = (cursor: string) =>
+      decodeJournalCursor(cursor, "project:p", generation.epoch, nextSeq);
+    const retained = (
+      store
+        .prepare("SELECT seq FROM event WHERE pid = ? ORDER BY seq")
+        .all(generation.pid) as Array<{
+        seq: number;
+      }>
+    ).map((row) => Number(row.seq));
+    expect(retained.length).toBeLessThan(nextSeq - 1);
+    expect(replayed.map((event) => seqOf(event.cursor))).toEqual(retained);
+    expect(replayed).toEqual(readJournalEvents(store, "project:p", undefined, blobs));
+    expect(pages[0]!.events).toHaveLength(JOURNAL_PAGE_ROWS);
+    for (const [index, page] of pages.entries()) {
+      const bytes = page.events.reduce((sum, event) => sum + storedBytes(event), 0);
+      expect(page.events.length).toBeLessThanOrEqual(JOURNAL_PAGE_ROWS);
+      if (page.events.length > 1) expect(bytes).toBeLessThanOrEqual(JOURNAL_PAGE_BYTES);
+      expect(page.through).toBe(pages[0]!.through);
+      expect(page.position).toBe(page.events.at(-1)!.cursor);
+      expect(page.more).toBe(index < pages.length - 1);
+      // Greedy prefixes: a page ends only where the next row would break a bound.
+      const next = pages[index + 1]?.events[0];
+      if (next)
+        expect(
+          page.events.length === JOURNAL_PAGE_ROWS ||
+            bytes + storedBytes(next) > JOURNAL_PAGE_BYTES,
+        ).toBe(true);
+    }
+    const alone = pages.find((page) => page.events.some((event) => event.type === "oversized"))!;
+    expect(alone.events).toHaveLength(1);
+    expect(alone.events[0]!.payload).toEqual(oversized);
+    expect(
+      pages.filter((page) => page.events.some((event) => event.type === "inline")).length,
+    ).toBe(2);
+
+    // Resuming from any delivered cursor continues the same ordered suffix.
+    for (const at of [0, 1, JOURNAL_PAGE_ROWS - 1, JOURNAL_PAGE_ROWS, replayed.length - 2]) {
+      expect(walk(store, blobs, replayed[at]!.cursor).flatMap((page) => page.events)).toEqual(
+        replayed.slice(at + 1),
+      );
+    }
+    expect(walk(store, blobs, replayed.at(-1)!.cursor)).toEqual([
+      { events: [], position: replayed.at(-1)!.cursor, through: pages[0]!.through, more: false },
+    ]);
+  });
+
+  it("binds a page walk to its captured head and to the generation serving now", async () => {
+    const store = await openStore();
+    const blobs = new BlobFiles(store);
+    const generation = store.transaction(() => createPartition(store, "project:p"));
+    const start = encodeJournalCursor("project:p", generation.epoch, 0);
+    const empty = readJournalEventPage(store, "project:p", {}, blobs);
+    expect(empty).toEqual({ events: [], position: start, through: start, more: false });
+    new SqlEventLedger(store, blobs, generation).append("history", { n: 1 });
+    // The captured head excludes later rows; the next walk captures them.
+    expect(
+      readJournalEventPage(store, "project:p", { after: start, through: empty.through }, blobs),
+    ).toEqual({ events: [], position: start, through: start, more: false });
+    const tail = readJournalEventPage(store, "project:p", { after: start }, blobs);
+    expect(tail.events.map((event) => event.payload)).toEqual([{ n: 1 }]);
+    expect(tail.through).toBe(tail.position);
+
+    for (const key of ["after", "through"] as const)
+      for (const [cursor, detail] of [
+        [encodeJournalCursor("project:p", "other-epoch", 0), "stale epoch"],
+        [encodeJournalCursor("global", generation.epoch, 0), "stale epoch"],
+        [encodeJournalCursor("project:p", generation.epoch, 2), "ahead of the durable partition"],
+        ["not base64url!", "malformed"],
+      ] as const)
+        expect(
+          failure(() => readJournalEventPage(store, "project:p", { [key]: cursor }, blobs)),
+        ).toMatchObject({
+          code: "journal_cursor_invalid",
+          status: 409,
+          requiredActions: ["resnapshot"],
+          message: `journal cursor is ${detail}; resnapshot is required`,
+        });
+
+    // A replaced generation refuses the old position; it never continues in the new epoch.
+    store.transaction(() => {
+      store.prepare("UPDATE partition SET status = 'quarantined' WHERE id = ?").run(generation.pid);
+      createPartition(store, "project:p");
+    });
+    const next = currentGeneration(store, "project:p")!;
+    new SqlEventLedger(store, blobs, next).append("history", { n: 2 });
+    for (const request of [{ after: start }, { after: tail.position, through: tail.through }])
+      expect(failure(() => readJournalEventPage(store, "project:p", request, blobs))).toMatchObject(
+        {
+          code: "journal_cursor_invalid",
+          message: "journal cursor is stale epoch; resnapshot is required",
+        },
+      );
+    expect(readJournalEventPage(store, "project:p", {}, blobs).events).toEqual([
+      expect.objectContaining({ cursor: encodeJournalCursor("project:p", next.epoch, 1) }),
+    ]);
+  });
+
+  it("sizes and reads pages as primary-key ranges", async () => {
+    const store = await openStore();
+    const plan = (sql: string, ...args: number[]) =>
+      (store.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as Array<{ detail: string }>).map(
+        (row) => row.detail,
+      );
+    expect(plan(JOURNAL_PAGE_SIZE_SQL, 1, 0, 10, 5)).toEqual([
+      "SEARCH e USING PRIMARY KEY (pid=? AND seq>? AND seq<?)",
+      "SEARCH b USING INDEX sqlite_autoindex_blob_1 (sha256=?) LEFT-JOIN",
+    ]);
+    expect(plan(JOURNAL_PAGE_READ_SQL, 1, 0, 10)).toEqual([
+      "SEARCH event USING PRIMARY KEY (pid=? AND seq>? AND seq<?)",
+    ]);
   });
 });

@@ -6,6 +6,7 @@
       "maxUsd": 2.5
     },
     "spendUsd": 1.25,
+    "controllableSpendUsd": 1.25,
     "valuationUsd": null,
     "valuationKnowledge": "unknown",
     "remainingUsd": 1.25,

@@ -125,14 +125,12 @@ struct RunOutcomeSection: View {
             .help(fact.help ?? fact.text)
     }
 
-    /// Tone for the server-owned banner: a failure-shaped lifecycle or a
-    /// review-blocked delivery must never read green.
-    private var bannerTone: StatusTone {
+    /// Tone for the server-owned banner: a failure-shaped lifecycle, unfinished
+    /// work or a review-blocked delivery must never read green.
+    static func bannerTone(for task: TaskRun) -> StatusTone {
         if task.phase.isFailureShaped { return .negative }
         if task.phase == .cancelled { return .neutral }
-        if task.reviewNeedsDecision || task.outcomeFacts?.review == "blocked"
-            || task.applyState == "applied_review_blocked" { return .caution }
-        return .positive
+        return task.succeededTone
     }
 
     private var answerBlock: some View {
@@ -144,7 +142,7 @@ struct RunOutcomeSection: View {
                !banner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Label(banner, systemImage: "flag.fill")
                     .font(.headline)
-                    .foregroundStyle(Theme.status(bannerTone))
+                    .foregroundStyle(Theme.status(Self.bannerTone(for: task)))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             // D18/item f: apply is server-owned. When a patch is NOT eligible, the
@@ -218,7 +216,10 @@ struct RunOutcomeSection: View {
                 Label(reviewVerdictText(verdict), systemImage: reviewVerdictGlyph(verdict))
                     .foregroundStyle(reviewVerdictColor(verdict))
             }
-            if task.reviewNeedsDecision {
+            if task.reviewNeedsDecision, task.unfinishedWorkLabel != nil {
+                Text("A risk decision cannot resolve unfinished work — rerun with feedback from its card in the conversation.")
+                    .font(.caption).foregroundStyle(Theme.status(.caution))
+            } else if task.reviewNeedsDecision {
                 Text("This run needs a decision — decide from its card in the conversation.")
                     .font(.caption).foregroundStyle(Theme.status(.caution))
             } else if let action = task.operatorDecisionAction {

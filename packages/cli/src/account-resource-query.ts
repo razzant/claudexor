@@ -45,7 +45,8 @@ export async function accountResourceQuery(
     const query = input as ResourceQuery;
     if (query.target && !query.refresh) throw new Error("target requires refresh:true");
     if (query.model && !query.refresh) throw new Error("model requires refresh:true");
-    path = "/quota?view=resources";
+    // Same-version consumer: API-key rows (OpenRouter key allowance) included.
+    path = "/quota?view=resources&includeApiKeys=true";
     if (query.refresh) {
       method = "POST";
       body = {

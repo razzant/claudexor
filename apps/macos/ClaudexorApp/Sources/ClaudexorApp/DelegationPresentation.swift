@@ -232,8 +232,8 @@ extension AppModel {
     /// hydrated earlier, then stop once the question payload is present.
     func hydrateDelegatedChildInteractions(_ child: TaskRun) async {
         guard DelegationPresentation.shouldHydrateChildInteractions(
-            waitingOnUser: child.waitingOnUser,
-            pendingInteractionCount: child.pendingInteractions.count
+            waitingOnUser: child.awaitingAnswer,
+            pendingInteractionCount: child.openQuestions.count
         ) else { return }
         await loadRunDetail(child.id)
     }
@@ -243,9 +243,12 @@ extension AppModel {
     /// projection append as a legacy/restoration fallback.
     func delegatedChildren(
         of parentRunId: String,
-        projectedIds: [String] = []
+        projectedIds: [String] = [],
+        at locationID: ExecutionLocationID? = nil
     ) -> [TaskRun] {
-        let exact = tasks.filter { DelegationPresentation.isChild($0, of: parentRunId) }
+        let location = locationID ?? activeExecutionLocation
+        let locatedTasks = location == .local ? tasks : remoteTasks[location] ?? []
+        let exact = locatedTasks.filter { DelegationPresentation.isChild($0, of: parentRunId) }
         guard !projectedIds.isEmpty else { return exact }
         let byId = Dictionary(uniqueKeysWithValues: exact.map { ($0.id, $0) })
         var seen = Set<String>()
@@ -259,10 +262,11 @@ extension AppModel {
 
     func delegatedChildren(
         of parent: TaskRun,
-        projectedIds: [String] = []
+        projectedIds: [String] = [],
+        at locationID: ExecutionLocationID? = nil
     ) -> [TaskRun] {
         delegatedChildren(
             of: parent.resolvedRunId ?? parent.id,
-            projectedIds: projectedIds)
+            projectedIds: projectedIds, at: locationID)
     }
 }

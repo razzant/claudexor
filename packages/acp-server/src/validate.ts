@@ -8,10 +8,14 @@ import {
   validateOptionalNonEmptyString,
   validateSurfaceRunControls,
 } from "@claudexor/schema";
-import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+export function runControlsFromMeta(meta: unknown): Record<string, unknown> {
+  if (!isPlainRecord(meta)) return {};
+  return isPlainRecord(meta.claudexor) ? meta.claudexor : {};
 }
 
 /** Typed validation verdict: message for humans, optional machine code. */
@@ -35,6 +39,8 @@ export function validateRunControls(params: unknown): RunControlError | null {
     "model",
     "effort",
     "processingPreference",
+    "maxSeconds",
+    "timeLimitMode",
     "execution",
     "n",
     "race",
@@ -85,16 +91,5 @@ export function validateRunControls(params: unknown): RunControlError | null {
     }
   }
   const shared = validateSurfaceRunControls(params);
-  if (shared) return msg(shared);
-  return validateNoInlineSecrets(params, "ACP session/prompt params");
-}
-
-function validateNoInlineSecrets(value: unknown, context: string): RunControlError | null {
-  try {
-    assertNoInlineSecretValues(value, "$", context);
-    return null;
-  } catch (err) {
-    const code = errorCode(err);
-    return { message: err instanceof Error ? err.message : String(err), ...(code ? { code } : {}) };
-  }
+  return shared ? msg(shared) : null;
 }

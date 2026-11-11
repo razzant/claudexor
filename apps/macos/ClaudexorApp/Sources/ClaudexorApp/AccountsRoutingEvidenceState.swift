@@ -2,7 +2,8 @@ import Foundation
 import ClaudexorKit
 
 /// Model-scoped account routing evidence per execution location (INV-135):
-/// live refusal marks and each account's last service per requested model.
+/// live refusal marks, live model-scoped credential refusals and each
+/// account's last service per requested model.
 /// It is kept apart from the profile DTOs, so a PATCH that replaces one row
 /// never drops it, and its failure never fails Accounts hydration: the listing
 /// stays authoritative and the surface shows one non-fatal notice.
@@ -53,6 +54,13 @@ final class AccountsRoutingEvidenceState {
     func marks(harnessId: String, profileId: String, at location: ExecutionLocationID,
                now: Date = Date()) -> [AccountRefusalMark] {
         (evidence[location]?.refusals ?? []).filter {
+            $0.harnessId == harnessId && $0.profileId == profileId && $0.isLive(at: now)
+        }
+    }
+
+    func credentialUnusable(harnessId: String, profileId: String, at location: ExecutionLocationID,
+                            now: Date = Date()) -> [AccountCredentialUnusableMark] {
+        (evidence[location]?.credentialUnusable ?? []).filter {
             $0.harnessId == harnessId && $0.profileId == profileId && $0.isLive(at: now)
         }
     }

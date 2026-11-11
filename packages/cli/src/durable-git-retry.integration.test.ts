@@ -31,7 +31,8 @@ async function awaitTerminal(client: DaemonClient, jobId: string): Promise<JobRe
 
 describe("durable thread Git preflight", () => {
   it("QA-D19: Exact Retry replays the refused target and resources after Git becomes available", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-git-retry-")));
+    // The daemon socket must fit even under a long runner-owned TMPDIR.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "g-")));
     const repo = join(root, "repo");
     const runDir = join(root, "run-retried");
     const resourcePath = join(root, "contract.txt");

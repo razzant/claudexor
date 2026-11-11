@@ -10,8 +10,9 @@ import {
   RETIRED_EXTERNAL_SANDBOX_FULL,
   TaskContract,
   restoreRecordedRunReviewRequest,
+  decodeAcceptedRunStart,
 } from "@claudexor/schema";
-import type { EffortHint, ProcessingPreference } from "@claudexor/schema";
+import type { EffortHint, ProcessingPreference, PromptCacheTtl } from "@claudexor/schema";
 import type {
   DaemonControlApiOptions,
   DaemonFacadeClient,
@@ -34,6 +35,8 @@ type RetryServices = Pick<
 
 export interface RunRetryRouteContext {
   daemon: DaemonFacadeClient;
+  storeId?: () => string | undefined;
+  wantsStoreId?: boolean;
   services?: RetryServices;
   findRun(id: string): Promise<DaemonRunRecord | null>;
   waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
@@ -89,9 +92,7 @@ async function exactRetry(
     idempotencyKey = runStart.requiredIdempotencyKey(req);
     const replay = await sourceReplayInput(ctx, source);
     sourceTurnProvenance = replay.turn;
-    const recorded = restoreRecordedRunReviewRequest(
-      RecordedControlRunStartRequest.parse(replay.params),
-    );
+    const recorded = restoreRecordedRunReviewRequest(decodeAcceptedRunStart(replay.params).request);
     const { turnId: _turnId, retryOf: _retryOf, ...original } = recorded;
     // QA-035: Exact Retry replays the IMMUTABLE original request. The stored
     // params omit any model/effort the caller left to settings, so re-reading
@@ -109,6 +110,9 @@ async function exactRetry(
       ...(frozen.efforts ? { efforts: { ...frozen.efforts, ...(original.efforts ?? {}) } } : {}),
       ...(original.processingPreference === undefined && frozen.processingPreference !== undefined
         ? { processingPreference: frozen.processingPreference }
+        : {}),
+      ...(original.promptCacheTtl === undefined && frozen.promptCacheTtl !== undefined
+        ? { promptCacheTtl: frozen.promptCacheTtl }
         : {}),
       parentRunId: source.runId ?? source.id,
       retryOf: source.runId ?? source.id,
@@ -153,8 +157,19 @@ async function exactRetry(
           );
         }
         params = runStart.normalizeRunStart(ControlRunStartRequest.parse(recordedParams));
-        await ctx.services?.validateResources?.(params.attachments ?? []);
-        await ctx.services?.preflightRunRequirements?.(params);
+        // A same-key repeat whose recovery turn was recorded before its first enqueue
+        // (#249) reads the refs as that turn, which holds them; otherwise this Exact
+        // Retry is a new reference. A changed request under the key conflicts here.
+        const recorded = threadId
+          ? await ctx.services?.findThreadTurnByIdempotency?.(threadId, {
+              key: idempotencyKey,
+              client: "control-api",
+              request: idempotencyRequest,
+            })
+          : null;
+        const heldBy = recorded ? { owner: "turn" as const, id: recorded.id } : undefined;
+        await ctx.services?.validateResources?.(params.attachments ?? [], heldBy);
+        await ctx.services?.preflightRunRequirements?.(params, heldBy);
       },
     );
     if (prior) {
@@ -214,6 +229,7 @@ async function exactRetry(
     const request = { ...activeParams, ...(retryTurnId ? { turnId: retryTurnId } : {}) };
     let job: { id: string };
     try {
+      runStart.requireTaskGroupStoreIdentity(request, ctx.storeId);
       job = await ctx.daemon.enqueue(request, {
         idempotencyKey,
         clientId: "control-api",
@@ -268,21 +284,28 @@ async function respondToExactRetryJob(
       ...(retryTurnId ? { turnId: retryTurnId } : {}),
     });
   }
+  const metadata = runStart.acceptedRunReceipt(accepted, ctx.storeId, ctx.wantsStoreId);
   if (!accepted.runId && TERMINAL_STATES.has(accepted.state)) {
     // The replayed job died BEFORE it bound a run (e.g. the trust gate's typed
     // 403). A 202 here would hand the caller a durable handle for a run that
     // will never exist, and `claudexor retry` would exit 0 on it.
-    const { status, body } = runStart.unboundRunStartResponse(accepted, true, {
-      retryOf: sourceRunId,
-      ...(threadId ? { threadId } : {}),
-      ...(retryTurnId ? { turnId: retryTurnId } : {}),
-    });
+    const { status, body } = runStart.unboundRunStartResponse(
+      accepted,
+      true,
+      {
+        retryOf: sourceRunId,
+        ...(threadId ? { threadId } : {}),
+        ...(retryTurnId ? { turnId: retryTurnId } : {}),
+      },
+      metadata,
+    );
     return ctx.json(res, status, body);
   }
   ctx.json(
     res,
     accepted.runId ? 200 : 202,
     ControlRunRetryResponse.parse({
+      ...metadata,
       retryOf: sourceRunId,
       jobId: accepted.id,
       runId: accepted.runId ?? null,
@@ -296,9 +319,8 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
   const source = await ctx.findRun(id);
   if (!source) return ctx.json(res, 404, { error: "no such run" });
   try {
-    const recorded = restoreRecordedRunReviewRequest(
-      RecordedControlRunStartRequest.parse((await sourceReplayInput(ctx, source)).params),
-    );
+    const accepted = decodeAcceptedRunStart((await sourceReplayInput(ctx, source)).params);
+    const recorded = restoreRecordedRunReviewRequest(accepted.request);
     const retiredAccess = recorded.access === RETIRED_EXTERNAL_SANDBOX_FULL;
     const { access: recordedAccess, ...withoutRecordedAccess } = recorded;
     const parsed = ControlRunStartRequest.parse(
@@ -321,6 +343,15 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
       ...request
     } = parsed;
     const differences = [
+      ...(accepted.deferredDefaults
+        ? [
+            {
+              field: "deferredDefaults",
+              change: "omitted" as const,
+              reason: "new editable run resolves execution preferences from current settings",
+            },
+          ]
+        : []),
       ...(continueModelInherited !== undefined
         ? [
             {
@@ -405,6 +436,7 @@ function readFrozenRouting(source: DaemonRunRecord): {
   models?: Record<string, string>;
   efforts?: Record<string, EffortHint>;
   processingPreference?: ProcessingPreference;
+  promptCacheTtl?: PromptCacheTtl;
 } {
   if (!source.runDir) return {};
   let contract: TaskContract;
@@ -426,6 +458,9 @@ function readFrozenRouting(source: DaemonRunRecord): {
     ...(efforts ? { efforts } : {}),
     ...(contract.processing_preference !== undefined
       ? { processingPreference: contract.processing_preference }
+      : {}),
+    ...(contract.prompt_cache_ttl !== undefined
+      ? { promptCacheTtl: contract.prompt_cache_ttl }
       : {}),
   };
 }

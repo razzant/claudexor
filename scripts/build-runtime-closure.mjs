@@ -48,6 +48,7 @@ import {
 } from "./lib/remote-runtime-archive.mjs";
 import { runtimeArchiveName, runtimeArchiveUrl } from "./lib/runtime-manifest-contract.mjs";
 import { verifyWin32ConptyHelperCustody } from "./lib/win32-conpty-artifact.mjs";
+import { pinnedRelease, stagedPlatforms } from "./lib/betterleaks-stage.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -209,6 +210,31 @@ function assertNoNativeAddons(resources, entries) {
   }
 }
 
+function verifyBundledScanners(resources) {
+  const nativeDir = join(resources, "native");
+  const keys = stagedPlatforms(nativeDir);
+  const allowed = ["darwin-arm64", "darwin-x64"];
+  if (keys.some((key) => !allowed.includes(key)))
+    fail(`runtime closure may carry only darwin publication scanners, found ${keys.join(", ")}`);
+  if (process.env.CLAUDEXOR_REQUIRE_BETTERLEAKS === "1" && keys.length !== allowed.length)
+    fail("release runtime closure requires the darwin-arm64 and darwin-x64 publication scanners");
+  for (const key of keys) {
+    const release = pinnedRelease(key);
+    const dir = join(nativeDir, "betterleaks", key);
+    let matches = false;
+    try {
+      const provenance = JSON.parse(readFileSync(join(dir, "provenance.json"), "utf8"));
+      matches =
+        provenance.upstreamBinarySha256 === release.binarySha256 &&
+        provenance.bundledSha256 === sha256File(join(dir, release.binary)) &&
+        readFileSync(join(dir, "LICENSE"), "utf8").includes("MIT License");
+    } catch {
+      matches = false;
+    }
+    if (!matches) fail(`bundled ${key} publication scanner does not match its pin and provenance`);
+  }
+}
+
 function main() {
   let options;
   try {
@@ -260,6 +286,10 @@ function main() {
   if (expectedWin32ConptySha256 !== undefined) {
     verifyWin32ConptyHelperCustody([win32ConptyHelper], expectedWin32ConptySha256);
   }
+  // The publication scanner (INV-146): this universal Darwin closure may carry
+  // only the darwin-arm64 and darwin-x64 builds, each matching its pin and its
+  // recorded provenance; a release (CLAUDEXOR_REQUIRE_BETTERLEAKS=1) needs both.
+  verifyBundledScanners(resources);
   // Node MUST stay app-owned: refuse to ship it inside the update closure even
   // if a future build-app.sh change accidentally routed it here.
   if (CLOSURE_ENTRIES.includes("node"))

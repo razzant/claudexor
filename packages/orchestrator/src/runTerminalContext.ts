@@ -1,5 +1,5 @@
 import type { ArtifactStore } from "@claudexor/artifact-store";
-import type { BudgetLedger, BudgetTerminal } from "@claudexor/budget";
+import type { BudgetLedger, BudgetTerminal, CashCertainty } from "@claudexor/budget";
 import type { EventLog } from "@claudexor/event-log";
 import type { ModeKind } from "@claudexor/schema";
 import type { ContinuityTerminalFacts } from "./continuity-terminal.js";
@@ -19,6 +19,8 @@ export interface AnnouncedRunContext {
   valuation?: () => number;
   spendEstimated?: () => boolean;
   valuationKnowledge?: () => "exact" | "estimated" | "unknown";
+  /** Reported vs cap-governed certainty of `spend`, for the decision record. */
+  cashCertainty?: () => CashCertainty;
   /** Re-evaluated after Delegate child drain. A child settlement can make the
    * shared family overshoot or become unverifiable after strategy synthesis. */
   budgetTerminal?: () => BudgetTerminal;
@@ -47,6 +49,7 @@ export function announcedRunContext(
     valuation: () => ledger.valuation(),
     spendEstimated: () => ledger.estimated(),
     valuationKnowledge: () => ledger.valuationKnowledge(),
+    cashCertainty: () => ledger.cashCertainty(),
     budgetTerminal: () => ledger.terminal(),
     recheckBudgetAfterBarrier: hasDelegateAuthority,
   };

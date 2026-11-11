@@ -1,0 +1,34 @@
+{
+  "provenance": "Synthetic monetary amounts and billing dates in a recorded dashboard shape; not real account usage.",
+  "observed_at": "2026-10-15T13:04:58Z",
+  "data": {
+    "billingCycleStart": "2026-10-01T00:00:00.000Z",
+    "billingCycleEnd": "2026-11-01T00:00:00.000Z",
+    "membershipType": "ultra",
+    "limitType": "user",
+    "isUnlimited": false,
+    "individualUsage": {
+      "plan": {
+        "enabled": true,
+        "used": 5000,
+        "limit": 5000,
+        "remaining": 0,
+        "breakdown": {
+          "included": 5000,
+          "bonus": 250,
+          "total": 5250
+        },
+        "autoPercentUsed": 100,
+        "apiPercentUsed": 100,
+        "totalPercentUsed": 100
+      },
+      "onDemand": {
+        "enabled": false,
+        "used": 0,
+        "limit": null,
+        "remaining": null
+      }
+    },
+    "teamUsage": {}
+  }
+}

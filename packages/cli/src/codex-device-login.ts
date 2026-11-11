@@ -14,7 +14,7 @@
  * initialized notification → typed method calls, with vendor diagnostics never
  * treated as protocol authority.
  *
- * SECRET DISCIPLINE (INV-062, D-17): the one-time `userCode` is a TRANSIENT
+ * SECRET DISCIPLINE (INV-146, D-17): the one-time `userCode` is a TRANSIENT
  * disclosure. It rides the runner's transient device-code sidecar and a
  * read-time snapshot projection ONLY; it is NEVER journaled, logged, or written
  * to the durable result receipt. The durable authority persists only THAT a
@@ -68,7 +68,7 @@ export function deviceCodeDurableMarker(
   _disclosure: DeviceCodeDisclosure,
 ): DeviceCodeDurableMarker {
   // Deliberately drops loginId, verificationUrl, and userCode: the journal
-  // records THAT a code exists, never the code (D-17, INV-062).
+  // records THAT a code exists, never the code (D-17, INV-146).
   return { disclosed: true };
 }
 

@@ -30,9 +30,12 @@ public func modelFieldState(
     // Same normalization as the field-owned settings patch: whitespace-only
     // is an empty draft, which the save path encodes as an explicit clear.
     let hasDraft = !modelDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    if hasDraft, models != nil { return .refusedLegacy }
-    if hasDraft, loadFailed { return .unavailableWithDraft }
+    // A failed live read (#393) answered with a typed problem proves nothing:
+    // it is "unavailable", never an empty list or an absent stored model.
+    let readFailed = loadFailed || models?.problem != nil
+    if hasDraft, models != nil, !readFailed { return .refusedLegacy }
+    if hasDraft, readFailed { return .unavailableWithDraft }
     if models == nil, !loadFailed { return .loading }
-    if loadFailed { return .unavailable }
+    if readFailed { return .unavailable }
     return .defaultOnly
 }

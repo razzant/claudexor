@@ -22,6 +22,7 @@ extension AppModel {
         do {
             _ = try await requestClient.updateCredentialProfile(
                 harnessId: harnessId, profileId: profileId, enabled: enabled)
+            noteAccountResourceBindingWrite(AccountTarget(harness: harnessId, profileId: profileId), at: locationID)
             await refreshCredentialProfilesAfterMutation(locationID: locationID)
             return nil
         } catch {
@@ -71,6 +72,7 @@ extension AppModel {
         do {
             let receipt = try await requestClient.deleteCredentialProfile(
                 harnessId: harnessId, profileId: profileId)
+            noteAccountResourceBindingWrite(AccountTarget(harness: harnessId, profileId: profileId), at: locationID)
             if draftCredentialProfileId == profileId {
                 draftCredentialProfileId = nil
                 if draftPrimaryHarness == harnessId { draftPrimaryHarness = nil }

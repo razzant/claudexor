@@ -1,3 +1,4 @@
+import { resolveCodexBin } from "@claudexor/harness-codex";
 import { prepareHarnessCommand, killOwnedProcessTree } from "@claudexor/core";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -21,7 +22,7 @@ import {
 import {
   emptyResourceFacet,
   type AccountResourceObservation,
-  type AccountTarget,
+  type AccountResourceTarget,
   type QuotaAbsence,
   type QuotaSnapshot,
 } from "@claudexor/schema";
@@ -34,8 +35,6 @@ import {
 } from "./quota-refresh-diagnostics.js";
 
 export { parseCodexRateLimitsResponse } from "@claudexor/harness-codex";
-
-const CODEX_BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 
 /** One subject per logged-in CODEX_HOME: the default native home (subject null)
  * plus every enabled codex config_dir_login profile (subject = profile_id).
@@ -156,7 +155,7 @@ export async function refreshCodexQuota(
 /** The default native home plus every enabled codex config_dir_login profile,
  * resolved to its scoped CODEX_HOME (the profile's isolation_locator dir). */
 function codexQuotaCandidates(
-  target?: AccountTarget,
+  target?: AccountResourceTarget,
 ): Array<{ subjectId: string | null; home: string }> {
   // A MIGRATED harness has no null subject (its former default home IS the
   // auto-registered row the profile loop covers): probing it again would
@@ -237,13 +236,15 @@ export async function requestCodexAccount(
       reason,
       nativeRpcCode,
       ...(outcome === "started"
-        ? { binary: harnessBinaryIdentity(bin ?? CODEX_BIN, invocation.env) }
+        ? { binary: harnessBinaryIdentity(bin ?? resolveCodexBin(), invocation.env) }
         : {}),
     });
-  const command = prepareHarnessCommand(bin ?? CODEX_BIN, invocation.args, invocation.env);
+  const command = prepareHarnessCommand(bin ?? resolveCodexBin(), invocation.args, invocation.env);
   const child = start(command.binary, command.args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: command.env,
+    // A captured background probe: no console window for the direct child on Windows.
+    windowsHide: true,
   });
   const lines = createInterface({ input: child.stdout });
   const timeout = setTimeout(() => killOwnedProcessTree(child, "SIGKILL"), 10_000);

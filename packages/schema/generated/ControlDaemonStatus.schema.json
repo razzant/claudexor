@@ -500,6 +500,28 @@
                         }
                       ],
                       "description": "Longest COMMIT call; null before the first."
+                    },
+                    "p50_ms": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Lifetime COMMIT p50, microsecond histogram with two significant digits; absent on older engines."
+                    },
+                    "p99_ms": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/store/properties/flusher/anyOf/0/properties/interval_ms"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Lifetime COMMIT p99, microsecond histogram with two significant digits; absent on older engines."
                     }
                   },
                   "required": [
@@ -605,6 +627,222 @@
           ],
           "additionalProperties": false
         },
+        "timing": {
+          "type": "object",
+          "properties": {
+            "windowMs": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "windowEndedAt": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO-8601 timestamp string."
+            },
+            "routes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "method": {
+                    "type": "string"
+                  },
+                  "route": {
+                    "type": "string"
+                  },
+                  "outcomes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "served",
+                            "not_found",
+                            "disconnected_at_entry",
+                            "disconnected",
+                            "failed"
+                          ]
+                        },
+                        "lifetime": {
+                          "type": "object",
+                          "properties": {
+                            "count": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "p50Ms": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "p99Ms": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "maxMs": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "count",
+                            "p50Ms",
+                            "p99Ms",
+                            "maxMs"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "window": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "lifetime",
+                        "window"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "maxItems": 5
+                  },
+                  "lifetime": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                  },
+                  "window": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "method",
+                  "route",
+                  "lifetime",
+                  "window"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 256,
+              "description": "Completed responses or disconnects by method and catalog template (never raw URLs). SSE latency includes the stream lifetime. At most 256 keys including OTHER <unmatched>. Fixed histograms use microseconds and two significant digits; max is exact to a microsecond. Window is the last completed loop-facts window, null before the first; empty windows have count zero and null latencies."
+            },
+            "worstSync": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": [
+                      "store.begin_immediate",
+                      "store.commit",
+                      "store.external_write",
+                      "control.run_detail",
+                      "control.run_summary",
+                      "scope.persist"
+                    ]
+                  },
+                  "durationMs": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
+                  },
+                  "at": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/memory/properties/atAdmission/anyOf/0/properties/at"
+                  }
+                },
+                "required": [
+                  "operation",
+                  "durationMs",
+                  "at"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 32,
+              "description": "The 32 longest instrumented synchronous sections since process start, descending by duration, retaining later samples on ties. Labels contain no SQL, paths, IDs or payloads. Scope persistence measures synchronous serialization only; its file writes are asynchronous. Sections can overlap; these facts do not attribute a stall to disk or another cause."
+            },
+            "bulk": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "cursor",
+                      "detail",
+                      "summary",
+                      "event-replay",
+                      "artifact"
+                    ]
+                  },
+                  "queue": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                  },
+                  "projection": {
+                    "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/routes/items/properties/outcomes/items/properties/lifetime"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "queue",
+                  "projection"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Finite bulk reads: lifetime queue residence and worker execution wall times, including scheduling and asynchronous retained-output publication. These are not main-thread synchronous sections."
+            }
+          },
+          "required": [
+            "windowMs",
+            "windowEndedAt",
+            "routes",
+            "worstSync"
+          ],
+          "additionalProperties": false,
+          "description": "Bounded process timing facts; absent on older engines."
+        },
         "loop": {
           "anyOf": [
             {
@@ -633,14 +871,13 @@
                           "minimum": 0
                         },
                         "p50Ms": {
-                          "type": "number",
-                          "minimum": 0
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
                         },
                         "p99Ms": {
-                          "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
                         },
                         "maxMs": {
-                          "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                          "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
                         }
                       },
                       "required": [
@@ -679,10 +916,10 @@
                       "minimum": 0
                     },
                     "totalMs": {
-                      "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
                     },
                     "maxMs": {
-                      "$ref": "#/definitions/ControlDaemonStatus/properties/loop/anyOf/0/properties/delay/anyOf/0/properties/p50Ms"
+                      "$ref": "#/definitions/ControlDaemonStatus/properties/timing/properties/windowMs/anyOf/0"
                     }
                   },
                   "required": [

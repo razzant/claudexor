@@ -64,6 +64,7 @@
             "interaction.answered",
             "interaction.timeout",
             "interaction.answer_discarded",
+            "interaction.withdrawn",
             "message.accepted",
             "message.delivered",
             "message.refused",
@@ -103,7 +104,9 @@
             "run.continuation",
             "run.continuation.denied",
             "run.continuity",
-            "workspace.retained"
+            "workspace.retained",
+            "workspace.prepared",
+            "workspace.settlement_failed"
           ],
           "description": "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs."
         },

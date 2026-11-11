@@ -11,6 +11,10 @@ import UniformTypeIdentifiers
 struct ThreadsScreen: View {
     @Environment(AppModel.self) var model
     @State var composerText = ""
+    @State private var composerInput = ConversationComposerInput()
+    /// Eager rows avoid the macOS 26 lazy-history layout feedback loop. Keep
+    /// their number bounded; older turns remain available through navigation.
+    @State var feedState = ConversationFeedState()
     /// Files/images staged for upload before the next turn. Images are gated by
     /// each selected harness's finite attachment-input declaration.
     @State var composerAttachments: [PendingAttachment] = []
@@ -229,6 +233,8 @@ struct ThreadsScreen: View {
         }
         .navigationTitle(navTitle)
         .navigationSubtitle(navSubtitle)
+        .onChange(of: model.selectedThreadId) { feedState = ConversationFeedState() }
+        .onChange(of: model.selectedExecutionLocation) { feedState = ConversationFeedState() }
     }
 
     /// Inset of the floating sidebar panel from the window edges (leading + vertical).
@@ -312,44 +318,13 @@ struct ThreadsScreen: View {
 
     private var conversation: some View {
         VStack(spacing: 0) {
-            if let detail = model.selectedThreadDetail {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                            ForEach(detail.turns) { turn in
-                                // C (D-13): the readable 680pt measure is applied PER
-                                // ROW, not as a double-frame around the whole LazyVStack
-                                // — a sidebar drag / width change no longer relayouts the
-                                // entire scrolled column as one framed unit; each row
-                                // measures independently (scroll position stays anchored).
-                                TurnCard(
-                                    turn: turn,
-                                    target: model.turnStartTarget(
-                                        locationID: model.selectedExecutionLocation,
-                                        thread: detail.thread),
-                                    routingOptions: resolvedComposerOptions.routingOverridesOnly,
-                                    executionRoot: ThreadWorkspacePanel.executionRoot(for: detail.thread))
-                                    .conversationMeasure()
-                                    .id(turn.id)
-                            }
-                            if !detail.sessions.isEmpty {
-                                sessionsFooter(detail.sessions)
-                                    .conversationMeasure()
-                            }
-                        }
-                        .padding(Theme.Spacing.lg)
-                        // B (D-13): selection backing is SCOPED to the text nodes users
-                        // actually select (message / answer / transcript Text carry their
-                        // own `.textSelection(.enabled)`). Overriding the window-root
-                        // global (RootView, §2.9) to DISABLED here strips the selectable
-                        // NSText backing from the feed's receipts / chips / status
-                        // containers, which never needed it; a descendant `.enabled` on
-                        // real prose still wins locally.
-                        .textSelection(.disabled)
-                    }
-                    .onChange(of: detail.turns.count) {
-                        if let last = detail.turns.last { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
+            if let history = model.selectedHistory, history.header != nil {
+                ConversationFeed(state: feedState, history: history,
+                    routingOptions: resolvedComposerOptions.routingOverridesOnly,
+                    sessions: AnyView(sessionsFooter(history.header?.sessions ?? []).conversationMeasure()))
+            } else if model.selectedThreadId != nil {
+                SavedHistoryControl(state: model.threadStatus == nil ? .loading : .failed) {
+                    if let id = model.selectedThreadId { Task { await model.openThread(locationID: model.selectedExecutionLocation, id: id) } }
                 }
             } else {
                 emptyConversation
@@ -365,6 +340,7 @@ struct ThreadsScreen: View {
 
             composer
         }
+        .environment(\.conversationComposerInput, composerInput)
     }
 
     /// The conversation's window title/subtitle — the thread title lives in the
@@ -395,7 +371,8 @@ struct ThreadsScreen: View {
         // wrapping layout bounded to the column width can never overflow.
         FlowLayout(spacing: Theme.Spacing.sm) {
             IntentMenu(selection: $composerMode, projectScoped: threadHasProject)
-            ProjectChip(name: projectChipName,
+            ProjectChip(context: composerSelectionContext,
+                        metadataKnown: projectChipMetadataKnown,
                         bound: model.selectedThreadId != nil,
                         hasProject: threadHasProject,
                         recent: model.recentProjects,
@@ -546,7 +523,7 @@ struct ThreadsScreen: View {
                                placeholder: inputCopy.placeholder,
                                accessibilityName: inputCopy.accessibilityName,
                                accessibilityHintText: inputCopy.accessibilityHint,
-                               onSubmit: send)
+                               onSubmit: send, composerInput: composerInput)
                     // While the head turn is still running, a new turn can't start over a
                     // live one (the native session is busy) — swap Send→Stop so the only
                     // action is to cancel the active run, not queue a doomed second turn.

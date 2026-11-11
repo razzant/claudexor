@@ -1,0 +1,71 @@
+{
+  "$ref": "#/definitions/ControlUploadImportRequest",
+  "definitions": {
+    "ControlUploadImportRequest": {
+      "type": "object",
+      "properties": {
+        "expectedStoreId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Store UUID from the opt-in handshake, saved with the key BEFORE the first import and replayed unchanged; never replaced by the current store. A different store is refused before any effect."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "file"
+          ],
+          "description": "Kind of attached resource: image input or generic file bytes."
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "default": ""
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Opaque caller identity of the selected source, such as the absolute path a local client read or a task artifact id. Bound into the key only; the daemon never reads, resolves, stores or returns it."
+        },
+        "lifetime": {
+          "type": "string",
+          "const": "managed",
+          "description": "Opt in to a managed resource lifetime (support: the POST /v2/resources/:id/release catalog descriptor). Bound into the key like kind, mime, name and source."
+        },
+        "content": {
+          "type": "object",
+          "properties": {
+            "sizeBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Exact byte length."
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "description": "Exact digest of the bytes: \"sha256:\" and 64 lowercase hex digits."
+            }
+          },
+          "required": [
+            "sizeBytes",
+            "sha256"
+          ],
+          "additionalProperties": false,
+          "description": "Required to begin an import. Omit it to read or replay an already bound key without touching the source."
+        }
+      },
+      "required": [
+        "expectedStoreId",
+        "kind",
+        "mime"
+      ],
+      "additionalProperties": false,
+      "description": "Keyed import of one ordinary attachment through the upload owner."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

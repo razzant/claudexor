@@ -1,21 +1,31 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { ControlRunResult, RunDeliveryState, WorkProduct } from "@claudexor/schema";
+import {
+  ControlRunResult,
+  RunDeliveryState,
+  type RunTakenReason,
+  WorkProduct,
+  type WorkspaceFilesManifest,
+} from "@claudexor/schema";
 import { nowIso } from "@claudexor/util";
-import { releaseRetainedEnvelope, retainedEnvelopeOfRun } from "@claudexor/workspace";
+import {
+  deliverableWorkspaceChanges,
+  releaseRetainedEnvelope,
+  retainedEnvelopeOfRun,
+} from "@claudexor/workspace";
 import { safeArtifactRoot } from "./artifact-paths.js";
 import { safeReadStructuredArtifact } from "./run-artifact-read.js";
 import type { DaemonRunRecord } from "./run-record.js";
 
 /** Revert targets the tree recorded at execution, even if its thread moved later. */
-export function recordedExecutionRoot(rec: DaemonRunRecord): string | null {
-  const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+export function recordedExecutionRoot(rec: DaemonRunRecord, maxBytes?: number): string | null {
+  const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct, maxBytes);
   return typeof wp?.meta["execution_root"] === "string" ? wp.meta["execution_root"] : null;
 }
 
-export function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
-  const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+export function controlRunResult(rec: DaemonRunRecord, maxBytes?: number): ControlRunResult {
+  const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct, maxBytes);
   const meta = (wp?.meta ?? {}) as Record<string, unknown>;
   const kindRaw = meta["result_kind"];
   const kind =
@@ -28,19 +38,19 @@ export function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
       : "none";
   const ds = meta["diffstat"] as
     { files?: unknown; additions?: unknown; deletions?: unknown } | undefined;
+  // Unknown is not zero: a Git result with no rendered patch has no line counts.
   const diffStat =
-    ds && typeof ds.files === "number"
-      ? {
-          files: ds.files,
-          additions: typeof ds.additions === "number" ? ds.additions : 0,
-          deletions: typeof ds.deletions === "number" ? ds.deletions : 0,
-        }
+    ds &&
+    typeof ds.files === "number" &&
+    typeof ds.additions === "number" &&
+    typeof ds.deletions === "number"
+      ? { files: ds.files, additions: ds.additions, deletions: ds.deletions }
       : null;
   // Delivery/apply state is MUTABLE and lives in its own artifact
   // (final/delivery_state.yaml, V8/PLAN addendum 2); work_product.yaml is the
   // immutable run snapshot. Prefer the delivery-state overlay when present,
   // else fall back to the initial snapshot the orchestrator stamped.
-  const delivery = readDeliveryState(rec);
+  const delivery = readDeliveryState(rec, maxBytes);
   const applyStateRaw = delivery?.applyState ?? meta["apply_state"];
   const applyState =
     applyStateRaw === "applied" ||
@@ -53,9 +63,13 @@ export function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
   const postTurnSha =
     delivery?.postTurnSha ??
     (typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null);
+  // An explicit null is a delivery that left no anchor: nothing older stands in.
   const revertAnchorId =
-    delivery?.revertAnchorId ??
-    (typeof meta["revert_anchor_id"] === "string" ? meta["revert_anchor_id"] : null);
+    delivery?.revertAnchorId !== undefined
+      ? delivery.revertAnchorId
+      : typeof meta["revert_anchor_id"] === "string"
+        ? meta["revert_anchor_id"]
+        : null;
   const revertable =
     (applyState === "applied" || applyState === "applied_review_blocked") &&
     revertAnchorId !== null;
@@ -75,8 +89,11 @@ export function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
 /** Read the MUTABLE delivery/apply state overlay (final/delivery_state.yaml);
  * null when the run never delivered/reverted (its state is the immutable
  * work_product snapshot). */
-export function readDeliveryState(rec: DaemonRunRecord): RunDeliveryState | null {
-  return safeReadStructuredArtifact(rec, "final/delivery_state.yaml", RunDeliveryState);
+export function readDeliveryState(
+  rec: DaemonRunRecord,
+  maxBytes?: number,
+): RunDeliveryState | null {
+  return safeReadStructuredArtifact(rec, "final/delivery_state.yaml", RunDeliveryState, maxBytes);
 }
 
 /** Flip the run's MUTABLE delivery/apply state after a successful apply or
@@ -88,9 +105,13 @@ export function readDeliveryState(rec: DaemonRunRecord): RunDeliveryState | null
  * already happened; a metadata write failure must not 500 the response. */
 export function markRunApplyState(
   rec: DaemonRunRecord,
-  state: "applied" | "reverted" | "discarded" | "not_applied",
+  state: "applied" | "applied_review_blocked" | "reverted" | "discarded" | "not_applied",
   appliedPaths?: string[],
   required = false,
+  /** The anchor of THIS delivery (an object delivery's actual pair). Null: it left
+   * none, so no earlier anchor may answer for it. Omitted: it has nothing to say,
+   * and the anchor already recorded stands. */
+  deliveryAnchorId?: string | null,
 ): void {
   try {
     if (!rec.runDir) return;
@@ -107,11 +128,18 @@ export function markRunApplyState(
     const next = RunDeliveryState.parse({
       appliedPaths: appliedPaths ?? prev?.appliedPaths,
       discardedAt: state === "discarded" ? nowIso() : prev?.discardedAt,
+      takenAt: prev?.takenAt,
+      takenReason: prev?.takenReason,
       applyState: state,
       deliveredAt: state === "applied" ? nowIso() : (prev?.deliveredAt ?? null),
       revertAnchorId:
-        prev?.revertAnchorId ??
-        (typeof meta["revert_anchor_id"] === "string" ? meta["revert_anchor_id"] : null),
+        deliveryAnchorId !== undefined
+          ? deliveryAnchorId
+          : prev?.revertAnchorId !== undefined
+            ? prev.revertAnchorId
+            : typeof meta["revert_anchor_id"] === "string"
+              ? meta["revert_anchor_id"]
+              : null,
       postTurnSha:
         prev?.postTurnSha ??
         (typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null),
@@ -128,4 +156,52 @@ export function markRunApplyState(
     if (required) throw error;
     /* best-effort: the revert succeeded regardless of this metadata flip */
   }
+}
+
+/** Record that the caller has captured a terminal patch result. This is a
+ * delivery-state overlay, not a second retention disposition: the immutable
+ * work product and exact patch remain available until ordinary retention. */
+export function markRunTaken(rec: DaemonRunRecord, reason: RunTakenReason): void {
+  if (!rec.runDir) throw new Error("cannot record taken result without a run directory");
+  const root = safeArtifactRoot(rec.runDir);
+  if (!root) throw new Error("cannot record taken result outside the run artifact root");
+  const dsPath = join(root, "final", "delivery_state.yaml");
+  const prev = existsSync(dsPath)
+    ? (RunDeliveryState.safeParse(parseYaml(readFileSync(dsPath, "utf8"))).data ?? null)
+    : null;
+  const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+  const meta = (wp?.meta ?? {}) as Record<string, unknown>;
+  const next = RunDeliveryState.parse({
+    applyState: prev?.applyState ?? controlRunResult(rec).applyState,
+    appliedPaths: prev?.appliedPaths,
+    discardedAt: prev?.discardedAt,
+    deliveredAt: prev?.deliveredAt ?? null,
+    revertAnchorId:
+      prev?.revertAnchorId !== undefined
+        ? prev.revertAnchorId
+        : typeof meta["revert_anchor_id"] === "string"
+          ? meta["revert_anchor_id"]
+          : null,
+    postTurnSha:
+      prev?.postTurnSha ??
+      (typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null),
+    takenAt: prev?.takenAt ?? nowIso(),
+    takenReason: prev?.takenReason ?? reason,
+  });
+  const tmp = `${dsPath}.tmp-${process.pid}`;
+  writeFileSync(tmp, stringifyYaml(next), "utf8");
+  renameSync(tmp, dsPath);
+}
+
+/** A files result is applied once every deliverable change of its manifest is. */
+export function markFilesAppliedState(
+  record: DaemonRunRecord,
+  paths: string[],
+  manifest: WorkspaceFilesManifest,
+): void {
+  const applied = [...new Set([...(readDeliveryState(record)?.appliedPaths ?? []), ...paths])];
+  const complete =
+    deliverableWorkspaceChanges(manifest).every((entry) => applied.includes(entry.path)) &&
+    !manifest.entries.some((entry) => entry.before === "unknown" && entry.after !== null);
+  markRunApplyState(record, complete ? "applied" : "not_applied", applied, true);
 }

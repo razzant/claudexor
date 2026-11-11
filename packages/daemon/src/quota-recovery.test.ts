@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { quotaSnapshotAvailability } from "@claudexor/schema";
+import { REOPENING_UNKNOWN_COOLDOWN_ID, quotaSnapshotAvailability } from "@claudexor/schema";
 import type { QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
 import { withoutSupersededQuotaConstraints } from "./quota-registry-support.js";
 
@@ -143,6 +143,63 @@ describe("primary quota recovery", () => {
     expect(withoutSupersededQuotaConstraints(old, unrelated, now)).toBe(old);
     const matching = primary({ constraints: [window("known", { applies_to_models: ["b", "a"] })] });
     expect(withoutSupersededQuotaConstraints(old, matching, now).constraints).toEqual([]);
+  });
+
+  describe("a usage refusal with no reopening time (#558) outlives every read (#318)", () => {
+    // The engine's own bounded recheck: five minutes after the refusal.
+    const recheck = "2026-10-04T12:04:00Z";
+    const refusal = window(REOPENING_UNKNOWN_COOLDOWN_ID, {
+      used_ratio: null,
+      window_seconds: null,
+      resets_at: null,
+      cooldown_until: recheck,
+      applies_to_request_kinds: ["text"],
+    });
+    const refused = (extra: Partial<QuotaSnapshot> = {}) =>
+      snapshot({ constraints: [refusal], ...extra });
+    const justBefore = new Date(Date.parse(recheck) - 1);
+
+    it.each([
+      { constraints: [window("codex:primary")] },
+      { constraints: [window("codex:primary", { used_ratio: null })] },
+      { constraints: [window("review:primary", { used_ratio: 0.1 })] },
+      { constraints: [] },
+    ])("a newer recognized read neither retires nor moves it: %j", ({ constraints }) => {
+      const old = refused();
+      expect(withoutSupersededQuotaConstraints(old, primary({ constraints }), now)).toBe(old);
+      expect(old.constraints).toEqual([refusal]);
+      expect(quotaSnapshotAvailability(old, { now: justBefore }).state).not.toBe("available");
+      // Its own recheck alone ends the block; the row may then try again.
+      expect(quotaSnapshotAvailability(old, { now: new Date(recheck) }).state).toBe("available");
+    });
+
+    it("keeps a newer spent window's own date beside it", () => {
+      const spent = window("codex:primary", { used_ratio: 1 });
+      const current = primary({ constraints: [spent] });
+      expect(withoutSupersededQuotaConstraints(refused(), current, now).constraints).toEqual([
+        refusal,
+      ]);
+      expect(quotaSnapshotAvailability(current, { now })).toMatchObject({
+        state: "exhausted",
+        resets_at: reset,
+      });
+    });
+
+    it("only a generic refusal beside it yields to the same read", () => {
+      const old = snapshot({ constraints: [cooldown, refusal] });
+      expect(
+        withoutSupersededQuotaConstraints(old, primary({ constraints: [] }), now).constraints,
+      ).toEqual([refusal]);
+    });
+
+    it("a model-scoped refusal is kept even by a measured read of its own scope", () => {
+      const scoped = { ...refusal, applies_to_models: ["model-one"] };
+      const old = refused({ constraints: [scoped] });
+      const measured = primary({
+        constraints: [window("reopening_unknown", { applies_to_models: ["model-one"] })],
+      });
+      expect(withoutSupersededQuotaConstraints(old, measured, now)).toBe(old);
+    });
   });
 
   it("does not let a successful read erase a refusal observed after the request began", () => {

@@ -8,7 +8,10 @@ import {
 } from "./control.js";
 import { Id, ModeKind } from "./primitives.js";
 import { DeliveryReceipt } from "./delivery.js";
+import { GitResultRefusal } from "./git-result.js";
 import { RunExecution } from "./control-run-execution.js";
+import { DeferredMessageProjection } from "./deferred-message.js";
+import { TaskGroupReceipt } from "./task-group.js";
 
 export const ControlRunStartResponse = z
   .union([ControlRunStartInfo, ControlQueuedRunInfo])
@@ -41,6 +44,9 @@ export const ControlRunControlResponse = z
       .default([])
       .describe("Active Claudexor Delegate descendants included in this cancellation."),
     message: z.string().optional().describe("Human-readable detail."),
+    deferredMessage: DeferredMessageProjection.optional().describe(
+      "The run's latest next-message draft after this cancel: a waiting draft is held by the same call; an already accepted successor is named, not cancelled.",
+    ),
   })
   .describe("Response to a run control request.");
 export type ControlRunControlResponse = z.infer<typeof ControlRunControlResponse>;
@@ -100,6 +106,10 @@ export const ControlApplyCheckResponse = z
       .boolean()
       .default(false)
       .describe("True when the clean check is an already-applied idempotent no-op."),
+    /** #535: the delivery owner's typed reason, as a delivery of this result would refuse. */
+    refusal: GitResultRefusal.optional().describe(
+      "Typed reason an object result's dry run refused (code, message, bounded paths); absent otherwise.",
+    ),
   })
   .strict()
   .describe("Mechanical git apply --check result.");
@@ -111,6 +121,7 @@ export const ControlDeliveryResponse = DeliveryReceipt.describe(
 export type ControlDeliveryResponse = z.infer<typeof ControlDeliveryResponse>;
 
 export const ControlThreadTurnRequest = ControlRunStartRequest.omit({
+  taskGroupId: true,
   scope: true,
   execution: true,
   threadId: true,
@@ -126,12 +137,17 @@ export const ControlThreadTurnRequest = ControlRunStartRequest.omit({
     mode: ModeKind.optional().describe(
       "Turn mode override; omission inherits the thread's default mode.",
     ),
-    execution: RunExecution.pick({ workspaceKind: true, scopePaths: true, isolation: true })
+    execution: RunExecution.pick({
+      workspaceKind: true,
+      scopePaths: true,
+      isolation: true,
+      auxiliaryWritableRoots: true,
+    })
       .partial()
       .strict()
       .optional()
       .describe(
-        "Directory geometry for this turn; project identity and execution root remain thread-owned.",
+        "Directory geometry and this turn's own auxiliary writable directories; project identity and execution root remain thread-owned, and an omitted list grants nothing.",
       ),
     /** Source plan whose open questions this follow-up answers. The thread
      * route validates ownership/current-head/duplicate submission. */
@@ -150,8 +166,19 @@ export type ControlThreadTurnRequest = z.infer<typeof ControlThreadTurnRequest>;
 
 export const ControlThreadTurnResponse = z
   .union([
-    ControlRunStartInfo.extend({ threadId: Id, turnId: Id }),
-    z.object({ jobId: Id, threadId: Id, turnId: Id, state: z.string().min(1) }).strict(),
+    ControlRunStartInfo.omit({ taskGroupId: true }).extend({
+      threadId: Id,
+      turnId: Id,
+    }),
+    z
+      .object({
+        storeId: TaskGroupReceipt.shape.storeId.optional(),
+        jobId: Id,
+        threadId: Id,
+        turnId: Id,
+        state: z.string().min(1),
+      })
+      .strict(),
   ])
   .describe("Durable handle returned by thread turn create or Exact Retry.");
 export type ControlThreadTurnResponse = z.infer<typeof ControlThreadTurnResponse>;

@@ -1,5 +1,414 @@
 # @claudexor/daemon
 
+## 6.0.0
+
+### Minor Changes
+
+- 2241f40: Bound model-operation receipt history to 30 days after termination (#637), without applying the Agent history count cap. Active operations, the unacknowledged result-pickup window and unsettled resources remain protected. After expiry, the operation and its idempotency binding can be absent: a late lookup proves neither non-dispatch nor zero cost, and re-uploading new request bytes under an expired key is a new request. This deliberately replaces the indefinite compact-receipt guarantee (CONCEPT-CHANGE(INV-064)).
+
+  Reduce retention inventory reads to product and delivery commands in bounded windows of existing rows (#638). Rowid gaps, archived generations, unknown product states and pending deliveries retain their meanings; there is no schema or index migration. Existing resources, conversation history and native profiles are not blanket-pruned.
+
+### Patch Changes
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- 7be23bd: A failed model operation names the model it asked for (#649). A failed or
+  interrupted operation, and one cancelled before it started, carries the
+  requested model in `problem.context.requestedModel`; `route.model` still names
+  only a model the provider reported, so a failure no longer reads as if no model
+  was requested. Execution reports the model named by the request bytes it read,
+  and none when those bytes do not parse. An operation that ends before that read
+  (cancelled while queued, or unable to read its input), and one the engine marks
+  interrupted at restart without an execution receipt, names the model stored in
+  the command parameters outside idempotency identity, so a same-key retry is
+  unchanged. Create stores the model its request bytes parsed; a raw
+  `claudexor.enqueue` caller that bypasses create can set that parameter itself,
+  and the engine does not verify it. A queued cancel now reports the honest
+  `model_operation_cancelled` problem with dispatch still `not_started` and no
+  response, usage or cost. Successful results and operations recorded before this
+  release read back unchanged. An older release refuses a store this release has
+  served (`root_authority_floor_regression`); only an older build of the same
+  version could open it, and it would reject the new parameter and report those
+  operations as not found.
+- 7be23bd: A Codex usage refusal that names no reopening time (#558) now lasts until its
+  own five-minute recheck (#318). Before, any newer successful quota read, an
+  empty one included, cleared it, so a Refresh or the background poll let the
+  refused account be tried again at once. Reads no longer clear or extend it; a
+  generic cooldown and a vendor-dated window keep their existing behavior. After
+  the recheck the next requested run may try the account; nothing probes the
+  vendor in between, and runs requested at the same moment each start.
+
+  Claude's exact `oauth_not_allowed_for_organization` API error is now the
+  existing subscription refusal (`oauth_org_not_allowed`) instead of an untyped
+  failure, so the same request is no longer retried on the same account. The
+  vendor's own code and words stay in the failure record, and the account is set
+  aside for that refusal's existing period: up to an hour, or until a new sign-in
+  or a later success on it. A pinned run still never moves to another account or
+  an API key.
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [a20492c]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/core@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/workspace@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- Sweep orphan lane homes in unregistered runtime namespaces while protecting live, archived and quarantined owners.
+- Carry latched retention hold causes into GC examples, and preserve intermediate registration roots, late recovery holds and deferred anchors during retention.
+- d9e8247: A Codex usage refusal is no longer treated as a network blip (#558), and the vendor's own failure record reaches the run's diagnostics without an OS exit code (#414).
+
+  Codex's typed `usage_limit_exceeded` (a spent plan window or a workspace out of credits) now becomes a typed limit with no known reopening time (`rate_limit.reopening: "unknown"`), read from the rollout record or the app-server frame and never from the message words. The run never resumes or replays the same account for it, and neither does an ordinary reviewer when the refusal's words also read as a broken stream; a broken stream with no typed refusal is still retried on the same account as before. A pinned account ends at once with `code: null`, `category: harness_unavailable`, `resetsAt: null` and the vendor's cause, because `subscription_window_exhausted` tells every reader that waiting cures it, which nobody knows here. An unpinned run follows its `limit_action` (the default moves to the next ready account), and with no other account it ends with an undated `credential_pool_exhausted`. The daemon keeps the refusal for its existing bounded cooldown under the identity `cooldown:reopening_unknown`, with no invented usage or reset, so the next pinned run is refused before spawn with the same honest record and the pool ranks the account last and stays undated, even when another of the account's windows has a date. The same record is kept when a pinned Ask's `fallback_model` meets the refusal during attempt setup, and the Accounts `next_up` text no longer says unpinned runs wait for a reset when a member was refused this way. A newer recognized quota read retires the refusal under the same rules as a generic refusal. Vendor-dated windows, retry delays and vendor reset days with no such refusal beside them keep their code and reset. The `vendorFailure` of a failed try is recorded whether or not the try ended with an exit code, on that try's `poolAttempts` row and on the failure record for the attempt's last try only. A candidate that changed files before such a typed refusal now keeps the refusal's code, reset and remedy on its failure record instead of a generic harness error.
+
+- 2be1a9c: Questions Claude Code asks through `AskUserQuestion` now reach every answering surface without the former length cuts (2,000 characters for a question, 100 for a header, 500 for an option label and 1,000 for a description), and a selected long label goes back unchanged (#560). Non-blank free text is sent as written; `claudexor follow` and the macOS card take one line per question. The daemon refuses an answer row that names a question the interaction does not list, repeats a question, or carries neither a label nor non-blank text (`rejected`), and the question stays pending; partial answers, the empty-set decline and selected labels are handled as before. A pending question that no live session holds is answered `not_found` instead of `delivered`, and `delivered` does not prove that the Claude process read the answer. In ACP, each permission prompt now also shows the question's header and option descriptions, a multi-select question with every option skipped is left out instead of sent as an empty row, and a turn-text message names every question left without an answer: with nothing chosen the run stays paused on the set until it is answered elsewhere or expires, and otherwise the message says the chosen answers will be submitted as a partial answer that closes the set once it is accepted. The macOS question card wraps long option labels and scrolls long questions inside a bounded area. No live Claude CLI was run for this change, and the cause of the incident reported in #560 is not established.
+- 8fb1023: Upload bytes, model-request reads and the full trust-file list no longer run on the daemon's request thread. A scoped trust entry says whether it came from a file or from defaults, so a caller can tell a missing grant from an explicit refusal without listing every repo. The daemon sizes its libuv pool from the host when that variable is unset, and upload writes leave two of those threads free so DNS still runs while parts are being written.
+- 8905c72: Add exact thread export (`claudexor thread export`, `GET /v2/threads/:id/export`) and conditional retirement against that export (`claudexor thread-retire`, `POST /v2/threads/:id/retire`), with `POST /v2/threads/:id/retire/abandon` to settle an unanswered operation and `GET /v2/threads/:id/retirement` (`claudexor thread retirement`) to read its outcome. A partial export names each gap and cannot retire. Retirement reaches only what a recorded real session proved, currently Claude 2.1.316 transcripts and spilled tool output on Darwin; any other host platform or session material is a named gap, exported byte-exact only where its harness declares its layout. A name the bundle's volume cannot hold is kept by item id, with the complete name in the manifest and the place in the receipt. `thread-retire` re-hashes and syncs every byte its bundle received, and the directories above it, before it sends a new operation, keeps that request in the bundle until an answer settles it, and names it in every unknown answer, so repeating the command repeats that operation. A purged thread admits no new work: a turn's create or retry, Exact Retry and decision rerun answer 409 `thread_purged`, while a command the thread accepted still answers its replay and a run's retained result can still be applied, discarded or reverted. Stop ends an export's journal or transcript read at its next chunk, and a restart's replay of an open retirement cleanup between lane entries. An export observes the thread's closure in the store maintenance worker's read-only snapshot, off the request thread, and an export read cancelled by Stop answers 503 `daemon_stopping` (retryable); the retirement decision still rereads the closure synchronously inside its transaction, at a cost that grows with the closure.
+- d4a8b3c: Record Windows kernel birth identity in new daemon writer leases and use it when checking recorded owners (#580). A recycled PID whose start time can be read no longer impersonates that writer; one whose start time cannot be read keeps the record held. With a recorded birth, `claudexor daemon stop` and an admitted `claudexord --stop` on Windows may now force-terminate that exact daemon process after the grace window (one process, not its tree), which was previously withheld; a mismatched or unreadable birth is never signalled. Legacy PID-only records remain conservative: file age is not identity and never authorizes takeover, and their manual recovery is documented with no new command or automatic release. Core identity defaults and root authority are unchanged.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b9f57d9]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [780ec76]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [780ec76]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/workspace@5.1.0
+  - @claudexor/core@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- 6ba9b91: A slow external file write is now attributed in the daemon log. When a write becomes one of the 32 worst synchronous sections that `GET /v2/daemon/status` reports as `worstSync`, the daemon also logs one `store.external_write` line naming what it carried (a large stored body, a run's terminal receipt, a terminal event-log rewrite, or an import), its byte count, and how its time split between metadata calls, the write-through data write, and the publishing rename. The status schema and its labels are unchanged.
+- 135f6de: Large stored bodies (over 64 KiB) whose bytes are known before their database commit are now written to disk off the daemon's request thread: an enqueued command's parameters and its acceptance record, a finished run's returned result and its update record, a thread turn's prompt, a deferred draft after its capture, and the command a draft is promoted into, with its acceptance record, after the draft's validation. The same write-through temp file is written on Node's file worker pool and linked into place only if that body is not already stored; the synchronous commit then finds it and only registers its directory for the usual durability barrier. The store creates its body directory, registered like any other new directory, before the first such write, so a new store, or one whose bodies all stayed small, stages too. Nothing about durability, ordering or the stored bytes changes, and if the staged file was cleaned up or staging failed, the commit writes the body itself as before. A body staged for a request that is then refused or held stays on disk, unowned, until the orphan sweep at the next daemon start removes it. HTTP requests, Stop and stream heartbeats no longer wait behind those writes when the disk is slow.
+- 51e5250: A run's terminal receipts (`final/run_facts.yaml`, `final/telemetry.yaml`), any rewrite of its event log that the terminal needs, and its large terminal bodies are now written to disk off the daemon's request thread before the terminal commits. The terminal is prepared first, with its outcome and receipt frozen, then its bytes are written as write-through temp files on Node's file worker pool (in the store's body directory, which a new store creates before its first terminal), and the synchronous terminal commit renames them into place right after the database commit instead of writing them there. The stage reads only the end of the run's event log to see that the usual terminal just appends (only a log that ends otherwise is read whole and its rewrite staged), so staging does not repeat the commit's full pass over the log on the request thread; the commit still loads the job record once more itself, which measures 0.009 ms for a 100-byte prompt and 1.1 ms for a 1 MiB one. Durability, the order in which a terminal becomes visible, and the receipt contents are unchanged; anything that could not be staged, or changed meanwhile, is written by the commit as before. A control audit or live-message receipt that arrives during that write is recorded before the terminal, which takes the next sequence number and keeps its prepared outcome and time; a cancel arriving then does not change the outcome. If the daemon stops before the commit, there is no terminal and no receipt, and the leftover temp files and unowned bodies are removed by the existing orphan sweep after the next start. `EventLog.flushDeferredTerminal()` is removed: `await log.commitDeferredTerminal()` commits a held terminal, staging its bytes first when a staging hook is set and committing before its first yield otherwise.
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/workspace@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/core@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/core@5.0.1
+- @claudexor/schema@5.0.1
+- @claudexor/util@5.0.1
+- @claudexor/workspace@5.0.1
+
+## 5.0.0
+
+### Minor Changes
+
+- d9e7977: `claudexor project remove <project-id> --purge-trashed-threads` (`DELETE /v2/projects/:id?trashedThreads=purge`) removes a project together with the threads already in its trash, in one action (#333). Without the option, removal is unchanged and still refuses while any non-purged thread remains. The option purges only threads that are in the trash: an active or closed thread must be trashed first. The whole removal is refused, with nothing changed, while any thread is outside the trash (`project_has_threads`) or while any of the project's work is queued or running, including a thread Apply or a run started under a former root (`project_has_active_run`). The purges and the project's retirement are one store transaction. Each purged thread then loses what a thread purge deletes: its isolated worktree and `claudexor/thread-*` branch with any changes never applied, and its lane homes. The project folder, a delegated thread's caller-owned workspace and run artifacts are never deleted; the conversation rows stay in the engine store, while the threads leave every listing and can no longer be restored or resumed. The receipt's new `purgedThreads` lists each purged thread with `cleanup: "completed"`, or `"pending"` with the error; a pending cleanup is retried when the daemon next starts. A repeated or inexact `trashedThreads` value is refused with 400 before anything changes. Other query parameters stay ignored as before, so a misspelled parameter name gets the default removal, which still refuses while any non-purged thread remains.
+
+  Every thread purge (Delete Now, expired trash, the retention retry, daemon startup and this removal) now reports a cleanup as completed only once the thread's worktree with its Git registration and branch and its lane homes are gone. When Git refuses, for example for a worktree locked with `git worktree lock` or a ref lock held by another Git process, the cleanup stays pending with Git's error, nothing Git still records is deleted, and a later attempt finishes it once the cause is gone. Git is asked in the repository that registered the worktree, which the worktree's own `.git` file names; a branch, registration or directory already gone there counts as removed. Without that file, the project folder's repository is asked. Because Git deletes the file with the worktree and a project folder can be replaced, the cleanup records the repository it asks before Git's first change there, so a later attempt or the next daemon start finishes in that same repository, and syncs its Git directories to disk, also when the project folder is gone or another repository is at the project path by then. Git drops a worktree's registration even when it fails to delete the worktree directory, for example a read-only one; the cleanup stays pending with Git's error, and once the directory can be deleted, a later attempt finishes it in that recorded repository. A repository moved without relinking the project, or deleted (the two look the same), keeps the cleanup pending too; after a move, `git worktree repair` in the moved repository lets the next daemon start finish it, and a recorded repository that moves away or is replaced at its path afterwards keeps it pending until it is back. Thread purge, the account lane cleanup and the orphan-lane sweep no longer follow a link inside Claudexor's runtime directory: a link above what they delete is refused with an error and its target is left untouched, and a link in place of what they delete is only unlinked. Before, such a link made the deletion follow it into the linked folder, and a Git refusal was reported as completed and never retried.
+
+### Patch Changes
+
+- 8bae6ae: Credential-shaped text in your own work is no longer refused or masked (#555, INV-146 retires INV-062). A review brief, prompt, instruction, output schema, test command, live or deferred message, interaction answer or attachment that contains a bearer header, an `sk-`/`ghp_`/`AKIA` key, a JWT or a PEM block now reaches the selected harness exactly; the typed `inline_secret_rejected` error is gone from the CLI, `POST /v2/runs`, thread turns, MCP and ACP. The task contract, command journal, served job params, thread history, events, SSE frames, answers, plans, reports, retained output, saved `patch.diff` copies, reviewer packets, reviewer workspaces, context packs and served artifacts keep the exact bytes, so Exact Retry, Run Again, continuation and later turns read back what was sent, and reviewers judge the same patch apply uses. Files named `.env`, `credentials.json`, `*.pem`, `*.key`, `secrets/…`, `.ssh/…` or `.claude/…` inside the project are ordinary project files for context, review, directory results, uploads and served outputs; Codex approval requests for them are offered instead of declined, and `review --diff` no longer refuses a diff. Claude `AskUserQuestion` text is shown exactly and answered by its native question text. Tool calls keep unmasked targets (command, path, query, URL) within each adapter's existing bounds, and tool results keep unmasked summaries of their output (`content_summary`, and a failed tool's own `error_summary`, within each adapter's existing bound and whitespace normalization) for every adapter, a Cursor shell command whose end is unconfirmed keeps its complete native result (`native_result`) exactly, a failed raw-API completion keeps the model's bounded partial output (`partial_output`) exact in its error event while it stays a failure, never becomes the answer and the provider's error report stays masked, a Copilot ACP answer keeps credential-shaped text exact (only the managed token Claudexor injected is removed), a work report's required inputs stay exact in telemetry and run facts, a planner's own `plans/<harness>.md` copy is its exact text, and the gate argv disclosed to a candidate is the argv the gate runner executes. Images are no longer withheld from `produced/` or from served outputs for their bytes; an image Claudexor did not save (over the per-image or total size cap, unreadable, a link, not a regular file or an unsafe path) is listed in the attempt's `produced_omitted` with its size and reason, and the run summary names it. Credentials Claudexor itself owns stay in their stores, outside every worktree, behind daemon authentication, grants, read-only and trust policy, root and symlink containment and digest checks; engine diagnostics (errors, stderr tails, probe output, vendor failure reports, also inside the run, attempt and reviewer event journals, which all pass through one masking step) are still masked. Claudexor never places its engine credentials into prompts, events or artifacts; a harness process can read the credential the engine hands it, and whatever the harness prints is ordinary output kept exactly in local run records, as in the vendor's own transcript. Importing an arbitrary host file still refuses credential-store paths, and review risk still rates credential-named paths critical. The historical release-attestation sealer no longer refuses a reviewer report or metadata file for credential-shaped text: it still requires strict UTF-8, the digest and exact-key bindings and its other checks, and the attestation carries digests and validated fields, never report text. A real key you put in working content is ordinary task material: it reaches the selected model and stays in local run records. Runs written by earlier versions keep their masked copies; their `persisted_patch: redacted` patches still apply only from the private exact object (`patch_exact_bytes_unavailable` when it is missing), and the MCP read tools still project their `secretLike` disclosure, which is `null` for new runs.
+
+  **Breaking:** `pr` delivery now needs the pinned open-source scanner Betterleaks 1.9.0 and checks what would leave the machine with it instead of Claudexor's own patterns; an npm-installed CLI bundles no scanner, so its `pr` refuses with `publication_scan_unavailable` until one is provided (below). Before any branch, index or ref changes, the exact outgoing commit, every earlier commit that a URL `git push origin` sends to (its push URL when one is set) does not already advertise, read with `git ls-remote` (a secret added and later deleted included, and a commit only the fetch URL or another remote holds still counts), what each merge in that range itself changed (Git's remerge view, Git 2.36 or newer: a conflict resolution or an "evil" merge, never content its parents already carried; an octopus merge has no such view and is scanned for what it adds over its first parent, which can re-flag content a non-first parent already published), the commit messages of that range, the branch name and the PR title and body are scanned with live validation off; the PR body `gh` reads is the scanned copy, and the push sends exactly the scanned commit object. A finding refuses typed (`publication_scan_findings`, rule and place only, never the matched text; a file name or label the scanner itself flags is shown as `withheld location (sha256 …)`, and every place is withheld when that check cannot run); a missing or unpinned scanner (`publication_scan_unavailable`) and a scan that fails, times out, writes no valid report or reads a Git history that Git's own trace2 record does not prove complete (every `git log` it ran exited 0 without a signal; a `git log` killed mid-stream otherwise looks clean) (`publication_scan_failed`) also refuse, and local apply, branch and commit stay available. The outgoing repository's own `.gitleaksignore`/`.betterleaksignore`, inline allow comments and scanner environment variables cannot suppress a finding. The macOS app and its update closure now bundle the darwin-arm64 and darwin-x64 builds and each SSH runtime archive bundles its own target's build, with the MIT license and provenance (the SBOMs list them). npm installs, and hosts on other platforms embedding the closure, bundle none for their platform: point `CLAUDEXOR_BETTERLEAKS_PATH` at the pinned build or provision it with `node scripts/provision-betterleaks.mjs`. Delivery never downloads it. Betterleaks skips some binary, archive and lockfile content by design, so a clean scan is not proof that nothing sensitive is present. Repository CI and release use the same adapter in place of the old `git grep` step, over the range's commits, merges and messages and the tracked tree; a release being published also scans its annotated tag's message.
+
+- 9a5ef43: `GET /v2/global/events` and `GET /v2/projects/:id/events` now replay and tail the retained journal in bounded pages (at most 256 events and 1 MiB of stored payload each) instead of reading, validating and writing the whole retained history before the first event. Replay stays complete and ordered with the same cursors and the same 409 `resnapshot` refusals; an event larger than a page is sent whole on its own. The daemon waits for a slow reader to drain before writing more, keeps one page read in flight per connection, and stops reading when the client leaves or the daemon stops. A stream whose partition generation is replaced now closes instead of continuing in the new epoch, including a stream that had not received an event yet. Motivation: issue #312, where back-to-back full snapshots of a dense root raised daemon RSS to 4.1 GB.
+- f428c0a: Account resources can now show an OpenRouter key's own spending limit, for the key requests actually use, including the default one (#138). The engine reads OpenRouter's `GET /api/v1/key` (no generation, no account balance) for the default key and each enabled registered OpenRouter API-key account, on an explicit full or exact refresh only. Clients that send `includeApiKeys=true` with a resources view of `GET`/`POST /v2/quota` or the Accounts snapshot receive one row per key: the default key as `target.profile_id: null` (the API-key route, not an account) and each registered key, all bound to a non-secret `credential_fingerprint`. A replaced key never shows the previous key's figures and a removed key has no row. The spending row keeps the provider's decimal `limit` and `remaining`, `capped: false` for a key without a per-key limit (never zero or unlimited money), spend for its UTC `window`, and a reset instant only when OpenRouter reports one. Failed reads keep the last figures as stale with the cause. These rows never affect routing, quota admission or polling; clients that do not ask keep the previous response. `claudexor quota --resources` and the MCP `claudexor_account_resources` tool include them, and the macOS OpenRouter Auth sheet shows them in a Key allowance panel with a Refresh that reads only those keys.
+- 2d83b87: Claude quota families now reach newly released models of that family (#394). A weekly Opus limit, whether read from the usage endpoint, reported during a run or carried by a typed Opus rejection, applies to every `claude-opus-…` id, including ones newer than the built-in model list, and no longer applies to `best`, a run that names no model, or another family. A weekly limit the vendor does not name, and an Antigravity quota group the adapter does not recognize, no longer block the whole account: each such window's id, usage and reset are written to the daemon's `quota.observation` log instead, even when the reading held no other window, while known family and account-wide limits keep blocking. A reading that held only such windows counts as a failed refresh, never as an account with no limits. Quota records written by earlier versions are read back in the new form, so an old Opus limit stops refusing `best` and is replaced by the next reading of the same window; an old reading that held only such unknown windows is read back as unknown, so it is not shown as current and the account is still polled. Other accounts, routes and windows are untouched.
+
+  A short quota window that has reset no longer counts against an account, and no longer hides a weekly limit read at the same time (#457). Run admission judges each window separately at the moment it decides: within the five minutes a reading stays current, a weekly reserve still applies after the five-hour window resets. A reading never becomes fresher than when it was taken, and a reset window is not treated as new free quota. The next-account hint (both the ordinary Accounts read and an explicit refresh) and model operations make the same per-window decision as runs, so the hint never names an account a run would refuse. The quota display and the Accounts cards keep their existing whole-reading freshness.
+
+  A pinned account refused by quota now says why (#318). The refusal keeps the `subscription_window_exhausted` code and adds `quotaRefusal.basis` to the run's failure record, `refusal_basis` to the problem context and `basis` to the `route.profile.headroom_exceeded` event: `owner_reserve` when usage reached your saved `headroom_threshold` while the provider still reports quota left, `provider_window` when the provider reports the window spent, and `provider_cooldown` for a provider rate-limit cooldown or a limit hit by the pinned run itself, in Agent, Ask, `--attempts` and Plan runs. A pinned Plan stopped by a provider limit now ends with the same typed code, reset time and basis instead of a generic harness error; a limit the vendor recovered from, or a Plan that ended for another reason (context exhaustion, an empty plan, an invalid work report, an outdated Claude Code CLI, a Claude API error other than HTTP 429 such as a rejected login, a crash or cancellation), keeps its own cause. A provider limit is never labelled as your reserve, whatever the threshold, including a spent window whose reset time is unknown. The window, usage and reset time reported with a refusal all come from the limit that decided it, and a run whose candidates hit different windows reports only what they share. The saved reserve still applies to a pinned account and a pin still never moves to another account; the default threshold stays 100%. When every account stopped only at its saved reserve, the next-account hint says so. Authentication and billing failures are not quota refusals and are not covered by this change.
+
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [30caf39]
+- Updated dependencies [d16170f]
+- Updated dependencies [f428c0a]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/workspace@5.0.0
+  - @claudexor/core@5.0.0
+  - @claudexor/util@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- 67b8833: Release old unreferenced artifacts and native sessions after archived project bindings are cleared. Reclaim aged, unnamed revert/exact-patch objects and empty engine containers while preserving surviving runs and recovery holds. Expose a durable last cleanup outcome, counted holds and errors through `claudexor gc --last` and `GET /v2/maintenance/gc`.
+
+  Preserve complete NUL-delimited interaction IDs on Node 24.15 when pruning commands and observing retention changes, so question event groups and bodies are released and questions published during cleanup protect their runs.
+
+  Preserve live workspace, Git checkout and harness-home directories during cleanup. Keep hold history through interrupted inventory, recover unreadable last-pass records with a passive diagnostic, and report unsupported native adapters without false holds.
+
+  Keep foreign Codex session entries informational and preserve unobserved holds through interrupted cleanup. Reclaim empty run-retirement containers and avoid removal attempts on nonempty containers.
+
+- f88a561: Fix multi-run waits and task-group recovery (#513, #514, #515).
+
+  A daemon that stops while `POST /v2/runs/wait-many` (`claudexor_runs_wait`, CLI `runs-wait`) is waiting now answers a retryable `503 daemon_stopping` at once instead of holding the shutdown until a forced exit; a launch whose run has not started yet gets its `202` receipt. `waitMs` bounds the wait between reads, never a read: a read under way at the deadline finishes and its facts and attention are the answer, so a short positive `waitMs` no longer returns every target `not_observed`. A problem row's `null` token can be echoed as `seen: null` to acknowledge that problem, so the wait continues for the healthy targets instead of returning at once; output shapes are unchanged. Observation tokens never match the secret scan that guards MCP input. A request body the daemon refuses keeps its connection until the typed `413` is read, on JSON routes and upload bytes alike, and stop closes only connections still sending such a body.
+
+  Waits wake from the store's post-commit notices for the watched jobs, runs and questions instead of a 250 ms poll that re-read every target, and they re-read only the targets a notice names. Group pages add each member once instead of re-serializing the page per member.
+
+  Task-group membership now ignores the letter case of the group UUID: engine schema 6 stores the canonical lower-case group in a `command.task_group_id` column, backfilled for live and archived rows, and answers keep the caller's spelling. Older engines refuse the upgraded store, and group cursors issued before the upgrade restart with `stale_cursor`. A tagged launch, retry or decision rerun is refused before acceptance when the store identity is unavailable; a decision rerun keeps its group and answers `newJobId` with the group receipt. A CLI wait that fails after acceptance keeps the job receipt in the error context. CLI `--wait-ms` and `--limit` accept only plain decimal integers.
+
+  Changes that controllers and embedders can see: earlier CLI and MCP clients check `seen` locally and refuse `null`, and an earlier daemon refuses a request that carries it, so acknowledging a problem needs both sides upgraded. A token saved from an earlier engine that the MCP secret scan refuses can be dropped from `seen` once to receive its re-derived replacement. A target hidden by pruning, archive or a generation change during a wait shows `not_found` at the deadline's read rather than at once. `GET /v2/task-groups/:id/runs` refuses a `limit` with a leading zero. The CLI's bounded observation reads report a malformed daemon answer as non-retryable `invalid_service_response` and a read timeout as `run_observation_timeout`. Embedders of `DaemonControlApiServer` can pass the new optional `runObservationChanges` feed; without it waits keep the 250 ms poll, and wait-many no longer subscribes to the `bus` option, which still drives the event streams.
+
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+  - @claudexor/workspace@4.8.2
+  - @claudexor/core@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/core@4.8.1
+- @claudexor/schema@4.8.1
+- @claudexor/util@4.8.1
+- @claudexor/workspace@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Add operator-only editable next messages for daemon-owned one-shot Agent and Ask runs: `claudexor_next_message` and `claudexor_next_message_read`, CLI `next-message` and `next-message-read`, and HTTP `/v2/runs/next-message`. One revisioned draft reserves the predecessor's single successor claim. An eligible settled success sends it once as an ordinary continuation through the existing admission and queue; failure, unknown process custody, Stop, restart or admission refusal holds it without retry. Controls and Settings execution preferences are captured at creation and shown by origin on the bounded read, while permissions, trust, accounts and quota stay current at dispatch.
+
+  Public Stop (`POST /v2/runs/:id/control`, `claudexor_run_cancel`) holds a waiting draft whatever the predecessor's lifecycle and reports an already accepted successor as `next_message_dispatched` without cancelling it. If the hold cannot be saved, the run is still stopped, the draft is not sent, and Stop answers 503 `next_message_hold_failed`. `claudexor_run_cancel` failures now keep the control API's typed problem: their text starts with the code (for example `http_409: run is succeeded; cancel has nothing to stop`), and the structured failure carries the code, required actions and context.
+
+  The orchestrator exports `captureRunDefaults`, `executionRunConfig` and `resolveRunInputDefaults`, accepts captured `executionDefaults`, and adds `preflightOneShot` for dispatch validation without starting a run.
+
+  Engine-store schema 4 adds the `deferred_message` table in an atomic forward-only migration; older engines refuse an upgraded store.
+
+- 7dfbc42: Add document ingress over the existing upload owner. MCP gains the upload stage tools (`claudexor_upload_create`, `claudexor_upload_import_local`, `claudexor_upload_status`, `claudexor_upload_finalize`, `claudexor_upload_cancel`) with matching CLI verbs, and public runs, thread turns and continuations accept strict `attachments: [{resourceId}]` refs. Codex carries verified references for TXT, Markdown, JSON, PDF and DOCX; this is byte access with no parsing or OCR promise.
+
+  A keyed import binds one source to one immutable resource under a saved store id and caller key: `claudexor_store_identity` and `claudexor_upload_import`, CLI `store-identity` and `upload-import`, and HTTP `POST /v2/uploads/imports`. A completed import replays its original resource before the client reads the source, even after the source changed or was deleted. Other arguments or other bytes under the same key are refused without effects, another store is refused before any effect, and verified bytes received before a lost reply or a daemon restart are published on replay. An import's interrupted or unverified transfer returns to `open` so the same key can resend it; ordinary uploads keep their single-shot cancellation. CLI runs take ready refs with `--attach-resource`.
+
+  Existing callers see three behavior changes. CLI `--attach` now labels `.pdf` and `.docx` files `application/pdf` and `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (previously `application/octet-stream`), so lane admission matches those types. Codex now declares TXT, Markdown and JSON as well as PDF and DOCX file inputs, so Auto routing keeps Codex for runs that carry them where it used to drop it, and explicit pools that include Codex now admit them; Auto and pool choices for such runs can change. The Delegate belt's run tools accept `attachments: [{resourceId}]` refs, while the belt still exposes no upload controls.
+
+- Add bounded thread history reads. `GET /v2/threads/:id/history` returns one page of at most 20 turns with prompt and answer previews and receipt facts, chosen by a cursor or a before, after or around turn id, and `GET /v2/threads/:id/turns/:turnId/prompt` returns a bounded UTF-8 part of a turn's complete stored prompt, refused turns included, with its total size and SHA-256. CLI `thread history` and `thread prompt` and MCP `claudexor_thread_history` and `claudexor_thread_prompt` expose the same reads; they require an existing daemon and never start one. The existing thread detail read remains available.
+
+  A page stays within 2 MiB of JSON. A stale cursor fails as `thread_history_cursor_stale` with the `resnapshot` required action, and a turn whose run record was pruned reads as `not_retained` instead of failing the page.
+
+  Engine-store schema 5 adds only the `turn_plan_answer` index in an atomic forward-only migration; building it scans existing turns once without rewriting them, and older engines refuse an upgraded store.
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies [6c31c44]
+- Updated dependencies [7dfbc42]
+- Updated dependencies
+  - @claudexor/schema@4.8.0
+  - @claudexor/core@4.8.0
+  - @claudexor/util@4.8.0
+  - @claudexor/workspace@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- 30f8195: Preserve optional caller-generated task group membership in accepted one-shot jobs and their receipts. Tagged receipts identify the accepting store, Exact Retry retains membership, and new continuations join a group only when explicitly requested. Add atomic engine-store schema version 3 expression indexes for retained group membership.
+
+  Recover original queued and bound job handles with the bounded `task-group-runs` CLI, `claudexor_task_group_runs` MCP tool and HTTP group page. Store/view/filter-bound cursors require explicit paging; compact member observations share the multi-run attention contract. Results cover retained rows in currently served generations, not a permanent roster. Discovery adds no launch, retry, resume, answer, permissions or budget authority.
+
+  Document durable caller receipts, exact keyed replay, separate interaction/result reads and storage downgrade precautions. Add deterministic built CLI/MCP/HTTP qualification stories for controller loss, queued binding, replay conflicts, store mismatch, archive visibility and daemon-crash interruption without autoresume. Manual host UI and real-vendor qualification remain separate.
+
+- Updated dependencies [880081d]
+- Updated dependencies [30f8195]
+- Updated dependencies [8a9c2f6]
+  - @claudexor/schema@4.7.1
+  - @claudexor/core@4.7.1
+  - @claudexor/workspace@4.7.1
+  - @claudexor/util@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- Updated dependencies [74fb275]
+  - @claudexor/schema@4.7.0
+  - @claudexor/core@4.7.0
+  - @claudexor/workspace@4.7.0
+  - @claudexor/util@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/core@4.6.2
+- @claudexor/schema@4.6.2
+- @claudexor/util@4.6.2
+- @claudexor/workspace@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/core@4.6.1
+- @claudexor/schema@4.6.1
+- @claudexor/util@4.6.1
+- @claudexor/workspace@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- Updated dependencies [b344c39]
+- Updated dependencies [a81897c]
+- Updated dependencies [2593b90]
+  - @claudexor/core@4.6.0
+  - @claudexor/schema@4.6.0
+  - @claudexor/util@4.6.0
+  - @claudexor/workspace@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- 032b44b: Demote Codex accounts for a model after a pre-generation refusal. A recognized capability refusal (`model_capability_refused`) marks the account at once; any other definite provider HTTP 4xx before generation on an auto operation (outside sign-in, timeouts, conflicts, rate and quota limits, the processing fallback, server failures and typed request faults) offers the same single correlated host retry, which becomes a confirmed mark when another account serves and marks nothing when it refuses too. Both kinds also record the shared pre-progress refusal observation, so Agent runs of that model order the account last as well, and an older in-flight refusal never undoes a newer model operation's service. Auto selection prefers accounts whose live catalog lists the model, then advisory misses, then accounts with only a soft observation (a recent refusal, or a served-model substitution of a non-preferred account), then capability-marked accounts; history bound to an unmarked, unrefused preferred account stays on that account. Refusal problems carry `modelMarks` (each live mark with the start of its episode) and `alternativeRemains` (whether another selectable account without a mark remains). Routing receipts (`captureRoutingEvidence=true` on `POST /v2/model-operations`) and capability rows (`includeCapabilities=true` on `GET /v2/accounts/routing-evidence`) are opt-in over HTTP, so strict 4.4.0 clients keep their shapes; Claudexor's own CLI and MCP readers request the rows. Behavior change: the recognized Codex refusals (an explicit `model_not_found` or `model_not_supported` code, the ChatGPT-account unsupported-model sentence, the narrow missing-model sentences) now return `model_capability_refused` instead of `invalid_request` or `model_unavailable` (an explicit vendor `model_not_found` still records the model-scoped unusable verdict), and `preferredProfileId` no longer wins over a listed account or over its own mark or recent refusal; history bound to that account keeps it first over a catalog miss only while it has neither.
+- Updated dependencies [032b44b]
+- Updated dependencies [85e312d]
+  - @claudexor/schema@4.5.0
+  - @claudexor/workspace@4.5.0
+  - @claudexor/core@4.5.0
+  - @claudexor/util@4.5.0
+
+## 4.4.0
+
+### Minor Changes
+
+- Daemon status reports per-route request latency (one count of completed responses or disconnects with p50, p99 and max for the lifetime and the last loop window, keyed by HTTP method and operation-catalog template) and the 32 longest labelled synchronous sections since start (store BEGIN and COMMIT, external writes, run detail and summary projections, scope persistence), plus lifetime COMMIT p50 and p99. A request whose client has already hung up skips its pending heavy read projections; an admitted mutation still completes. `POST /v2/handshake` returns the durable engine store id as `storeId` to a client that sends `X-Claudexor-Store-Identity: 1`, and every other client keeps the earlier response shape. `scripts/daemon-load-bench.mjs` compares an exact base against the working tree in alternating trials inside temporary roots it owns. Moving checkpoints off the request thread was measured and not adopted: it lowered COMMIT tails but not the event-loop tail consistently (`docs/benchmarks/daemon-sync-20261020.md`).
+- Engine retention retires unregistered and archived project histories, orphaned run trees and unreferenced native session parts in recurring bounded maintenance and never removes anything still referenced; immutable attempt, final and anchor patches share one content-addressed object per project where hard links are supported (#477).
+- After a SQL miss, an addressed legacy upload binding that cannot be read or parsed answers HTTP 503 `legacy_upload_binding_unavailable` instead of minting a new upload (while the legacy directory itself is unreadable, every SQL miss is refused, new keys included), and internal model results publish without a historical lookup. Thanks to @josephsteuerjr (#474).
+- MCP controllers get idempotent one-shot launches and durable run supervision: `claudexor_run_wait`, `claudexor_run_message`, `claudexor_run_continue` and bounded `claudexor_run_event_read` parts. Thanks to @IlidanNaga (#478).
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/util@4.4.0
+  - @claudexor/schema@4.4.0
+  - @claudexor/core@4.4.0
+  - @claudexor/workspace@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- Updated dependencies [64ee7fc]
+  - @claudexor/workspace@4.3.1
+  - @claudexor/core@4.3.1
+  - @claudexor/schema@4.3.1
+  - @claudexor/util@4.3.1
+
+## 4.3.0
+
+### Minor Changes
+
+- Ordinary Codex Fast (`fast`/`priority`) on a verified ChatGPT subscription is included service under no-paid routing and every cash cap, including `finite(0)`; verified Codex subscription work now reports its cash as unknown (`spendUsd` and `budget_summary.spend_usd` null, cost basis `debit: "unobserved"`) beside the cap-governed `controllableSpendUsd` instead of exact zero, and without a preference keeps the first account's chosen speed across retries, Exact Retry, rotation and continuation (#468, thanks @IlidanNaga). Codex catalogs keep a declared `inputModalities` list only when it is wholly valid and non-empty, as metadata that gates no request (#435, thanks @josephsteuerjr). The opt-in `GET /v2/quota?view=resources_freshness` view adds a required `availability_scope` echo, Cursor accounts report dated display-only monetary resources from Cursor's internal dashboard through the existing refresh cycle, and Antigravity's native headless permission auto-denial becomes typed `permission_denial` evidence without retry or access elevation (#467).
+
+  Codex workspace-write uses native on-request with auto_review by default and an explicit one-action retry handback; HTTP/MCP can revise the existing live soft/hard timer, and configuration can disable only inactivity timing with null (#466, thanks @IlidanNaga). This adds no session-wide grant, readonly bypass, automatic retry authorization by Claudexor, per-run idle field or installed CLI update; timers are not restored after daemon loss and native UI/vendor qualification remains limited.
+
+- 23a74cb: Let any controlling MCP agent inspect and answer native worker approvals through
+  the existing interaction tools. Codex workspace-write runs use native automatic
+  review and can hand back one exact denied action for an explicitly authorized
+  same-session retry, without changing managed policy or granting session-wide access.
+  A request the worker withdraws itself emits `interaction.withdrawn`, closing the
+  obsolete follow prompt or app card instead of blocking the next approval.
+
+  A completed Codex turn's answer, including a structured WorkReport envelope,
+  is kept before any handback; a denial that cannot be presented exactly is
+  disclosed and stands natively instead of failing the run. A thread that settles
+  in systemError never hands a denial back, authorizes it or starts another turn.
+
+  The verified Codex pin moves from codex-cli 0.156.1 to 0.162.1. Its captured
+  model snapshot makes `gpt-6.1-sol` the fallback default and a known model. An
+  installed 0.156.1 no longer matches the snapshot provenance: without a live
+  `model/list`, its effort snapshot is not trusted (no effort flag is sent) and
+  no turn-input bound is published for it.
+
+  Add revision-guarded live run time-limit read, set, extend and disable controls,
+  soft warnings and optional inactivity-watchdog disabling. Existing explicit
+  maxSeconds limits remain hard by default; omitting a limit adds no deadline, and
+  `set` keeps the timer's current mode unless one is named. Inactivity windows
+  longer than one Node timer delay are honored instead of firing immediately.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [23a74cb]
+  - @claudexor/core@4.3.0
+  - @claudexor/schema@4.3.0
+  - @claudexor/workspace@4.3.0
+  - @claudexor/util@4.3.0
+
 ## 4.2.0
 
 ### Minor Changes

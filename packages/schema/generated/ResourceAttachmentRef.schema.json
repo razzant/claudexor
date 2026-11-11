@@ -1,0 +1,21 @@
+{
+  "$ref": "#/definitions/ResourceAttachmentRef",
+  "definitions": {
+    "ResourceAttachmentRef": {
+      "type": "object",
+      "properties": {
+        "resourceId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Immutable daemon resource id returned by upload finalize."
+        }
+      },
+      "required": [
+        "resourceId"
+      ],
+      "additionalProperties": false,
+      "description": "Reference to an immutable daemon-owned uploaded resource."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

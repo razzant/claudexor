@@ -50,7 +50,8 @@ describe("built-in raw-api registry cost wiring", () => {
       adapter!.run(
         HarnessRunSpec.parse({
           session_id: "registry-openrouter-cost",
-          intent: "review",
+          intent: "explain",
+          model_hint: "vendor/chosen",
           prompt: "x",
           cwd: process.cwd(),
           access: "readonly",
@@ -101,7 +102,8 @@ describe("built-in raw-api registry cost wiring", () => {
       adapter!.run(
         HarnessRunSpec.parse({
           session_id: "registry-generic-cost",
-          intent: "review",
+          intent: "explain",
+          model_hint: "vendor/chosen",
           prompt: "x",
           cwd: process.cwd(),
           access: "readonly",

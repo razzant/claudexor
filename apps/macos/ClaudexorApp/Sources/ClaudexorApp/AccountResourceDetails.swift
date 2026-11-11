@@ -44,7 +44,8 @@ struct AccountResourceDetails: View {
             }
             ForEach(attempts) { attempt in outcome(attempt) }
             ForEach(absences) { absence in
-                Text(absence.detail ?? absence.reason.replacingOccurrences(of: "_", with: " "))
+                Text(absence.reason == "no_source" ? AccountResourcePresentation.quotaAbsenceReason(absence.reason)
+                    : (absence.detail ?? absence.reason.replacingOccurrences(of: "_", with: " ")))
                     .font(.caption2).foregroundStyle(.primary)
             }
             AccountResourceQuotaWindows(groups: row.quotaGroups, historical: historicalUsage)

@@ -10,7 +10,8 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EngineStore } from "@claudexor/daemon";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 import type { FlusherController } from "../../daemon/src/store/flusher.js";
 import { SqlDaemonStorage } from "./sql-daemon-storage.js";
 
@@ -34,15 +35,19 @@ beforeEach(() => {
     return store;
   });
 });
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's stores, taken before its closes: a late close never closes the next test's.
+  const ownedStores = acquired.splice(0);
   vi.restoreAllMocks();
   try {
     for (const owner of owners.splice(0).reverse()) await owner.close();
   } finally {
     // A failing negative control must not leave its observed leaked worker alive.
-    for (const { store } of acquired.splice(0)) if (!store.isClosed) await store.close();
-    rmSync(root, { recursive: true, force: true });
+    for (const { store } of ownedStores) if (!store.isClosed) await store.close();
   }
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 function owner() {

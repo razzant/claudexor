@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { describe, expect, it } from "vitest";
 import { makeOutcomeFacts, SCHEMA_VERSION, validateRunFactsInvariants } from "@claudexor/schema";
 import { defaultClaudexorTools, serveClaudexorMcp, type McpTool, type RunnerFn } from "./index.js";
+import { accountsTool } from "./accounts-tool.js";
 import { beltClaudexorTools } from "./delegation-belt.js";
 
 function sleep(ms: number): Promise<void> {
@@ -98,7 +99,131 @@ async function wireToolCall(tools: McpTool[], name: string, args: Record<string,
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 21 tools, and answers PING during a slow call", async () => {
+  it("rejects path and inline attachment authority on the wire before calling the runner", async () => {
+    let calls = 0;
+    const tools = defaultClaudexorTools(async () => {
+      calls += 1;
+      return {};
+    });
+    for (const name of [
+      "claudexor_ask",
+      "claudexor_plan",
+      "claudexor_run",
+      "claudexor_best_of",
+      "claudexor_create",
+      "claudexor_thread_turn",
+    ]) {
+      const result = await wireToolCall(tools, name, {
+        prompt: "read document",
+        ...(name === "claudexor_thread_turn" ? { threadId: "t" } : {}),
+        attachments: [{ resourceId: "r", path: "/host/file", base64: "abc" }],
+      });
+      expect(result?.isError).toBe(true);
+    }
+    expect(calls).toBe(0);
+  });
+
+  it("preserves typed upload errors through the MCP wire", async () => {
+    const tools = defaultClaudexorTools(async () => {
+      throw Object.assign(new Error("publication barrier unavailable"), {
+        code: "resource_publish_unavailable",
+        retryable: true,
+        context: { uploadId: "u", expectedSha256: "sha256:saved" },
+      });
+    });
+    const result = await wireToolCall(tools, "claudexor_upload_finalize", {
+      uploadId: "u",
+      request: { expectedSha256: "sha256:saved" },
+      idempotencyKey: "final-key",
+    });
+    expect(result?.isError).toBe(true);
+    expect(result?.structuredContent).toMatchObject({
+      status: "failed",
+      failure: {
+        code: "resource_publish_unavailable",
+        retryable: true,
+        context: { uploadId: "u", expectedSha256: "sha256:saved" },
+      },
+    });
+  });
+
+  it("keeps caller idempotency keys outside the Delegate belt before ledger admission", async () => {
+    let calls = 0;
+    const ledger = { started: 0, committedUsd: 0 };
+    const tools = beltClaudexorTools(
+      async () => {
+        calls += 1;
+      },
+      {
+        parentRunId: "parent",
+        repoRoot: "/fixture",
+        depth: 0,
+        maxSubRuns: 8,
+        parentBudget: { kind: "finite", maxUsd: 1 },
+      },
+      ledger,
+    );
+    for (const tool of tools)
+      expect(tool.inputSchema.properties).not.toHaveProperty("idempotencyKey");
+    const result = await wireToolCall(tools, "claudexor_run", {
+      prompt: "inspect",
+      idempotencyKey: "caller-key",
+    });
+    expect(result?.isError).toBe(true);
+    expect(calls).toBe(0);
+    expect(ledger).toEqual({ started: 0, committedUsd: 0 });
+  });
+
+  it.each(["ask", "run", "plan", "best_of", "create"])(
+    "accepts and forwards an optional caller key on claudexor_%s",
+    async (suffix) => {
+      const calls: unknown[] = [];
+      const tools = defaultClaudexorTools(async (params) => {
+        calls.push(params);
+        return { runId: "run-key", jobId: "job-key", status: "running" };
+      });
+      const name = `claudexor_${suffix}`;
+      const tool = tools.find((candidate) => candidate.name === name)!;
+      expect((tool.inputSchema.properties as Record<string, unknown>).idempotencyKey).toMatchObject(
+        {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          pattern: "\\S",
+        },
+      );
+      expect(tool.inputSchema.required).not.toContain("idempotencyKey");
+      const result = await wireToolCall(tools, name, {
+        prompt: "inspect",
+        idempotencyKey: "k".repeat(256),
+      });
+      expect(result?.isError).not.toBe(true);
+      expect(calls).toEqual([
+        expect.objectContaining({
+          idempotencyKey: "k".repeat(256),
+          deferred: true,
+        }),
+      ]);
+    },
+  );
+
+  it.each(["", " \t ", "k".repeat(257), 123, null])(
+    "refuses an invalid one-shot caller key %j before invoking the runner",
+    async (idempotencyKey) => {
+      let calls = 0;
+      const result = await wireToolCall(
+        defaultClaudexorTools(async () => {
+          calls += 1;
+        }),
+        "claudexor_run",
+        { prompt: "inspect", idempotencyKey },
+      );
+      expect(result?.isError).toBe(true);
+      expect(calls).toBe(0);
+    },
+  );
+
+  it("negotiates the client's 2025-06-18 era, lists 41 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -136,9 +261,30 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
     const listedTools = w.responses.find((r) => r.id === 2)?.result?.tools;
-    expect(listedTools).toHaveLength(23);
+    expect(listedTools).toHaveLength(41);
     expect(listedTools.map((tool: { name: string }) => tool.name)).toEqual(
-      expect.arrayContaining(["claudexor_account_resources", "claudexor_account_reset"]),
+      expect.arrayContaining([
+        "claudexor_store_identity",
+        "claudexor_upload_import",
+        "claudexor_upload_create",
+        "claudexor_upload_import_local",
+        "claudexor_upload_status",
+        "claudexor_upload_finalize",
+        "claudexor_upload_cancel",
+        "claudexor_account_resources",
+        "claudexor_account_reset",
+        "claudexor_run_time_limit",
+        "claudexor_run_message",
+        "claudexor_run_wait",
+        "claudexor_runs_wait",
+        "claudexor_task_group_runs",
+        "claudexor_thread_history",
+        "claudexor_thread_prompt",
+        "claudexor_run_event_read",
+        "claudexor_run_continue",
+        "claudexor_next_message",
+        "claudexor_next_message_read",
+      ]),
     );
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
@@ -251,6 +397,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
+      runDecisionActions: ["taken"],
       outputSchemaDialects: [
         {
           dialect: "draft-07",
@@ -335,7 +482,6 @@ describe("Claudexor MCP server (SDK v2)", () => {
 
     const w = wire(tools);
     await w.initialize();
-    const secretLike = "sk-" + "abcdefghijklmnopqrstuvwxyz123456";
     const invalidCalls = [
       { id: 1, name: "claudexor_run", arguments: {} },
       { id: 2, name: "claudexor_run", arguments: { prompt: "" } },
@@ -383,25 +529,6 @@ describe("Claudexor MCP server (SDK v2)", () => {
       { id: 17, name: "claudexor_run", arguments: { prompt: "go", harness: "" } },
       { id: 18, name: "claudexor_run", arguments: { prompt: "go", primaryHarness: " " } },
       { id: 19, name: "claudexor_run", arguments: { prompt: "go", model: "" } },
-      {
-        id: 20,
-        name: "claudexor_run",
-        arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] },
-      },
-      {
-        id: 21,
-        name: "claudexor_run",
-        arguments: { prompt: "go", tests: [{ program: "echo", args: [secretLike] }] },
-      },
-      {
-        id: 22,
-        name: "claudexor_run",
-        arguments: { prompt: "go", protectedPathApprovals: [{ path: secretLike }] },
-      },
-      // The prompt hard block: a secret-like value INSIDE the prompt is
-      // refused on the MCP surface too (prompts are durable artifacts).
-      { id: 23, name: "claudexor_run", arguments: { prompt: `deploy with ${secretLike}` } },
-      { id: 24, name: "claudexor_ask", arguments: { prompt: `explain ${secretLike}` } },
       { id: 25, name: "claudexor_run", arguments: { prompt: "go", deepScan: true } },
       { id: 26, name: "claudexor_ask", arguments: { prompt: "go", council: true } },
     ];
@@ -427,15 +554,34 @@ describe("Claudexor MCP server (SDK v2)", () => {
       const r = w.responses.find((x) => x.id === id);
       return String(r?.result?.content?.[0]?.text ?? r?.error?.message ?? "");
     };
-    expect(textOf(20)).toContain("secret-like value is not accepted");
-    expect(textOf(21)).toContain("secret-like value is not accepted");
-    expect(textOf(22)).toContain("secret-like value is not accepted");
-    // Prompt block carries the tailored durable-artifact remediation AND the
-    // machine-readable class prefix (text contract until structured outputs).
-    expect(textOf(23)).toContain("durable run artifacts");
-    expect(textOf(23)).toContain("inline_secret_rejected");
-    expect(textOf(24)).toContain("durable run artifacts");
-    expect(textOf(24)).toContain("inline_secret_rejected");
+    expect(textOf(25)).not.toBe("");
+  });
+
+  it("passes credential-shaped prompt and test fixtures to the runner exactly (INV-146)", async () => {
+    const received: Record<string, unknown>[] = [];
+    const tools = defaultClaudexorTools(async (params) => {
+      received.push(params as Record<string, unknown>);
+      return "queued";
+    });
+    const fixture = "sk-" + "abcdefghijklmnopqrstuvwxyz123456";
+    const w = wire(tools);
+    await w.initialize();
+    const prompt = `review: expect(auth).toBe("Bearer ${fixture}")`;
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "claudexor_run",
+        arguments: { prompt, tests: [{ program: "echo", args: [fixture] }] },
+      },
+    });
+    await sleep(250);
+    await w.close();
+    expect(w.responses.find((r) => r.id === 1)?.result?.isError).not.toBe(true);
+    expect(received).toHaveLength(1);
+    expect(received[0]?.["prompt"]).toBe(prompt);
+    expect(JSON.stringify(received[0]?.["tests"])).toContain(fixture);
   });
 
   it("exposes persistent thread tools with strict route controls and durable handles", async () => {
@@ -1012,7 +1158,21 @@ describe("Claudexor MCP server (SDK v2)", () => {
           identity: null,
         },
       ],
-      harnesses: [{ id: "claude", status: "ok" }],
+      harnesses: [
+        {
+          id: "claude",
+          status: "ok",
+          manifest: {
+            id: "claude",
+            display_name: "Claude",
+            kind: "local_cli",
+            capability_profile: {},
+            capabilities: { plan: true, engine_added_capability: true },
+            auth_modes: [],
+            access_profiles_supported: [],
+          },
+        },
+      ],
       git: { status: "available", version: null, detail: null, remediation: null },
       quota: { snapshots: [], refreshed_at: null },
       quotaEventCursor: "q-1",
@@ -1060,7 +1220,38 @@ describe("Claudexor MCP server (SDK v2)", () => {
       profiles: expect.any(Object),
     });
     const result = await accounts!.handler({}, {});
-    expect(result).toMatchObject({ structured: snapshot });
+    const structured = typeof result === "string" ? {} : (result.structured ?? {});
+    expect(structured).toMatchObject({
+      profiles: snapshot.profiles,
+      harnesses: [{ id: "claude", status: "ok", manifest: { id: "claude" } }],
+    });
+    expect((structured as any).harnesses[0].manifest.capabilities).not.toHaveProperty(
+      "engine_added_capability",
+    );
+    expect((structured as any).quota).not.toHaveProperty("resources");
+    const resourcesSnapshot = structuredClone(snapshot) as any;
+    resourcesSnapshot.quota.resources = [];
+    const resourcesTool = accountsTool(async () => resourcesSnapshot, accounts!.outputSchema!);
+    const resourcesResult = await resourcesTool.handler({}, {});
+    const resourcesStructured =
+      typeof resourcesResult === "string" ? {} : (resourcesResult.structured ?? {});
+    expect((resourcesStructured as any).quota.resources).toEqual([]);
+    const malformedAtomic = structuredClone(snapshot) as any;
+    delete malformedAtomic.quota.snapshots;
+    const malformedAtomicResult = await wireToolCall(
+      defaultClaudexorTools(async () => malformedAtomic),
+      "claudexor_accounts",
+      {},
+    );
+    expect(malformedAtomicResult?.isError).toBe(true);
+    const malformedResources = structuredClone(resourcesSnapshot);
+    malformedResources.quota.resources = {};
+    const malformedResourcesResult = await wireToolCall(
+      defaultClaudexorTools(async () => malformedResources),
+      "claudexor_accounts",
+      {},
+    );
+    expect(malformedResourcesResult?.isError).toBe(true);
     await accounts!.handler({ fresh: true }, {});
     await accounts!.handler({ fresh: false }, {});
     expect(calls).toEqual([

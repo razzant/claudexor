@@ -6,9 +6,17 @@ import { DurableJournal } from "./store/test-support/fixtures/legacy/journal/ind
 import { withQuotaAvailability, type QuotaSubject } from "@claudexor/schema";
 import { hashJson, sha256 } from "@claudexor/util";
 import { sqlFixture as openSqlFixture } from "./store/test-support/sql-fixture.js";
+import { readJournalEvents } from "../dist/store/cursors.js";
 import { QuotaRegistry } from "./quota-registry.js";
 
 const sqlStores: Array<Awaited<ReturnType<typeof openSqlFixture>>> = [];
+
+/** Whole retained histories, read through the same bounded pages the SSE replays. */
+const journal = (
+  graph: Awaited<ReturnType<typeof openSqlFixture>>["graph"],
+  name: string,
+  cursor?: string,
+) => readJournalEvents(graph.store, name, cursor, graph.blobs);
 async function sqlFixture(root: string, now?: () => Date) {
   const sql = await openSqlFixture(root, now);
   sqlStores.push(sql);
@@ -421,29 +429,30 @@ describe("QuotaRegistry", () => {
 
     const fenced = await slot.refreshWithCursor();
     expect(fenced.response.snapshots).toHaveLength(2);
-    const refreshEvents = manager.graph.journalEvents("global");
+    const refreshEvents = journal(manager.graph, "global");
     expect(refreshEvents.map((event) => event.type)).toEqual([
       "quota.snapshot.upserted",
       "quota.snapshot.upserted",
       "quota.projection.updated",
     ]);
     expect(refreshEvents.at(-1)?.payload).toMatchObject({ reason: "refresh" });
-    expect(manager.graph.journalEvents("global", fenced.quotaEventCursor)).toEqual([]);
+    expect(journal(manager.graph, "global", fenced.quotaEventCursor)).toEqual([]);
 
     slot.upsert(quotaSnapshot("claude", "later", 0.6));
-    const laterEvents = manager.graph.journalEvents("global", fenced.quotaEventCursor);
+    const laterEvents = journal(manager.graph, "global", fenced.quotaEventCursor);
     expect(laterEvents.map((event) => event.type)).toEqual([
       "quota.snapshot.upserted",
       "quota.projection.updated",
     ]);
     expect(laterEvents.at(-1)?.payload).toMatchObject({ reason: "direct_mutation" });
-    const afterUpsertCursor = manager.graph.journalEvents("global").at(-1)?.cursor;
+    const afterUpsertCursor = journal(manager.graph, "global").at(-1)?.cursor;
     expect(afterUpsertCursor).toBeTruthy();
 
     slot.removeSubject("claude", "later");
-    expect(
-      manager.graph.journalEvents("global", afterUpsertCursor).map((event) => event.type),
-    ).toEqual(["quota.subject.removed", "quota.projection.updated"]);
+    expect(journal(manager.graph, "global", afterUpsertCursor).map((event) => event.type)).toEqual([
+      "quota.subject.removed",
+      "quota.projection.updated",
+    ]);
 
     await manager.close();
     rmSync(root, { recursive: true, force: true });
@@ -481,10 +490,10 @@ describe("QuotaRegistry", () => {
     const fenced = await slot.refreshWithCursor();
     expect(fenced.response.snapshots).toEqual([]);
     expect(fenced.response.absences).toHaveLength(1);
-    const events = manager.graph.journalEvents("global");
+    const events = journal(manager.graph, "global");
     expect(events.map((event) => event.type)).toEqual(["quota.projection.updated"]);
     expect(events[0]?.payload).toMatchObject({ reason: "refresh" });
-    expect(manager.graph.journalEvents("global", fenced.quotaEventCursor)).toEqual([]);
+    expect(journal(manager.graph, "global", fenced.quotaEventCursor)).toEqual([]);
 
     await manager.close();
     rmSync(root, { recursive: true, force: true });
@@ -649,51 +658,39 @@ describe("QuotaRegistry", () => {
     const manager = await sqlFixture(root);
     const slot = new QuotaRegistry(manager.graph.globalEvents, [], undefined, undefined);
     slot.recoverAfterStartup();
-    for (const [constraintId, aliases] of [
-      ["seven_day_opus", ["opus", "claude-opus-5", "best"]],
-      ["seven_day_sonnet", ["sonnet", "claude-sonnet-5", "best"]],
-    ] as const) {
+    for (const family of ["opus", "sonnet"] as const) {
       slot.ingest("claude", {
         type: "status",
-        session_id: `session-${constraintId}`,
+        session_id: `session-${family}`,
         ts: new Date().toISOString(),
         credential_route: "vendor_native",
         rate_limit: {
-          constraint_id: constraintId,
-          applies_to_models: aliases,
+          constraint_id: `seven_day_${family}`,
+          applies_to_models: [family],
+          applies_to_model_prefixes: [`claude-${family}-`],
           resets_at: null,
           retry_delay_ms: 30_000,
         },
       });
     }
-    expect(slot.read().snapshots[0]?.constraints).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "cooldown:seven_day_opus",
-          applies_to_models: ["opus", "claude-opus-5", "best"],
-        }),
-        expect.objectContaining({
-          id: "cooldown:seven_day_sonnet",
-          applies_to_models: ["sonnet", "claude-sonnet-5", "best"],
-        }),
-      ]),
-    );
+    const familyCooldowns = expect.arrayContaining([
+      expect.objectContaining({
+        id: "cooldown:seven_day_opus",
+        applies_to_models: ["opus"],
+        applies_to_model_prefixes: ["claude-opus-"],
+      }),
+      expect.objectContaining({
+        id: "cooldown:seven_day_sonnet",
+        applies_to_models: ["sonnet"],
+        applies_to_model_prefixes: ["claude-sonnet-"],
+      }),
+    ]);
+    expect(slot.read().snapshots[0]?.constraints).toEqual(familyCooldowns);
     await manager.close();
     const restarted = await sqlFixture(root);
     const restartedSlot = new QuotaRegistry(restarted.graph.globalEvents, [], undefined, undefined);
     restartedSlot.recoverAfterStartup();
-    expect(restartedSlot.read().snapshots[0]?.constraints).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "cooldown:seven_day_opus",
-          applies_to_models: ["opus", "claude-opus-5", "best"],
-        }),
-        expect.objectContaining({
-          id: "cooldown:seven_day_sonnet",
-          applies_to_models: ["sonnet", "claude-sonnet-5", "best"],
-        }),
-      ]),
-    );
+    expect(restartedSlot.read().snapshots[0]?.constraints).toEqual(familyCooldowns);
     await restarted.close();
     rmSync(root, { recursive: true, force: true });
   });
@@ -764,9 +761,11 @@ describe("QuotaRegistry", () => {
 
     const replay = new DurableJournal({ rootDir: root, partition: "global" });
     const recovered = new QuotaRegistry(replay, [], now);
+    // The retired alias list is restored as the current family scope (#394).
     expect(recovered.read().snapshots[0]?.constraints[0]).toMatchObject({
       id: "weekly_scoped:Fable 5",
-      applies_to_models: ["fable", "claude-fable-5", "best"],
+      applies_to_models: ["fable"],
+      applies_to_model_prefixes: ["claude-fable-"],
     });
     replay.close();
     rmSync(root, { recursive: true, force: true });
@@ -826,6 +825,54 @@ describe("QuotaRegistry", () => {
       cooldown_until: "2026-09-13T00:00:00.000Z",
     });
     journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("#558: keeps a typed usage refusal under its own cooldown identity, with no invented usage or reset, only for the bounded default cooldown, and replays it", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-codex-refusal-")));
+    const now = () => new Date("2026-10-29T20:58:25.000Z");
+    const first = new DurableJournal({ rootDir: root, partition: "global" });
+    const registry = new QuotaRegistry(first, [], now);
+    const refusal = {
+      applies_to_request_kinds: ["text"],
+      resets_at: null,
+      retry_delay_ms: null,
+    };
+    for (const [profile, reopening] of [
+      ["pinned", "unknown"],
+      ["plain", undefined],
+    ] as const)
+      registry.ingest("codex", {
+        type: "completed",
+        session_id: `session-${profile}`,
+        ts: "2026-10-29T20:58:25.000Z",
+        credential_route: "vendor_native",
+        credential_profile_id: profile,
+        rate_limit: { ...refusal, ...(reopening ? { reopening } : {}) },
+      });
+    const cooldown = (snapshots: ReturnType<QuotaRegistry["read"]>["snapshots"], id: string) =>
+      snapshots.find((snapshot) => snapshot.subject.subject_id === id)?.constraints[0];
+    expect(cooldown(registry.read().snapshots, "pinned")).toMatchObject({
+      id: "cooldown:reopening_unknown",
+      used_ratio: null,
+      resets_at: null,
+      cooldown_until: "2026-10-29T21:03:25.000Z",
+    });
+    // Control: a reset-less limit without the refusal semantic is unchanged.
+    expect(cooldown(registry.read().snapshots, "plain")).toMatchObject({
+      id: "cooldown",
+      used_ratio: null,
+      resets_at: null,
+      cooldown_until: "2026-10-29T21:03:25.000Z",
+    });
+    await first.close();
+    const replay = new DurableJournal({ rootDir: root, partition: "global" });
+    expect(cooldown(new QuotaRegistry(replay, [], now).read().snapshots, "pinned")).toMatchObject({
+      id: "cooldown:reopening_unknown",
+      used_ratio: null,
+      resets_at: null,
+    });
+    replay.close();
     rmSync(root, { recursive: true, force: true });
   });
 

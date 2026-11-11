@@ -1,15 +1,30 @@
 import { join } from "node:path";
 import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
-import { makeOutcomeFacts, type ModeKind, type RunOutcomeFacts } from "@claudexor/schema";
+import {
+  makeOutcomeFacts,
+  type ModeKind,
+  type RunOutcomeFacts,
+  type WorkspaceKind,
+} from "@claudexor/schema";
 import { newId } from "@claudexor/util";
 import { snapshotTree } from "@claudexor/workspace";
 import { publishUnverifiedGitCandidate } from "./candidateWorkProduct.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
-import type { CandidateRun } from "./candidateEvidence.js";
+import {
+  candidateCaptureRefusals,
+  candidateCause,
+  hasCandidateChanges,
+  type CandidateRun,
+} from "./candidateEvidence.js";
 import { publishDirectoryCandidate } from "./directoryCandidate.js";
 import { delegationBeltToolFailure, delegationBeltUnavailable } from "./delegationToolEvidence.js";
-import { captureRefusalNextActions } from "./secretDiff.js";
+import {
+  captureInspectionActions,
+  captureRefusalNextActions,
+  resultSummaryLines,
+} from "./secretDiff.js";
+import { CAPTURE_REFUSED_REASON, captureRefusedFacts } from "./captureRefusal.js";
 
 export type DelegationFailureKind = "startup" | "runtime";
 
@@ -38,12 +53,51 @@ export function candidateFailureKind(run: CandidateRun): DelegationFailureKind |
 /** Race-level precedence: an unrecovered injected-belt failure dominates all
  * siblings; an uncaptured isolated candidate is merely ineligible (its bytes
  * remain in retained custody), while an uncaptured in-place candidate remains
- * terminal because its live effects need direct inspection. */
-export function dominantRaceCandidateFailure(runs: CandidateRun[]): CandidateRun | undefined {
+ * terminal because its live effects need direct inspection. An isolated copy of
+ * a directory run whose retention setup failed is ineligible too (owner
+ * decision): a healthy sibling may still win, and its receipt keeps the
+ * stage that failed. A Git source whose retention failed stays terminal. */
+export function dominantRaceCandidateFailure(
+  runs: CandidateRun[],
+  race: { workspaceKind?: WorkspaceKind },
+): CandidateRun | undefined {
   return (
     runs.find((run) => delegationFailureKind(run.telemetry)) ??
-    runs.find((run) => run.captureRefusal?.disposition === "manual_cleanup")
+    runs.find(
+      (run) =>
+        run.captureRefusal?.disposition === "manual_cleanup" &&
+        !(race.workspaceKind === "directory" && run.captureRefusal.retentionFailure),
+    )
   );
+}
+
+/** The run summary's disclosure for a race that has a winner: an ERRORED
+ * winner's own cause (the failure record's lead, #621; never a loser's), the
+ * winner's own result lines, then every sibling excluded by a refused capture,
+ * or holding a continuation's refused one, with its exact receipt (cause, kept
+ * copy and any retention stage that failed). */
+export function raceSummaryDisclosure(
+  winner: CandidateRun | undefined,
+  runs: CandidateRun[],
+): string | null {
+  const lines = [
+    winner?.errored ? `- Failure: ${candidateCause(winner)}` : null,
+    resultSummaryLines(winner),
+    ...runs
+      .filter((run) => run !== winner && run.captureRefusal)
+      .map(
+        (run) =>
+          `- Excluded ${run.label} (${run.attemptId}, ${run.harnessId}): ${run.captureRefusal!.detail}`,
+      ),
+    ...runs.flatMap((run) =>
+      run.continuationRefusal
+        ? [
+            `- Excluded ${run.label}'s continuation (${run.continuationRefusal.attemptId}, ${run.harnessId}): ${run.continuationRefusal.refusal.detail}`,
+          ]
+        : [],
+    ),
+  ].filter((line): line is string => !!line);
+  return lines.length > 0 ? lines.join("\n") : null;
 }
 
 /** Build the terminal cause/provenance without duplicating the race and
@@ -80,9 +134,16 @@ export function delegationFailureTerminal(run: CandidateRun, lane: "race" | "con
 /** A Delegate failure leads when both occur. An incomplete capture is
  * orthogonal to the leading cause: its typed facts (capture failure, unknown
  * changes) and inspection actions ride with either cause, so a later terminal
- * owner (a late cancellation) recognizes the record by those facts. */
-export function candidateFailureTerminal(run: CandidateRun, lane: "race" | "convergence") {
+ * owner (a late cancellation) recognizes the record by those facts. Any other
+ * capture refusal among `attempts` (a sibling's, a continuation's) follows. */
+export function candidateFailureTerminal(
+  run: CandidateRun,
+  lane: "race" | "convergence",
+  attempts: readonly CandidateRun[] = [run],
+) {
   const refusal = run.captureRefusal;
+  const others = candidateCaptureRefusals(attempts).filter((other) => other !== refusal);
+  const followUps = { followUps: others.flatMap(captureInspectionActions) };
   const terminal = delegationFailureKind(run.telemetry)
     ? delegationFailureTerminal(run, lane)
     : refusal && {
@@ -97,14 +158,20 @@ export function candidateFailureTerminal(run: CandidateRun, lane: "race" | "conv
         },
       };
   if (!terminal) throw new Error("candidate failure terminal requested without cause");
-  if (!refusal) return terminal;
+  if (!refusal)
+    return {
+      ...terminal,
+      metadata: { ...terminal.metadata, captureFailure: others[0]?.failure, ...followUps },
+    };
   return {
     ...terminal,
     metadata: {
       ...terminal.metadata,
+      ...followUps,
       captureFailure: refusal.failure,
-      // failTerminally derives the reason from the leading cause's phase.
+      // The leading cause owns the reason: a Delegate failure's phase, else the refusal.
       priorFacts: makeOutcomeFacts("failed", { noChanges: null }),
+      ...(delegationFailureKind(run.telemetry) ? {} : { reason: CAPTURE_REFUSED_REASON }),
       nextActions: [...captureRefusalNextActions(refusal), ...terminal.metadata.nextActions],
     },
   };
@@ -117,6 +184,7 @@ type FailedCandidateOutput = {
   log: EventLog;
   paths: RunPaths;
   execRoot: string;
+  projectRoot: string;
   preTurnSha: string | null;
   postTurnSha?: string | null;
   taskId: string;
@@ -143,15 +211,13 @@ export async function persistFailedCandidateOutput(input: FailedCandidateOutput)
  * required Delegate failure becomes terminal. Persist those unavoidable bytes
  * as blocked and revertable; envelope runs stay diagnostic-only. */
 export async function persistFailedInPlaceWorkProduct(input: FailedCandidateOutput): Promise<void> {
-  if (!input.live || (!input.run.diff.trim() && !input.run.captureRefusal)) return;
+  if (!input.live || (!hasCandidateChanges(input.run) && !input.run.captureRefusal)) return;
   const refusal = input.run.captureRefusal;
   if (refusal) {
     // Uncaptured live effects: nothing was rolled back and no patch or revert
     // anchor can be produced, so the record says exactly that.
     const manualCleanup = refusal.disposition === "manual_cleanup";
-    const facts =
-      input.facts ??
-      makeOutcomeFacts("failed", { reason: "workspace_unavailable", noChanges: null });
+    const facts = input.facts ?? captureRefusedFacts();
     input.store.writeYaml(join(input.paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: input.kind,

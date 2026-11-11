@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { packWithSourceModes } from "./lib/pack-with-modes.mjs";
@@ -19,12 +20,45 @@ const root = resolve(import.meta.dirname, "..");
 const out = resolve(process.env.RUNNER_TEMP ?? "/tmp", "claudexor-npm-release");
 const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 const RELEASE_WORKFLOW_PATH = ".github/workflows/release.yml";
+const RELEASE_REPOSITORY = "razzant/claudexor";
+const NPM_REGISTRY = "https://registry.npmjs.org/";
+const NPM_NOT_FOUND = /E404|is not in this registry/i;
+const PUBLISH_RETRY_DELAYS_MS = [15_000, 45_000];
+const NETWORK_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "EPIPE",
+]);
+const SIGNATURE_AUDIT_STEPS = [
+  ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--legacy-peer-deps"],
+  ["audit", "signatures"],
+];
+
+// Read-only reconciliation (`--reconcile <selection.json>`). All selected
+// versions share one exposure window and no registry read (npm view or
+// attestations) starts after it closes. Every read and audit command carries
+// its own timeout, so waiting ends within one read timeout of the window, and
+// a run that reaches the signature audit adds at most its two command timeouts.
+const RECONCILE_EXPOSURE_WINDOW_MS = 10 * 60_000;
+const RECONCILE_POLL_MS = 10_000;
+const REGISTRY_READ_TIMEOUT_MS = 60_000;
+const SIGNATURE_AUDIT_TIMEOUT_MS = 10 * 60_000;
+const EXACT_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   await main();
 }
 
 async function main() {
+  // Any spelling of --reconcile selects the read-only mode, which refuses
+  // every argument shape but its own instead of falling through to publishing.
+  if (process.argv.slice(2).some((arg) => arg.startsWith("--reconcile"))) {
+    process.exitCode = await reconcileNpmPublications(process.argv.slice(2));
+    return;
+  }
   if (!process.argv.includes("--provenance")) fail("--provenance is mandatory");
   // npm publishes through trusted publishing (GitHub OIDC); no stored token is read.
   const candidateSha = process.env.GITHUB_SHA ?? "";
@@ -33,7 +67,7 @@ async function main() {
   const releaseVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   const win32ConptySha256 = process.env.CLAUDEXOR_WIN32_CONPTY_SHA256 ?? "";
   if (!/^[0-9a-f]{40}$/.test(candidateSha)) fail("GITHUB_SHA must be an exact commit SHA");
-  if (repository !== "razzant/claudexor") fail("GITHUB_REPOSITORY is not the release repository");
+  if (repository !== RELEASE_REPOSITORY) fail("GITHUB_REPOSITORY is not the release repository");
   if (ref !== `refs/tags/v${releaseVersion}`) fail("GITHUB_REF must be the exact release tag");
   if (!/^[0-9a-f]{64}$/.test(win32ConptySha256)) {
     fail("CLAUDEXOR_WIN32_CONPTY_SHA256 must bind the promoted candidate helper");
@@ -82,29 +116,11 @@ async function main() {
       workflowPath: RELEASE_WORKFLOW_PATH,
       ref,
     };
-    const existing = view(spec);
-    if (existing) {
-      await verifyPublished(existing, expected, spec, { allowSameSourceRebuild: true });
-      console.log(`npm already published with verified provenance: ${spec}`);
-      continue;
+    try {
+      await publishNpmPackage(tarball, expected);
+    } catch (error) {
+      fail(`${spec}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    run("npm", ["publish", tarball, "--access", "public", "--provenance"], root);
-    // npm indexing after publish is eventually consistent and has been
-    // observed to lag by MINUTES (v2.1.0 postmortem: a 10s window failed a
-    // release whose publish had succeeded, and the burned version could
-    // never be re-published). Poll for up to 10 minutes before declaring
-    // the publish unexposed.
-    let published = null;
-    for (let attempt = 0; attempt < 60 && !published; attempt += 1) {
-      published = view(spec);
-      if (!published) {
-        if (attempt % 6 === 5) console.log(`waiting for npm to expose ${spec}…`);
-        await new Promise((resolveWait) => setTimeout(resolveWait, 10_000));
-      }
-    }
-    if (!published) fail(`npm did not expose ${spec} after publish`);
-    await verifyPublished(published, expected, spec);
-    console.log(`npm published with provenance: ${spec}`);
   }
   verifyRegistrySignatures(packed);
   moveNextChannel(packed);
@@ -236,47 +252,156 @@ function pack(pkg) {
   }
 }
 
-function view(spec) {
-  const result = spawnSync("npm", ["view", spec, "--json"], { cwd: root, encoding: "utf8" });
-  if (result.status === 0) return JSON.parse(result.stdout);
-  if (/E404|is not in this registry/i.test(result.stderr)) return null;
-  fail(`npm view failed for ${spec}: ${npmFailureText(result.stderr)}`);
+/** Retry only a named network failure, never an arbitrary npm/auth/provenance error. */
+function networkFailure(value) {
+  const code =
+    value?.error?.code ??
+    value?.cause?.code ??
+    value?.code ??
+    String(value?.stderr ?? "").match(/^npm (?:error|ERR!) code (\S+)/m)?.[1];
+  return NETWORK_CODES.has(code);
 }
 
-async function verifyPublished(metadata, expected, spec, { allowSameSourceRebuild = false } = {}) {
+async function view(spec, io, deadline = io.now() + RECONCILE_EXPOSURE_WINDOW_MS) {
+  for (let attempt = 0; ; attempt += 1) {
+    const remaining = deadline - io.now();
+    if (remaining <= 0) throw new Error(`npm view exposure window expired for ${spec}`);
+    const result = io.spawn("npm", ["view", spec, "--json"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: Math.max(1, Math.min(REGISTRY_READ_TIMEOUT_MS, Math.ceil(remaining))),
+    });
+    if (result.status === 0) return JSON.parse(result.stdout);
+    if (NPM_NOT_FOUND.test(result.stderr ?? "")) return null;
+    if (!networkFailure(result) || attempt === PUBLISH_RETRY_DELAYS_MS.length) {
+      throw new Error(`npm view failed for ${spec}: ${npmFailureText(result.stderr)}`);
+    }
+    await io.sleep(Math.min(PUBLISH_RETRY_DELAYS_MS[attempt], Math.max(0, deadline - io.now())));
+  }
+}
+
+/** One packed package, at most three network-only publish attempts. npm versions
+ * are immutable: a repeated PUT cannot overwrite accepted bytes. A failed request
+ * may nevertheless have landed; re-read before retrying and verify strict original
+ * integrity after any attempt. An acknowledgement switches permanently to reads. */
+export async function publishNpmPackage(tarball, expected, io = registryIo()) {
+  const spec = `${expected.packageName}@${expected.version}`;
+  let metadata = await view(spec, io);
+  if (metadata) {
+    await verifyPublished(metadata, expected, spec, io, { allowSameSourceRebuild: true });
+    io.log(`npm already published with verified provenance: ${spec}`);
+    return;
+  }
+  for (let attempt = 0; ; attempt += 1) {
+    const result = io.spawn("npm", ["publish", tarball, "--access", "public", "--provenance"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.status === 0) {
+      io.log(`npm publish acknowledged: ${spec}; verifying registry exposure and provenance`);
+      break;
+    }
+    if (!networkFailure(result)) {
+      throw new Error(`npm publish failed for ${spec}: ${npmFailureText(result.stderr)}`);
+    }
+    if (attempt === PUBLISH_RETRY_DELAYS_MS.length) {
+      metadata = await view(spec, io);
+      if (metadata) break;
+      throw new Error(
+        `npm publish outcome unresolved for ${spec} after ${attempt + 1} attempts: ${npmFailureText(result.stderr)}`,
+      );
+    }
+    io.log(`npm publish network failure for ${spec}; rechecking before another attempt`);
+    await io.sleep(PUBLISH_RETRY_DELAYS_MS[attempt]);
+    metadata = await view(spec, io);
+    if (metadata) break;
+  }
+  // An accepted publish must never be repeated merely because indexing lags.
+  const deadline = io.now() + RECONCILE_EXPOSURE_WINDOW_MS;
+  while (!metadata && io.now() < deadline) {
+    metadata = await view(spec, io, deadline);
+    if (!metadata) await io.sleep(Math.min(RECONCILE_POLL_MS, Math.max(0, deadline - io.now())));
+  }
+  if (!metadata) throw new Error(`npm did not expose ${spec} after publish; outcome unresolved`);
+  await verifyPublished(metadata, expected, spec, io);
+  io.log(`npm published with provenance: ${spec}`);
+}
+
+/** Where npm serves a version's signed attestations; only the npm registry itself is trusted. */
+function trustedAttestationUrl(metadata) {
   const url = metadata?.dist?.attestations?.url;
-  if (typeof url !== "string") fail(`npm provenance is missing for ${spec}`);
+  if (typeof url !== "string") return { problem: "npm provenance is missing" };
   let parsedUrl;
   try {
     parsedUrl = new URL(url);
   } catch {
-    fail(`npm provenance URL is invalid for ${spec}`);
+    return { problem: "npm provenance URL is invalid" };
   }
   if (parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "registry.npmjs.org") {
-    fail(`npm provenance URL is untrusted for ${spec}`);
+    return { problem: "npm provenance URL is untrusted" };
   }
+  return { url: parsedUrl };
+}
+
+async function verifyPublished(
+  metadata,
+  expected,
+  spec,
+  io,
+  { allowSameSourceRebuild = false } = {},
+) {
+  const attestations = trustedAttestationUrl(metadata);
+  if (attestations.problem) throw new Error(`${attestations.problem} for ${spec}`);
+  const parsedUrl = attestations.url;
   // npm's attestation endpoint is eventually consistent like the version
   // listing (v2.1.1 postmortem: fresh publishes 404 here for minutes while
   // the tarball itself is already served). Poll 404s with the same bounded
-  // 10-minute window; any other failure — and a still-missing attestation
-  // after the deadline — stays a loud hard failure.
+  // 10-minute window. Named network failures and temporary HTTP failures are reads
+  // only; they never cause another publication. A mismatch is never retried.
   let response = null;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    response = await fetch(parsedUrl, { headers: { accept: "application/json" } });
-    if (response.status !== 404) break;
-    if (attempt % 6 === 5) console.log(`waiting for npm attestations for ${spec}…`);
-    await new Promise((resolveWait) => setTimeout(resolveWait, 10_000));
+  let networkError;
+  let attestationDocument;
+  const deadline = io.now() + RECONCILE_EXPOSURE_WINDOW_MS;
+  while (io.now() < deadline) {
+    try {
+      response = await io.fetch(parsedUrl, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.min(REGISTRY_READ_TIMEOUT_MS, Math.ceil(deadline - io.now()))),
+        ),
+      });
+      if (response.ok) {
+        attestationDocument = await response.json();
+        break;
+      }
+      if (![404, 408, 429, 500, 502, 503, 504].includes(response.status)) break;
+    } catch (error) {
+      // Native fetch reports a closed response body through Undici's socket code.
+      // This is a read-only retry, never another npm publish.
+      if (
+        !networkFailure(error) &&
+        error?.cause?.code !== "UND_ERR_SOCKET" &&
+        error?.name !== "TimeoutError"
+      )
+        throw error;
+      networkError = error;
+      response = null;
+    }
+    await io.sleep(Math.min(RECONCILE_POLL_MS, Math.max(0, deadline - io.now())));
   }
-  if (!response?.ok) fail(`npm provenance fetch failed for ${spec}: HTTP ${response?.status}`);
-  const attestationDocument = await response.json();
+  if (!response?.ok)
+    throw new Error(
+      `npm provenance fetch failed for ${spec}: ${response ? `HTTP ${response.status}` : (networkError?.message ?? "unavailable")}`,
+    );
   const validation = validatePublishedProvenance({
+    ...expected,
     metadata,
     attestationDocument,
     allowSameSourceRebuild,
-    ...expected,
   });
   if (!validation.ok)
-    fail(`npm publication mismatch for ${spec}: ${validation.reasons.join("; ")}`);
+    throw new Error(`npm publication mismatch for ${spec}: ${validation.reasons.join("; ")}`);
 }
 
 export function validatePublishedProvenance(input) {
@@ -367,24 +492,305 @@ function verifyRegistrySignatures(packed) {
   mkdirSync(auditRoot, { recursive: true });
   writeFileSync(
     join(auditRoot, "package.json"),
-    `${JSON.stringify(
-      {
-        name: "claudexor-release-signature-audit",
-        version: "0.0.0",
-        private: true,
-        dependencies: Object.fromEntries(packed.map(({ pkg }) => [pkg.name, `=${pkg.version}`])),
-      },
-      null,
-      2,
-    )}\n`,
+    signatureAuditManifest(packed.map(({ pkg }) => [pkg.name, pkg.version])),
     { mode: 0o600 },
   );
-  run(
-    "npm",
-    ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--legacy-peer-deps"],
-    auditRoot,
+  for (const step of SIGNATURE_AUDIT_STEPS) run("npm", step, auditRoot);
+}
+
+/** A private project depending on exactly these versions, for `npm audit signatures`. */
+function signatureAuditManifest(versions) {
+  return `${JSON.stringify(
+    {
+      name: "claudexor-release-signature-audit",
+      version: "0.0.0",
+      private: true,
+      dependencies: Object.fromEntries(versions.map(([name, version]) => [name, `=${version}`])),
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+/**
+ * Continues a stopped publish run without publishing. The selection file names
+ * the release identity and the versions to read, each marked with what the
+ * stopped run showed: `accepted` (npm acknowledged the publish) or `uncertain`.
+ * Selecting a version authorizes reading it and never proves it was published:
+ * each one gets the publish path's checks (exposure, signed provenance bound to
+ * this repository's release workflow, tag and commit, and the selected original
+ * tarball digest when one is given), then the registry signatures of the
+ * selected versions and their dependencies are audited. A version npm does not
+ * expose stays unresolved, never accepted and never unsent. Nothing is packed,
+ * published or moved to a dist-tag, and a package the selection omits gets no
+ * verdict. Resolves to the exit code: 0 only when every selected version
+ * verified and the audit passed.
+ */
+export async function reconcileNpmPublications(args, io = registryIo()) {
+  let selection;
+  let registryArgs;
+  try {
+    if (args.length !== 2 || args[0] !== "--reconcile") {
+      throw new Error("--reconcile takes exactly one selection file and no other argument");
+    }
+    const publishable = discoverPackages();
+    selection = parseSelection(readFileSync(args[1], "utf8"), publishable);
+    registryArgs = registryPins(publishable.keys());
+  } catch (error) {
+    io.error(`npm reconcile refused: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  const outcomes = await readSelectedVersions(selection, registryArgs, io);
+  let verified = 0;
+  for (const entry of selection.packages) {
+    const { kind, detail } = outcomes.get(entry);
+    if (kind === "verified") verified += 1;
+    io.log(
+      `npm reconcile: ${entry.name}@${selection.version} (selected as ${entry.prior}) ${kind}: ${detail}`,
+    );
+  }
+  const auditProblem =
+    verified === selection.packages.length
+      ? auditSelectedSignatures(selection, registryArgs, io)
+      : "not run while a selected version is unverified";
+  io.log(`npm reconcile: signature audit ${auditProblem ?? "passed"}`);
+  const summary = `${verified} of ${selection.packages.length} selected version(s) verified; nothing was published and no dist-tag was moved`;
+  if (auditProblem) {
+    io.error(`npm reconcile incomplete: ${summary}`);
+    return 1;
+  }
+  io.log(`npm reconcile complete: ${summary}`);
+  return 0;
+}
+
+function registryIo() {
+  return {
+    spawn: spawnSync,
+    fetch: (url, init) => fetch(url, init),
+    sleep: (ms) => new Promise((resolveWait) => setTimeout(resolveWait, ms)),
+    now: () => performance.now(),
+    log: (line) => console.log(line),
+    error: (line) => console.error(line),
+  };
+}
+
+function parseSelection(text, publishable) {
+  let selection;
+  try {
+    selection = JSON.parse(text);
+  } catch {
+    throw new Error("the selection file is not JSON");
+  }
+  knownFieldsOnly(selection, "selection", [
+    "registry",
+    "repository",
+    "workflowPath",
+    "version",
+    "ref",
+    "candidateSha",
+    "packages",
+  ]);
+  const { registry, repository, workflowPath, version, ref, candidateSha, packages } = selection;
+  const problem =
+    (registry !== NPM_REGISTRY && `registry must be ${NPM_REGISTRY}`) ||
+    (repository !== RELEASE_REPOSITORY && `repository must be ${RELEASE_REPOSITORY}`) ||
+    (workflowPath !== RELEASE_WORKFLOW_PATH && `workflowPath must be ${RELEASE_WORKFLOW_PATH}`) ||
+    ((typeof version !== "string" || !EXACT_VERSION.test(version)) &&
+      "version must be an exact release version") ||
+    (ref !== `refs/tags/v${version}` && "ref must be the version's release tag") ||
+    ((typeof candidateSha !== "string" || !/^[0-9a-f]{40}$/.test(candidateSha)) &&
+      "candidateSha must be an exact commit SHA") ||
+    ((!Array.isArray(packages) || packages.length === 0) &&
+      "packages must list at least one package");
+  if (problem) throw new Error(`selection ${problem}`);
+  const names = new Set();
+  packages.forEach((entry, index) => {
+    const label = `selection packages[${index}]`;
+    knownFieldsOnly(entry, label, ["name", "prior", "integrity"]);
+    if (!publishable.has(entry.name)) {
+      throw new Error(`${label}.name is not a published package of this checkout`);
+    }
+    if (names.has(entry.name)) throw new Error(`${label}.name repeats an earlier package`);
+    names.add(entry.name);
+    if (entry.prior !== "accepted" && entry.prior !== "uncertain") {
+      throw new Error(`${label}.prior must be "accepted" or "uncertain"`);
+    }
+    if (entry.integrity !== undefined && !isSha512Integrity(entry.integrity)) {
+      throw new Error(`${label}.integrity must be the original tarball's sha512 integrity`);
+    }
+  });
+  return selection;
+}
+
+/** Unknown fields refuse: a misspelled `integrity` must not quietly weaken the check. */
+function knownFieldsOnly(value, label, fields) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  const unknown = Object.keys(value).find((key) => !fields.includes(key));
+  if (unknown !== undefined)
+    throw new Error(`${label} has unknown field ${JSON.stringify(unknown)}`);
+}
+
+function isSha512Integrity(value) {
+  if (typeof value !== "string" || !value.startsWith("sha512-")) return false;
+  const digest = Buffer.from(value.slice("sha512-".length), "base64");
+  return digest.length === 64 && `sha512-${digest.toString("base64")}` === value;
+}
+
+/** The selected registry on every reconcile npm command. npm resolves a scoped
+ * package through `@scope:registry` before `registry`, and a command-line value
+ * outranks every npmrc, so each scope this checkout publishes under is pinned
+ * too; a scope override in an npmrc would otherwise redirect the read. */
+function registryPins(packageNames) {
+  const scopes = new Set();
+  for (const name of packageNames) if (name.startsWith("@")) scopes.add(name.split("/")[0]);
+  const scopePins = [...scopes].sort().map((scope) => `--${scope}:registry=${NPM_REGISTRY}`);
+  return ["--registry", NPM_REGISTRY, ...scopePins];
+}
+
+async function readSelectedVersions(selection, registryArgs, io) {
+  const deadline = io.now() + RECONCILE_EXPOSURE_WINDOW_MS;
+  const outcomes = new Map(
+    selection.packages.map((entry) => [
+      entry,
+      { kind: "waiting", detail: "the exposure window closed before this version was read" },
+    ]),
   );
-  run("npm", ["audit", "signatures"], auditRoot);
+  let waiting = selection.packages;
+  for (let round = 1; ; round += 1) {
+    const next = [];
+    for (const entry of waiting) {
+      if (io.now() < deadline) {
+        outcomes.set(entry, await readSelected(entry, selection, registryArgs, deadline, io));
+      }
+      if (outcomes.get(entry).kind === "waiting") next.push(entry);
+    }
+    waiting = next;
+    const remaining = deadline - io.now();
+    if (waiting.length === 0 || remaining <= 0) break;
+    if (round % 6 === 0) {
+      const specs = waiting.map((entry) => `${entry.name}@${selection.version}`);
+      io.log(`waiting for npm to expose ${specs.join(", ")}…`);
+    }
+    await io.sleep(Math.min(RECONCILE_POLL_MS, remaining));
+  }
+  for (const entry of waiting) {
+    const unknown =
+      entry.prior === "accepted"
+        ? "selected as accepted: reconcile again later rather than sending it again"
+        : "whether the stopped run's request reached npm is unknown";
+    const { detail } = outcomes.get(entry);
+    outcomes.set(entry, { kind: "unresolved", detail: `${detail}; ${unknown}` });
+  }
+  return outcomes;
+}
+
+async function readSelected(entry, selection, registryArgs, deadline, io) {
+  const spec = `${entry.name}@${selection.version}`;
+  const viewed = io.spawn("npm", ["view", spec, "--json", ...registryArgs], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: REGISTRY_READ_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
+  if (viewed.error) {
+    return unresolved(`npm view did not finish (${viewed.error.code ?? viewed.error.message})`);
+  }
+  if (viewed.status !== 0) {
+    return NPM_NOT_FOUND.test(viewed.stderr ?? "")
+      ? { kind: "waiting", detail: "npm still did not expose this version when the window closed" }
+      : unresolved(`npm view failed: ${npmFailureText(viewed.stderr)}`);
+  }
+  let metadata;
+  try {
+    metadata = JSON.parse(viewed.stdout);
+  } catch {
+    return unresolved("npm view answered without readable metadata");
+  }
+  const attestations = trustedAttestationUrl(metadata);
+  if (attestations.problem) return { kind: "mismatch", detail: attestations.problem };
+  // The window bounds the attestation read as well: a slow view can finish
+  // after the window closed, and then no further read starts.
+  if (io.now() >= deadline) {
+    return {
+      kind: "waiting",
+      detail: "npm served this version, but the window closed before its attestations were read",
+    };
+  }
+  let attestationDocument;
+  try {
+    const response = await io.fetch(attestations.url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(REGISTRY_READ_TIMEOUT_MS),
+    });
+    if (response.status === 404) {
+      return {
+        kind: "waiting",
+        detail: "npm served this version but not its attestations when the window closed",
+      };
+    }
+    if (!response.ok) return unresolved(`npm attestations answered HTTP ${response.status}`);
+    attestationDocument = await response.json();
+  } catch (error) {
+    return unresolved(`npm attestations were not read (${error?.name ?? "error"})`);
+  }
+  const { integrity } = entry;
+  const validation = validatePublishedProvenance({
+    metadata,
+    attestationDocument,
+    packageName: entry.name,
+    version: selection.version,
+    integrity,
+    sha512Hex:
+      integrity && Buffer.from(integrity.slice("sha512-".length), "base64").toString("hex"),
+    candidateSha: selection.candidateSha,
+    repository: selection.repository,
+    workflowPath: selection.workflowPath,
+    ref: selection.ref,
+    // Without the original digest only the narrower same-source claim is made;
+    // nothing is re-packed to stand in for the bytes the stopped run sent.
+    allowSameSourceRebuild: integrity === undefined,
+  });
+  if (!validation.ok) return { kind: "mismatch", detail: validation.reasons.join("; ") };
+  return {
+    kind: "verified",
+    detail: integrity
+      ? "the published bytes are the selected original tarball, with matching provenance"
+      : "same-source provenance only; no original tarball digest was selected",
+  };
+}
+
+function unresolved(detail) {
+  return { kind: "unresolved", detail };
+}
+
+function auditSelectedSignatures(selection, registryArgs, io) {
+  const auditRoot = mkdtempSync(join(tmpdir(), "claudexor-npm-reconcile-"));
+  try {
+    writeFileSync(
+      join(auditRoot, "package.json"),
+      signatureAuditManifest(selection.packages.map(({ name }) => [name, selection.version])),
+      { mode: 0o600 },
+    );
+    for (const step of SIGNATURE_AUDIT_STEPS) {
+      const result = io.spawn("npm", [...step, ...registryArgs], {
+        cwd: auditRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: SIGNATURE_AUDIT_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      });
+      if (result.error) {
+        return `failed: npm ${step[0]} did not finish (${result.error.code ?? result.error.message})`;
+      }
+      if (result.status !== 0) return `failed: npm ${step[0]}: ${npmFailureText(result.stderr)}`;
+    }
+    return null;
+  } finally {
+    rmSync(auditRoot, { recursive: true, force: true });
+  }
 }
 
 function run(command, args, cwd, env = process.env) {

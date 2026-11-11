@@ -1,17 +1,25 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MaintenanceController } from "./maintenance.js";
 import { runMutation } from "./mutation.js";
 import { putUploadInTx, readUploadRow, payloadRef } from "./resource-rows.js";
+import {
+  claimResourceUsesInTx,
+  collectAfterCommit,
+  dropResourceUsesInTx,
+} from "./resource-uses.js";
 import { cleanupUploadPart } from "./uploads.js";
 import {
   builtWorker,
+  chunks,
   resourceFixture,
   uploaded,
   type ResourceFixture,
 } from "./test-support/resource-fixture.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const fixtures: ResourceFixture[] = [];
@@ -32,14 +40,80 @@ function maintenance(f: ResourceFixture) {
   controllers.push(controller);
   return controller;
 }
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a late close or a later test never reaches
+  // another test's.
+  const ownedRoots = roots.splice(0);
+  const ownedFixtures = fixtures.splice(0);
   for (const controller of controllers.splice(0)) await controller.stop();
-  for (const f of fixtures.splice(0)) await f.close();
-  for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const f of ownedFixtures) await f.close();
+  return () => {
+    for (const path of ownedRoots) rmSync(path, { recursive: true, force: true });
+  };
 });
 const settleTick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe("resource owner generation races", () => {
+  it("frees a managed import released before its publication cleared, but not its holder's bytes", async () => {
+    const f = await fixture();
+    const imported = async (key: string, text: string) => {
+      const bytes = Buffer.from(text);
+      const hex = createHash("sha256").update(bytes).digest("hex");
+      const request = {
+        expectedStoreId: f.store.storeId,
+        kind: "file",
+        mime: "text/plain",
+        name: "brief.txt",
+        source: "/host/brief.txt",
+        lifetime: "managed",
+      };
+      const content = { sizeBytes: bytes.length, sha256: `sha256:${hex}` };
+      const begun = f.resources.importUpload({ ...request, content }, key);
+      await f.resources.write(begun.uploadId, chunks(bytes));
+      const resource = f.resources.importUpload(request, key).resource!;
+      return {
+        resource,
+        part: f.resources["uploads"].partPath(begun.uploadId),
+        blob: f.blobs.filePath(hex),
+      };
+    };
+    const release = ({ resourceId, sha256 }: { resourceId: string; sha256: string }) =>
+      f.resources.releaseResource(resourceId, { expectedStoreId: f.store.storeId, sha256 });
+    // A pending collection waits for a later tick here, so nothing below may await a drain.
+    const barrier = async () => {
+      await f.tick();
+      await settleTick();
+    };
+
+    const free = await imported("free", "freed at the barrier\n");
+    release(free.resource);
+    // The publication's obligation is still open: it owns both the part and the digest.
+    expect(existsSync(free.part)).toBe(true);
+    expect(existsSync(free.blob)).toBe(true);
+    await vi.waitFor(async () => {
+      await barrier();
+      expect(existsSync(free.part)).toBe(false);
+      expect(existsSync(free.blob)).toBe(false);
+    });
+
+    const held = await imported("held", "kept for its holder\n");
+    const holder = { owner: "command", id: "job-accepted" } as const;
+    runMutation(f.store, (tx) => claimResourceUsesInTx(tx, holder, [held.resource.resourceId]));
+    release(held.resource);
+    await vi.waitFor(async () => {
+      await barrier();
+      expect(existsSync(held.part)).toBe(false);
+    });
+    for (let round = 0; round < 4; round += 1) await barrier();
+    expect(existsSync(held.blob)).toBe(true);
+    // The owner's end collects after its commit, not at the next startup sweep.
+    runMutation(f.store, (tx) => collectAfterCommit(tx, f, dropResourceUsesInTx(tx, holder)));
+    await vi.waitFor(async () => {
+      await barrier();
+      expect(existsSync(held.blob)).toBe(false);
+    });
+  });
+
   it("drops an inline row in the same transaction as its last resource owner, then collects the file", async () => {
     const f = await fixture();
     const bytes = Buffer.from("test");

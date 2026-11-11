@@ -6,17 +6,43 @@ import Testing
 /// No AppModel construction, lifecycle, daemon, credentials or live networking.
 @MainActor @Suite(.serialized)
 struct AccountResourcesActionTests {
+    @Test func concurrentClientsKeepTheirHandlersAndIndependentTeardown() async throws {
+        let first = ResourceAppFixture()
+        let second = ResourceAppFixture()
+        defer { first.handler = nil; second.handler = nil }
+        let gate = ResourceResponseGate()
+        first.handler = { _ in
+            await gate.pause()
+            return (200, Data(AccountResourcesFixtures.catalog.utf8))
+        }
+        second.handler = { _ in (200, Data(#"{"operations":[]}"#.utf8)) }
+        let firstClient = first.gateway()
+        let secondClient = second.gateway()
+        let pending = Task { try await firstClient.accountResourceCapabilities() }
+        await gate.waitForStart()
+        let other = try await secondClient.accountResourceCapabilities()
+        #expect(!other.refresh)
+        // Replacing the first fixture does not change the already-started
+        // request; removing the second does not unregister the first client.
+        first.handler = { _ in (200, Data(AccountResourcesFixtures.catalog.utf8)) }
+        second.handler = nil
+        await gate.finish()
+        #expect(try await pending.value.refresh)
+        #expect(try await firstClient.accountResourceCapabilities().refresh)
+    }
+
     @Test func normalRelaunchRestoresUnresolvedKeyBodyAndLocationBeforeAnyNewRequest() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         var bytes: Data?
         let preferences = AccountResetRecoveryPreferences(load: { bytes }, save: { bytes = $0 })
         let recorder = ResourceAppRecorder()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             throw URLError(.timedOut)
         }
         let remote = ExecutionLocationID.remote(UUID())
-        let client = ResourceAppProtocol.gateway()
+        let client = fixture.gateway()
         let connection = AccountResourceConnection(location: remote, client: client, isCurrent: { true }, accept: { _, _, _ in })
         var actions: AccountsResourceActions? = AccountsResourceActions(preferences: preferences)
         await actions?.startReset(AccountResourcesFixtures.request, label: "Granted reset", using: connection)
@@ -32,7 +58,7 @@ struct AccountResourcesActionTests {
         #expect(recovered.unconfirmed && recovered.receipt == nil && !recovered.inFlight)
         #expect(relaunched.attempts(for: AccountResourcesFixtures.target, at: .local).isEmpty)
         #expect(await recorder.requests.count == 1) // Restore never sends a request.
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             return (200, try AccountResourcesFixtures.receipt(outcome: "already_redeemed", readback: "fresh"))
         }
@@ -43,15 +69,16 @@ struct AccountResourcesActionTests {
     }
 
     @Test func relaunchKeepsConfirmedResetWhileReadbackIsUnresolved() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         var bytes: Data?
         let preferences = AccountResetRecoveryPreferences(load: { bytes }, save: { bytes = $0 })
         let recorder = ResourceAppRecorder()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             return (200, try AccountResourcesFixtures.receipt(outcome: "reset", readback: "failed"))
         }
-        let connection = AccountResourceConnection(location: .local, client: ResourceAppProtocol.gateway(),
+        let connection = AccountResourceConnection(location: .local, client: fixture.gateway(),
             isCurrent: { true }, accept: { _, _, _ in })
         let actions = AccountsResourceActions(preferences: preferences)
         await actions.startReset(AccountResourcesFixtures.request, label: "Granted reset", using: connection)
@@ -65,7 +92,7 @@ struct AccountResourcesActionTests {
         #expect(AccountResourcePresentation.status(prior) == "Reset applied")
         #expect(prior.receipt?.resources == nil)
         #expect(await recorder.requests.count == 1)
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             if request.url.path.hasSuffix("/operations") {
                 return (200, Data(AccountResourcesFixtures.catalog.utf8))
@@ -108,16 +135,17 @@ struct AccountResourcesActionTests {
     }
 
     @Test func timeoutWithoutReceiptRetainsBodyAndKeyAndRecoveryCannotSpendAgain() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let recorder = ResourceAppRecorder()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             if await recorder.requests.count == 1 { throw URLError(.timedOut) }
             return (200, try AccountResourcesFixtures.receipt())
         }
         let actions = AccountsResourceActions()
         var displayed: ControlQuotaResponse?
-        let connection = AccountResourceConnection(location: .local, client: ResourceAppProtocol.gateway(),
+        let connection = AccountResourceConnection(location: .local, client: fixture.gateway(),
                                                    isCurrent: { true }, accept: { response, _, _ in displayed = response })
         await actions.startReset(AccountResourcesFixtures.request, label: "Granted reset", using: connection)
         let unknown = try #require(actions.attempts(for: AccountResourcesFixtures.target, at: .local).last)
@@ -137,14 +165,15 @@ struct AccountResourcesActionTests {
     }
 
     @Test func deliberateResetAfterUnknownUsesNewKeyAndKeepsOriginalRecoverable() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let recorder = ResourceAppRecorder()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             return (200, try AccountResourcesFixtures.receipt(outcome: "unknown"))
         }
         let actions = AccountsResourceActions()
-        let connection = AccountResourceConnection(location: .local, client: ResourceAppProtocol.gateway(), isCurrent: { true }, accept: { _, _, _ in })
+        let connection = AccountResourceConnection(location: .local, client: fixture.gateway(), isCurrent: { true }, accept: { _, _, _ in })
         await actions.startReset(AccountResourcesFixtures.request, label: "Reset", using: connection)
         let original = try #require(actions.attempts(for: AccountResourcesFixtures.target, at: .local).last)
         let snapshot = try #require(AccountResourcesFixtures.quota().resources?.first)
@@ -163,9 +192,10 @@ struct AccountResourcesActionTests {
     }
 
     @Test func runningReceiptUsesStatusReadAndSettlesWithoutAnotherResetPost() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let recorder = ResourceAppRecorder()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             if request.url.path == "/v2/operations" { return (200, Data(AccountResourcesFixtures.catalog.utf8)) }
             if request.method == "POST" {
@@ -174,7 +204,7 @@ struct AccountResourcesActionTests {
             return (200, try AccountResourcesFixtures.receipt(outcome: "already_redeemed", readback: "fresh"))
         }
         let actions = AccountsResourceActions()
-        let client = ResourceAppProtocol.gateway()
+        let client = fixture.gateway()
         let connection = AccountResourceConnection(location: .local, client: client, isCurrent: { true }, accept: { _, _, _ in })
         await actions.loadCapabilities(client: client, at: .local, isCurrent: { true })
         await actions.startReset(AccountResourcesFixtures.request, label: "Reset", using: connection)
@@ -189,9 +219,10 @@ struct AccountResourcesActionTests {
     }
 
     @Test func pendingThenRemoteGatewayRetirementCannotCommitOldResponse() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let gate = ResourceResponseGate()
-        ResourceAppProtocol.handler = { _ in
+        fixture.handler = { _ in
             await gate.pause()
             return (200, try AccountResourcesFixtures.receipt(readback: "fresh"))
         }
@@ -199,7 +230,7 @@ struct AccountResourcesActionTests {
         let remote = ExecutionLocationID.remote(UUID())
         var current = true
         var commits = 0
-        let connection = AccountResourceConnection(location: remote, client: ResourceAppProtocol.gateway(),
+        let connection = AccountResourceConnection(location: remote, client: fixture.gateway(),
             isCurrent: { current }, accept: { _, _, _ in commits += 1 })
         let task = Task { await actions.startReset(AccountResourcesFixtures.request, label: "Reset", using: connection) }
         await gate.waitForStart()
@@ -216,9 +247,10 @@ struct AccountResourcesActionTests {
     }
 
     @Test func retryReadbackOnlyRefreshesExactDisabledDefaultAccount() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let recorder = ResourceAppRecorder()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             if request.url.path == "/v2/operations" { return (200, Data(AccountResourcesFixtures.catalog.utf8)) }
             if request.url.path == "/v2/quota" { return (200, Data(AccountResourcesFixtures.resources.utf8)) }
@@ -226,7 +258,7 @@ struct AccountResourcesActionTests {
         }
         let actions = AccountsResourceActions()
         var target: AccountTarget?
-        let connection = AccountResourceConnection(location: .local, client: ResourceAppProtocol.gateway(),
+        let connection = AccountResourceConnection(location: .local, client: fixture.gateway(),
             isCurrent: { true }, accept: { _, value, _ in target = value })
         await actions.startReset(AccountResourcesFixtures.request, label: "Reset", using: connection)
         await actions.refresh(AccountResourcesFixtures.target, using: connection)
@@ -242,23 +274,25 @@ struct AccountResourcesActionTests {
     }
 
     @Test func oldEngineDoesNotTurnExactRefreshIntoProviderFanout() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let recorder = ResourceAppRecorder()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             await recorder.record(request)
             return (200, Data(#"{"operations":[]}"#.utf8))
         }
         let actions = AccountsResourceActions()
-        let connection = AccountResourceConnection(location: .local, client: ResourceAppProtocol.gateway(), isCurrent: { true }, accept: { _, _, _ in Issue.record("Unexpected projection") })
+        let connection = AccountResourceConnection(location: .local, client: fixture.gateway(), isCurrent: { true }, accept: { _, _, _ in Issue.record("Unexpected projection") })
         await actions.refresh(AccountResourcesFixtures.target, using: connection)
         #expect(await recorder.requests.count == 1)
         #expect(actions.refreshes[.local]?[AccountResourcesFixtures.target]?.error?.contains("does not advertise") == true)
     }
 
     @Test func aRefreshStartedBeforeResetCannotOverwriteItsReadback() async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let gate = ResourceResponseGate()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             if request.url.path == "/v2/operations" { return (200, Data(AccountResourcesFixtures.catalog.utf8)) }
             if request.url.path == "/v2/quota" {
                 await gate.pause()
@@ -268,7 +302,7 @@ struct AccountResourcesActionTests {
         }
         let actions = AccountsResourceActions()
         var commits = 0
-        let connection = AccountResourceConnection(location: .local, client: ResourceAppProtocol.gateway(),
+        let connection = AccountResourceConnection(location: .local, client: fixture.gateway(),
             isCurrent: { true }, accept: { _, _, _ in commits += 1 })
         let refreshing = Task { await actions.refresh(AccountResourcesFixtures.target, using: connection) }
         await gate.waitForStart()
@@ -282,9 +316,10 @@ struct AccountResourcesActionTests {
 
     @Test(arguments: [false, true], [false, true])
     func newerBackgroundReadOfSameTargetSurvivesLateCommandResponse(reset: Bool, equalTimestamp: Bool) async throws {
-        defer { ResourceAppProtocol.handler = nil }
+        let fixture = ResourceAppFixture()
+        defer { fixture.handler = nil }
         let gate = ResourceResponseGate()
-        ResourceAppProtocol.handler = { request in
+        fixture.handler = { request in
             if request.url.path == "/v2/operations" { return (200, Data(AccountResourcesFixtures.catalog.utf8)) }
             await gate.pause()
             return reset ? (200, try AccountResourcesFixtures.receipt(readback: "fresh"))
@@ -293,9 +328,12 @@ struct AccountResourcesActionTests {
         let actions = AccountsResourceActions()
         var displayed: ControlQuotaResponse? = try AccountResourcesFixtures.quota()
         var displayGeneration: UInt64 = 1
-        let connection = AccountResourceConnection(location: .local, client: ResourceAppProtocol.gateway(),
-            isCurrent: { true }, displayGeneration: { displayGeneration }, accept: { response, target, generation in
-                displayed = response.replacingAccount(target, in: displayed, preferPreviousOnTie: generation != displayGeneration)
+        let connection = AccountResourceConnection(location: .local, client: fixture.gateway(),
+            isCurrent: { true }, observe: { _ in AccountRequestObservation(displayGeneration: displayGeneration) },
+            accept: { response, target, observation in
+                // The background read below keeps this account's key: not a rebinding.
+                displayed = response.replacingAccount(target, in: displayed, reboundSinceRequest: false,
+                                                      preferPreviousOnTie: observation.displayGeneration != displayGeneration)
             })
         let command = Task {
             if reset { await actions.startReset(AccountResourcesFixtures.request, label: "Reset", using: connection) }

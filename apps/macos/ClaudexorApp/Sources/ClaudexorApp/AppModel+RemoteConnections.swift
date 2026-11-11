@@ -83,7 +83,7 @@ extension AppModel {
     }
 
     private func persistRemoteConnections() {
-        try? RemoteConnectionStore.applicationSupport().save(remoteConnections)
+        try? persistence.remoteConnections?().save(remoteConnections)
     }
 
     func userMessageForRemote(_ error: Error) -> String {

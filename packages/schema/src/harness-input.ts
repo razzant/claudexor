@@ -35,11 +35,41 @@ export const HarnessRequestRefusal = z
       binary_path: z.string().min(1).nullable(),
       installed_version: z.string().min(1).nullable(),
     }),
+    z.object({
+      kind: z.literal("credential_source_unconfirmed"),
+      native_code: z.literal("grok_credential_source_unconfirmed"),
+      source: z.literal("grok_init"),
+      reported_source: z
+        .string()
+        .max(80)
+        .describe("Redacted credential source the vendor's startup frame reported."),
+    }),
+    z.object({
+      kind: z.literal("vendor_not_retryable"),
+      source: z.literal("agy_stderr"),
+      error_id: z
+        .string()
+        .min(1)
+        .max(128)
+        .nullable()
+        .describe("The vendor's own error id from the same record, verbatim; null when absent."),
+    }),
   ])
   .describe(
-    "Vendor-attested request refusal that another account cannot repair; input and executable causes carry their own evidence.",
+    "Vendor-attested request refusal that stops retries and account rotation on its harness; input, executable and credential-source causes and an explicit vendor not-retryable verdict carry their own evidence.",
   );
 export type HarnessRequestRefusal = z.infer<typeof HarnessRequestRefusal>;
+
+export const HarnessPermissionDenial = z
+  .object({
+    permission: z.string().min(1),
+    source: z.string().min(1),
+  })
+  .strict()
+  .describe(
+    "Adapter-attested native tool permission refusal, not a claim inferred from model prose or empty output. Does not grant broader access.",
+  );
+export type HarnessPermissionDenial = z.infer<typeof HarnessPermissionDenial>;
 
 export const CatalogInputLimit = HarnessInputLimit.extend({
   askPromptBudget: z

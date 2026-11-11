@@ -7,6 +7,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { redactSecrets } from "@claudexor/util";
+import { projectionRead } from "./projection-context.js";
 import {
   type AppliedConfinementRecord,
   ControlCandidate,
@@ -41,9 +42,9 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
   if (!existsSync(attemptsDir)) return [];
   const out: ControlCandidate[] = [];
   for (const attemptId of safeReaddir(attemptsDir)) {
-    const raw = readYamlMaybe<RawAttempt>(join(attemptsDir, attemptId, "attempt.yaml"));
+    const raw = readYamlMaybe<RawAttempt>(runDir, `attempts/${attemptId}/attempt.yaml`);
     if (!raw || typeof raw.attempt_id !== "string" || typeof raw.harness_id !== "string") continue;
-    const review = readYamlMaybe<RawReview>(join(runDir, "reviews", `${attemptId}.yaml`));
+    const review = readYamlMaybe<RawReview>(runDir, `reviews/${attemptId}.yaml`);
     const rawFindings = Array.isArray(review?.findings) ? review.findings : [];
     // Blocking is the SCHEMA's judgment (isBlocking: accepted
     // BLOCK/FIX_FIRST with evidence, or NEEDS_HUMAN) — never a projection-
@@ -84,8 +85,13 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
             ? review.final_review_clean
             : null,
       winner: decision?.winner === raw.attempt_id,
+      // Unknown is not zero: a Git result with no rendered patch has no line counts.
       diffstat:
-        raw.diffstat && typeof raw.diffstat === "object"
+        raw.diffstat &&
+        typeof raw.diffstat === "object" &&
+        typeof raw.diffstat.files === "number" &&
+        typeof raw.diffstat.additions === "number" &&
+        typeof raw.diffstat.deletions === "number"
           ? {
               files: numberOr(raw.diffstat.files, 0),
               additions: numberOr(raw.diffstat.additions, 0),
@@ -134,13 +140,18 @@ function confinementCard(raw: RawAttempt): ControlCandidateConfinement | null {
   };
 }
 
-function readYamlMaybe<T>(path: string): T | null {
-  try {
-    if (!existsSync(path)) return null;
-    return (parseYaml(readFileSync(path, "utf8")) ?? null) as T | null;
-  } catch {
-    return null;
-  }
+function readYamlMaybe<T>(runDir: string, relative: string): T | null {
+  return projectionRead(runDir, `candidates:yaml:${relative}`, () => {
+    try {
+      const raw = projectionRead<string | null>(runDir, `candidates:raw:${relative}`, () => {
+        const path = join(runDir, relative);
+        return existsSync(path) ? readFileSync(path, "utf8") : null;
+      });
+      return raw === null ? null : ((parseYaml(raw) ?? null) as T | null);
+    } catch {
+      return null;
+    }
+  });
 }
 
 function safeReaddir(dir: string): string[] {

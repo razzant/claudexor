@@ -3,13 +3,35 @@
  * exactly one JSON object on stdout; usage errors go to stderr (text mode)
  * or a typed {ok:false,exitCode,error} object (json mode).
  */
-import type { QuotaRefreshSkipped } from "@claudexor/schema";
+import {
+  harnessHasDefaultCredentialStore,
+  type HarnessManifest,
+  type QuotaRefreshSkipped,
+} from "@claudexor/schema";
 
 export function quotaRefreshLabel(skip: QuotaRefreshSkipped): string {
   const subject = skip.subject;
   return subject
     ? `${subject.harness}/${subject.subject_id ?? "default"} (${subject.credential_route})`
     : skip.vendor;
+}
+
+/** The `claudexor models` line for a harness that answered no model list. A
+ * harness with only named accounts that enumerates per account (Grok) had no
+ * account to list under; that is not an adapter without enumeration. */
+export function noModelListLine(
+  harnessId: string,
+  statuses: readonly { id: string; manifest?: HarnessManifest | null }[],
+  route: string | undefined,
+): string {
+  const manifest = statuses.find((status) => status.id === harnessId)?.manifest;
+  const perAccount =
+    route !== "api_key" &&
+    !harnessHasDefaultCredentialStore(harnessId) &&
+    (manifest?.capabilities.model_inventory_routes?.length ?? 0) > 0;
+  return perAccount
+    ? `${harnessId}: no account selected (models are listed per named account)`
+    : `${harnessId}: no model enumeration (adapter cannot list models)`;
 }
 
 export function print(s: string): void {

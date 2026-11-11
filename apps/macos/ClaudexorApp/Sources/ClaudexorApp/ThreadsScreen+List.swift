@@ -51,7 +51,7 @@ extension ThreadsScreen {
         case .needsDecision:
             Image(systemName: "person.fill.questionmark")
                 .foregroundStyle(Theme.status(.caution))
-                .help("This thread is blocked on your decision")
+                .help("This thread needs you: a decision, or the input or rerun its last turn asked for")
         case .idle:
             EmptyView()
         }
@@ -92,7 +92,7 @@ extension ThreadsScreen {
                 Button("Cancel") { renameTargetId = nil }
                 Button("Rename") { submitRename() }
                     .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
+                    .tint(Theme.accentSolid)
                     .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }

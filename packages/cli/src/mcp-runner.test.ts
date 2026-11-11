@@ -2,7 +2,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { makeOutcomeFacts, SCHEMA_VERSION, validateRunFactsInvariants } from "@claudexor/schema";
+import {
+  ControlPendingInteraction,
+  ControlProblem,
+  makeOutcomeFacts,
+  SCHEMA_VERSION,
+  validateRunFactsInvariants,
+} from "@claudexor/schema";
+import { requestInteractionAnswers } from "../../acp-server/src/interaction-answers.js";
+import { DaemonControlApiServer } from "../../control-api/src/daemon-server.js";
+import type { DaemonRunRecord } from "../../control-api/src/run-record.js";
 import { makeInteractionBridge } from "./mcp-runner.js";
 
 const addr = { baseUrl: "http://127.0.0.1:1", token: "t" } as never;
@@ -154,6 +163,959 @@ describe("makeInteractionBridge (MCP daemon-run interaction plumbing)", () => {
     await bridge({ runId: "run-retry" });
     expect(asks).toBe(1);
     expect(posts).toBe(2);
+  });
+
+  /** Each POST answers with the next scripted outcome; the detail keeps listing the question. */
+  function scriptedPosts(outcomes: Array<"throw" | { status: number; body: unknown }>) {
+    const posted: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          posted.push(JSON.parse(init.body ?? "{}"));
+          const outcome = outcomes.shift() ?? { status: 200, body: {} };
+          if (outcome === "throw") throw new TypeError("fetch failed");
+          return {
+            ok: outcome.status < 300,
+            status: outcome.status,
+            json: async () => outcome.body,
+          } as never;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            pendingInteractions: [{ interactionId: "int-r", questions: [], timeoutAt: null }],
+          }),
+        } as never;
+      }),
+    );
+    return posted;
+  }
+
+  async function ticks(bridge: (info: { runId: string }) => Promise<void>, count: number) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let tick = 0; tick < count; tick++) {
+        await bridge({ runId: "run-r" });
+        // The prompt and its post run beside the tick.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        vi.setSystemTime(Date.now() + 1_100);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("stops re-posting an answer the daemon definitely refused, without asking again", async () => {
+    // The answer route's problem for a refused answer: nothing committed, the
+    // question still pending, and the same body would be refused again.
+    const posted = scriptedPosts([
+      {
+        status: 409,
+        body: {
+          code: "conflict",
+          message: "question 'q' has neither a selected label nor free text",
+          retryable: false,
+          context: { accepted: false, status: "rejected" },
+        },
+      },
+    ]);
+    let asks = 0;
+    const bridge = makeInteractionBridge(addr, async () => {
+      asks += 1;
+      return { answers: [{ question_id: "q", selected_labels: [""], free_text: null }] };
+    });
+    await ticks(bridge, 4);
+    expect(asks).toBe(1);
+    expect(posted).toHaveLength(1);
+  });
+
+  it("keeps re-posting the same answer after a transport failure or a refusal that is not definite", async () => {
+    const posted = scriptedPosts([
+      "throw",
+      {
+        status: 503,
+        body: {
+          code: "daemon_stopping",
+          message: "daemon is stopping",
+          retryable: true,
+          context: {},
+        },
+      },
+      { status: 200, body: { accepted: true, status: "delivered" } },
+    ]);
+    let asks = 0;
+    const bridge = makeInteractionBridge(addr, async () => {
+      asks += 1;
+      return { answers: [{ question_id: "q", selected_labels: ["A"], free_text: null }] };
+    });
+    await ticks(bridge, 5);
+    expect(asks).toBe(1);
+    // Three attempts with the same body, then delivered: nothing more is posted.
+    expect(posted).toEqual(
+      Array(3).fill({ answers: [{ questionId: "q", selectedLabels: ["A"] }] }),
+    );
+  });
+});
+
+describe("makeInteractionBridge with async questions (#628)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const question = (interactionId: string, delivery?: "blocking" | "async") => ({
+    interactionId,
+    questions: [
+      {
+        id: "q1",
+        question: "Who is it for?",
+        header: null,
+        options: [{ label: "Customers", description: null }],
+        multi_select: false,
+      },
+    ],
+    timeoutAt: null,
+    ...(delivery ? { delivery } : {}),
+  });
+
+  function detailServer(initial: unknown[]) {
+    let pending = initial;
+    const posts: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          posts.push({ url, body: JSON.parse(init.body ?? "{}") });
+          return { ok: true, json: async () => ({}) } as never;
+        }
+        return { ok: true, json: async () => ({ pendingInteractions: pending }) } as never;
+      }),
+    );
+    return {
+      posts,
+      set: (next: unknown[]) => {
+        pending = next;
+      },
+    };
+  }
+
+  // Monotonic across calls, so every tick passes the bridge's one-second poll
+  // throttle instead of landing inside the window of the previous one.
+  let clock = 0;
+  async function nextTick(bridge: (info: { runId: string }) => Promise<void>) {
+    clock = Math.max(clock, Date.now()) + 1_100;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(clock);
+      await bridge({ runId: "run-a" });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("never holds the poll tick on an async prompt and closes it once the question is gone", async () => {
+    const server = detailServer([question("async-1", "async")]);
+    const seen: any[] = [];
+    let release!: (value: unknown) => void;
+    const bridge = makeInteractionBridge(addr, (ctx) => {
+      seen.push(ctx);
+      return new Promise((resolve) => {
+        release = resolve;
+        ctx.signal.addEventListener("abort", () => resolve(null), { once: true });
+      });
+    });
+    // The tick returns while the async prompt is still open.
+    await bridge({ runId: "run-a" });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].request).toMatchObject({ interaction_id: "async-1", delivery: "async" });
+    expect(seen[0].signal.aborted).toBe(false);
+    // Answered elsewhere: the next tick closes the obsolete prompt and posts nothing.
+    server.set([]);
+    await nextTick(bridge);
+    expect(seen[0].signal.aborted).toBe(true);
+    release({ answers: [{ question_id: "q1", selected_labels: ["Customers"], free_text: null }] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(server.posts).toEqual([]);
+    // The closed question is never asked again.
+    server.set([question("async-1", "async")]);
+    await nextTick(bridge);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seen).toHaveLength(1);
+  });
+
+  it("posts an async answer the user gives while the question is still pending", async () => {
+    const server = detailServer([question("async-1", "async")]);
+    let answer!: (value: unknown) => void;
+    const bridge = makeInteractionBridge(addr, () => new Promise((resolve) => (answer = resolve)));
+    await bridge({ runId: "run-a" });
+    answer({ answers: [{ question_id: "q1", selected_labels: [], free_text: "Customers" }] });
+    await vi.waitFor(() => expect(server.posts).toHaveLength(1));
+    expect(server.posts[0]).toEqual({
+      url: expect.stringContaining("/runs/run-a/interactions/async-1/answer"),
+      body: { answers: [{ questionId: "q1", selectedLabels: [], freeText: "Customers" }] },
+    });
+  });
+
+  it("asks a blocking question first and is never held back by an open async prompt", async () => {
+    detailServer([question("async-1", "async"), question("blocking-1")]);
+    const order: string[] = [];
+    const bridge = makeInteractionBridge(addr, async (ctx) => {
+      order.push(`${ctx.request.interaction_id}:${ctx.request.delivery}`);
+      if (ctx.request.delivery === "async") return new Promise(() => undefined);
+      return null;
+    });
+    await bridge({ runId: "run-a" });
+    // The async question waits while the blocking prompt is open.
+    expect(order).toEqual(["blocking-1:blocking"]);
+    await settle();
+    await nextTick(bridge);
+    expect(order).toEqual(["blocking-1:blocking", "async-1:async"]);
+  });
+
+  it("does not hold a tick on a blocking prompt, and closes one whose question is gone", async () => {
+    const server = detailServer([question("blocking-1"), question("blocking-2")]);
+    const asked: any[] = [];
+    // A hook that ignores its signal and never settles, as a stale editor may.
+    const bridge = makeInteractionBridge(addr, (ctx) => {
+      asked.push(ctx);
+      return new Promise(() => undefined);
+    });
+    await bridge({ runId: "run-a" });
+    expect(asked.map((ctx) => ctx.request)).toEqual([
+      expect.objectContaining({ interaction_id: "blocking-1", delivery: "blocking" }),
+    ]);
+    // Still pending: the same prompt stays open and nothing else is asked.
+    await nextTick(bridge);
+    expect(asked).toHaveLength(1);
+    expect(asked[0].signal.aborted).toBe(false);
+    // Answered elsewhere: the prompt closes and no longer holds the next question.
+    server.set([question("blocking-2")]);
+    await nextTick(bridge);
+    expect(asked[0].signal.reason).toEqual({ kind: "interaction_resolved" });
+    expect(asked.map((ctx) => ctx.request.interaction_id)).toEqual(["blocking-1", "blocking-2"]);
+    expect(asked[1].signal.aborted).toBe(false);
+    expect(server.posts).toEqual([]);
+  });
+
+  it("posts nothing for a blocking prompt answered after it closed, and reports no failure for one", async () => {
+    const server = detailServer([question("blocking-1"), question("blocking-2")]);
+    const settlers: Array<{
+      answer: (value: unknown) => void;
+      fail: (error: Error) => void;
+    }> = [];
+    const bridge = makeInteractionBridge(
+      addr,
+      () => new Promise((answer, fail) => settlers.push({ answer, fail })),
+    );
+    await bridge({ runId: "run-a" });
+    expect(settlers).toHaveLength(1);
+    server.set([question("blocking-2")]);
+    await nextTick(bridge);
+    expect(settlers).toHaveLength(2);
+    settlers[0]!.answer({
+      answers: [{ question_id: "q1", selected_labels: ["Customers"], free_text: null }],
+    });
+    server.set([]);
+    await nextTick(bridge);
+    settlers[1]!.fail(new Error("closed prompt's own failure"));
+    await settle();
+    await expect(nextTick(bridge)).resolves.toBeUndefined();
+    expect(server.posts).toEqual([]);
+    // Neither closed prompt is asked again if its id were listed once more.
+    server.set([question("blocking-1"), question("blocking-2")]);
+    await nextTick(bridge);
+    expect(settlers).toHaveLength(2);
+  });
+
+  it("closes every prompt the moment the caller cancels and asks nothing after", async () => {
+    const server = detailServer([question("async-1", "async"), question("blocking-1")]);
+    const signals: AbortSignal[] = [];
+    const caller = new AbortController();
+    const bridge = makeInteractionBridge(
+      addr,
+      (ctx) => {
+        signals.push(ctx.signal);
+        return new Promise(() => undefined);
+      },
+      caller.signal,
+    );
+    await bridge({ runId: "run-a" });
+    expect(signals).toHaveLength(1);
+    caller.abort("user_cancelled");
+    expect(signals[0]!.reason).toEqual({ kind: "bridge_closed" });
+    await nextTick(bridge);
+    expect(signals).toHaveLength(1);
+    expect(server.posts).toEqual([]);
+  });
+
+  it("opens nothing for a caller that cancelled before the bridge existed", async () => {
+    detailServer([question("blocking-1")]);
+    const onInteraction = vi.fn(async () => null);
+    const bridge = makeInteractionBridge(addr, onInteraction, AbortSignal.abort("user_cancelled"));
+    await bridge({ runId: "run-a" });
+    expect(onInteraction).not.toHaveBeenCalled();
+  });
+
+  it("closes every prompt left open when the runner stops observing the run", async () => {
+    detailServer([question("async-1", "async")]);
+    let signal!: AbortSignal;
+    const bridge = makeInteractionBridge(addr, (ctx) => {
+      signal = ctx.signal;
+      return new Promise(() => undefined);
+    });
+    await bridge({ runId: "run-a" });
+    expect(signal.aborted).toBe(false);
+    bridge.close();
+    expect(signal.aborted).toBe(true);
+    // A closed bridge asks nothing more.
+    await nextTick(bridge);
+  });
+
+  /** The ACP client of the real ACP answer surface, failing every permission
+   * request as a client error or a lost connection does. Its session updates
+   * are kept as the question's call: opened, then how it was closed. */
+  function failingAcpClient() {
+    const permissionRequests: unknown[] = [];
+    const calls: Array<[string, string, unknown]> = [];
+    const client = {
+      notify: async (_method: string, params: { update: Record<string, unknown> }) => {
+        const { sessionUpdate, toolCallId, status } = params.update;
+        if (typeof toolCallId === "string") calls.push([String(sessionUpdate), toolCallId, status]);
+      },
+      request: async (_method: string, params: unknown) => {
+        permissionRequests.push(params);
+        throw new Error("Internal error");
+      },
+    };
+    return { permissionRequests, calls, client: client as never };
+  }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("asks an async question whose prompt failed only once, posts nothing for it and keeps polling", async () => {
+    const server = detailServer([question("async-1", "async")]);
+    const acp = failingAcpClient();
+    const bridge = makeInteractionBridge(addr, (ctx) =>
+      requestInteractionAnswers(acp.client, "session-a", ctx, async () => undefined),
+    );
+    await bridge({ runId: "run-a" });
+    await vi.waitFor(() => expect(acp.permissionRequests).toHaveLength(1));
+    await settle();
+    // Every later poll still lists the question. The failed prompt may have
+    // shown it, so none asks it again; nothing answers or declines it, and the
+    // run stays observed while the agent keeps working.
+    for (let tick = 0; tick < 3; tick++) {
+      await expect(nextTick(bridge)).resolves.toBeUndefined();
+      await settle();
+    }
+    expect(acp.permissionRequests).toHaveLength(1);
+    expect(server.posts).toEqual([]);
+    // Its call was closed as failed once, never left pending.
+    expect(acp.calls).toEqual([
+      ["tool_call", "async-1:q1", "pending"],
+      ["tool_call_update", "async-1:q1", "failed"],
+    ]);
+  });
+
+  it("ends a multi-select prompt resolved elsewhere during its first option: nothing more asked or posted", async () => {
+    const server = detailServer([
+      {
+        interactionId: "async-ms",
+        delivery: "async",
+        timeoutAt: null,
+        questions: [
+          {
+            id: "q1",
+            question: "Which platforms?",
+            header: null,
+            multi_select: true,
+            options: [
+              { label: "macOS", description: null },
+              { label: "linux", description: null },
+            ],
+          },
+        ],
+      },
+    ]);
+    const asked: string[] = [];
+    const calls: Array<[string, unknown]> = [];
+    const said: string[] = [];
+    // An editor that leaves the prompt open and reports only the cancellation.
+    const client = {
+      notify: async (_method: string, params: { update: Record<string, unknown> }) => {
+        calls.push([String(params.update.toolCallId), params.update.status]);
+      },
+      request: (
+        _method: string,
+        params: { toolCall: { toolCallId: string } },
+        options: { cancellationSignal: AbortSignal },
+      ) => {
+        asked.push(params.toolCall.toolCallId);
+        return new Promise((resolve) => {
+          const cancelled = () => resolve({ outcome: { outcome: "cancelled" } });
+          if (options.cancellationSignal.aborted) cancelled();
+          else options.cancellationSignal.addEventListener("abort", cancelled, { once: true });
+        });
+      },
+    };
+    const bridge = makeInteractionBridge(addr, (ctx) =>
+      requestInteractionAnswers(client as never, "session-m", ctx, async (text) => {
+        said.push(text);
+      }),
+    );
+    await bridge({ runId: "run-a" });
+    await vi.waitFor(() => expect(asked).toEqual(["async-ms:q1:opt-1"]));
+    // Another surface answered it: the next poll no longer lists the question.
+    server.set([]);
+    await nextTick(bridge);
+    await settle();
+    expect(asked).toEqual(["async-ms:q1:opt-1"]);
+    expect(calls).toEqual([
+      ["async-ms:q1:opt-1", "pending"],
+      ["async-ms:q1:opt-1", "failed"],
+    ]);
+    expect(said).toEqual([]);
+    expect(server.posts).toEqual([]);
+  });
+
+  it("still fails the next poll tick when a blocking question's prompt fails", async () => {
+    const server = detailServer([question("blocking-1")]);
+    const acp = failingAcpClient();
+    const bridge = makeInteractionBridge(addr, (ctx) =>
+      requestInteractionAnswers(acp.client, "session-b", ctx, async () => undefined),
+    );
+    await bridge({ runId: "run-a" });
+    await vi.waitFor(() => expect(acp.permissionRequests).toHaveLength(1));
+    await settle();
+    // The agent is held on this prompt, so its failure is the runner's to report,
+    // and inside the poll throttle too: it reports on the very next tick.
+    await expect(bridge({ runId: "run-a" })).rejects.toThrow("Internal error");
+    expect(acp.permissionRequests).toHaveLength(1);
+    expect(server.posts).toEqual([]);
+    expect(acp.calls).toEqual([
+      ["tool_call", "blocking-1:q1", "pending"],
+      ["tool_call_update", "blocking-1:q1", "failed"],
+    ]);
+  });
+
+  it("re-posts an async answer whose reply was lost with the same body, without asking again", async () => {
+    const posted: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          posted.push(JSON.parse(init.body ?? "{}"));
+          if (posted.length === 1) throw new TypeError("fetch failed");
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ accepted: true, status: "delivered" }),
+          } as never;
+        }
+        return {
+          ok: true,
+          json: async () => ({ pendingInteractions: [question("async-1", "async")] }),
+        } as never;
+      }),
+    );
+    let asks = 0;
+    const bridge = makeInteractionBridge(addr, async () => {
+      asks += 1;
+      return { answers: [{ question_id: "q1", selected_labels: ["Customers"], free_text: null }] };
+    });
+    await bridge({ runId: "run-a" });
+    await vi.waitFor(() => expect(posted).toHaveLength(1));
+    await settle();
+    await nextTick(bridge);
+    await vi.waitFor(() => expect(posted).toHaveLength(2));
+    await settle();
+    // Delivered: a later poll neither asks nor posts again.
+    await nextTick(bridge);
+    await settle();
+    expect(asks).toBe(1);
+    expect(posted).toEqual(
+      Array(2).fill({ answers: [{ questionId: "q1", selectedLabels: ["Customers"] }] }),
+    );
+  });
+});
+
+describe("makeInteractionBridge keeps an answer only while its question is pending", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  type Reply = "throw" | { status: number; body: unknown; gate?: Promise<void> };
+
+  const alreadyResolved = {
+    status: 409,
+    body: {
+      code: "conflict",
+      message: "interaction already resolved",
+      retryable: false,
+      context: { accepted: false, status: "already_resolved" },
+    },
+  };
+  const untyped = { status: 500, body: { error: "boom" } };
+  const entry = (interactionId: string, delivery?: "async") => ({
+    interactionId,
+    questions: [],
+    timeoutAt: null,
+    ...(delivery ? { delivery } : {}),
+  });
+  const answerOf = (label: string) => ({
+    answers: [{ question_id: "q", selected_labels: [label], free_text: null }],
+  });
+  const postOf = (label: string) => ({ answers: [{ questionId: "q", selectedLabels: [label] }] });
+
+  /** A daemon whose run-detail reads and answer replies the test scripts. */
+  function scriptedDaemon(replies: Reply[] = []) {
+    const posted: unknown[] = [];
+    let read: "throw" | { ok: boolean; body: unknown } = {
+      ok: true,
+      body: { pendingInteractions: [] },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          posted.push(JSON.parse(init.body ?? "{}"));
+          const reply = replies.shift() ?? {
+            status: 200,
+            body: { accepted: true, status: "delivered" },
+          };
+          if (reply === "throw") throw new TypeError("fetch failed");
+          await reply.gate;
+          return {
+            ok: reply.status < 300,
+            status: reply.status,
+            json: async () => reply.body,
+          } as never;
+        }
+        const current = read;
+        if (current === "throw") throw new TypeError("fetch failed");
+        return {
+          ok: current.ok,
+          status: current.ok ? 200 : 500,
+          json: async () => current.body,
+        } as never;
+      }),
+    );
+    return {
+      posted,
+      list: (...entries: unknown[]) => {
+        read = { ok: true, body: { pendingInteractions: entries } };
+      },
+      readThrows: () => {
+        read = "throw";
+      },
+      readFails: () => {
+        read = { ok: false, body: {} };
+      },
+      readOmitsList: () => {
+        read = { ok: true, body: {} };
+      },
+      readLists: (value: unknown) => {
+        read = { ok: true, body: { pendingInteractions: value } };
+      },
+    };
+  }
+  type Scripted = ReturnType<typeof scriptedDaemon>;
+  /** Every read that returns no usable list, in the bridge's terms: unknown, not empty. */
+  const unknownReads = (server: Scripted) => [
+    server.readThrows,
+    server.readFails,
+    server.readOmitsList,
+    () => server.readLists("not a list"),
+    () => server.readLists([null]),
+    () => server.readLists([{ questions: [] }]),
+    () => server.readLists([{ interactionId: "" }]),
+  ];
+
+  /** The bridge plus its own answer cache: the first Map it creates. A test
+   * proves it is the cache by seeing an answer in it before seeing one leave. */
+  function trackedBridge(onInteraction: (ctx: any) => Promise<any | null>) {
+    const maps: Array<Map<string, unknown>> = [];
+    const NativeMap = globalThis.Map;
+    globalThis.Map = class extends NativeMap<string, unknown> {
+      constructor() {
+        super();
+        maps.push(this);
+      }
+    } as MapConstructor;
+    try {
+      return { bridge: makeInteractionBridge(addr, onInteraction), cache: maps[0]! };
+    } finally {
+      globalThis.Map = NativeMap;
+    }
+  }
+
+  let clock = 0;
+  async function tick(bridge: (info: { runId: string }) => Promise<void>) {
+    clock = Math.max(clock, Date.now()) + 1_100;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(clock);
+      await bridge({ runId: "run-c" });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  function gated(reply: { status: number; body: unknown }) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    return { reply: { ...reply, gate }, release };
+  }
+
+  it.each([
+    ["blocking", undefined, alreadyResolved],
+    ["async", "async", untyped],
+  ] as const)(
+    "drops a refused %s answer once a successful read no longer lists its question",
+    async (_kind, delivery, refusal) => {
+      const server = scriptedDaemon([refusal]);
+      let asks = 0;
+      const { bridge, cache } = trackedBridge(async () => {
+        asks += 1;
+        return answerOf(asks === 1 ? "old" : "new");
+      });
+      server.list(entry("int-c", delivery));
+      await tick(bridge);
+      await settle();
+      expect(server.posted).toEqual([postOf("old")]);
+      expect(cache.has("int-c")).toBe(true);
+      // Resolved another way: nothing can deliver this answer any more.
+      server.list();
+      await tick(bridge);
+      await settle();
+      expect(cache.has("int-c")).toBe(false);
+      expect(server.posted).toHaveLength(1);
+      // The same id listed again is pending anew: the old answer is not replayed.
+      server.list(entry("int-c", delivery));
+      await tick(bridge);
+      await settle();
+      expect(asks).toBe(2);
+      expect(server.posted).toEqual([postOf("old"), postOf("new")]);
+    },
+  );
+
+  it.each([
+    ["blocking", undefined],
+    ["async", "async"],
+  ] as const)(
+    "keeps a %s answer through reads that prove nothing and retries the same body",
+    async (_kind, delivery) => {
+      const server = scriptedDaemon(["throw"]);
+      let asks = 0;
+      const { bridge, cache } = trackedBridge(async () => {
+        asks += 1;
+        return answerOf("kept");
+      });
+      server.list(entry("int-k", delivery));
+      await tick(bridge);
+      await settle();
+      expect(server.posted).toEqual([postOf("kept")]);
+      expect(cache.has("int-k")).toBe(true);
+      for (const inconclusive of unknownReads(server)) {
+        inconclusive();
+        await tick(bridge);
+        await settle();
+        expect(cache.has("int-k")).toBe(true);
+      }
+      server.list(entry("int-k", delivery));
+      await tick(bridge);
+      await settle();
+      expect(asks).toBe(1);
+      expect(server.posted).toEqual([postOf("kept"), postOf("kept")]);
+      expect(cache.has("int-k")).toBe(false);
+    },
+  );
+
+  it("leaves an open async prompt open through reads that prove nothing and closes it on a real empty list", async () => {
+    const server = scriptedDaemon();
+    const signals: AbortSignal[] = [];
+    const bridge = makeInteractionBridge(addr, (ctx) => {
+      signals.push(ctx.signal);
+      return new Promise((resolve) =>
+        ctx.signal.addEventListener("abort", () => resolve(null), { once: true }),
+      );
+    });
+    server.list(entry("int-o", "async"));
+    await tick(bridge);
+    expect(signals).toHaveLength(1);
+    for (const inconclusive of unknownReads(server)) {
+      inconclusive();
+      await tick(bridge);
+      await settle();
+      expect(signals[0]!.aborted).toBe(false);
+    }
+    // Still listed: the same open prompt continues, nothing is asked twice.
+    server.list(entry("int-o", "async"));
+    await tick(bridge);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.aborted).toBe(false);
+    server.list();
+    await tick(bridge);
+    expect(signals[0]!.reason).toEqual({ kind: "interaction_resolved" });
+  });
+
+  it.each([
+    ["blocking", undefined],
+    ["async", "async"],
+  ] as const)("drops a retained %s answer when the bridge closes", async (_kind, delivery) => {
+    const server = scriptedDaemon([untyped]);
+    const { bridge, cache } = trackedBridge(async () => answerOf("left"));
+    server.list(entry("int-t", delivery));
+    await tick(bridge);
+    await settle();
+    expect(cache.has("int-t")).toBe(true);
+    bridge.close();
+    expect(cache.size).toBe(0);
+  });
+
+  it.each([
+    ["blocking", undefined],
+    ["async", "async"],
+  ] as const)(
+    "keeps nothing of a %s answer whose post is still out when the bridge closes",
+    async (_kind, delivery) => {
+      const { reply, release } = gated(untyped);
+      const server = scriptedDaemon([reply]);
+      const { bridge, cache } = trackedBridge(async () => answerOf("late"));
+      server.list(entry("int-p", delivery));
+      const ticking = tick(bridge);
+      await settle();
+      expect(server.posted).toEqual([postOf("late")]);
+      expect(cache.has("int-p")).toBe(true);
+      bridge.close();
+      expect(cache.size).toBe(0);
+      release();
+      await ticking;
+      await settle();
+      expect(cache.size).toBe(0);
+    },
+  );
+
+  it.each([
+    ["blocking", undefined],
+    ["async", "async"],
+  ] as const)(
+    "keeps nothing of a %s prompt that completes after the bridge closed",
+    async (_kind, delivery) => {
+      const server = scriptedDaemon();
+      let finish!: (value: unknown) => void;
+      const { bridge, cache } = trackedBridge(() => new Promise((resolve) => (finish = resolve)));
+      server.list(entry("int-l", delivery));
+      const ticking = tick(bridge);
+      await settle();
+      bridge.close();
+      finish(answerOf("late"));
+      await ticking;
+      await settle();
+      expect(server.posted).toEqual([]);
+      expect(cache.size).toBe(0);
+    },
+  );
+
+  it("cannot keep an answer whose question left the list while its post was still out", async () => {
+    const { reply, release } = gated(alreadyResolved);
+    const server = scriptedDaemon([reply]);
+    const { bridge, cache } = trackedBridge(async () => answerOf("late"));
+    server.list(entry("int-g", "async"));
+    await tick(bridge);
+    await settle();
+    expect(server.posted).toEqual([postOf("late")]);
+    expect(cache.has("int-g")).toBe(true);
+    server.list();
+    await tick(bridge);
+    await settle();
+    expect(cache.has("int-g")).toBe(false);
+    release();
+    await settle();
+    expect(cache.has("int-g")).toBe(false);
+  });
+});
+
+describe("makeInteractionBridge over the real run detail when a pending read fails (#628)", () => {
+  const token = "pending-read";
+  const stops: Array<() => Promise<unknown>> = [];
+  afterEach(async () => {
+    vi.useRealTimers();
+    for (const stop of stops.splice(0)) await stop();
+  });
+
+  const question = (interactionId: string, delivery: "blocking" | "async") =>
+    ControlPendingInteraction.parse({
+      interactionId,
+      runId: "run-http",
+      requestedAt: "2026-11-10T00:00:00.000Z",
+      delivery,
+      questions: [
+        { id: "q", question: "Who is it for?", header: null, options: [], multi_select: false },
+      ],
+    });
+  const answerOf = (text: string) => ({
+    answers: [{ question_id: "q", selected_labels: [], free_text: text }],
+  });
+
+  /** The actual control API over HTTP; only its two services are scripted. */
+  async function producer() {
+    const record: DaemonRunRecord = {
+      id: "job-http",
+      runId: "run-http",
+      state: "running",
+      params: { mode: "ask" },
+    };
+    let read: () => ControlPendingInteraction[] = () => [];
+    const posted: unknown[] = [];
+    let refuseNextPost = false;
+    const server = new DaemonControlApiServer({
+      token,
+      daemon: {
+        list: async () => [record],
+        status: async () => record,
+        enqueue: async () => ({ id: "unused", state: "queued" }),
+        cancel: async () => ({}),
+      },
+      services: {
+        pendingInteractions: () => read(),
+        answerInteraction: (_runId, _interactionId, answers) => {
+          posted.push(answers);
+          if (refuseNextPost) {
+            refuseNextPost = false;
+            throw new Error("answer commit failed");
+          }
+          return { status: "delivered" };
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    stops.push(() => server.stop());
+    return {
+      addr: { baseUrl: `http://${host}:${port}`, token } as never,
+      posted,
+      lists: (...rows: ControlPendingInteraction[]) => {
+        read = () => rows;
+      },
+      readFails: () => {
+        read = () => {
+          throw new Error("database is locked");
+        };
+      },
+      refuseNextPost: () => {
+        refuseNextPost = true;
+      },
+      detail: async () => {
+        const response = await fetch(`http://${host}:${port}/v2/runs/run-http`, {
+          headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+        });
+        return {
+          status: response.status,
+          body: (await response.json()) as Record<string, unknown>,
+        };
+      },
+    };
+  }
+
+  let clock = 0;
+  async function tick(bridge: (info: { runId: string }) => Promise<void>) {
+    clock = Math.max(clock, Date.now()) + 1_100;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(clock);
+      await bridge({ runId: "run-http" });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("keeps an async prompt open through a failed read and posts its answer after the read heals", async () => {
+    const run = await producer();
+    const prompts: Array<{ signal: AbortSignal; answer: (value: unknown) => void }> = [];
+    const bridge = makeInteractionBridge(
+      run.addr,
+      (ctx) =>
+        new Promise((answer) => {
+          prompts.push({ signal: ctx.signal, answer });
+          ctx.signal.addEventListener("abort", () => answer(null), { once: true });
+        }),
+    );
+    const pending = question("async-http", "async");
+    run.lists(pending);
+    await tick(bridge);
+    expect(prompts).toHaveLength(1);
+
+    run.readFails();
+    const failed = await run.detail();
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+    expect(ControlProblem.safeParse(failed.body).success).toBe(true);
+    expect(failed.body).not.toHaveProperty("pendingInteractions");
+    await tick(bridge);
+    await settle();
+    expect(prompts[0]!.signal.aborted).toBe(false);
+
+    run.lists(pending);
+    await tick(bridge);
+    await settle();
+    // The same open prompt continues: it is neither closed nor asked twice.
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]!.signal.aborted).toBe(false);
+    prompts[0]!.answer(answerOf("Customers"));
+    await vi.waitFor(() => expect(run.posted).toHaveLength(1));
+    expect(run.posted[0]).toMatchObject({ interaction_id: "async-http" });
+    bridge.close();
+  });
+
+  it.each(["blocking", "async"] as const)(
+    "keeps a %s answer through a failed read and retries the same body after it heals",
+    async (delivery) => {
+      const run = await producer();
+      run.refuseNextPost();
+      let asks = 0;
+      const bridge = makeInteractionBridge(run.addr, async () => {
+        asks += 1;
+        return answerOf(`answer-${asks}`);
+      });
+      const pending = question(`${delivery}-http`, delivery);
+      run.lists(pending);
+      await tick(bridge);
+      await vi.waitFor(() => expect(run.posted).toHaveLength(1));
+      await settle();
+
+      run.readFails();
+      await tick(bridge);
+      await settle();
+
+      run.lists(pending);
+      await tick(bridge);
+      await vi.waitFor(() => expect(run.posted).toHaveLength(2));
+      await settle();
+      expect(asks).toBe(1);
+      expect(run.posted[1]).toEqual(run.posted[0]);
+      bridge.close();
+    },
+  );
+
+  it("still closes the prompt when the read succeeds with a genuinely empty list", async () => {
+    const run = await producer();
+    const signals: AbortSignal[] = [];
+    const bridge = makeInteractionBridge(run.addr, (ctx) => {
+      signals.push(ctx.signal);
+      return new Promise((resolve) =>
+        ctx.signal.addEventListener("abort", () => resolve(null), { once: true }),
+      );
+    });
+    run.lists(question("async-gone", "async"));
+    await tick(bridge);
+    run.lists();
+    const empty = await run.detail();
+    expect(empty.status).toBe(200);
+    expect(empty.body["pendingInteractions"]).toEqual([]);
+    await tick(bridge);
+    expect(signals[0]!.reason).toEqual({ kind: "interaction_resolved" });
+    bridge.close();
   });
 });
 
@@ -342,6 +1304,57 @@ describe("mcp daemon body mapping", () => {
       }
     },
   );
+
+  it.each([
+    [
+      "names a Git result's typed refusal",
+      {
+        ok: false,
+        code: 1,
+        stderr: "2 Git object(s) of this result are missing; nothing was written",
+        refusal: { code: "result_objects_missing", message: "m", paths: [], pathCount: 0 },
+      },
+      "apply check refused: result_objects_missing: 2 Git object(s) of this result are missing; nothing was written",
+    ],
+    [
+      "counts a typed refusal's paths",
+      {
+        ok: false,
+        code: 1,
+        stderr: "both changed x",
+        refusal: { code: "delivery_conflict", message: "m", paths: ["x"], pathCount: 3 },
+      },
+      "apply check refused: delivery_conflict (3 path(s)): both changed x",
+    ],
+    [
+      "keeps an untyped failure a patch conflict",
+      { ok: false, code: 1, stderr: "error: patch failed: x:1" },
+      "apply check failed: the patch does NOT apply cleanly: error: patch failed: x:1",
+    ],
+  ])("__apply_check %s", async (_case, body, summary) => {
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const connectSpy = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+      engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => body })) as never,
+    );
+    try {
+      expect(await mcpSurfaceRunner()({ mode: "__apply_check", runId: "run-x" })).toMatchObject({
+        summary,
+        runId: "run-x",
+        eligible: false,
+        check: body,
+      });
+    } finally {
+      connectSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("preserves the daemon's typed error field for a missing-run belt roundtrip", async () => {
     const { mcpSurfaceRunner } = await import("./mcp-runner.js");
@@ -703,6 +1716,39 @@ describe("mcp daemon body mapping", () => {
       ]);
       expect(seen[0]?.body).toEqual(seen[1]?.body);
       expect(seen[2]?.body).not.toEqual(seen[0]?.body);
+    } finally {
+      ensureSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("forwards a turn's own auxiliary writable roots and nothing when omitted", async () => {
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+      engine: { engineVersion: null, engineBuildSha: null, servingMode: "normal" },
+    });
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return {
+          ok: true,
+          status: 202,
+          json: async () => ({ jobId: "j", turnId: "t", threadId: "th", state: "queued" }),
+        } as never;
+      }),
+    );
+    try {
+      const runner = mcpSurfaceRunner();
+      const execution = { auxiliaryWritableRoots: ["/srv/cache"] };
+      await runner({ mode: "__thread_turn", threadId: "th", prompt: "grant", execution });
+      await runner({ mode: "__thread_turn", threadId: "th", prompt: "omit" });
+      expect(bodies[0]).toMatchObject({ prompt: "grant", execution });
+      expect(bodies[1]).not.toHaveProperty("execution");
     } finally {
       ensureSpy.mockRestore();
       vi.unstubAllGlobals();
@@ -1449,6 +2495,7 @@ describe("mcp daemon body mapping", () => {
         delegatedFromRunId: null,
         delegation: null,
         secretLike: null,
+        objectResult: null,
         detailProblem: {
           code: problemCode,
           message: `typed ${problemCode}`,

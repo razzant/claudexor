@@ -2,7 +2,7 @@ import { SetupJobStore } from "../../daemon/src/store/test-support/fixtures/lega
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AuthCapabilityVerifier,
   ProcessGroupService,
@@ -20,6 +20,7 @@ import {
   readRunnerResult,
   SETUP_LOGIN_PROTOCOL_VERSION,
 } from "./setup-login-protocol.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 type Manager = ReturnType<typeof createSetupJobManager>;
 let root: string;
@@ -56,15 +57,17 @@ beforeEach(() => {
   });
 });
 
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const manager of managers.splice(0)) {
     await manager.shutdown();
     (manager._store as SetupJobStore).journal.close();
   }
-  vi.restoreAllMocks();
-  if (oldConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = oldConfig;
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    vi.restoreAllMocks();
+    if (oldConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = oldConfig;
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 
 function fixture(input: { onOpen?: () => void; verify?: () => Promise<void> } = {}) {

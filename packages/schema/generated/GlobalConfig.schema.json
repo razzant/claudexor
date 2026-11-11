@@ -233,10 +233,17 @@
               "description": "Wall-clock timeout for a reviewer run, in milliseconds."
             },
             "harness_inactivity_timeout_ms": {
-              "type": "integer",
-              "exclusiveMinimum": 0,
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "default": 3600000,
-              "description": "Inactivity watchdog for harness streams: no events for this window aborts the stream and fails the attempt with a typed timeout."
+              "description": "Inactivity watchdog for harness streams: no events for this window aborts the stream; null disables inactivity timing without changing cancellation or cleanup."
             },
             "max_concurrent": {
               "anyOf": [
@@ -306,7 +313,7 @@
               "type": "integer",
               "minimum": 0,
               "default": 20,
-              "description": "The newest N runs per project always survive, regardless of age."
+              "description": "The newest N runs survive for active registrations (even with missing roots), archived registrations whose roots exist, and the built-in no-project scope. Orphaned namespaces have no keep-last protection."
             }
           },
           "additionalProperties": false,
@@ -411,7 +418,7 @@
                   "null"
                 ],
                 "default": null,
-                "description": "Per-harness default model; null = the harness's own default."
+                "description": "Per-harness default model; null = the harness's own default, or no model on a route whose request must name one."
               },
               "effort": {
                 "anyOf": [

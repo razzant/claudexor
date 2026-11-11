@@ -124,8 +124,8 @@ extension AppModel {
     var composerTurnStartTarget: TurnStartTarget {
         if let threadID = selectedThreadId {
             let thread: ThreadSummary? = {
-                if selectedThreadDetail?.thread.id == threadID {
-                    return selectedThreadDetail?.thread
+                if selectedHistory?.header?.thread.id == threadID {
+                    return selectedHistory?.header?.thread.summary
                 }
                 return threadSummary(threadID, at: selectedExecutionLocation)
             }()

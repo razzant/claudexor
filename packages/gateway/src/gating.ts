@@ -5,7 +5,10 @@ import type {
   Intent,
 } from "@claudexor/schema";
 
-/** Map declared capabilities to the intents an adapter could in principle play. */
+/** Map declared capabilities to the intents an adapter could in principle play.
+ * Answering a question (`explain`) needs no file access, so every harness may
+ * play it where its doctor enables it; `read_files` gates the deep-scan `audit`
+ * here and project-scoped Ask at run admission (#133). */
 export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
   const intents: Intent[] = [];
   if (caps.plan) intents.push("plan", "spec");
@@ -14,7 +17,8 @@ export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
   if (caps.review) intents.push("review");
   if (caps.verify) intents.push("verify");
   if (caps.synthesize) intents.push("synthesize");
-  if (caps.read_files) intents.push("explain", "audit");
+  intents.push("explain");
+  if (caps.read_files) intents.push("audit");
   return [...new Set(intents)];
 }
 

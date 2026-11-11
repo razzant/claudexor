@@ -10,8 +10,12 @@ import SwiftUI
 ///   and sent a hardcoded sentence).
 /// - Override needs-human: destructive-styled with an explicit confirm — it
 ///   unblocks apply past a needs-human escalation.
+///
+/// The engine refuses both risk decisions on unfinished work, so only Rerun is
+/// offered there (`DecisionApplyPresentation.offersRiskDecisions`).
 struct DecisionBar: View {
     let runId: String
+    let offersRiskDecisions: Bool
     /// Called ONLY for UNBLOCK decisions (accept_risk / override_needs_human).
     /// A rerun_with_feedback enqueues a follow-up run — the original stays
     /// blocked, so the bar must not collapse into apply affordances for it.
@@ -27,15 +31,19 @@ struct DecisionBar: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
-            Button("Accept risk & unblock…") { showAcceptSheet = true }
-                .help("Records an auditable operator decision (your risk note, bound to this exact patch), then allows apply")
+            if offersRiskDecisions {
+                Button("Accept risk & unblock…") { showAcceptSheet = true }
+                    .help("Records an auditable operator decision (your risk note, bound to this exact patch), then allows apply")
+            }
             Button("Rerun with feedback…") {
                 feedbackText = ""
                 showFeedbackSheet = true
             }
             .help("Enqueues a follow-up run seeded with YOUR feedback text")
-            Button("Override needs-human", role: .destructive) { confirmOverride = true }
-                .help("Overrides a needs-human escalation with an auditable decision; a mutated patch invalidates it")
+            if offersRiskDecisions {
+                Button("Override needs-human", role: .destructive) { confirmOverride = true }
+                    .help("Overrides a needs-human escalation with an auditable decision; a mutated patch invalidates it")
+            }
             Spacer()
         }
         .buttonStyle(.bordered)
@@ -102,7 +110,7 @@ struct DecisionBar: View {
                     Task { await submit() }
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .tint(Theme.accentSolid)
                 .disabled(!submitEnabled || busy)
             }
         }

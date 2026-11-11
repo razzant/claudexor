@@ -1,0 +1,49 @@
+# Fixture provenance. ask/write were recorded on Windows 11 from a grok.com
+# device login (CLI 1.0.67); local paths, skill inventories and thinking
+# signatures are sanitized, every event SHAPE is verbatim. Their init frames
+# carry `apiKeySource: "oauth"`, the only source value the adapter accepts; the
+# vendor guide uses it for any login that is not an API key, so the value alone
+# does not identify grok.com. quota.jsonl is synthetic.
+#
+# `expectations` are the stream semantics the conformance test asserts through
+# core streamExpectationViolations: Grok's typed final comes only from the
+# terminal `result` frame, never from assistant narration.
+cli: grok
+fixtures:
+  errors/quota.jsonl:
+    source: synthetic
+    notes: Failure-channel quota contract; not a claim of a live exhausted subscription.
+    expectations:
+      final_messages: 0
+      started_events: 1
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: true
+      retry_class: rate_limit
+  ask.jsonl:
+    source: recorded
+    cli_version: "1.0.67"
+    recorded_at: "2026-10-25"
+    notes: Subscription reply; local paths, skill inventories and thinking signatures sanitized.
+    expectations:
+      final_messages: 1
+      final_source: result
+      final_is_last_message: true
+      started_events: 1
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
+  write.jsonl:
+    source: recorded
+    cli_version: "1.0.67"
+    recorded_at: "2026-10-25"
+    notes: Workspace tool-policy write; local paths, skill inventories and thinking signatures sanitized.
+    expectations:
+      final_messages: 1
+      final_source: result
+      final_is_last_message: true
+      started_events: 1
+      thinking_events: 0
+      delta_messages: 0
+      tool_error_results: 0
+      typed_rate_limit: false

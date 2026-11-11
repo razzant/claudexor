@@ -276,6 +276,7 @@
                           "claude_oauth_usage",
                           "agy_command_usage",
                           "cursor_rate_limit",
+                          "grok_rate_limit",
                           "claude_rate_limit_event",
                           "codex_app_server_event",
                           "codex_image_response"
@@ -488,7 +489,35 @@
                     "type": "object",
                     "properties": {
                       "target": {
-                        "$ref": "#/definitions/ControlAccountResetResponse/properties/request/properties/target"
+                        "type": "object",
+                        "properties": {
+                          "harness": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "profile_id": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "description": "Registered account id; null names the harness's default API-key route, which is not an account."
+                          }
+                        },
+                        "required": [
+                          "harness",
+                          "profile_id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "credential_fingerprint": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{16}$",
+                        "description": "Non-secret identity of the API key this row was read with. Present only on API-key rows; a row is published only while it matches the key requests would send now."
                       },
                       "balances": {
                         "type": "object",
@@ -500,6 +529,45 @@
                                 "items": {
                                   "type": "object",
                                   "properties": {
+                                    "scope": {
+                                      "type": "string",
+                                      "enum": [
+                                        "personal",
+                                        "team"
+                                      ]
+                                    },
+                                    "usage_kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "included",
+                                        "bonus",
+                                        "on_demand",
+                                        "total"
+                                      ]
+                                    },
+                                    "period": {
+                                      "type": "object",
+                                      "properties": {
+                                        "starts_at": {
+                                          "$ref": "#/definitions/ControlAccountResetResponse/properties/completed_at"
+                                        },
+                                        "ends_at": {
+                                          "$ref": "#/definitions/ControlAccountResetResponse/properties/completed_at"
+                                        }
+                                      },
+                                      "required": [
+                                        "starts_at",
+                                        "ends_at"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "fee_included": {
+                                      "type": [
+                                        "boolean",
+                                        "null"
+                                      ],
+                                      "description": "Whether the reported amount includes fees; null means the source did not establish this."
+                                    },
                                     "id": {
                                       "type": "string"
                                     },
@@ -610,6 +678,18 @@
                                 "items": {
                                   "type": "object",
                                   "properties": {
+                                    "scope": {
+                                      "$ref": "#/definitions/ControlAccountResetResponse/properties/resources/anyOf/0/properties/resources/items/properties/balances/properties/value/anyOf/0/items/properties/scope"
+                                    },
+                                    "usage_kind": {
+                                      "$ref": "#/definitions/ControlAccountResetResponse/properties/resources/anyOf/0/properties/resources/items/properties/balances/properties/value/anyOf/0/items/properties/usage_kind"
+                                    },
+                                    "period": {
+                                      "$ref": "#/definitions/ControlAccountResetResponse/properties/resources/anyOf/0/properties/resources/items/properties/balances/properties/value/anyOf/0/items/properties/period"
+                                    },
+                                    "fee_included": {
+                                      "$ref": "#/definitions/ControlAccountResetResponse/properties/resources/anyOf/0/properties/resources/items/properties/balances/properties/value/anyOf/0/items/properties/fee_included"
+                                    },
                                     "id": {
                                       "type": "string"
                                     },
@@ -662,6 +742,37 @@
                                         "string",
                                         "null"
                                       ]
+                                    },
+                                    "capped": {
+                                      "type": [
+                                        "boolean",
+                                        "null"
+                                      ],
+                                      "description": "true: the provider reports a cap in limit; false: it reports no cap, so a null limit is not unknown and not unlimited money; null or absent: not established."
+                                    },
+                                    "remaining": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "Provider-reported amount left under limit in the current window, with its sign; null when not reported."
+                                    },
+                                    "window": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "day",
+                                            "week",
+                                            "month",
+                                            "lifetime"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "description": "Provider calendar window that used counts (UTC); when capped, limit resets at its end and lifetime never resets. resets_at is set only from a provider-reported instant."
                                     }
                                   },
                                   "required": [

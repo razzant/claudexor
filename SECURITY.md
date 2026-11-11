@@ -39,21 +39,43 @@ What Claudexor already does, so you can calibrate reports:
   (timing-safe comparison), and enforces a loopback host/origin guard;
   `/healthz` is the only unauthenticated route.
 - Claudexor-managed secrets use the daemon-owned `0600` file store. Vendor-native
-  credentials remain in each vendor's own store, which may use the OS Keychain;
-  secret material is redacted from event logs, job records, thread stores, and
-  reviewer artifacts.
-- No telemetry, analytics, or crash reporting is collected (see the Privacy
-  section of the README). Outbound traffic comes from configured model/harness
-  routes. Generic Web/Search follows the run's external-context policy (default
-  `auto`); Browser MCP/navigation requires explicit Browser opt-in. Remote SSH
-  reaches only connections explicitly configured and enabled, after which the
-  app may connect and retry their event streams automatically. While the daemon
-  runs, it may poll configured vendor quota/status sources in the background
-  (including Anthropic `oauth/usage`) to maintain routing and readiness. Public
-  GitHub/npm lookups cover release-name checks, updates, and download statistics;
-  they are user-invoked except the app's update check, which runs only on app
-  foreground (there is no background update timer). Local files named
-  `telemetry` contain only on-device run evidence and are never transmitted.
+  credentials remain in each vendor's own store, which may use the OS Keychain.
+  Claudexor never places these engine credentials into prompts, events or
+  artifacts and keeps their stores outside every authorized root. A harness
+  process can read the credential the engine hands it (for example the API key
+  or OAuth token in its environment); whatever the harness prints is ordinary
+  output, kept exactly in local run records as in the vendor's own transcript.
+  The ACP adapter removes the managed token it injected, by value. Engine and
+  vendor diagnostics (errors, stderr tails, probe output, vendor failure
+  reports, retry notices and native warnings) are not working content: they
+  mask credential-shaped text, including in the run, attempt and reviewer
+  event journals, which every writer fills through one shared
+  diagnostic-masking step, and may be retained only in masked form. Your own
+  working content (model-authored or user-provided material) is not filtered:
+  prompts, attachments, project files, answers, a failed completion's partial
+  output, tool calls and tool output, patches and review evidence reach the
+  selected harness and stay unmasked in local run records (answers, patches
+  and files byte-exact; tool output as each adapter's bounded,
+  whitespace-normalized summary), so a real key you place there or a tool
+  prints is ordinary task material. Of an ACP agent's raw frames only the lines of its JSON-RPC
+  error frames, which are diagnostics, are masked; its other frames stay
+  exact. Publication is the one content check: before anything is
+  pushed, `pr` delivery scans the outgoing commits (merges and messages
+  included), the branch name and the PR title and body with the pinned
+  Betterleaks scanner and refuses on a finding, an unavailable scanner or a
+  failed scan, including a Git history read that Git's own trace does not
+  prove complete. Betterleaks skips some binary, archive and lockfile content.
+- No telemetry, analytics or crash reports (README Privacy). Configured model/
+  harness routes send outbound traffic; Web/Search follows run policy (`auto`),
+  Browser needs opt-in, and enabled SSH streams may reconnect automatically.
+  Existing demand/pacing polls vendor status/quota, including Anthropic
+  `oauth/usage` and Cursor's internal dashboard `usage-summary`. Cursor sends
+  only the named file store's bound token as a `WorkosCursorSessionToken` cookie
+  to cursor.com: no OAuth refresh/credential write. Dashboard money is display-only,
+  never execution quota/admission. Public name/version/statistics reads are invoked by a person or an
+  authorized caller, including opening the view that shows versions. Foreground
+  app update checks follow that user action; there is no engine update timer.
+  Local `telemetry` files are on-device evidence, never transmitted analytics.
 - Harness processes run as the signed-in OS user under each vendor CLI's
   native access mode. Claudexor does not add an outer Seatbelt, container, or
   other OS filesystem boundary. Scoped `HOME` and named profile directories
@@ -61,6 +83,14 @@ What Claudexor already does, so you can calibrate reports:
   stop the process from reaching other same-user host paths. In particular,
   trusted `full` can read or mutate out-of-project state, and those effects are
   outside Claudexor's patch capture, review, revert, and rollback custody.
+- `execution.auxiliaryWritableRoots` is a caller grant, not a confinement claim:
+  under `workspace_write` a capable adapter may write those exact directories,
+  and the same custody gap applies to what it writes there. Admission refuses
+  roots that would reach HOME itself, Claudexor state, the project, the execution
+  tree or their Git metadata, but cannot judge whether a granted directory is
+  safe to share; sharing one mutable environment between concurrent runs, or
+  granting a vendor's own configuration directory under HOME, is the caller's
+  decision.
 - Repository trust gates authorization for an operator at a surface to request
   native `full`; it is not a containment claim. `workspace_write` and `readonly`
   mean the selected adapter's native policy, whose exact enforcement differs by
@@ -87,7 +117,8 @@ What Claudexor already does, so you can calibrate reports:
   on mutating delegated attempts; the immutable contract records the resulting
   `full` effective profile but not which authority admitted it.
 - The macOS app cannot originate the marker: its `RunExecution` carries only
-  `isolation`. It can re-issue a run that already recorded one, because Retry
+  `isolation` and an optional `auxiliaryWritableRoots` list that no app control
+  sets. It can re-issue a run that already recorded one, because Retry
   Exact replays the recorded request and the Run Again draft keeps
   `execution`, so both carry `delegated` forward into a new `full` run without a
   grant; `claudexor retry` and `claudexor run-again` behave the same way.

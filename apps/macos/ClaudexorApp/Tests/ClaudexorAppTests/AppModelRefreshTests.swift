@@ -1092,6 +1092,48 @@ struct AppModelRefreshTests {
     }
 
     @MainActor
+    @Test func harnessWithdrawnInteractionClosesItsCardWithoutTimeoutWording() {
+        let model = AppModel(requestNotificationAuthorization: false)
+        model.liveTasks = [TaskRun(
+            id: "run-withdrawn", title: "Run", prompt: "", mode: .agent, phase: .running,
+            project: "Project", harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )]
+        let question: JSONValue = .object([
+            "id": .string("approval"), "header": .string("Codex approval"),
+            "question": .string("Approve this single native action?"),
+            "options": .array([.object(["label": .string("Approve once"), "description": .string("")])]),
+            "multi_select": .bool(false),
+        ])
+        for (seq, id) in [(1, "int-withdrawn"), (2, "int-next")] {
+            model.apply(BusEnvelope(seq: seq, kind: "interaction.requested", event: .object([
+                "type": .string("interaction.requested"),
+                "payload": .object([
+                    "interaction_id": .string(id), "harness_id": .string("codex"),
+                    "source_tool": .string("item/fileChange/requestApproval"),
+                    "questions": .array([question]), "requested_at": .string("2026-10-17T00:00:00.000Z"),
+                    "timeout_at": .null,
+                ]),
+            ])), to: "run-withdrawn")
+        }
+        #expect(model.liveTasks[0].pendingInteractions.map(\.interactionId) == ["int-withdrawn", "int-next"])
+
+        model.apply(BusEnvelope(seq: 3, kind: "interaction.withdrawn", event: .object([
+            "type": .string("interaction.withdrawn"),
+            "payload": .object(["interaction_id": .string("int-withdrawn"), "harness_id": .string("codex")]),
+        ])), to: "run-withdrawn")
+
+        #expect(model.liveTasks[0].pendingInteractions.map(\.interactionId) == ["int-next"])
+        #expect(model.liveTasks[0].waitingOnUser)
+        let title = model.liveBoxes["run-withdrawn"]?.activity.last?.title ?? ""
+        #expect(title == "Question withdrawn by the agent — no answer needed")
+        #expect(!title.localizedCaseInsensitiveContains("timed out"))
+    }
+
+    @MainActor
     @Test func availabilityReadsServerRoutableIntentsNotLocalDerivation() {
         let model = AppModel(requestNotificationAuthorization: false)
         // Healthy + intent enabled, but the SERVER says not routable (e.g.
@@ -1377,22 +1419,26 @@ struct AppModelRefreshTests {
         let accountsArrived = AppRefreshCallCounter()
         let releaseHarness = DispatchSemaphore(value: 0)
         let releaseAccounts = DispatchSemaphore(value: 0)
-        defer { releaseHarness.signal(); releaseAccounts.signal() }
+        let releaseObserver = DispatchSemaphore(value: 0)
+        defer { releaseHarness.signal(); releaseAccounts.signal(); releaseObserver.signal() }
         AppRequestStubURLProtocol.handler = { request in
             switch request.url?.path {
             case "/v2/harnesses":
                 harnessArrived.increment()
-                _ = releaseHarness.wait(timeout: .now() + 5)
+                _ = releaseHarness.wait(timeout: .now() + 60)
                 return (appResponse(for: request), appHarnessSnapshot(
                     version: "held-old", status: "degraded"))
             case "/v2/credential-profiles":
                 accountsArrived.increment()
-                _ = releaseAccounts.wait(timeout: .now() + 5)
+                _ = releaseAccounts.wait(timeout: .now() + 60)
                 return (appResponse(for: request), appAccountsSnapshot(
                     profileID: "accounts", displayName: "Accounts",
                     observedAt: "2026-07-29T00:00:00Z"))
             case "/v2/global/events":
-                throw AppRefreshTestError.badRequest
+                // Held like the sibling tests: an immediate failure could invalidate next-up
+                // before the test suspends the observer this refresh starts (#527).
+                _ = releaseObserver.wait(timeout: .now() + 60)
+                return (appResponse(for: request), Data())
             default:
                 throw AppRefreshTestError.badRequest
             }
@@ -3029,7 +3075,7 @@ struct AppModelRefreshTests {
         await model.openThread("B")
         await first.value
         #expect(model.selectedThreadId == "B")
-        #expect(model.selectedThreadDetail?.thread.id == "B")
+        #expect(model.selectedHistory?.header?.thread.id == "B")
     }
 
     @MainActor
@@ -3050,8 +3096,12 @@ struct AppModelRefreshTests {
             from: Data(#"{"id":"remote-thread","title":"Visible","repoRoot":"/tmp/project","mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"}"#.utf8))
         model.selectedExecutionLocation = locationID
         model.selectedThreadId = oldThread.id
-        model.selectedThreadDetail = ThreadDetailResponse(
-            thread: oldThread, sessions: [], turns: [])
+        let oldDetail = ThreadDetailResponse(thread: oldThread, sessions: [], turns: [])
+        let oldPage = try JSONDecoder().decode(ThreadHistoryPage.self,
+            from: LegacyHistoryFixture.response(JSONEncoder().encode(oldDetail), sequence: 1))
+        let history = model.makeHistoryStore(locationID: locationID, id: oldThread.id)
+        model.selectedHistory = history
+        history.install([oldPage], ids: [], reset: true, serial: 0)
 
         AppRequestStubURLProtocol.handler = { request in
             Thread.sleep(forTimeInterval: 0.15)
@@ -3063,9 +3113,9 @@ struct AppModelRefreshTests {
             await model.refreshOpenThread(locationID: locationID, id: oldThread.id)
         }
         try await Task.sleep(for: .milliseconds(20))
-        #expect(model.selectedThreadDetail?.thread.title == "Visible")
+        #expect(model.selectedHistory?.header?.thread.title == "Visible")
         await refresh.value
-        #expect(model.selectedThreadDetail?.thread.title == "Refreshed")
+        #expect(model.selectedHistory?.header?.thread.title == "Refreshed")
     }
 
     @MainActor
@@ -3161,7 +3211,7 @@ struct AppModelRefreshTests {
         AppRequestStubURLProtocol.handler = { request in
             switch request.url?.path {
             case "/v2/threads/thread-old":
-                let json = #"{"thread":{"id":"thread-old","title":"Old","repoRoot":null,"mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":["run-parent"],"headRunId":"run-parent","needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"},"sessions":[],"turns":[{"id":"turn-old","threadId":"thread-old","runId":"run-parent","parentRunId":null,"kind":"agent","prompt":"Old Delegate turn","run":{"state":"succeeded","mode":"agent","delegation":{"requested":true,"effective":true,"used":true,"reason":"used"}},"createdAt":"2026-07-15T00:00:00Z"}]}"#
+                let json = #"{"thread":{"id":"thread-old","title":"Old","repoRoot":null,"mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":["run-parent"],"headRunId":"run-parent","needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"},"sessions":[],"turns":[{"id":"turn-old","threadId":"thread-old","runId":"run-parent","parentRunId":null,"kind":"agent","prompt":"Old Delegate turn","run":{"state":"succeeded","mode":"agent","delegation":{"requested":true,"effective":true,"used":true,"reason":"used"},"delegatedChildRunIds":["run-historical-child"]},"createdAt":"2026-07-15T00:00:00Z"}]}"#
                 return (appResponse(for: request), Data(json.utf8))
             case "/v2/runs/run-parent":
                 detailCalls += 1
@@ -3172,8 +3222,6 @@ struct AppModelRefreshTests {
             }
         }
 
-        // Neither row exists in the bounded global list. The embedded Delegate
-        // receipt authorizes exactly one targeted parent detail hydration.
         await model.openThread("thread-old")
 
         #expect(model.liveTasks.map(\.id) == ["run-parent", "run-historical-child"])
@@ -3204,6 +3252,9 @@ struct AppModelRefreshTests {
         }
 
         await model.openThread("thread-wrong")
+        model.workspaceHistoryVisible = true
+        await model.loadWorkspaceHistory()
+        await model.ensureRunDetail("run-parent", insertingIfMissing: true)
 
         #expect(model.liveTasks.isEmpty)
         #expect(!model.hydratedRunDetails.contains("run-parent"))
@@ -3229,6 +3280,7 @@ struct AppModelRefreshTests {
         model.selectedThreadId = thread.id
         model.selectedThreadDetail = ThreadDetailResponse(
             thread: thread, sessions: [], turns: [turn])
+        model.workspaceHistoryVisible = true
         AppRequestStubURLProtocol.handler = { request in
             guard request.url?.path == "/v2/runs/run-child-projected" else {
                 throw AppRefreshTestError.badRequest
@@ -3308,7 +3360,7 @@ struct AppModelRefreshTests {
         AppRequestStubURLProtocol.handler = { request in
             switch request.url?.path {
             case "/v2/threads/A":
-                let json = #"{"thread":{"id":"A","title":"A","repoRoot":null,"mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":["run-parent"],"headRunId":"run-parent","needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"},"sessions":[],"turns":[{"id":"turn-A","threadId":"A","runId":"run-parent","parentRunId":null,"kind":"agent","prompt":"Delegate","run":{"state":"succeeded","mode":"agent","delegation":{"requested":true,"effective":true,"used":true,"reason":"used"}},"createdAt":"2026-07-15T00:00:00Z"}]}"#
+                let json = #"{"thread":{"id":"A","title":"A","repoRoot":null,"mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":["run-parent"],"headRunId":"run-parent","needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"},"sessions":[],"turns":[{"id":"turn-A","threadId":"A","runId":"run-parent","parentRunId":null,"kind":"agent","prompt":"Delegate","run":{"state":"succeeded","mode":"agent","delegation":{"requested":true,"effective":true,"used":true,"reason":"used"},"delegatedChildRunIds":["run-child"]},"createdAt":"2026-07-15T00:00:00Z"}]}"#
                 return (appResponse(for: request), Data(json.utf8))
             case "/v2/threads/B":
                 let json = #"{"thread":{"id":"B","title":"B","repoRoot":null,"mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"},"sessions":[],"turns":[]}"#
@@ -4888,8 +4940,9 @@ private func waitForAppTest(
     _ predicate: @escaping @MainActor () -> Bool,
     message: String
 ) async throws {
+    // Parallel UI suites can hold the main actor for seconds (#527); this only bounds a failing test.
     try #require(
-        await appTestEventually(timeout: .seconds(5), predicate),
+        await appTestEventually(timeout: .seconds(60), predicate),
         Comment(rawValue: message))
 }
 
@@ -4953,7 +5006,11 @@ private final class AppRequestStubURLProtocol: URLProtocol {
         DispatchQueue.global().async { [self] in
             do {
                 guard let handler = Self.handler else { throw AppRefreshTestError.badRequest }
-                let (response, data) = try handler(request)
+                var fixtureRequest = request
+                let history = request.url?.path.hasSuffix("/history") == true
+                if history { fixtureRequest.url = request.url?.deletingLastPathComponent() }
+                let (response, raw) = try handler(fixtureRequest)
+                let data = history ? try LegacyHistoryFixture.response(raw) : raw
                 client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
                 client?.urlProtocol(self, didLoad: data)
                 client?.urlProtocolDidFinishLoading(self)

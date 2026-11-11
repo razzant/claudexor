@@ -8,7 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 // `--version` to answer; without stubs this suite would silently depend on a
 // dev machine's installs. The manifest hint lists are what is exercised here.
 const stubDir = mkdtempSync(join(tmpdir(), "claudexor-model-truth-"));
-afterAll(() => rmSync(stubDir, { recursive: true, force: true }));
+afterAll(() => rmSync(stubDir, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 function stub(name: string, version: string): string {
   const bin = join(stubDir, name);
   writeFileSync(
@@ -20,6 +20,9 @@ function stub(name: string, version: string): string {
 }
 process.env["CLAUDEXOR_CODEX_BIN"] = stub("codex", "codex-cli 0.0.0-stub");
 process.env["CLAUDEXOR_AGY_BIN"] = stub("agy", "agy 0.0.0-stub");
+// grok's stub answers only `--version`; an unscoped listing must never spawn
+// `grok models` (there is no default account to run it under).
+process.env["CLAUDEXOR_GROK_BIN"] = stub("grok", "grok 0.0.0-stub");
 // claude's stub answers `--version`, and the model probe's `-p …` argv only
 // while an `answer` file sits beside it (rewriting the stub changes its
 // identity, so the probe cache re-reads it — no module reset needed).
@@ -42,8 +45,14 @@ function claudeStubAnswers(picker: boolean): void {
   chmodSync(claudeBin, 0o755);
 }
 process.env["CLAUDEXOR_CLAUDE_BIN"] = claudeBin;
-const { checkHarnessModel, checkHarnessModelTruth, harnessModelTruth, harnessModels } =
-  await import("./registry.js");
+const {
+  buildRegistry,
+  checkHarnessModel,
+  checkHarnessModelTruth,
+  harnessModelTruth,
+  harnessModels,
+} = await import("./registry.js");
+const { noModelListLine } = await import("./cli-io.js");
 
 describe("harness model truth = list + declaration (the ONE settings/doctor/catalog gate, INV-104)", () => {
   it("codex: an unlisted model is admitted with the note (advisory), a listed one silently", async () => {
@@ -107,6 +116,65 @@ describe("harness model truth = list + declaration (the ONE settings/doctor/cata
     });
   }, 30_000);
 
+  it("grok: an account-less listing claims no live catalog; an explicit model is forwarded", async () => {
+    // Unscoped, and explicitly on the subscription route: neither names an
+    // account, so neither may answer an empty `api` catalog.
+    expect(
+      (await harnessModelTruth("grok", process.cwd(), false, "local_session")).response,
+    ).toEqual({
+      harnessId: "grok",
+      models: [],
+      source: "none",
+      verifiedAgainst: null,
+      sourceProgram: null,
+    });
+    const truth = await harnessModelTruth("grok", process.cwd());
+    expect(truth.response).toEqual({
+      harnessId: "grok",
+      models: [],
+      source: "none",
+      verifiedAgainst: null,
+      sourceProgram: null,
+    });
+    expect(truth.absence).toBe("advisory");
+    expect(checkHarnessModelTruth(truth, "grok-4.7")).toMatchObject({
+      status: "ok",
+      unverified: true,
+    });
+  });
+
+  it("grok: `claudexor models` says no account was selected, not that Grok cannot list models", async () => {
+    // The status rows `claudexor models` reads carry each harness's manifest.
+    const statuses = await Promise.all(
+      ["grok", "codex"].map(async (id) => ({
+        id,
+        manifest: await buildRegistry().get(id)!.discover(),
+      })),
+    );
+    for (const route of [undefined, "local_session"] as const) {
+      const truth = await harnessModelTruth("grok", process.cwd(), false, route);
+      expect(truth.response.source).toBe("none");
+      expect(noModelListLine("grok", statuses, route)).toBe(
+        "grok: no account selected (models are listed per named account)",
+      );
+    }
+    // Controls: a harness without a per-account inventory or without a
+    // manifest, a harness with a default account, and the API-key route Grok
+    // does not serve keep the plain wording.
+    const plain = "no model enumeration (adapter cannot list models)";
+    expect(noModelListLine("cursor", [{ id: "cursor", manifest: null }], undefined)).toBe(
+      `cursor: ${plain}`,
+    );
+    expect(noModelListLine("codex", statuses, "local_session")).toBe(`codex: ${plain}`);
+    expect(noModelListLine("grok", statuses, "api_key")).toBe(`grok: ${plain}`);
+  });
+
+  it("agy: the same route keeps its non-empty manifest hints (control)", async () => {
+    const truth = await harnessModelTruth("agy", process.cwd(), false, "local_session");
+    expect(truth.response.source).toBe("manifest");
+    expect(truth.response.models.length).toBeGreaterThan(0);
+  });
+
   it("an unknown harness id has no truth at all and refuses every explicit model", async () => {
     const { truth, check } = await checkHarnessModel("no-such-harness", "anything", process.cwd());
     expect(truth).toEqual({
@@ -114,6 +182,7 @@ describe("harness model truth = list + declaration (the ONE settings/doctor/cata
       models: [],
       source: "none",
       verifiedAgainst: null,
+      sourceProgram: null,
     });
     expect(check.status).toBe("rejected");
   });

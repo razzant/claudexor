@@ -99,13 +99,32 @@ private struct ResourceProtocolCallback: @unchecked Sendable {
     let deliver: (Result<(Int, Data), Error>) -> Void
 }
 
+/// Each fixture owns a unique request host. Tests may replace its response for a
+/// recovery step without affecting another client's concurrently running suite.
+final class ResourceAppFixture {
+    let host = "\(UUID().uuidString.lowercased()).engine.invalid"
+    var handler: ResourceAppProtocol.Handler? {
+        get { ResourceAppProtocol.lock.withLock { ResourceAppProtocol.handlers[host] } }
+        set { ResourceAppProtocol.lock.withLock { ResourceAppProtocol.handlers[host] = newValue } }
+    }
+    deinit { handler = nil }
+    func gateway() -> GatewayClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ResourceAppProtocol.self]
+        return GatewayClient(baseURL: URL(string: "https://\(host)")!, token: "fixture",
+                             session: URLSession(configuration: configuration))
+    }
+}
+
 final class ResourceAppProtocol: URLProtocol {
-    nonisolated(unsafe) static var handler: (@Sendable (ResourceRecordedRequest) async throws -> (Int, Data))?
+    typealias Handler = @Sendable (ResourceRecordedRequest) async throws -> (Int, Data)
+    fileprivate static let lock = NSLock()
+    nonisolated(unsafe) fileprivate static var handlers: [String: Handler] = [:]
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let recorded = ResourceRecordedRequest(request)
-        let handler = Self.handler!
+        let handler = Self.lock.withLock { Self.handlers[recorded.url.host ?? ""] }
         let callback = ResourceProtocolCallback { [self] result in
             switch result {
             case .success(let (status, data)):
@@ -117,15 +136,12 @@ final class ResourceAppProtocol: URLProtocol {
             }
         }
         Task { [handler, recorded, callback] in
-            do { callback.deliver(.success(try await handler(recorded))) }
+            do {
+                guard let handler else { throw URLError(.unsupportedURL) }
+                callback.deliver(.success(try await handler(recorded)))
+            }
             catch { callback.deliver(.failure(error)) }
         }
     }
     override func stopLoading() {}
-    static func gateway() -> GatewayClient {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [Self.self]
-        return GatewayClient(baseURL: URL(string: "https://engine.invalid")!, token: "fixture",
-                             session: URLSession(configuration: configuration))
-    }
 }

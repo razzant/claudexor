@@ -5,10 +5,12 @@ import { requireTransaction, runMutation, type SqlWriteContext } from "./mutatio
 import {
   commandRetentionCandidates,
   deleteEventKeysInTx,
+  modelReceiptCandidates,
   COMMAND_RETENTION_BATCH,
 } from "./retention.js";
 import type { EngineStore } from "./store.js";
 import { collectReleasedBodies } from "./event-store.js";
+import { dropResourceUsesInTx } from "./resource-uses.js";
 
 type PruneRow = {
   id: string;
@@ -26,7 +28,19 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
   requireTransaction(sql);
   const released: string[] = [];
   for (const row of rows) {
+    if (draftRetainsCommand(sql, row.id)) continue;
     const keys = [`c:${row.id}:a`, `c:${row.id}:u`];
+    const drafts = sql
+      .prepare(
+        "DELETE FROM deferred_message WHERE pid=? AND predecessor_job_id=? AND state IN ('cleared','dispatched') RETURNING id,body_sha",
+      )
+      .all(row.pid, row.id) as Array<{ id: string; body_sha: string | null }>;
+    for (const draft of drafts) {
+      keys.push(`draft:${draft.id}`);
+      if (draft.body_sha) released.push(draft.body_sha);
+      released.push(...dropResourceUsesInTx(sql, { owner: "deferred_message", id: draft.id }));
+      deleteTargetIdempotencyInTx(sql, "deferred_message", row.pid, draft.id);
+    }
     if (row.run_id) {
       keys.push(
         `r:${row.run_id}:c`,
@@ -34,11 +48,16 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
         `r:${row.run_id}:t`,
         `d:${row.run_id}`,
       );
+      // Node 24.15 truncates TEXT at NUL; decode the full runId\0interactionId from bytes.
       const interactions = sql
-        .prepare("DELETE FROM interaction WHERE run_id=? AND pid=? RETURNING id")
-        .all(row.run_id, row.pid) as Array<{ id: string }>;
-      for (const interaction of interactions)
-        keys.push(`i:${row.run_id}:${interaction.id.slice(row.run_id.length + 1)}`);
+        .prepare(
+          "DELETE FROM interaction WHERE run_id=? AND pid=? RETURNING CAST(id AS BLOB) AS id",
+        )
+        .all(row.run_id, row.pid) as Array<{ id: Uint8Array }>;
+      for (const interaction of interactions) {
+        const id = Buffer.from(interaction.id).toString("utf8");
+        keys.push(`i:${row.run_id}:${id.slice(row.run_id.length + 1)}`);
+      }
       sql
         .prepare("DELETE FROM operator_decision WHERE run_id=? AND pid=?")
         .run(row.run_id, row.pid);
@@ -50,6 +69,8 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
     }
     released.push(...deleteEventKeysInTx(sql, row.pid, keys), row.params_sha);
     if (row.result_sha) released.push(row.result_sha);
+    // Its managed attachments lose this holder; a released ID's bytes may now go.
+    released.push(...dropResourceUsesInTx(sql, { owner: "command", id: row.id }));
     deleteTargetIdempotencyInTx(sql, "command", row.pid, row.id);
     sql.prepare("DELETE FROM command WHERE id=? AND pid=?").run(row.id, row.pid);
     if (row.scope_root)
@@ -59,9 +80,11 @@ export function applyCommandPruneInTx(sql: SqlWriteContext, rows: readonly Prune
 }
 
 /** At most one batch per admission/terminal, over the global live command set.
- * File GC is asynchronous and uses the existing shared C10 owner generations. */
+ * File GC is asynchronous and uses the existing shared C10 owner generations.
+ * Model receipts have their own age-only batch (#637), outside the product cap. */
 export class SqlCommandPruner {
   private eventCursor = { time: "", pid: 0, seq: 0 };
+  private modelCursor = 0;
   constructor(
     private readonly store: EngineStore,
     private readonly blobs: BlobFiles,
@@ -77,6 +100,7 @@ export class SqlCommandPruner {
       retentionMs,
       cap,
       exempt: (candidate) =>
+        draftRetainsCommand(this.store, candidate.id) ||
         !!(
           candidate.runDir &&
           candidate.runId &&
@@ -92,8 +116,15 @@ export class SqlCommandPruner {
         ),
     });
     this.prune(selection.victims.map((row) => row.id));
+    const models = modelReceiptCandidates(this.store, {
+      now: new Date(now),
+      after: this.modelCursor,
+    });
+    this.prune(models.ids);
+    // Scan progress, not authority: a failed prune above leaves it unchanged.
+    this.modelCursor = models.next;
     this.pruneReceiptEvents(now);
-    return selection.victims.map((row) => row.id);
+    return [...selection.victims.map((row) => row.id), ...models.ids];
   }
 
   prune(ids: readonly string[], pid?: number): void {
@@ -167,4 +198,13 @@ export class SqlCommandPruner {
   private collect(digests: readonly string[]): void {
     collectReleasedBodies(this.store, this.blobs, digests, this.options.log);
   }
+}
+
+function draftRetainsCommand(sql: Pick<SqlWriteContext, "prepare">, id: string): boolean {
+  return !!sql
+    .prepare(
+      `SELECT 1 FROM deferred_message WHERE predecessor_job_id=? AND state IN ('waiting','held')
+    UNION ALL SELECT 1 FROM deferred_message WHERE successor_job_id=? LIMIT 1`,
+    )
+    .get(id, id);
 }

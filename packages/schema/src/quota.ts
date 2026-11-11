@@ -13,6 +13,7 @@ export const QuotaSource = z
     "claude_oauth_usage",
     "agy_command_usage",
     "cursor_rate_limit",
+    "grok_rate_limit",
     "claude_rate_limit_event",
     "codex_app_server_event",
     "codex_image_response",
@@ -88,6 +89,12 @@ export const QUOTA_SOURCE_TRAITS = {
     refreshDemandHarness: null,
     producedByRefresher: false,
   },
+  grok_rate_limit: {
+    snapshotMode: "full",
+    vendorAuthenticated: false,
+    refreshDemandHarness: null,
+    producedByRefresher: false,
+  },
   claude_rate_limit_event: {
     snapshotMode: "window",
     // Measured quota telemetry is not a standalone fresh authentication receipt.
@@ -123,7 +130,25 @@ export const REACTIVE_COOLDOWN_SOURCE: Partial<Record<string, QuotaSource>> = {
   codex: "codex_rollout",
   claude: "claude_api_retry",
   cursor: "cursor_rate_limit",
+  grok: "grok_rate_limit",
 };
+
+/** The engine-owned identity of the reactive cooldown a typed usage refusal
+ * with no reopening time leaves (`rate_limit.reopening: unknown`, #558), in
+ * the same identity channel as the generic `cooldown` and the vendor-window
+ * `cooldown:<id>`. It records no usage (none was measured) and no reset (none
+ * was named): its `cooldown_until` is the engine's own bounded recheck, never a
+ * time the account reopens. Unlike the generic refusal, no quota read retires
+ * or moves it (#318): an empty, unknown or measured read does not show that the
+ * refused usage or credits returned, so only that recheck ends the block. */
+export const REOPENING_UNKNOWN_COOLDOWN_ID = "cooldown:reopening_unknown";
+
+/** What that refusal travels under: the engine's existing name for a typed
+ * vendor limit, in `ControlProblem.code` and `resumable.limitCode` (free
+ * strings). Deliberately NOT a `RunFailureCode`: the run record keeps `code: null`,
+ * since `subscription_window_exhausted` tells every reader that waiting cures it
+ * and a new enum member would make an old strict reader drop the whole record. */
+export const REOPENING_UNKNOWN_REFUSAL_CODE = "vendor_limit_rejected";
 
 /** Durable-journal source label the strict v3.2.0 rollback runtime can parse.
  * `cursor_rate_limit` postdates that enum, so a base upsert record carrying it
@@ -134,7 +159,9 @@ export const REACTIVE_COOLDOWN_SOURCE: Partial<Record<string, QuotaSource>> = {
  * v3.2.0 but predates this mapping: remapping it now would orphan its already
  * journaled prepare/commit hashes, so it stays a disclosed rollback residual. */
 export function legacyV320QuotaSource(source: QuotaSource): QuotaSource {
-  return source === "cursor_rate_limit" ? "claude_api_retry" : source;
+  return source === "cursor_rate_limit" || source === "grok_rate_limit"
+    ? "claude_api_retry"
+    : source;
 }
 
 export function quotaRefreshDemandHarnesses(): Array<"claude" | "codex" | "agy"> {

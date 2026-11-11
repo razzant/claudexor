@@ -17,10 +17,12 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { DaemonClient } from "@claudexor/daemon";
 import {
   ControlDaemonStatus,
+  ControlHandshakeResponse,
   type ControlJournalInspection,
   type ControlJournalQuarantineReceipt,
 } from "@claudexor/schema";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 import { daemonStoreLine } from "./daemon-status-report.js";
 import {
   DurableJournal,
@@ -66,9 +68,17 @@ class Fixture {
       version: 1,
       credential_profiles: [],
       harnesses: Object.fromEntries(
-        ["claude", "codex", "cursor", "agy", "copilot", "opencode", "raw-api", "openrouter"].map(
-          (id) => [id, { enabled: false, native_credentials_enabled: false }],
-        ),
+        [
+          "claude",
+          "codex",
+          "cursor",
+          "agy",
+          "copilot",
+          "opencode",
+          "grok",
+          "raw-api",
+          "openrouter",
+        ].map((id) => [id, { enabled: false, native_credentials_enabled: false }]),
       ),
     });
     writeFileSync(join(this.config, "config.yaml"), this.settings, { mode: 0o600 });
@@ -200,6 +210,7 @@ class Fixture {
       headers: {
         authorization: `Bearer ${token}`,
         "x-claudexor-protocol-major": "3",
+        "x-claudexor-store-identity": "1",
         "content-type": "application/json",
         "idempotency-key": key,
       },
@@ -212,10 +223,12 @@ class Fixture {
     return value as T;
   }
   async hello() {
-    return this.request<{ servingMode: string }>("/v2/handshake", "POST", {
-      protocolMajor: 3,
-      client: "sql-startup-fixture",
-    });
+    return ControlHandshakeResponse.parse(
+      await this.request("/v2/handshake", "POST", {
+        protocolMajor: 3,
+        client: "sql-startup-fixture",
+      }),
+    );
   }
   async quarantine(name: string, inspection: ControlJournalInspection, key = randomUUID()) {
     return this.request<ControlJournalQuarantineReceipt>(
@@ -276,20 +289,27 @@ class Fixture {
     expect(child.exitCode, this.stderr).toBe(0);
     expect(() => process.kill(child.pid!, 0)).toThrow();
   }
-  async dispose() {
+  /** Stops and checks this fixture; its removal comes back for the hook's tail. */
+  async dispose(): Promise<() => void> {
     try {
       await this.stop();
       expect(readFileSync(join(this.config, "config.yaml"), "utf8")).toBe(this.settings);
       expect(existsSync(join(this.config, "migration", "accounts-unified.json"))).toBe(false);
     } finally {
       if (this.child && live(this.child)) throw new Error("refusing to remove a live fixture root");
-      rmSync(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
+    return () => {
+      rmSync(this.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    };
   }
 }
 
-afterEach(async () => {
-  for (const fixture of fixtures.splice(0).reverse()) await fixture.dispose();
+afterEachClosed(async () => {
+  const removals: Array<() => void> = [];
+  for (const fixture of fixtures.splice(0).reverse()) removals.push(await fixture.dispose());
+  return () => {
+    for (const remove of removals) remove();
+  };
 }, 30_000);
 
 function seedCopiedJournal(f: Fixture, count = 1, promptBytes = 16) {
@@ -351,6 +371,35 @@ function readSql<T>(
 }
 
 describe.skipIf(!sqlite)("production SQL daemon startup process qualification", () => {
+  it("handshakes the durable store identity across a restart and a different root", async () => {
+    const first = new Fixture("handshake-store");
+    first.start();
+    await first.httpReady();
+    await first.mode("normal");
+    const identity = (await first.hello()).storeId;
+    expect(identity).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    await first.stop();
+    expect(
+      readSql(first, (db) => db.prepare("SELECT value FROM meta WHERE key='store_id'").get()),
+    ).toEqual({ value: identity });
+    first.start();
+    await first.httpReady();
+    await first.mode("normal");
+    expect((await first.hello()).storeId).toBe(identity);
+    await first.stop();
+
+    const other = new Fixture("handshake-other-store");
+    other.start();
+    await other.httpReady();
+    await other.mode("normal");
+    const otherIdentity = (await other.hello()).storeId;
+    expect(typeof otherIdentity).toBe("string");
+    expect(otherIdentity).not.toBe(identity);
+    await other.stop();
+  }, 60_000);
+
   it("starts a fresh root, serves real health and global/project threads, then closes SQL", async () => {
     const f = new Fixture("fresh");
     f.start();

@@ -1,5 +1,197 @@
 # @claudexor/config
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- 8fb1023: Upload bytes, model-request reads and the full trust-file list no longer run on the daemon's request thread. A scoped trust entry says whether it came from a file or from defaults, so a caller can tell a missing grant from an explicit refusal without listing every repo. The daemon sizes its libuv pool from the host when that variable is unset, and upload writes leave two of those threads free so DNS still runs while parts are being written.
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/util@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/schema@5.0.1
+- @claudexor/util@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [d16170f]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/util@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/schema@4.8.1
+- @claudexor/util@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies [6c31c44]
+- Updated dependencies [7dfbc42]
+- Updated dependencies
+  - @claudexor/schema@4.8.0
+  - @claudexor/util@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- Updated dependencies [880081d]
+- Updated dependencies [30f8195]
+  - @claudexor/schema@4.7.1
+  - @claudexor/util@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- Updated dependencies [74fb275]
+  - @claudexor/schema@4.7.0
+  - @claudexor/util@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/schema@4.6.2
+- @claudexor/util@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/schema@4.6.1
+- @claudexor/util@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- Updated dependencies [a81897c]
+  - @claudexor/schema@4.6.0
+  - @claudexor/util@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- Updated dependencies [032b44b]
+  - @claudexor/schema@4.5.0
+  - @claudexor/util@4.5.0
+
+## 4.4.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/util@4.4.0
+  - @claudexor/schema@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- @claudexor/schema@4.3.1
+- @claudexor/util@4.3.1
+
+## 4.3.0
+
+### Patch Changes
+
+- 23a74cb: Let any controlling MCP agent inspect and answer native worker approvals through
+  the existing interaction tools. Codex workspace-write runs use native automatic
+  review and can hand back one exact denied action for an explicitly authorized
+  same-session retry, without changing managed policy or granting session-wide access.
+  A request the worker withdraws itself emits `interaction.withdrawn`, closing the
+  obsolete follow prompt or app card instead of blocking the next approval.
+
+  A completed Codex turn's answer, including a structured WorkReport envelope,
+  is kept before any handback; a denial that cannot be presented exactly is
+  disclosed and stands natively instead of failing the run. A thread that settles
+  in systemError never hands a denial back, authorizes it or starts another turn.
+
+  The verified Codex pin moves from codex-cli 0.156.1 to 0.162.1. Its captured
+  model snapshot makes `gpt-6.1-sol` the fallback default and a known model. An
+  installed 0.156.1 no longer matches the snapshot provenance: without a live
+  `model/list`, its effort snapshot is not trusted (no effort flag is sent) and
+  no turn-input bound is published for it.
+
+  Add revision-guarded live run time-limit read, set, extend and disable controls,
+  soft warnings and optional inactivity-watchdog disabling. Existing explicit
+  maxSeconds limits remain hard by default; omitting a limit adds no deadline, and
+  `set` keeps the timer's current mode unless one is named. Inactivity windows
+  longer than one Node timer delay are honored instead of firing immediately.
+
+- Updated dependencies
+- Updated dependencies [23a74cb]
+  - @claudexor/schema@4.3.0
+  - @claudexor/util@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

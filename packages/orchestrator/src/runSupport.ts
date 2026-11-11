@@ -1,8 +1,9 @@
 /**
  * Run-support helpers: transient retry pacing, gate-derived protected paths,
- * prompt constraints, harness-event redaction/payload projection, and the
+ * prompt constraints, harness-event payload projection, and the
  * run summary/findings renderers. Pure functions — no orchestrator state.
  */
+import { maskHarnessEventDiagnostics } from "@claudexor/core";
 import type {
   HarnessEvent,
   ModeKind,
@@ -15,7 +16,6 @@ import type {
 import {
   FallbackReason as FallbackReasonSchema,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
-  RoutePrimaryDivergedPayload as RoutePrimaryDivergedPayloadSchema,
   RoutePoolDegradedPayload as RoutePoolDegradedPayloadSchema,
   makeOutcomeFacts,
   runOutcomeLabel,
@@ -24,8 +24,9 @@ import type { BudgetObservation, RouteDropStage } from "@claudexor/schema";
 import type { EventLog } from "@claudexor/event-log";
 import { isBlocking, quotaConstraintAppliesToRequestKind } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import { redactSecrets } from "@claudexor/util";
+import { displayPreview, redactSecrets } from "@claudexor/util";
 import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
+import { attemptRoutingCostSample, type AttemptUsageCost } from "./attemptUsageCost.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { blockedDecisionOverride } from "@claudexor/delivery";
 
@@ -204,9 +205,10 @@ export function promptWithEngineConstraints(
  * guessing `npm test` / bare `node`, which on an at-risk machine dies `Killed: 9`.
  *
  * Rendered as a read-only JSON argv list (same `[program, ...args]` shape the
- * gate runner and review packet use), redacted with the same fence as the rest
- * of the contract so a secret-like token can never surface in the prompt. Never
- * a shell string — the model must reuse the exact argv, not re-parse it.
+ * gate runner and review packet use), byte for byte what the runner executes
+ * (INV-146): a credential-shaped argument is shown as is, since a masked argv
+ * reused verbatim would run a different command. Never a shell string — the
+ * model must reuse the exact argv, not re-parse it.
  */
 export function promptWithGateArgvDisclosure(
   prompt: string,
@@ -217,7 +219,7 @@ export function promptWithGateArgvDisclosure(
   const lines = [
     "",
     "Engine-configured deterministic gates (the engine will run these EXACT typed argv again to verify the run). Use them verbatim for local verification; do not substitute a bare `node`/`npm`, a package script, or a shell string:",
-    ...shown.map((g) => `- ${redactSecrets(JSON.stringify([g.program, ...g.args]))}`),
+    ...shown.map((g) => `- ${JSON.stringify([g.program, ...g.args])}`),
   ];
   // Never let the slice silently imply the disclosed set is exhaustive: mark how
   // many gates were omitted so the model knows more will run than it can see.
@@ -253,58 +255,52 @@ export function safeErrorMessage(err: unknown): string {
   return message.trim().length > 0 ? message : "thrown error carried no message";
 }
 
-export function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
-  try {
-    return JSON.parse(redactSecrets(JSON.stringify(ev))) as HarnessEvent;
-  } catch {
-    return {
-      ...ev,
-      text: ev.text ? redactSecrets(ev.text) : undefined,
-      error: ev.error ? redactSecrets(ev.error) : undefined,
-      payload: ev.payload ? { redacted: true } : undefined,
-    };
-  }
-}
-
 export function harnessEventPayload(
   harnessId: string,
   attemptId: string,
   ev: HarnessEvent,
 ): Record<string, unknown> {
-  const safe = redactHarnessEvent(ev);
+  // Working content (text, tool and interaction payloads) is journaled exactly;
+  // engine diagnostics are masked through the one shared journal seam (INV-146).
+  const safe = maskHarnessEventDiagnostics(ev);
+  const error = safe.error;
+  const payload = safe.payload;
   const title =
-    safe.error ??
+    error ??
     safe.text ??
-    (safe.usage
-      ? `usage: ${safe.usage.input_tokens ?? 0} in / ${safe.usage.output_tokens ?? 0} out`
-      : safe.type);
+    (ev.usage
+      ? `usage: ${ev.usage.input_tokens ?? 0} in / ${ev.usage.output_tokens ?? 0} out`
+      : ev.type);
   // Hoist adapter ignored_settings onto the existing timeline disclosure (INV-105).
-  const ignored = (safe.payload as Record<string, unknown> | undefined)?.["ignored_settings"];
+  const ignored = (ev.payload as Record<string, unknown> | undefined)?.["ignored_settings"];
   return {
     ...(Array.isArray(ignored) ? { ignored_settings: ignored } : {}),
     harness_id: harnessId,
     attempt_id: attemptId,
-    session_id: safe.session_id,
-    ts: safe.ts,
-    type: safe.type,
-    title: String(title).slice(0, 500),
+    session_id: ev.session_id,
+    ts: ev.ts,
+    type: ev.type,
+    // A display label only: the exact text, error and interaction ride beside it.
+    title: displayPreview(String(title), 500),
     text: safe.text,
-    error: safe.error,
-    usage: safe.usage,
-    observed_model: safe.observed_model,
-    credential_route: safe.credential_route,
-    quota: safe.quota,
-    rate_limit: safe.rate_limit,
-    request_refusal: safe.request_refusal,
-    tool: safe.tool,
-    interaction: safe.interaction,
-    // Typed finality/status MUST survive this projection (W-C1/W-C2): the
-    // app's transcript reducer keys the answer-dedup on `final` and the
-    // activity feed on `status` — dropping them here silently killed both
-    // on the LIVE path (caught by the F2.5 E2E smoke, not unit tests).
-    final: safe.final,
-    status: safe.status,
-    payload: safe.payload,
+    error,
+    usage: ev.usage,
+    observed_model: ev.observed_model,
+    credential_route: ev.credential_route,
+    quota: ev.quota,
+    rate_limit: ev.rate_limit,
+    request_refusal: ev.request_refusal,
+    permission_denial: ev.permission_denial,
+    turn_limit: ev.turn_limit,
+    tool: ev.tool,
+    interaction: ev.interaction,
+    // Preserve finality/status for answer dedup and activity (W-C1/W-C2);
+    // losing them here broke both on the live path (F2.5 E2E). The adapter-
+    // issued speech key/op rides beside them so readers key text by identity.
+    final: ev.final,
+    speech: ev.speech,
+    status: ev.status,
+    payload,
   };
 }
 
@@ -368,7 +364,7 @@ export interface ResolvedConfigLike {
     runtime: {
       transient_retry: { max_retries: number; initial_delay_ms: number; max_delay_ms: number };
       reviewer_timeout_ms: number;
-      harness_inactivity_timeout_ms: number;
+      harness_inactivity_timeout_ms: number | null;
     };
   };
 }
@@ -390,7 +386,7 @@ export function reviewerTimeoutMs(cfg: ResolvedConfigLike): number {
   return cfg.global.runtime.reviewer_timeout_ms;
 }
 
-export function harnessInactivityTimeoutMs(cfg: ResolvedConfigLike): number {
+export function harnessInactivityTimeoutMs(cfg: ResolvedConfigLike): number | null {
   return cfg.global.runtime.harness_inactivity_timeout_ms;
 }
 
@@ -423,37 +419,6 @@ export function observeAuthSwitch(
   } catch {
     /* a malformed marker must not fail the run */
   }
-}
-
-/** Primary divergence disclosure (round-3 item 1b): the composer chip pins a
- * sticky PRIMARY, but if that harness's account is quota-exhausted / on cooldown
- * (dropped by budget/quota ranking) or its route went unavailable (dropped from
- * the pool), it never enters `ordered` — so the run silently routes to a
- * different harness with ZERO fallback disclosure (no attempt was ever made on
- * the primary to fall back FROM). Emit a typed, evidence-backed divergence the
- * receipt renders loudly ("requested claude → ran on codex"). No-op when the
- * primary actually ran, or when there is no pinned primary. */
-export function emitPrimaryDivergence(
-  log: EventLog | undefined,
-  requested: string | undefined,
-  ordered: { adapter: { id: string } }[],
-  pool: { adapter: { id: string } }[],
-  dropped: string[],
-): void {
-  if (!log || !requested || ordered.some((r) => r.adapter.id === requested)) return;
-  const survivedPool = pool.some((r) => r.adapter.id === requested);
-  log.emit(
-    "route.primary.diverged",
-    RoutePrimaryDivergedPayloadSchema.parse({
-      requested,
-      effective: ordered[0]?.adapter.id ?? null,
-      reason: survivedPool ? "quota_exhausted" : "auth_unavailable",
-      detail: survivedPool
-        ? `${requested} is on cooldown or over its budget/quota pace`
-        : (dropped.find((d) => d.startsWith(`${requested} `) || d.startsWith(`${requested}(`)) ??
-          `${requested} is unavailable`),
-    }) as unknown as Record<string, unknown>,
-  );
 }
 
 /** Auto-pool degradation disclosure (QA-043): the resolver dropped one or more
@@ -581,6 +546,7 @@ export function recordCleanAttemptMetrics(
   harnessId: string,
   sample: {
     costUsd: number;
+    usageCost: AttemptUsageCost;
     streamMs: number;
     errored: boolean;
     aborted: boolean;
@@ -592,7 +558,7 @@ export function recordCleanAttemptMetrics(
     return;
   }
   recordHarnessMetric(configDir, harnessId, {
-    costUsd: sample.costUsd > 0 ? sample.costUsd : null,
+    costUsd: attemptRoutingCostSample(sample.costUsd, sample.usageCost),
     durationMs: sample.streamMs,
     authMode: sample.authMode ?? null,
   });

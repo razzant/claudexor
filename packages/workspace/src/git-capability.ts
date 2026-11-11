@@ -129,6 +129,7 @@ export async function probeGitCapability(
         runCaptureRaw(path, ["--version"], {
           timeoutMs: 10_000,
           inheritEnv: "mirror_native",
+          windowsConsole: "none",
         }))
     )(executable);
     const detail = labelStreams(result.stderr, result.stdout);

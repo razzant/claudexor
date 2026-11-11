@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { ProjectThreadPort, ProjectStorePort } from "@claudexor/daemon";
 import { sqlActivityRecords } from "./sql-daemon-queries.js";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
@@ -17,6 +17,7 @@ import { ArtifactStore } from "@claudexor/artifact-store";
 import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
 import { createRetentionRunner, scheduleStartupRetention } from "./retention-service.js";
 import { threadPurgeOwner } from "./thread-purge.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 const roots: string[] = [];
 const sqlStores: Array<Awaited<ReturnType<typeof sqlFixture>>> = [];
@@ -37,13 +38,17 @@ beforeEach(() => {
   writeFileSync(join(configDir, "config.yaml"), "retention:\n  keep_last_runs_per_project: 0\n");
 });
 
-afterEach(async () => {
+afterEachClosed(async () => {
+  // This test's entries, taken before its closes: a later test never removes them.
+  const ownedRoots = roots.splice(0);
   for (const sql of sqlStores.splice(0).reverse()) await sql.close();
-  if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
-  else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
-  if (previousHome === undefined) delete process.env.HOME;
-  else process.env.HOME = previousHome;
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  return () => {
+    if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+  };
 });
 
 /** A project root whose runtime dir holds one long-terminal run tree. */
@@ -99,9 +104,25 @@ function deps(input: {
     input.threads ?? (input.threadRunIds ? [{ id: "t1", run_ids: input.threadRunIds }] : []);
   const threads = {
     healthyProjectRoots: () => input.healthyRoots,
+    retentionThreads: async () => rows,
+    retentionReferences: async (ignored = new Set<string>()) => ({
+      isCurrent: () => true,
+      projectRoots: input.projectRoots,
+      registeredProjectRoots: new Set(input.projectRoots),
+      protectedProjectRoots: new Set(
+        input.projectRoots.filter((root) => !input.healthyRoots.includes(root)),
+      ),
+      referencedRunIds: new Set(
+        rows
+          .filter((row) => row.state !== "purged" && !ignored.has(row.id))
+          .flatMap((row) => [...row.run_ids, ...(row.head_run_id ? [row.head_run_id] : [])]),
+      ),
+      records: input.records.filter((row) => row.runId),
+    }),
     // Like the store, a purged thread drops out of every listing; only the
     // retention pass lists it, to finish a cleanup that failed.
     listThreads: () => rows.filter((thread) => thread.state !== "purged"),
+    getThread: (id: string) => rows.find((thread) => thread.id === id),
     listPurgedThreads: () => rows.filter((thread) => thread.state === "purged"),
     turnsFor: () => [],
   } as unknown as ProjectThreadPort;
@@ -167,9 +188,9 @@ describe("retention service composition", () => {
     expect(overrideReceipt.data_root_unrecognized).toEqual(["v1", "v2", "v3"]);
   });
 
-  it("fails CLOSED for a project whose partition journal is quarantined (W3.6)", async () => {
+  it("fails CLOSED for a project whose partition journal needs recovery (W3.6)", async () => {
     // The reference set (listThreads/turnsFor) only spans READY partitions. If
-    // a quarantined project's runs were still swept, they would be judged
+    // an unavailable project's runs were still swept, they would be judged
     // against an EMPTY reference set and a live thread's history would vanish.
     const root = projectWithAgedRun("run-quarantined");
     const run = await createRetentionRunner(
@@ -212,15 +233,18 @@ describe("retention service composition", () => {
     });
     const runner = createRetentionRunner({
       ...base,
-      daemonJobs: async () => {
-        active += 1;
-        peak = Math.max(peak, active);
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        try {
-          return await base.daemonJobs();
-        } finally {
-          active -= 1;
-        }
+      threads: {
+        ...base.threads,
+        retentionThreads: async () => {
+          active += 1;
+          peak = Math.max(peak, active);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          try {
+            return await base.threads.retentionThreads();
+          } finally {
+            active -= 1;
+          }
+        },
       },
     });
     // The startup pass and an operator `gc` firing together.
@@ -423,6 +447,34 @@ describe("expired trash purge in the retention pass (owner decision E2)", () => 
     expect(purged).toEqual(["t-locked"]);
   });
 
+  it("hands the purge owner the pass's own cancellation signal, for an unfinished purge and for expired trash", async () => {
+    const root = projectWithThreadDirs("t-unfinished");
+    const isolated = { repo: { root }, workspace: { mode: "isolated" } };
+    const bindings = deps({
+      projectRoots: [root],
+      healthyRoots: [root],
+      threads: [
+        { id: "t-unfinished", run_ids: [], state: "purged", ...isolated },
+        { id: "t-expired", run_ids: [], state: "trashed", purge_after: past, ...isolated },
+      ],
+      records: [],
+    });
+    const owner = bindings.purgeThread;
+    const seen: Array<{ id: string; signal: AbortSignal | undefined }> = [];
+    const receipt = await createRetentionRunner({
+      ...bindings,
+      purgeThread: async (id, signal) => {
+        seen.push({ id, signal });
+        return owner(id);
+      },
+    })({ dry_run: false, trash_purge_report: true });
+    expect(receipt.purge_leftovers).toEqual(["t-unfinished"]);
+    expect(receipt.purged_threads).toEqual(["t-expired"]);
+    expect(seen.map(({ id }) => id)).toEqual(["t-unfinished", "t-expired"]);
+    expect(seen[0]!.signal).toBeInstanceOf(AbortSignal);
+    expect(seen[1]!.signal).toBe(seen[0]!.signal);
+  });
+
   it("dry run lists an unfinished purge without deleting; a finished purge is left alone", async () => {
     const root = projectWithThreadDirs("t-leftover");
     const purged: string[] = [];
@@ -452,7 +504,7 @@ describe("expired trash purge in the retention pass (owner decision E2)", () => 
     const runner = createRetentionRunner(
       deps({ projectRoots: [], healthyRoots: [], threads: trashThreads, records: [] }),
     );
-    scheduleStartupRetention(
+    const stop = scheduleStartupRetention(
       async (request) => {
         requests.push(request);
         return runner(request);
@@ -463,7 +515,37 @@ describe("expired trash purge in the retention pass (owner decision E2)", () => 
     for (let i = 0; i < 500 && !readLog().includes("retention:"); i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(requests).toEqual([{ dry_run: false, trash_purge_report: true }]);
+    expect(requests).toEqual([
+      { dry_run: false, trash_purge_report: true, native_home_report: true },
+    ]);
     expect(readLog()).toContain("1 expired trash threads");
+    await stop();
   });
+});
+
+it("rechecks current trash state after inventory before invoking the purge owner", async () => {
+  const row: FakeThread = {
+    id: "restored-during-inventory",
+    run_ids: [],
+    state: "trashed",
+    purge_after: ancient,
+  };
+  const purged: string[] = [];
+  const bindings = deps({
+    projectRoots: [],
+    healthyRoots: [],
+    records: [],
+    threads: [row],
+    purged,
+  });
+  bindings.daemonJobs = async () => {
+    row.state = "active";
+    return [];
+  };
+  const receipt = await createRetentionRunner(bindings)({
+    dry_run: false,
+    trash_purge_report: true,
+  });
+  expect(purged).toEqual([]);
+  expect(receipt.purged_threads).toEqual([]);
 });

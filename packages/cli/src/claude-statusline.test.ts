@@ -18,7 +18,7 @@ afterEach(() => {
   else process.env.CLAUDEXOR_CONFIG_DIR = originalConfig;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("Claude official statusline quota source", () => {
   it("persists only allowlisted subscription windows and provenance", async () => {

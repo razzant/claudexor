@@ -5,6 +5,7 @@
       "kind": "unlimited"
     },
     "spendUsd": 0,
+    "controllableSpendUsd": 0,
     "valuationUsd": 0.87,
     "valuationKnowledge": "estimated",
     "remainingUsd": null,

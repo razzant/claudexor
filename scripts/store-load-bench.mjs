@@ -156,15 +156,13 @@ const fileTimer =
       }, 200 / K)
     : null;
 let integrity = null;
-const maintenanceTimer = setTimeout(
-  () => {
-    maintenance.integrityCheck().then(
-      (report) => (integrity = { ok: report.ok, ms: +report.durationMs.toFixed(1) }),
-      (error) => (integrity = { error: error.message }),
-    );
-  },
-  (SECONDS * 1000) / 2,
-);
+let integrityPromise;
+const checkIntegrity = () =>
+  (integrityPromise ??= maintenance.integrityCheck().then(
+    (report) => (integrity = { ok: report.ok, ms: +report.durationMs.toFixed(1) }),
+    (error) => (integrity = { error: error.message }),
+  ));
+const maintenanceTimer = setTimeout(checkIntegrity, (SECONDS * 1000) / 2);
 
 const total = RATE * SECONDS;
 const started = performance.now();
@@ -177,7 +175,8 @@ await new Promise((resolve) => {
       setTimeout(step, Math.max(0, due - now));
       return;
     }
-    while (i < total && performance.now() >= started + (i * 1000) / RATE) {
+    // A slow writer must yield instead of starving readers, flushes and maintenance.
+    if (i < total && performance.now() >= started + (i * 1000) / RATE) {
       const generation = generations[i % generations.length];
       const id = `cmd-${i}`;
       const ts = new Date().toISOString();
@@ -235,44 +234,50 @@ clearInterval(flushTimer);
 if (fileTimer) clearInterval(fileTimer);
 clearTimeout(maintenanceTimer);
 eld.disable();
-await store.flushed().catch(() => {});
-await new Promise((r) => setTimeout(r, 300));
-const facts = store.facts();
-const result = {
-  config:
-    "A2 (main wal_autocheckpoint=4000 ff; worker PASSIVE ff + explicit WAL fsync; dir syncs per pass)",
-  rate: RATE,
-  K,
-  seconds: SECONDS,
-  achieved: +(total / (wall / 1000)).toFixed(1),
-  load1: { start: loadStart, end: load1() },
-  node: process.version,
-  sqlite: process.versions.sqlite,
-  i_commit: { ...fmt(commits), stallsOver5ms: stalls.length, stallList: stalls.slice(0, 10) },
-  ii_fileWrite: fmt(fileWrites),
-  ii_bodyWrite200KiB: fmt(bodyWrites),
-  iii_eventLoop: {
-    eldP99: +(eld.percentile(99) / 1e6).toFixed(2),
-    eldMax: +(eld.max / 1e6).toFixed(2),
-    tickerLate,
-    maxGap: +maxGap.toFixed(1),
-  },
-  sseRead: fmt(reads),
-  flushed: fmt(flushes),
-  walMaxMB: +(walMax / 1048576).toFixed(2),
-  flusher: {
-    passes: fmt(passes),
-    barrier: fmt(barrierMs),
-    counters: facts.flusher.counters,
-    lastCheckpoint: facts.flusher.last_pass?.checkpoint ?? null,
-  },
-  busy_waits: facts.busy_waits,
-  integrity,
-};
-const line = JSON.stringify(result);
-console.log(line);
-if (process.env.OUT) appendFileSync(process.env.OUT, `${line}\n`);
-await maintenance.stop();
-await store.close();
-if (!KEEP) rmSync(root, { recursive: true, force: true });
-else console.error(`kept ${root}`);
+try {
+  await checkIntegrity();
+  const finalFlushStarted = performance.now();
+  await store.flushed();
+  flushes.push(performance.now() - finalFlushStarted);
+  await new Promise((r) => setTimeout(r, 300));
+  const facts = store.facts();
+  const result = {
+    config:
+      "A2 (main wal_autocheckpoint=4000 ff; worker PASSIVE ff + explicit WAL fsync; dir syncs per pass)",
+    rate: RATE,
+    K,
+    seconds: SECONDS,
+    achieved: +(total / (wall / 1000)).toFixed(1),
+    load1: { start: loadStart, end: load1() },
+    node: process.version,
+    sqlite: process.versions.sqlite,
+    i_commit: { ...fmt(commits), stallsOver5ms: stalls.length, stallList: stalls.slice(0, 10) },
+    ii_fileWrite: fmt(fileWrites),
+    ii_bodyWrite200KiB: fmt(bodyWrites),
+    iii_eventLoop: {
+      eldP99: +(eld.percentile(99) / 1e6).toFixed(2),
+      eldMax: +(eld.max / 1e6).toFixed(2),
+      tickerLate,
+      maxGap: +maxGap.toFixed(1),
+    },
+    sseRead: fmt(reads),
+    flushed: fmt(flushes),
+    walMaxMB: +(walMax / 1048576).toFixed(2),
+    flusher: {
+      passes: fmt(passes),
+      barrier: fmt(barrierMs),
+      counters: facts.flusher.counters,
+      lastCheckpoint: facts.flusher.last_pass?.checkpoint ?? null,
+    },
+    busy_waits: facts.busy_waits,
+    integrity,
+  };
+  const line = JSON.stringify(result);
+  console.log(line);
+  if (process.env.OUT) appendFileSync(process.env.OUT, `${line}\n`);
+} finally {
+  await maintenance.stop();
+  await store.close();
+  if (!KEEP) rmSync(root, { recursive: true, force: true });
+  else console.error(`kept ${root}`);
+}

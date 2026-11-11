@@ -1,3 +1,4 @@
+import { processTiming } from "@claudexor/util";
 import {
   CONCURRENCY_KEYS,
   ConcurrencyLimit,
@@ -27,6 +28,7 @@ export function daemonHealth(
     ok: true,
     memory: memoryFacts(),
     loop: loopFacts(),
+    timing: processTiming.facts(),
     uptime_ms: Date.now() - startedAt,
     queue,
     running: active > 0,

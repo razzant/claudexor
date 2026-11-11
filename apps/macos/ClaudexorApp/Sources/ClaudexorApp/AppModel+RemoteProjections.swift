@@ -213,7 +213,7 @@ extension AppModel {
     }
 
     func persistRemoteThreadCache() {
-        try? RemoteThreadCacheStore.applicationSupport().save(remoteThreadCache)
+        try? persistence.remoteThreadCache?().save(remoteThreadCache)
     }
 
     private static func threadSortDate(_ thread: ThreadSummary) -> String {

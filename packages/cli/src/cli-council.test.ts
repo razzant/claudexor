@@ -37,6 +37,7 @@ function planner(id: string, bad: boolean): HarnessAdapter {
         kind: "local_cli",
         provider_family: "openai",
         capabilities: {
+          read_files: true,
           plan: true,
           work_report_transport: "constrained",
           json_schema_output: true,
@@ -87,7 +88,7 @@ describe("Council human CLI terminal display", () => {
     vi.restoreAllMocks();
     vi.resetModules();
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
+  }, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
   it.each([false, true])(
     "renders producer membership and original failed-member reason (all contradictory: %s)",

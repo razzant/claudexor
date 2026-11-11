@@ -1,8 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ControlRunSummary, ControlTurnRunCard, makeOutcomeFacts } from "@claudexor/schema";
-import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
+import {
+  projectSession,
+  projectThread,
+  projectTurn,
+  projectTurnRunCards,
+  turnRunCard,
+} from "./thread-projection.js";
 
 describe("Delegate thread-card projection", () => {
+  it("submits no turn summary for an already inactive request", async () => {
+    const summarize = vi.fn(() => ControlRunSummary.parse({ jobId: "job", state: "running" }));
+    const cards = await projectTurnRunCards(
+      [{ run_id: "run" }],
+      [{ id: "job", runId: "run", state: "running" }],
+      summarize,
+      () => false,
+    );
+    expect(cards.size).toBe(0);
+    expect(summarize).not.toHaveBeenCalled();
+  });
+
   it("carries the durable outcome and bounded child identities", () => {
     const card = turnRunCard(
       ControlRunSummary.parse({

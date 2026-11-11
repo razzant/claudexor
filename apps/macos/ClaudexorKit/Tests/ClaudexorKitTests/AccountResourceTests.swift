@@ -63,7 +63,8 @@ struct AccountResourceTests {
         let response = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(Self.rich.utf8))
         let otherData = Self.rich.replacingOccurrences(of: "future-default", with: "other-disabled")
         let other = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(otherData.utf8))
-        let merged = response.replacingAccount(Self.request.target, in: other)
+        let merged = response.replacingAccount(Self.request.target, in: other,
+            reboundSinceRequest: false)
         #expect(merged.resources?.count == 2)
         #expect(merged.resources?.first == other.resources?.first)
         #expect(merged.resources?.last == response.resources?.first)
@@ -80,7 +81,8 @@ struct AccountResourceTests {
         resources[0]["resets"] = resets
         document["resources"] = resources
         let incoming = try JSONDecoder().decode(ControlQuotaResponse.self, from: JSONSerialization.data(withJSONObject: document))
-        let merged = incoming.replacingAccount(Self.request.target, in: prior, preferPreviousOnTie: true)
+        let merged = incoming.replacingAccount(Self.request.target, in: prior,
+            reboundSinceRequest: false, preferPreviousOnTie: true)
         #expect(merged.resources?.first?.balances == prior.resources?.first?.balances)
         #expect(merged.resources?.first?.balances.lastAttemptAt == "2026-10-09T12:10:00Z")
         #expect(merged.resources?.first?.spending == prior.resources?.first?.spending)
@@ -94,7 +96,8 @@ struct AccountResourceTests {
             .replacingOccurrences(of: "\"value\":null,\"source\":null", with: "\"value\":[{\"code\":\"newer\",\"detail\":\"Recent diagnostic\"}],\"source\":null")
         let incoming = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(older.utf8))
         let prior = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(newer.utf8))
-        let merged = incoming.replacingAccount(Self.request.target, in: prior, preferPreviousOnTie: true)
+        let merged = incoming.replacingAccount(Self.request.target, in: prior,
+            reboundSinceRequest: false, preferPreviousOnTie: true)
         #expect(merged.snapshots.isEmpty && merged.absences == prior.absences)
         #expect(merged.resources?.first?.diagnostics.value?.first?.code == "newer")
     }

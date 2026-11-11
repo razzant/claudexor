@@ -1,7 +1,16 @@
 import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 
 export type IdempotencyOwner =
-  "command" | "thread" | "turn" | "decision" | "project" | "setup" | "upload" | "quarantine";
+  | "command"
+  | "thread"
+  | "turn"
+  | "decision"
+  | "project"
+  | "setup"
+  | "upload"
+  | "quarantine"
+  | "deferred_message"
+  | "thread_retire";
 
 export interface IdempotencyKey {
   owner: IdempotencyOwner;
@@ -15,7 +24,7 @@ export interface IdempotencyBinding extends IdempotencyKey {
   requestDigest: string;
   targetId: string;
   createdAt: string;
-  /** Only uploads store an original reply. Other owners resolve their target. */
+  /** Uploads store their reply; drafts store only the originally applied revision. */
   result?: unknown;
 }
 
@@ -70,8 +79,15 @@ export function bindIdempotencyInTx(
   requireTransaction(sql);
   const existing = lookupIdempotency(sql, binding, binding.requestDigest);
   if (existing) return existing;
-  if (binding.owner !== "upload" && binding.result !== undefined) {
-    throw new Error("only upload idempotency bindings carry a result");
+  if (
+    binding.owner !== "upload" &&
+    binding.owner !== "deferred_message" &&
+    binding.owner !== "thread_retire" &&
+    binding.result !== undefined
+  ) {
+    throw new Error(
+      "only upload, deferred-message and thread-retire idempotency bindings carry a result",
+    );
   }
   sql
     .prepare(

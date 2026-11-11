@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { HarnessSpeechOp } from "./harness-speech.js";
 
 export const ControlTimelineEvent = z
   .object({
@@ -26,7 +27,7 @@ export const ControlTimelineEvent = z
       .nullable()
       .default(null)
       .describe(
-        "Human-readable event detail. For typed harness text, the complete redacted text with original whitespace; title may be abbreviated.",
+        "Human-readable event detail. For typed harness text, the complete text as journaled, with original whitespace; title may be abbreviated.",
       ),
     textKind: z
       .enum(["thinking", "message"])
@@ -41,17 +42,39 @@ export const ControlTimelineEvent = z
       .describe(
         "True only for adapter-declared text fragments. Consecutive deltas of the same textKind and attempt may be concatenated verbatim; complete messages and other events remain separate.",
       ),
+    speechKey: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Adapter-issued key of the observed text block this row belongs to (the harness event's speech.key); compare by equality only. Null when no block lifecycle was exactly observed; such rows stay separate.",
+      ),
+    speechOp: HarnessSpeechOp.nullable()
+      .default(null)
+      .describe("The harness event's speech.op on keyed rows; null otherwise."),
+    textFinal: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True only on the harness's typed final-answer text row (the harness event's final flag). It carries a speech key only when the adapter proved the link; otherwise it is a separate terminal result.",
+      ),
     severity: z
       .enum(["info", "warning", "error"])
       .default("info")
       .describe("Display severity of the event."),
     toolName: z.string().nullable().default(null).describe("Tool name for tool events."),
-    target: z.string().nullable().default(null).describe("Redacted tool target for tool events."),
+    target: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Tool target for tool events, bounded, as the agent issued it."),
     errorSummary: z
       .string()
       .nullable()
       .default(null)
-      .describe("Redacted error detail for error events."),
+      .describe(
+        "Error detail: a failed tool's own output, unmasked; for an error event, its masked diagnostic.",
+      ),
     /** Unsupported per-harness knobs the selected route silently could not honor
      * (INV-105): the engine discloses them on `harness.started`, and this
      * projection carries them so the row can render a visible warning ("max_turns

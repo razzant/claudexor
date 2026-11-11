@@ -1,0 +1,92 @@
+{
+  "$ref": "#/definitions/RunTimeLimitRequest",
+  "definitions": {
+    "RunTimeLimitRequest": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "read"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "set"
+            },
+            "seconds": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 604800
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "soft",
+                "hard"
+              ]
+            },
+            "expectedRevision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "action",
+            "seconds",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "extend"
+            },
+            "seconds": {
+              "$ref": "#/definitions/RunTimeLimitRequest/anyOf/1/properties/seconds"
+            },
+            "expectedRevision": {
+              "$ref": "#/definitions/RunTimeLimitRequest/anyOf/1/properties/expectedRevision"
+            }
+          },
+          "required": [
+            "action",
+            "seconds",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "disable"
+            },
+            "expectedRevision": {
+              "$ref": "#/definitions/RunTimeLimitRequest/anyOf/1/properties/expectedRevision"
+            }
+          },
+          "required": [
+            "action",
+            "expectedRevision"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

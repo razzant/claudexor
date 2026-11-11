@@ -68,6 +68,9 @@ const BINARY_EXT = new Set([
 ]);
 
 export interface AtlasOptions {
+  /** The exact paths to account for, when a caller already holds them; default:
+   * what `git ls-files` (or a walk outside Git) finds in the tree. */
+  files?: readonly string[];
   include?: string[];
   exclude?: string[];
   mandatory?: string[];
@@ -90,7 +93,7 @@ async function listFiles(repoRoot: string): Promise<string[]> {
     const r = await runCapture(
       "git",
       ["-C", repoRoot, "ls-files", "--cached", "--others", "--exclude-standard"],
-      { timeoutMs: 30_000 },
+      { timeoutMs: 30_000, windowsConsole: "none" },
     );
     if (r.code === 0) {
       const files = r.stdout
@@ -190,7 +193,7 @@ export async function buildScopeAtlas(
   const maxFileBytes = opts.maxFileBytes ?? 256 * 1024;
   const tokenLimit = opts.tokenLimit ?? 200_000;
 
-  const files = new Set(await listFiles(repoRoot));
+  const files = new Set(opts.files ?? (await listFiles(repoRoot)));
   const atlas: ScopeAtlasEntry[] = [];
   const candidates: { rel: string; bytes: number; mandatory: boolean }[] = [];
   const missingMandatory: string[] = [];
@@ -220,17 +223,6 @@ export async function buildScopeAtlas(
       continue;
     }
     const mandatory = mandatorySet.has(rel);
-    const sensitive = sensitiveResourcePolicy.classifyPath(rel);
-    if (sensitive.sensitive) {
-      atlas.push({
-        path: rel,
-        disposition: "sensitive",
-        bytes,
-        reason: sensitive.reason ?? undefined,
-      });
-      if (mandatory) missingMandatory.push(rel);
-      continue;
-    }
     if (!mandatory) {
       if (BINARY_EXT.has(extname(rel).toLowerCase())) {
         atlas.push({ path: rel, disposition: "binary", bytes });
@@ -288,17 +280,6 @@ export async function buildScopeAtlas(
       if (c.mandatory) missingMandatory.push(c.rel);
       continue;
     }
-    const contentDecision = sensitiveResourcePolicy.inspectContent(content, "reject");
-    if (contentDecision.containsSensitiveContent) {
-      atlas.push({
-        path: c.rel,
-        disposition: "sensitive",
-        bytes: c.bytes,
-        reason: `content signatures: ${contentDecision.signatures.join(", ")}`,
-      });
-      if (c.mandatory) missingMandatory.push(c.rel);
-      continue;
-    }
     const hash = sha256(content);
     used += estTokens(content.length);
     atlas.push({ path: c.rel, disposition: "full", bytes: c.bytes, hash });
@@ -350,7 +331,7 @@ export function contextSymlinkDenyReason(
     });
     return decision.allowed
       ? null
-      : (decision.detail ?? "symlink target denied by sensitive-resource policy");
+      : (decision.detail ?? "symlink target denied by the containment policy");
   } catch {
     return "symlink target cannot be resolved";
   }

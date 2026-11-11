@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { BlobFiles } from "./blob-files.js";
 import { SqlEventLedger } from "./event-store.js";
 import {
@@ -13,15 +13,18 @@ import {
 import { MutationPostCommitError, runMutation } from "./mutation.js";
 import { createPartition } from "./partitions.js";
 import { EngineStore } from "./store.js";
+import { afterEachClosed } from "../../../cli/src/test-support/after-each-closed.js";
 
 let root: string;
 const stores: EngineStore[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "cx-mutation-"));
 });
-afterEach(async () => {
+afterEachClosed(async () => {
   for (const store of stores.splice(0)) await store.close();
-  rmSync(root, { recursive: true, force: true });
+  return () => {
+    rmSync(root, { recursive: true, force: true });
+  };
 });
 async function openStore(): Promise<EngineStore> {
   const store = await EngineStore.open({

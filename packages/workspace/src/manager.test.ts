@@ -25,7 +25,10 @@ import {
   snapshotTree,
 } from "./git.js";
 import { revertWorkingTreePatch, revertWorkingTreeTo } from "./revert.js";
-import { createRevertAnchor, readRevertAnchor } from "./anchor-store.js";
+import { createRevertAnchor, readRevertPair } from "./anchor-store.js";
+import { treeOf } from "./git-result.js";
+import { importIntoRepository } from "./object-store.js";
+import { revertDeliveryPair } from "./object-revert.js";
 import { CLAUDE_BRIDGE_CONTENT, CLAUDE_BRIDGE_MARKER } from "./claude-bridge.js";
 import { WorkspaceManager } from "./manager.js";
 import { relativizePlainDiffHeaders } from "./plain-diff.js";
@@ -42,7 +45,7 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("revertWorkingTreeTo", () => {
   it("restores a modified file, removes a turn-added file, and refuses when the tree diverged", async () => {
@@ -663,7 +666,7 @@ describe("WorkspaceManager", () => {
     expect(readFileSync(join(repo, "dirty.txt"), "utf8")).toBe("pre-existing uncommitted state\n");
   });
 
-  it("names a secret-bearing binary postimage in a non-git in-place directory", async () => {
+  it("keeps a credential-shaped binary postimage in a non-git in-place directory", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-inplace-binary-"));
     writeFileSync(join(dir, "README.md"), "plain folder\n");
     const mgr = new WorkspaceManager(dir);
@@ -676,7 +679,6 @@ describe("WorkspaceManager", () => {
     const captured = await mgr.captureDiff(env);
 
     expect(captured.diff).toContain("Binary files");
-    expect(captured.binarySecretPaths).toEqual(["LEAK.bin"]);
     expect(captured.captureIncomplete).toBe(false);
     // V4C: capture classifies, it never removes — the bytes stay in the folder.
     expect(existsSync(join(dir, "LEAK.bin"))).toBe(true);
@@ -697,7 +699,6 @@ describe("WorkspaceManager", () => {
     expect(captured.diff).not.toContain(secret);
     // The display is clipped, so exact consumers must refuse. The live file
     // stays untouched and no secret-bearing suffix enters the preview.
-    expect(captured.binarySecretPaths).toEqual([]);
     expect(captured.captureIncomplete).toBe(true);
     expect(captured.captureFailure).toMatchObject({ code: "capture_preview_truncated" });
     expect(readFileSync(join(dir, "LONG.txt"), "utf8")).toContain(secret);
@@ -714,7 +715,7 @@ describe("WorkspaceManager", () => {
     chmodSync(leak, 0o000);
     try {
       const captured = await mgr.captureDiff(env);
-      expect(captured).toMatchObject({ diff: "", binarySecretPaths: [], captureIncomplete: true });
+      expect(captured).toMatchObject({ diff: "", captureIncomplete: true });
       expect(captured.captureFailure?.message).toContain("Permission denied");
     } finally {
       chmodSync(leak, 0o600);
@@ -722,7 +723,7 @@ describe("WorkspaceManager", () => {
     }
   });
 
-  it("names git binaries whose pre- or postimage holds secret-like bytes, keeping the exact payload", async () => {
+  it("keeps the exact payload of git binaries whose pre- or postimage holds credential-shaped bytes", async () => {
     const repo = await initRepo();
     const token = ["sk", "q".repeat(24)].join("-");
     const withToken = Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from(token)]);
@@ -742,7 +743,6 @@ describe("WorkspaceManager", () => {
     const captured = await mgr.captureDiff(env);
 
     expect(captured.captureIncomplete).toBe(false);
-    expect([...captured.binarySecretPaths].sort()).toEqual(["new-leak.bin", "old-leak.bin"]);
     // The exact patch still carries every binary payload (it is what gets applied).
     expect(captured.diff.match(/^GIT binary patch$/gm)?.length).toBe(3);
     expect(readFileSync(join(repo, "new-leak.bin")).equals(withToken)).toBe(true);
@@ -918,7 +918,21 @@ describe("WorkspaceManager", () => {
 
     await git(repo, ["reflog", "expire", "--expire=now", "--all"]);
     await git(repo, ["gc", "--prune=now"]);
-    const reverted = await revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId));
+    // #535: the anchor is the turn's actual object pair, kept in the project
+    // store; revert imports what the user's gc removed, then runs on that pair.
+    const pair = readRevertPair(repo, anchorId);
+    expect(pair).not.toBeNull();
+    const imported = await importIntoRepository({
+      projectRoot: repo,
+      repo,
+      roots: [pair!.pre_tree, pair!.post_tree],
+    });
+    expect(imported.missing).toEqual([]);
+    const reverted = await revertDeliveryPair({
+      worktree: repo,
+      pair: pair!,
+      currentTree: await treeOf(repo, await snapshotTree(repo)),
+    });
 
     expect(reverted.reverted).toBe(true);
     expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# test\n");

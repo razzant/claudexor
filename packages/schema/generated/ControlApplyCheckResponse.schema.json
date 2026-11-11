@@ -24,6 +24,53 @@
           "type": "boolean",
           "default": false,
           "description": "True when the clean check is an already-applied idempotent no-op."
+        },
+        "refusal": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "result_objects_missing",
+                "delivery_conflict",
+                "delivery_pairing_mismatch",
+                "delivery_target_changed",
+                "delivery_path_occupied",
+                "delivery_outside_sparse_checkout",
+                "delivery_content_mismatch",
+                "revert_conflict",
+                "revert_target_changed",
+                "pr_unrendered_result",
+                "result_path_encoding",
+                "space_insufficient",
+                "git_stalled",
+                "git_signal",
+                "git_failed"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "default": []
+            },
+            "pathCount": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false,
+          "description": "Typed reason an object result's dry run refused (code, message, bounded paths); absent otherwise."
         }
       },
       "required": [

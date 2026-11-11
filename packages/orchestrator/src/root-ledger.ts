@@ -1,4 +1,4 @@
-import { BudgetLedger } from "@claudexor/budget";
+import { BudgetLedger, type CashSettledCallback } from "@claudexor/budget";
 import type { EventLog } from "@claudexor/event-log";
 import type { QuotaSnapshot, TaskContract } from "@claudexor/schema";
 import type { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
@@ -11,12 +11,13 @@ export function createRootLedger(args: {
   authority?: DelegationBudgetAuthority;
   quotaSnapshots: readonly QuotaSnapshot[];
 }): BudgetLedger {
-  const onCashSettled = (
-    cashSpendUsd: number,
-    valuationUsd: number,
-    cashEstimated: boolean,
-    valuationKnowledge: "exact" | "estimated" | "unknown",
-    cashKnowledge: "exact" | "estimated" | "unknown",
+  const onCashSettled: CashSettledCallback = (
+    cashSpendUsd,
+    valuationUsd,
+    cashEstimated,
+    valuationKnowledge,
+    cashKnowledge,
+    controllableCashKnowledge,
   ) =>
     args.log.emit("budget.cash", {
       cash_spend_usd: cashSpendUsd,
@@ -24,6 +25,8 @@ export function createRootLedger(args: {
       estimated: cashEstimated,
       valuation_knowledge: valuationKnowledge,
       cash_knowledge: cashKnowledge,
+      // The finite cap governs this; reported cash can stay unknown beside it.
+      controllable_cash_knowledge: controllableCashKnowledge,
     });
   const ledger = args.input.delegatedFromRunId
     ? args.authority?.attachChild(

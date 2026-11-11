@@ -10,7 +10,7 @@
  * without a live daemon or TTY.
  */
 import { createInterface } from "node:readline/promises";
-import type { PlanQuestion } from "@claudexor/schema";
+import type { PlanQuestion, PromptCacheTtl } from "@claudexor/schema";
 import { parseChoiceIndexes } from "./choice-input.js";
 import { print } from "./cli-io.js";
 import {
@@ -126,6 +126,8 @@ export async function runPlanQuestionLoop(opts: {
   threadId: string | undefined;
   runId: string;
   interactive: boolean;
+  /** The command's prompt-cache lifetime; a thread turn does not inherit it. */
+  promptCacheTtl?: PromptCacheTtl;
 }): Promise<string> {
   const { client, addr, threadId, interactive } = opts;
   let currentRunId = opts.runId;
@@ -150,6 +152,7 @@ export async function runPlanQuestionLoop(opts: {
         threadId,
         scope: { kind: "project", root: process.cwd() },
         execution: { isolation: "envelope" },
+        ...(opts.promptCacheTtl ? { promptCacheTtl: opts.promptCacheTtl } : {}),
       },
       { waitForTerminal: false },
     );

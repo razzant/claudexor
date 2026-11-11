@@ -6,6 +6,7 @@ import {
   observeAttemptTelemetry,
 } from "./attemptTelemetry.js";
 import { RunTelemetry, type HarnessEvent } from "@claudexor/schema";
+import { beginNativeRetry } from "./native-retry-telemetry.js";
 
 // GH #31: the typed harness-failure taxonomy classifies every adapter/stream
 // transient failure at the adapter→orchestrator boundary. These tests pin the
@@ -260,17 +261,33 @@ describe("harness-reported terminal error (exit evidence)", () => {
     expect(t.transientFailures[0]?.category).toBe("unknown_harness_error");
     expect(t.transientFailures[0]?.retryable).toBe(false);
     expect(t.transientFailures[0]?.adapterCode).toBe("exit_1");
-    expect(t.transientFailures[0]?.vendorFailure).toBeNull();
+    expect(t.vendorFailure).toBeNull();
   });
 
-  it("carries the adapter-attached vendor failure on the observation, verbatim", () => {
+  it("carries the adapter-attached vendor failure as the try's evidence, verbatim", () => {
     const t = completed({
       exit_code: 1,
       harness_reported_error: true,
       vendor_failure: vendorFailure,
     });
-    expect(t.transientFailures[0]?.vendorFailure).toEqual(vendorFailure);
+    expect(t.vendorFailure).toEqual(vendorFailure);
     expect(t.transientFailures[0]?.category).toBe("unknown_harness_error");
+  });
+
+  it("#414: keeps the vendor failure of a voiced completion with NO exit evidence, deciding nothing", () => {
+    const t = completed({ harness_reported_error: true, vendor_failure: vendorFailure });
+    expect(t.vendorFailure).toEqual(vendorFailure);
+    expect(t.transientFailures).toHaveLength(0);
+    expect(t.rateLimits).toHaveLength(0);
+  });
+
+  it("#414: a signal kill, a cancel or an unvoiced completion carries no vendor evidence", () => {
+    for (const payload of [
+      { exit_signal: "SIGKILL", harness_reported_error: true, vendor_failure: vendorFailure },
+      { aborted: true, harness_reported_error: true, vendor_failure: vendorFailure },
+      { exit_code: 1, vendor_failure: vendorFailure },
+    ])
+      expect(completed(payload).vendorFailure, JSON.stringify(payload)).toBeNull();
   });
 
   it("keeps a SILENT non-zero exit a process_crash (unchanged)", () => {
@@ -306,7 +323,7 @@ describe("harness-reported terminal error (exit evidence)", () => {
       expect(t.transientFailures).toHaveLength(1);
       expect(t.transientFailures[0]?.category).toBe("unknown_harness_error");
       expect(t.transientFailures[0]?.retryable).toBe(false);
-      expect(t.transientFailures[0]?.vendorFailure).toBeNull();
+      expect(t.vendorFailure).toBeNull();
     }
   });
 
@@ -347,5 +364,45 @@ describe("harness-reported terminal error (exit evidence)", () => {
     expect(record.transient_failures[0]?.category).toBe("unknown_harness_error");
     expect(JSON.stringify(record)).not.toContain("server_overloaded");
     expect(record.transient_failures[0]).not.toHaveProperty("vendorFailure");
+  });
+});
+
+describe("the try's voiced vendor failure (evidence, never a transient)", () => {
+  const vendorFailure = { code: "ERROR", message: "stream ended", source: "agy_result" };
+
+  it("records a zero-exit voiced failure for the try without a transient observation", () => {
+    const t = fresh();
+    observeAttemptTelemetry(
+      t,
+      ev({
+        type: "completed",
+        payload: { exit_code: 0, harness_reported_error: true, vendor_failure: vendorFailure },
+      }),
+    );
+    expect(t.transientFailures).toHaveLength(0);
+    expect(t.vendorFailure).toEqual(vendorFailure);
+    expect(JSON.stringify(attemptTelemetryRecord("a01", "agy", t))).not.toContain("stream ended");
+  });
+
+  it("a later try starts clean and its own terminal replaces the fact", () => {
+    const t = fresh();
+    observeAttemptTelemetry(
+      t,
+      ev({
+        type: "completed",
+        payload: { exit_code: 0, harness_reported_error: true, vendor_failure: vendorFailure },
+      }),
+    );
+    beginNativeRetry(t);
+    expect(t.vendorFailure).toBeNull();
+    for (const payload of [
+      { exit_code: 0, harness_reported_error: true },
+      { aborted: true, harness_reported_error: true, vendor_failure: vendorFailure },
+      { exit_signal: "SIGKILL", harness_reported_error: true, vendor_failure: vendorFailure },
+      { exit_code: 0, vendor_failure: vendorFailure },
+    ]) {
+      observeAttemptTelemetry(t, ev({ type: "completed", payload }));
+      expect(t.vendorFailure, JSON.stringify(payload)).toBeNull();
+    }
   });
 });

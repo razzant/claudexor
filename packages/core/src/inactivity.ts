@@ -27,6 +27,10 @@ import type { HarnessEvent } from "@claudexor/schema";
  * run past this bound. Overridable per-call for deterministic tests. */
 const REAP_PROOF_DEADLINE_MS = 8000;
 
+/** Node clamps a setTimeout delay above 2^31-1 ms to 1 ms. A longer configured
+ * window is waited in chunks so its intended duration is preserved, not capped. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export class HarnessInactivityTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
     super(
@@ -82,7 +86,8 @@ export function countsAsAgentProgress(event: HarnessEvent): boolean {
 export async function* withInactivityWatchdog<T>(
   source: AsyncIterable<T>,
   opts: {
-    timeoutMs: number;
+    /** Null disables inactivity timing while retaining stream cleanup. */
+    timeoutMs: number | null;
     /** Closed typed policy deciding which values prove useful progress. */
     countsAsProgress: (value: T) => boolean;
     /** Called once when the window elapses; abort the stream here. */
@@ -95,6 +100,18 @@ export async function* withInactivityWatchdog<T>(
      * remains suspended until answer/cancel/terminal/restart when disabled.
      */
     isSuspended?: () => boolean;
+    /**
+     * The caller's Stop, observed when the caller asks for the next value.
+     * Once aborted, further values come from the same bounded drain as an
+     * inactivity timeout and the stream then ends without an error, so a caller
+     * that keeps consuming after Stop can record what the cancelled source
+     * reports during teardown instead of discarding it through iterator.return.
+     * The drain and the closing iterator.return share one cleanupDeadlineMs.
+     * A next() already pending when Stop fires is not woken by it; that read
+     * ends when the source answers or the inactivity timer fires. What the
+     * caller accepts from the drained values stays its decision.
+     */
+    stopSignal?: AbortSignal;
     /** Monotonic suspension transition counter. This closes the polling gap
      * where a wait begins and ends entirely between inactivity timer ticks. */
     suspensionVersion?: () => number;
@@ -108,6 +125,7 @@ export async function* withInactivityWatchdog<T>(
   },
 ): AsyncIterable<T> {
   const iterator = source[Symbol.asyncIterator]();
+  const timeoutMs = opts.timeoutMs;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let timedOut = false;
   let wake: (() => void) | null = null;
@@ -116,38 +134,44 @@ export async function* withInactivityWatchdog<T>(
   // useful-progress window instead of charging the user-wait interval to the
   // harness and firing immediately after an answer.
   let suspensionObserved = false;
-  let observedSuspensionVersion = opts.suspensionVersion?.() ?? 0;
+  let observedSuspensionVersion = timeoutMs === null ? 0 : (opts.suspensionVersion?.() ?? 0);
   const cleanupDeadlineMs = opts.cleanupDeadlineMs ?? REAP_PROOF_DEADLINE_MS;
   const arm = (resetSuspension = true): void => {
+    if (timeoutMs === null) return;
     if (resetSuspension) {
       suspensionObserved = false;
       observedSuspensionVersion = opts.suspensionVersion?.() ?? observedSuspensionVersion;
     }
     if (timer) clearTimeout(timer);
-    timer = setTimeout(
-      () => {
-        const currentSuspensionVersion = opts.suspensionVersion?.() ?? observedSuspensionVersion;
-        if (opts.isSuspended?.()) {
-          suspensionObserved = true;
-          observedSuspensionVersion = currentSuspensionVersion;
-          arm(false);
-          return;
-        }
-        if (suspensionObserved || currentSuspensionVersion !== observedSuspensionVersion) {
-          // Resume has no guaranteed harness event of its own. The first timer
-          // boundary that proves the interaction is over starts a full new
-          // window; the next boundary may time out if no agent progress follows.
-          suspensionObserved = false;
-          observedSuspensionVersion = currentSuspensionVersion;
-          arm(false);
-          return;
-        }
-        timedOut = true;
-        opts.onTimeout();
-        wake?.();
-      },
-      Math.max(1, opts.timeoutMs),
-    );
+    const elapsed = (): void => {
+      const currentSuspensionVersion = opts.suspensionVersion?.() ?? observedSuspensionVersion;
+      if (opts.isSuspended?.()) {
+        suspensionObserved = true;
+        observedSuspensionVersion = currentSuspensionVersion;
+        arm(false);
+        return;
+      }
+      if (suspensionObserved || currentSuspensionVersion !== observedSuspensionVersion) {
+        // Resume has no guaranteed harness event of its own. The first timer
+        // boundary that proves the interaction is over starts a full new
+        // window; the next boundary may time out if no agent progress follows.
+        suspensionObserved = false;
+        observedSuspensionVersion = currentSuspensionVersion;
+        arm(false);
+        return;
+      }
+      timedOut = true;
+      opts.onTimeout();
+      wake?.();
+    };
+    const wait = (remainingMs: number): void => {
+      const chunk = Math.min(remainingMs, MAX_TIMER_DELAY_MS);
+      timer = setTimeout(
+        () => (remainingMs > chunk ? wait(remainingMs - chunk) : elapsed()),
+        chunk,
+      );
+    };
+    wait(Math.max(1, timeoutMs));
     // Deliberately NOT unref'd: a wedged in-process stream can leave nothing
     // else on the event loop, and an unref'd watchdog would let node exit 0
     // mid-run instead of firing the timeout.
@@ -157,26 +181,40 @@ export async function* withInactivityWatchdog<T>(
   // its terminal death-proof events) must be consumed by the drain, not silently
   // eaten by an abandoned pending promise from this loop.
   let pending: Promise<IteratorResult<T>> | null = null;
+  // A recognized Stop gets ONE cleanup allowance, starting when the pump sees
+  // it, shared by the drain and the final iterator.return() below; the timeout
+  // path keeps its own drain plus return grace unchanged.
+  let stopCleanupEndsAt: number | null = null;
   try {
     arm();
     for (;;) {
+      if (opts.stopSignal?.aborted) {
+        if (timer) clearTimeout(timer);
+        stopCleanupEndsAt = performance.now() + cleanupDeadlineMs;
+        yield* drainAbortedSource(iterator, iterator.next(), cleanupDeadlineMs);
+        return;
+      }
       if (!pending) pending = iterator.next();
       // Race the next event against the watchdog firing: after onTimeout()
       // aborts the child, the source SHOULD end on its own, but a stuck
       // iterator must not keep the run parked — the sentinel wakes the pump.
-      const raced = await Promise.race([
-        pending.then<
-          { kind: "next"; result: IteratorResult<T> } | { kind: "source_error"; error: unknown },
-          { kind: "next"; result: IteratorResult<T> } | { kind: "source_error"; error: unknown }
-        >(
-          (result) => ({ kind: "next", result }),
-          (error) => ({ kind: "source_error", error }),
-        ),
-        new Promise<{ kind: "timeout" }>((resolve) => {
-          wake = () => resolve({ kind: "timeout" });
-          if (timedOut) resolve({ kind: "timeout" });
-        }),
-      ]);
+      const nextResult = pending.then<
+        { kind: "next"; result: IteratorResult<T> } | { kind: "source_error"; error: unknown },
+        { kind: "next"; result: IteratorResult<T> } | { kind: "source_error"; error: unknown }
+      >(
+        (result) => ({ kind: "next", result }),
+        (error) => ({ kind: "source_error", error }),
+      );
+      const raced =
+        timeoutMs === null
+          ? await nextResult
+          : await Promise.race([
+              nextResult,
+              new Promise<{ kind: "timeout" }>((resolve) => {
+                wake = () => resolve({ kind: "timeout" });
+                if (timedOut) resolve({ kind: "timeout" });
+              }),
+            ]);
       if (raced.kind === "timeout" || timedOut) {
         // Inactivity fired. onTimeout() already aborted the child. Do NOT throw
         // and terminalize yet: DRAIN the aborted source to its process-reap
@@ -188,14 +226,16 @@ export async function* withInactivityWatchdog<T>(
         // The still-pending next() is handed to the drain so the FIRST terminal
         // event is not lost; yielding the drained events lets the caller see the
         // unconfirmed-death error/terminal before it terminalizes on the throw.
-        yield* drainAfterTimeout(iterator, pending, cleanupDeadlineMs);
-        throw new HarnessInactivityTimeoutError(opts.timeoutMs);
+        yield* drainAbortedSource(iterator, pending, cleanupDeadlineMs);
+        throw new HarnessInactivityTimeoutError(timeoutMs!);
       }
       if (raced.kind === "source_error") throw raced.error;
       pending = null;
       if (raced.result.done) return;
-      if (opts.countsAsProgress(raced.result.value)) arm();
-      else if (opts.isSuspended?.()) suspensionObserved = true;
+      if (timeoutMs !== null) {
+        if (opts.countsAsProgress(raced.result.value)) arm();
+        else if (opts.isSuspended?.()) suspensionObserved = true;
+      }
       yield raced.result.value;
     }
   } finally {
@@ -212,32 +252,43 @@ export async function* withInactivityWatchdog<T>(
     // path; a pathological in-memory source suspended in an UNRELATED await must
     // never park the terminal past the reap's own deadline. (After a timeout the
     // drain above already ran the source to completion, so this return() is then
-    // a fast no-op.)
+    // a fast no-op.) After a Stop the return() still runs, but is awaited only
+    // for what remains of the Stop's single allowance: a drain that already
+    // spent it adds no second wait, and what the source reports past that
+    // cutoff is not evidence this stream can still deliver.
+    const graceMs =
+      stopCleanupEndsAt === null
+        ? cleanupDeadlineMs
+        : Math.max(0, stopCleanupEndsAt - performance.now());
     const ret = iterator.return?.(undefined as never);
     if (ret) {
-      await Promise.race([
-        Promise.resolve(ret).then(
-          () => undefined,
-          () => undefined,
-        ),
-        new Promise<void>((resolve) => {
-          const grace = setTimeout(resolve, cleanupDeadlineMs);
-          (grace as unknown as { unref?: () => void }).unref?.();
-        }),
-      ]);
+      const settled = Promise.resolve(ret).then(
+        () => undefined,
+        () => undefined,
+      );
+      if (graceMs > 0) {
+        await Promise.race([
+          settled,
+          new Promise<void>((resolve) => {
+            const grace = setTimeout(resolve, graceMs);
+            (grace as unknown as { unref?: () => void }).unref?.();
+          }),
+        ]);
+      }
     }
   }
 }
 
 /**
- * After an inactivity timeout aborted the child, pump the source to completion
- * so its own teardown/death-proof events (the typed `termination_unconfirmed`
- * terminal fact and terminal `completed`) surface through the stream, bounded by
- * the process-reap deadline so a source that cannot prove death still cannot
- * park the run. The inactivity timer is NOT re-armed here — the source is being
- * torn down, and a second timeout would race the reap it is waiting on.
+ * After an inactivity timeout or the caller's Stop aborted the child, pump the
+ * source to completion so its own teardown/death-proof events (the typed
+ * `termination_unconfirmed` terminal fact and terminal `completed`) surface
+ * through the stream, bounded by the process-reap deadline so a source that
+ * cannot prove death still cannot park the run. The inactivity timer is NOT
+ * re-armed here — the source is being torn down, and a second timeout would
+ * race the reap it is waiting on.
  */
-async function* drainAfterTimeout<T>(
+async function* drainAbortedSource<T>(
   iterator: AsyncIterator<T>,
   pending: Promise<IteratorResult<T>>,
   deadlineMs: number,
@@ -263,10 +314,10 @@ async function* drainAfterTimeout<T>(
     // Source could not prove death within the reap deadline — give up draining;
     // the outer `finally` runs iterator.return() (also bounded) as a last resort.
     if (drained === "deadline") return;
-    // Abort commonly rejects the in-flight native iterator. The watchdog has
-    // already established the terminal cause, so stop draining and let the
-    // caller receive the typed inactivity timeout instead of misclassifying
-    // this cleanup rejection as a process crash.
+    // Abort commonly rejects the in-flight native iterator. The timeout or Stop
+    // has already established the terminal cause, so stop draining and let the
+    // caller receive the typed inactivity timeout (or the Stop's end of stream)
+    // instead of misclassifying this cleanup rejection as a process crash.
     if (drained.kind === "source_error") return;
     if (drained.result.done) return;
     yield drained.result.value;

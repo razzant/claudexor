@@ -2,7 +2,6 @@
 import type {
   Attachment,
   CommandListQuery,
-  ControlJournalEvent,
   ControlJournalExportReceipt,
   ControlJournalInspection,
   ControlJournalQuarantineReceipt,
@@ -10,16 +9,25 @@ import type {
   ControlPendingInteraction,
   ControlProjectListingProblem,
   ControlResource,
+  ControlResourceRelease,
+  ControlUploadImport,
   ControlUploadStatus,
   ModelPayloadRef,
   Project,
   ProjectNesting,
   ResourceAttachmentRef,
   RunEvent,
+  RunObservationRecord,
   Session,
   Thread,
+  ThreadExportDigestEntry,
+  ThreadRetireRequest,
+  ThreadRetirementOperation,
   ThreadTurn,
+  TaskGroupPageQuery,
+  TaskGroupPage,
 } from "@claudexor/schema";
+export type { TaskGroupPageQuery } from "@claudexor/schema";
 import type { AcceptCommand, FindCommand } from "./command-store.js";
 import type { JobRecord } from "./job-record.js";
 import type { ProjectRegistration, RegisterProject } from "./projects.js";
@@ -27,6 +35,10 @@ import type { InteractionContext, InteractionTerminal } from "./interactions.js"
 import type { OperatorDecisionRecord, RecordedOperatorDecision } from "./operator-decisions.js";
 import type { CreateThreadInput, CreateTurnInput, UpdateThreadInput } from "./threads.js";
 import type { JournalQuarantineRequest } from "./journal-recovery-operation.js";
+import type { JournalEventPage, JournalEventPageRequest } from "./store/cursors.js";
+import type { ThreadClosure } from "./store/thread-closure.js";
+import type { RetirementRefusal } from "./store/thread-retirement.js";
+import type { ResourceUseHolder } from "./store/resource-uses.js";
 export interface ProfileContinuityResult {
   sessions: number;
   checkpoints: number;
@@ -42,6 +54,11 @@ export interface CommandStorePort {
   prunedScopeRoots(): string[];
   recoverDurableTerminal(id: string): JobRecord | null;
   flushed(): Promise<void>;
+  /** Off-loop staging of the bodies `accept` will own; resolves the creation
+   * time they carry, for `accept` to reuse (stores with file bodies only). */
+  stageAcceptance?(input: AcceptCommand): Promise<string>;
+  /** Off-loop staging of the bodies `update` will own (stores with file bodies only). */
+  stageUpdate?(id: string, patch: Partial<JobRecord>): Promise<void>;
 }
 
 export interface ProjectStorePort {
@@ -69,8 +86,15 @@ export interface ResourceStorePort {
     expectedSha256: string | undefined,
     idempotencyKey: string,
   ): ControlResource;
-  resolve(refs: ResourceAttachmentRef[] | undefined): Attachment[];
+  /** Keyed import: begin, read or replay, publishing verified bytes under the same key. */
+  importUpload(raw: unknown, idempotencyKey: string): ControlUploadImport;
+  /** Release a managed ordinary ID: no new reference afterwards; accepted holders keep bytes. */
+  releaseResource(resourceId: string, raw: unknown): ControlResourceRelease;
+  /** `heldBy`: an accepted owner reading its own refs (a released ID it holds still resolves). */
+  resolve(refs: ResourceAttachmentRef[] | undefined, heldBy?: ResourceUseHolder): Attachment[];
   readModel(raw: ModelPayloadRef): Buffer;
+  /** Off the request thread. Result GET stays on `readModel` so ACK cannot race it. */
+  readModelAsync(raw: ModelPayloadRef): Promise<Buffer>;
   publishModel(bytes: Uint8Array): ModelPayloadRef;
   releaseModel(raw: ModelPayloadRef): void;
   expireModel(raw: ModelPayloadRef, expiredAt: string): void;
@@ -79,6 +103,14 @@ export interface ResourceStorePort {
       createdAt: string;
     }
   >;
+}
+
+export interface PendingIdentityDigest {
+  pending: boolean;
+  digest: string;
+  /** Whether any pending question holds its agent until answered; absent when
+   * the port cannot tell, which readers treat as blocking. */
+  blocking?: boolean;
 }
 
 export interface InteractionStorePort {
@@ -94,15 +126,28 @@ export interface InteractionStorePort {
   ): string[];
   status(runId: string, interactionId: string): "pending" | "resolved" | "missing";
   pendingForRun(runId: string): ControlPendingInteraction[];
+  /** SQL observation capability; legacy answer-only ports need not implement it. */
+  pendingIdentityDigest?(runId: string): PendingIdentityDigest;
 }
 
 export interface ProjectThreadPort {
+  /** Cooperative served listing for maintenance, including unfinished purges. */
+  retentionThreads(signal?: AbortSignal): Promise<Thread[]>;
+  retentionReferences(
+    ignoreThreadIds?: ReadonlySet<string>,
+    signal?: AbortSignal,
+  ): Promise<import("./store/retention-references.js").DiskRetentionReferences>;
   registerProject(input: RegisterProject): ProjectRegistration;
   relinkProject(id: string, root: string): Project;
   removeProject(
     id: string,
     activeRunRoots: ReadonlySet<string>,
   ): import("@claudexor/schema").ControlProjectRemoveReceipt;
+  /** #333 opt-in: also purge the threads already in the trash, in one commit. */
+  removeProjectWithTrashedThreads(
+    id: string,
+    activeRunRoots: ReadonlySet<string>,
+  ): import("./store/projects.js").ProjectRemoval;
   createThread(
     input: CreateThreadInput & {
       ephemeral?: boolean;
@@ -124,6 +169,8 @@ export interface ProjectThreadPort {
   turnsFor(id: string): ThreadTurn[];
   sessionsForThread(id: string): Session[];
   createTurn(id: string, prompt: string, input?: CreateTurnInput): ThreadTurn;
+  /** Off-loop staging of a turn prompt body `createTurn` will own (best effort). */
+  stageTurnPrompt?(id: string, prompt: string): Promise<void>;
   findTurnByIdempotency(
     id: string,
     input: NonNullable<CreateTurnInput["idempotency"]>,
@@ -132,6 +179,24 @@ export interface ProjectThreadPort {
   trashThread(id: string): Thread;
   restoreThread(id: string): Thread;
   purgeThread(id: string): Thread;
+  retireThread(
+    id: string,
+    request: ThreadRetireRequest,
+    acceptedLane: readonly ThreadExportDigestEntry[],
+  ): Thread;
+  retirementOperation(id: string, operationId: string): ThreadRetirementOperation | null;
+  settleRetirement(
+    id: string,
+    operationId: string,
+    refusal: RetirementRefusal | null,
+  ): ThreadRetirementOperation;
+  /** An observation from the store's read-only snapshot, off the writer's thread;
+   * retirement reads the closure again inside its transaction. `signal` ends the wait. */
+  threadClosure(id: string, signal?: AbortSignal): Promise<ThreadClosure | null>;
+  /** The thread row and its store without the closure; null for no such thread. */
+  threadRecord(id: string): { storeId: string; thread: Thread } | null;
+  threadClosureDocument(id: string, key: string): Buffer | null;
+  threadCleanup(id: string): { reason: string | null } | null;
   setThreadWorktree(
     id: string,
     path: string,
@@ -225,6 +290,10 @@ export interface ProjectThreadPort {
 }
 
 export interface CommandQueries {
+  /** Required by compact observation; absent on legacy, non-observing fixtures.
+   * Persisted scalar facts must be validated per target before public use. */
+  observationRecords?(ids: readonly string[]): RunObservationRecord[];
+  taskGroupPage?(input: TaskGroupPageQuery): TaskGroupPage;
   getByRunId(runId: string): JobRecord | undefined;
   select(query: CommandListQuery): JobRecord[];
   publicList(query: CommandListQuery): JobRecord[];
@@ -234,7 +303,8 @@ export interface CommandQueries {
 
 /** Product recovery operations, without journal preparation or file ownership. */
 export interface PartitionControlPort {
-  events(afterCursor?: string): ControlJournalEvent[];
+  /** One bounded page of the partition's retained events (see `readJournalEventPage`). */
+  events(request?: JournalEventPageRequest): JournalEventPage;
   inspect(): ControlJournalInspection;
   preflightQuarantine(input: JournalQuarantineRequest): {
     disposition: string;

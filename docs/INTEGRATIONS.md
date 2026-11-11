@@ -10,12 +10,20 @@ changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, account-reset, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, thread, runs-wait, task-group-runs, next-message, next-message-read, retry, run-again, apply, decision, review, thread-retire), attachment ingress (store-identity, upload-import, upload-create, upload-import-local, upload-status, upload-finalize, upload-cancel), ops (project, models, harness, scanner, doctor, quota, account-reset, accounts, plugin, daemon, gc, auth, secrets, profiles, settings, trust, setup, remote, release), and agent introspection (capabilities, about, `help --json`). `runs-wait` observes existing handles read-only through `--targets-json` and optional `--wait-ms`, with `--json` or `--json-stream` output. `task-group-runs` reads one bounded retained group page. `next-message` creates, replaces or clears an authorized one-shot draft; `next-message-read` reads its bounded content and editing handles. | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, Agent runs, caller-owned model and image operations, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
-| MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
+| MCP server | Exposes Claudexor tools to MCP clients. `claudexor_runs_wait` projects the same read-only observation with `targets: [{runId, seen?}]` and optional `waitMs`. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
 | Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Experimental file layout (regenerate with `claudexor plugin repair all`). Installs owned local files/config only; host enablement can still require reload/manual action. |
-| Engine runtime closure | Node-free release artifact containing reviewed daemon and CLI entrypoints for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested full Node toolchain and verifies archive plus `--probe` identity. |
+| Engine runtime closure | Node-free release artifact containing reviewed daemon and CLI entrypoints for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested Node runtime and verifies archive plus `--probe` identity. |
+
+Browser requests on ordinary single-candidate Auto Agent runs use the engine's
+[Browser eligibility projection](ARCHITECTURE.md#4-routing). Explicit route
+controls retain their existing meaning, including inherited thread selections
+and the route group inherited by HTTP `continueFrom`. Browser itself is not an
+inherited continuation group; MCP run continuation has no Browser override.
+Deterministic source tests cover routing and adapter spec wiring, not native
+Browser navigation or rendered app behavior.
 
 ## Caller-Owned Model Operations
 
@@ -26,7 +34,8 @@ that owns its conversation and tools, not an OpenAI-compatible server or an
 Agent Run. The operation catalog and generated schemas describe upload purpose,
 request/response shapes, exact account metadata, status, cancellation and ACK.
 
-Use the stable operation identity to recover a lost local reply. Accept the
+Use the stable operation identity to recover a lost local reply within 30 days
+of its end; a later miss is unknown, never proof it did not run. Accept the
 digest-bound result into the caller's own history before acknowledging it;
 reading alone does not acknowledge custody. See
 [Caller-owned model operations](ARCHITECTURE.md#caller-owned-model-operations)
@@ -65,6 +74,15 @@ A confirmed processing refusal may authorize a separate caller-owned Standard
 request/reservation; it does not erase the first operation's physical dispatch
 or permit retrying an unknown outcome.
 
+The native prompt-cache lifetime is the optional `promptCacheTtl` run control.
+Send `5m` or `1h` only when the routed harness row of `GET /v2/agent-capabilities`
+lists that exact value in `promptCacheTtls`; omit the key for Default, and for
+engines whose catalog lacks it, because the run and thread-turn requests are
+strict. Continuations follow the `continueFrom` inheritance rule in
+[ARCHITECTURE](ARCHITECTURE.md#7-control-api). Read the requested, configured and observed facts from the
+attempt receipt described in [ARCHITECTURE](ARCHITECTURE.md#prompt-cache-lifetime);
+a configured lifetime is not proof that the provider applied it.
+
 Effort preferences resolve in the engine at the final model/account/harness.
 Embedding callers preserve the original request and consume the typed
 receipt; they do not duplicate adaptation or parse disclosure text. A caller
@@ -81,9 +99,9 @@ the effort receipt (`parameter: --model`); an id that cannot be placed stays
 unchanged with an `omitted` receipt. The
 [effort contract](ARCHITECTURE.md#4-routing) specifies existing result/artifact
 locations, omission versus explicit `none`, and independent provider observation.
-Raw model clients discover `captureEffortEvidence` on the model-operation POST
-descriptor and freeze that query choice for each operation; omission retains the
-legacy strict result shape. GET and ACK always use the exact stored bytes.
+Raw model clients discover `captureEffortEvidence` (and, the same way,
+`captureRoutingEvidence`) on the model-operation POST descriptor and freeze that
+query choice for each operation; omission retains the legacy strict result shape. GET and ACK always use the exact stored bytes.
 The shared fixture is `packages/schema/fixtures/effort-resolution.json`.
 
 Codex raw-model catalogs list inference efforts rather than native agent modes.
@@ -91,8 +109,7 @@ An existing `ultra` preference resolves within the vendor's ordered choices to
 the strongest supported ordinary generation effort (currently Astra `max`).
 The effort receipt preserves `requested: ultra`, the prepared value and independent
 provider observation; it discloses that raw calls do not execute native automatic
-delegation. Native Codex sessions retain their full Ultra mode. Catalog object
-shapes and the opt-in result contract are unchanged.
+delegation. Native Codex sessions retain their full Ultra mode.
 For an unlisted raw model, ordinary explicit effort is forwarded exactly with
 adapter-sourced submission evidence and unconfirmed model support. Ultra cannot
 be mapped without a known generation ladder and returns an unsupported-option
@@ -105,21 +122,17 @@ the macOS updater consumes. The archive contains regular files/directories only
 and deliberately excludes Node while including top-level
 `claudexord.bundle.cjs` and `claudexor.bundle.cjs`. A host pins its exact URL,
 build SHA, SHA-256, size, protocol major, separate daemon/CLI entrypoints, and
-tested full Node toolchain; after extraction it requires
+tested Node runtime; after extraction it requires
 `node claudexord.bundle.cjs --probe` to report the same version/build identity.
-A host invoking
-`node claudexor.bundle.cjs harness install <harness> --target local --yes --json`
-must provide the toolchain's own npm entrypoint next to the Node it runs the
-CLI on: `<node-root>/bin/node` plus `<node-root>/lib/node_modules/npm/bin/npm-cli.js`
-on POSIX, `<node-dir>\node.exe` plus `<node-dir>\node_modules\npm\bin\npm-cli.js`
-(the official zip layout) on Windows; no system/PATH npm is used. On Windows
-the local target resolves the npm package's declared native or Node entrypoint
-for Codex and Claude. The receipt identifies the vendor entrypoint rather than
-merely `node.exe`; launch, doctor and login share the resolved invocation.
-User npm prefixes on the effective PATH use the same lookup. Custom batch
-programs are not treated as standard npm wrappers, and an explicit binary
-path remains exact. The host's HOME (or user profile when unset) anchors the
-managed toolchain; profile and scratch homes do not choose another installation.
+A host invokes
+`node claudexor.bundle.cjs harness install <harness> --yes --json` with explicit
+user authorization. The engine uses adapter-declared vendor installers under
+the real installation HOME, preserving declared installation inputs. The host
+supplies the tested Node runtime; vendor maintenance requires no host npm.
+Runs, doctor, login and inventory share selected-program resolution, including
+exact overrides, declared vendor folders and existing standard Windows npm
+entrypoints. The receipt identifies the vendor program, with its interpreter
+and arguments retained by the engine when necessary.
 The existing signed runtime manifest remains the
 publication authority, so an embedder does not create a second artifact or
 trust root.
@@ -134,39 +147,80 @@ pin the exact archive URL/build SHA/SHA-256/size remain usable. The normal
 signed-manifest contract above remains fail-closed for every non-exempt
 release.
 
-For a valid `harness install ... --yes --json` invocation, stdout is exactly one
-JSON object. Every executed result carries `ok: boolean`, `dryRun: false`,
-`exitCode: number`, `target: "local" | "remote"`, `harness: string`,
-`command: string`, `installLocation: string`, `pinnedVersion: string | null`, and
-`verification: string`. Every successful `--target local` result additionally carries
-`installedBinary` (an absolute launcher path; on Windows the package-native
-image) and `installedVersion` (the exact npm pin, a kept runnable newer managed
-version, or the script vendor's bounded non-empty version line). `pinnedVersion`
-continues to name the release baseline; Ensure never downgrades a newer copy. On the local target,
-child exit zero is not sufficient: if that launcher/version proof fails, the
-result is `ok: false`, `code: "install_verification_failed"`. A remote success
-keeps the historical contract — `exitCode: 0` with no proof fields. A Cursor result after a
-successful non-empty download additionally carries `installerSha256` (64
-lowercase hex characters) and `installerByteLength` (a positive integer),
-including when the downloaded script itself exits non-zero or its post-install
-proof fails. A refusal may add `code`, `refusal`, or `message`; child/progress
-output goes only to stderr. If setup throws before producing a typed result,
-the canonical `harness_install_failed` JSON failure still carries every
-disclosure field (and the native `causeCode` when available). Dry-run
-returns the disclosure fields with
-`ok: true` and `dryRun: true`, without executing, proving a binary, or acquiring
-the install lease.
+`harness install <id> --yes --json` ensures a runnable program, installing the
+vendor's current copy when missing. `harness update <id> --yes --json` runs its
+own declared updater or installs when missing. Either accepts
+`--vendor-version <exact>` only where the adapter declares that capability.
+The valid CLI response is one JSON object: `ok`, `harness`, `dryRun` plus the
+shared `HarnessMaintenanceEvidence`. Vendor output is bounded/redacted in
+`progress`; streamed progress goes to stderr. Failed preparation keeps the
+evidence already obtained and a typed `problem`.
 
-For updates, negotiate the maintenance routes from the operation catalog rather
-than calling Ensure again. `GET /v2/maintenance/harnesses` returns selected-version
-facts and each installation's `maintainable`, `targets` and `canCheckLatest`.
-`POST /v2/maintenance/operations` accepts a harness and target with a stable
-Idempotency-Key; recover a lost reply with that same key/body, then read or cancel
-the returned operation. Acceptance is not completion. Latest-only native updaters
-can return an unchanged version without proving newest; npm return/exact targets
-require the package to remain downloadable. The CLI uses `harness inspect` and
-`harness update <id> --vendor-version <exact|latest> --yes --json`; its new receipt
-keeps before/after and effect facts separate from the legacy install envelope.
+For a durable host action, negotiate the maintenance routes in the operation
+catalog. `GET /v2/maintenance/harnesses` returns `{observedAt, harnesses}`.
+Every row supplies `selection` (path, realPath, self-reported version,
+versionOutput and override provenance), `newest` (not_read, available with
+version/time, or unavailable with time/problem), and `actions` (install, update,
+exactVersion). Each action has `available`, a one-sentence `reason` when absent,
+and display-only `commands`. Exec previews contain command/args; script
+previews contain URL/interpreter/args. Exact previews use `{version}` for the
+caller's input, and conversion may use `{installedProgram}` for the replacement
+resolved after installation. They are not an execution API.
+
+The row's `updateAvailable` is yes, no or cannot_tell, computed by the adapter's
+version scheme. Hosts must never order version strings or infer updates when a
+selected build is ahead of a published pointer. `releaseNotesUrl` is a literal
+vendor link or null; `operation` is the last full operation or null. Ask with
+`checkLatest=true` when opening a view that shows versions or the model chooser,
+on explicit check, or for an authorized caller. This reads the public source;
+there is no timer. Without it, newest is the last observation or not_read.
+Selection is re-observed on every read, even when newest is cached. A source
+failure does not remove an available Update action.
+
+`POST /v2/maintenance/operations` takes `{harness,target:{kind:"latest"}}` or
+`{harness,target:{kind:"version",version:"1.2.3"}}` and a stable Idempotency-Key.
+A repeated key/body rejoins; a changed body conflicts. Acceptance returns a
+handle, not completion. Read `/v2/maintenance/operations/:id` or POST its
+`/cancel` route. The operation has id/harness/state/timestamps and the same
+evidence as the direct CLI: phase, target, requester, installationHome,
+commands, before/after/elsewhere selections, activeRunsAtStart, exitCode,
+outcome, mutation, termination, limitations, progress and problem. Target
+latest carries a null version; an exact target carries the requested version.
+Actual commands contain binary/args/env and optional script URL/size/SHA-256;
+they are acknowledged durably before execution. The run count is informational.
+Cancellation can leave applied or unknown effects and never promises rollback.
+Optional `profileCleanup` records planned and removed Cursor profile-copy paths.
+
+A dry-run prepares commands and script evidence without the installation lease
+or mutation. It may execute a version probe and download a script. A later
+invocation can download different bytes, so display the execution receipt as
+the actual command. A successful install requires the selected program to
+answer its own version probe. Re-read doctor/readiness after maintenance.
+Package-manager copies whose own verb only advises retain that sentence in the
+result; the host must not invent a package-manager action. Windows routes cover
+Claude, Codex, Antigravity, Grok and Copilot. Cursor Windows (#667), OpenCode's
+second line and unattended Windows installation (#668) remain unsupported.
+OpenCode commands and conversion replacements stay on 1.x. Copilot's Windows MSI
+folder is declared for runs, probes and inventory, so it is found without
+restarting the engine. Copilot Update can return GitHub's unauthenticated
+rate-limit refusal; that vendor sentence is the result. Vendor programs live in vendor directories and
+are pruned by the vendor; see [program maintenance](ARCHITECTURE.md).
+
+Program-derived model lists, including per-account catalogs, carry
+`sourceProgram: {path, version} | null`. Use that field alone to attribute the
+list; null means no program supplied it, and a null version means it could not
+answer. Fixture stamps, maintenance inventory and HTTP `clientVersion` are
+separate facts. Passive reads reuse the answer for the same path, real path and
+stat identity, including no answer. A failed ask preserves an earlier answer
+from that identity. A changed file asks again; a replacement behind an unchanged
+wrapper is detected when an inventory read, fresh read or native startup frame
+obtains a different version; passive polls and continued missing answers do not
+reveal it. There is no version TTL, and stale in-flight answers are
+discarded. Native attempt evidence labels reused versions `remembered`, actual
+version asks `version_probe`, absent answers `unknown`, and startup versions
+`vendor_stream`. Claude, Codex and Copilot supply startup versions; Cursor,
+Antigravity, Grok and OpenCode do not. Exhausted
+credential pools retain a bounded/redacted last vendor error sentence.
 
 The public [Ouroboros runtime pin](https://github.com/razzant/ouroboros/blob/ouroboros/ouroboros/claudexor_runtime_pin.json)
 is a working example of that exact-version, exact-build, and checksum contract.
@@ -198,13 +252,34 @@ daemon/control API for long-running interactive use and use CLI JSON only where
 the command documents or returns machine-readable output.
 
 `--web off|auto|cached|live` is the CLI-first external context policy. It is
-separate from process/network sandboxing. `claudexor inspect <run_id> --json`
+separate from process/network sandboxing: `off` switches off each route's own
+web tools, and web evidence counts typed web tool calls and engine Browser calls
+only (`web.observation.network: not_measured`), so `attempted: false` says
+nothing about network use. Each attempt's `route_controls` names what was
+prepared for the route, just before dispatch: its web switch, the access profile,
+the vendor's own access arguments and the access mechanism (only `fs_sandbox`
+declares an OS file boundary, the vendor's own; `native_settings` leaves it
+unknown). `native_session_started` says whether a native start was reported; `false`
+never proves that no process ran. The run summary projects them as `routeControls`
+(empty when no route was prepared or on older records), and text `inspect` prints
+`access route`, `web route` (with the Browser's reported `browser_startup`),
+`web retrieval` (naming `(page)` or `(search results)` for a verified result, and
+`none` when completed web tools retrieved nothing) and `web scope` lines. See the
+[route controls receipt](ARCHITECTURE.md#route-controls-receipt).
+`claudexor inspect <run_id> --json`
 projects the run artifacts: output-ready state, the task contract, the
 engine-owned telemetry (web evidence, token usage, the auth route receipt,
 structured-output conformance, unrecovered tool errors), primary output,
 decision record, work product, and artifact paths. Terminal daemon state, live
 budget, and event streams come from the daemon/control API, not from
-`inspect`.
+`inspect`. A failed lookup returns the standard failure envelope. Recognized
+outcomes carry a typed `code`, and only `run_not_found` means the running daemon has
+no such run, in the store its `context.storeId` names when known; an error answer that is not a control problem (for example a
+non-daemon 404 page) has no `code` and names only its HTTP status. The lookup
+validates only the run-detail fields it uses, so additive same-major fields
+elsewhere are tolerated; a run state this CLI build does not know is reported as
+`invalid_service_response` (see the
+[lookup outcomes](ARCHITECTURE.md#interactive-runs-waiting_on_user)).
 
 ### Embedder run controls (v2.1)
 
@@ -217,7 +292,10 @@ gate's explicit exemptions):
 - `--instructions <text>` / `--instructions-file <file>`: per-run system-level
   instructions layered onto every task-producing lane (never reviewers or the
   synthesis judge).
-- `--max-seconds <n>`: hard wall-clock deadline for the whole run; on expiry
+- `--max-seconds <n>`: optional initial whole-run limit (1–604800 seconds).
+  Omission creates no wall-clock timer. `--time-limit-mode soft` warns and
+  continues; omission of the mode preserves the existing hard-stop behavior.
+  With `--time-limit-mode hard`, on expiry
   the run ends `cancelled` with reason `wall_clock_exceeded` and partial
   artifacts, including received assistant text in `final/retained-output.md`,
   are kept as diagnostics. Consumers must use both
@@ -228,10 +306,37 @@ gate's explicit exemptions):
   a host-initiated stop (daemon shutdown, MCP host teardown, an integrating
   host whose owning task died) records its real provenance instead of
   coercing to user intent; an absent code keeps the historical coercion.
+- Live timers: `GET /v2/runs/:id/time-limit` reads the current snapshot;
+  `PATCH` accepts `set`, `extend`, or `disable`. MCP exposes the same controls
+  through `claudexor_run_time_limit`. Mutations require `expectedRevision` from
+  a fresh read; conflicts return 409. Set measures seconds from now and keeps
+  the timer's current mode unless `mode` names one, so a hard limit never turns
+  soft by omission. A run's timer starts in `timeLimitMode`, else hard with
+  `maxSeconds`, else soft (disabled, because the user set no limit); a
+  controller adding a deadline to such a run gets a warning-only limit unless it
+  explicitly asks for `hard`. Extend adds to the later of now and the existing
+  deadline, keeping its mode. Disable removes only this timer. Read again after
+  an uncertain reply instead of blindly repeating an extension. Changes retain
+  the same run and worker; cancelled, terminal, and hard-expired runs cannot be
+  revived. A hard limit is calendar time and includes time spent waiting for an
+  interaction answer. Soft expiry emits a durable warning to observers (run
+  events, CLI follow, ACP) and keeps working without waiting for approval; it is
+  not delivered to the worker. Internal Delegate children (runs carrying
+  Claudexor's own delegation lineage) refuse timer mutations from every caller,
+  their parent included, and the delegation belt does not expose these controls.
+  An external orchestrator's `execution.delegated` workspace marker is a
+  different fact and does not restrict timers. Timers are process-local, not
+  resumable across daemon restart; the existing interrupted-run recovery still
+  applies. There is no dedicated timer editor in the macOS UI.
 - `--processing standard|fast|economy`: advisory service preference, carried as
   `processingPreference` on Agent requests and as `options.processingPreference`
   on raw model requests. Structured reviewer entries accept their own optional
   `processingPreference`; raw `serviceTier` remains the exact native override.
+- `--prompt-cache-ttl 5m|1h`: native prompt-cache lifetime for every session of
+  the run on a harness that declares it, carried as `promptCacheTtl`; omission
+  keeps native defaults. Plan answers the same command submits inline carry it
+  too. The MCP and ACP run tools do not expose it; delegation
+  belt children inherit the parent's value.
 - `--workspace-kind directory` and repeatable `--scope-path <relative-path>`:
   `execution.workspaceKind` and `execution.scopePaths` select the copied input
   footprint or direct capture coverage; `--scope-path .` selects the whole
@@ -239,6 +344,15 @@ gate's explicit exemptions):
   `--in-place` maps to `execution.isolation: live` for direct work. These fields
   are also carried by the typed MCP/ACP run controls; legacy omission preserves existing behavior.
   See [directory execution](ARCHITECTURE.md#directory-execution).
+- `--auxiliary-writable-root <absolute-dir>` (repeatable, Agent only):
+  `execution.auxiliaryWritableRoots`, existing caller-created service
+  directories the run may also write under `workspace_write` (MCP run tools,
+  `claudexor_thread_turn` and ACP carry the same member). These directories must
+  be outside both the source and execution trees. `claudexor_run_continue`
+  inherits execution and cannot replace it: to clear or change an inherited
+  grant, use `POST /v2/runs` with `continueFrom` and a complete replacement
+  `execution` group (`auxiliaryWritableRoots: []` to clear), or start a new run.
+  See [native access](ARCHITECTURE.md#external-orchestrator-workspaces-and-native-access).
 - `--max-turns <n>`: per-run turn cap; beats per-harness settings, and a lane
   without native support discloses the ignored knob.
 - `--deny-path <glob>` (repeatable): globs no candidate may touch at all;
@@ -270,6 +384,11 @@ gate's explicit exemptions):
 - `--json-stream`: NDJSON — early `run.started` frame with the runId, one line
   per run event, terminal summary object last. `--json` keeps its
   exactly-one-object contract.
+- `--task-group-id <uuid>`: tags a one-shot launch with a caller-saved group,
+  so `claudexor task-group-runs` (MCP `claudexor_task_group_runs`) can recover
+  its job handles later; `claudexor runs-wait` (MCP `claudexor_runs_wait`)
+  watches many handles at once. See
+  [Observing and directing an existing run](#observing-and-directing-an-existing-run).
 
 Run summaries (`GET /v2/runs/:id`, CLI `--json`) carry the matching receipts:
 `inputTokens`/`outputTokens`/`cachedInputTokens` (null when a harness reported
@@ -332,6 +451,42 @@ returns legacy data, whose snapshot freshness then applies to every window. 3.25
 3.25.1 answer HTTP 400; one plain GET is then the compatible fallback. Never fall back
 after other statuses, transport errors or malformed payloads, and never use POST for
 this read.
+
+`GET /v2/quota` with `view=resources_freshness` returns the strict
+`ControlAccountResourcesFreshnessResponse`: every constraint has freshness,
+`resources` retains independently dated facets, and required
+`availability_scope: {basis: "quota_block", model: string|null, requestKind: "text"|"image"}` echoes the
+exact supplied model and effective request kind (omitted means null/text).
+The basis names the existing `profileQuotaBlock` quota-blocking projection,
+including its deliberately loose alias matching and declared prefixes; it is not
+a promise of all dispatch/admission checks. BudgetLedger threshold/model checks
+are distinct. Null is the unspecified vendor route, not a claim about all models.
+An old/partial response without this echo is not proof selectors were honored.
+The three earlier views are unchanged. The combined view keeps the freshness-view
+`reset_credits` compatibility label; its typed reset offer is the same count, not additive inventory.
+Cursor resource rows optionally carry `scope` (personal/team), `usage_kind`
+(included/bonus/on_demand/total), `period` (starts_at/ends_at), and
+`fee_included` (null when unestablished). Team pool is not personal balance;
+bonus usage is not remaining budget. The internal dashboard is not a stable
+public API, and these amounts never authorize spending or change quota admission.
+
+API-key rows are a further opt-in: add `includeApiKeys=true` to `GET /v2/quota` with
+`view=resources` or `view=resources_freshness`, to `POST /v2/quota` with `view=resources`, or
+to `GET /v2/credential-profiles` with `snapshot=true&view=resources`, after finding the
+parameter on all three operations in the catalog. A harness with an API-key resource
+source (OpenRouter) then adds one row per key a request can send now: its default key
+as `target: {harness, profile_id: null}` (the API-key route, not an account) and each
+enabled registered API-key account, each with a non-secret `credential_fingerprint`. A
+key not read yet has unknown facets, and a row read with a replaced key is never shown.
+The spending row describes the key's own cap: `capped: false` means no per-key limit
+(the account's credit balance and workspace budgets still apply), `limit` and
+`remaining` are the provider's decimal USD, `used` counts the UTC `window` (`day`,
+`week`, `month` or `lifetime`), and `resets_at` is only a provider-reported instant.
+These figures never authorize spending, decide admission or change routing. With the
+flag, POST quota also accepts `target` naming the default key (`profile_id: null`) or a
+registered API-key account; a key that is not current answers HTTP 404, and a null
+`profile_id` without the flag answers HTTP 400. `claudexor quota --resources` and the
+MCP `claudexor_account_resources` tool include these rows.
 
 `POST /v2/account-resets` accepts `{target, offer_id, grant_id?}` and requires an
 Idempotency-Key. The receipt separates provider outcome from readback freshness;
@@ -399,14 +554,68 @@ new snapshot. The engine-default API-key fallback can appear as the native
 count. `next_up` in either listing is the configured default model's verdict,
 never a forecast for another model.
 
+The MCP `claudexor_accounts` tool projects the structured Accounts response
+against its advertised union before returning it to the SDK. This is a
+server-owned compatibility boundary: additive fields from a newer engine are
+discarded only where the published schema does not declare them, while known
+fields and required types remain validated. The projection selects the
+matching legacy or resources branch from its required fields; it never invents
+`quota.resources`, so a resources response that omits that required field
+remains a typed validation error. Raw textual output is retained separately
+for diagnostics.
+
 `GET /v2/accounts/routing-evidence` is the additive, read-only Accounts
-evidence: the live pre-progress refusal marks and each registered account's last
-service per requested model (most recent first), strict and query-free, with no
-probe and no quota refresh. Clients negotiate it through the operation catalog
-(`get:accounts.routing-evidence`) and keep the legacy listings unchanged. An
-engine without it answers 404, which first-party clients treat as no new data;
-any other failure leaves the listing authoritative with one diagnostic. Last
-service is a routing observation, never a quota or authentication verdict.
+evidence: live pre-progress refusals and each registered account's last service
+per requested model (most recent first), strict, with no probe and no quota
+refresh. Two opt-in queries extend it: `includeCapabilities=true` adds the
+temporary per-model capability marks, and `includeCredentialUnusable=true` adds
+the model-scoped credential refusals; without them the response keeps its
+earlier shape, and the legacy listings never change. The operation catalog
+(`get:accounts.routing-evidence`) advertises the route and both queries for any
+client that negotiates up front. First-party clients use a bounded read instead:
+the macOS app checks the catalog for the route only, while the CLI and the MCP
+tool read the route directly and treat a 404 as an engine without it (no new
+data). Each asks for its queries and treats a 400 as an engine that predates one,
+reading again without the newest query, at most once per query. No other status is
+retried: a 500 or any other failure leaves the listing authoritative with one
+diagnostic. Last service is a routing observation, never a quota or authentication
+verdict.
+
+The requested `capabilities[]` array lists temporary account/model demotions.
+Each entry includes `harness_id`, `profile_id`, `requested_model`,
+`account_fingerprint`, redacted `provider_reason`, `observed_at`, `expires_at`,
+and `state` (`provisional`, `confirmed`, `probe_due`, `probing`). Join it by
+harness/profile to show one line per model. It does not change account
+availability or quota. Model operations expose a separate `retryOnOtherAccount`
+signal and, when created with `captureRoutingEvidence=true`, their routing
+receipt; [the host retry contract](MODEL_CAPABILITY_ROUTING.md) describes the one
+allowed correlated re-send and the receipt fields.
+
+The requested `credentialUnusable[]` array lists live typed refusals of one model
+on one registered account: `harness_id`, `profile_id`, `model` (exactly as the run
+requested it), `code`, redacted `detail` (such as the vendor's error category, or
+null), `observed_at` and `expires_at`, most recent first per account. Each entry is
+dated evidence for that model
+only: while it is live, routing refuses that account for exactly that model (a pin
+is refused and automatic selection skips the row), and the account's status,
+Enabled state and order do not change. A credential-wide refusal appears in the
+account's status instead and is never listed here. An entry clears when the
+account later serves exactly that model as the vendor reports it, on a credential
+change, or on expiry; service the vendor reports under another id, such as a dated
+id for a requested alias, leaves it until expiry.
+
+`GET /v2/daemon/route-health` (no parameters; the operation catalog lists it,
+and an older engine answers 404, which a client treats as "unavailable from
+this engine") returns the terminal runs created in the last seven days per
+route, a route being one harness crossed with one effective access profile: `runs`,
+`succeeded`, `failed`, `cancelled` (cancelled or interrupted), `other`, and up
+to three `topFailures` groups per route (`category`, `code`, a redacted
+160-character `message`, `count`), with `scannedRuns`, `complete` and
+`incompleteReason` disclosing the bounded newest-first scan. Facts only: read
+the shares and judge them yourself; nothing in the answer is a threshold or an
+alarm. `claudexor doctor` prints the same answer as a summary line plus the
+routes with failures, and `doctor --json` carries it as `route_health`. The
+semantics and limits live in [Architecture](ARCHITECTURE.md#7-control-api).
 
 `GET /v2/run-applicability` takes an absolute `repoRoot` query and returns the
 live Workspace Git status plus the engine-owned in-place/isolated run-shape
@@ -482,9 +691,24 @@ receipts without that member use the legacy artifact/failure fallback.
 A failed run's `summary.failure` may carry `vendorFailure`: the vendor's own
 typed failure as `{ code, message, source }` (any of `code`/`message` may be
 null), or `null` — also the meaning of an absent key from an older engine —
-when no vendor-typed evidence exists. Display the code beside the message as a
-fact; never branch on its value or map it to a remedy, so codes a vendor adds
-later flow through with no release on either side.
+when no vendor-typed evidence exists. It is the evidence of the last try of the
+attempt the record speaks for, whether or not that try ended with an OS exit
+code, and each `poolAttempts` row carries its own try's evidence the same way.
+Display the code beside the message as a fact; never branch on its value or map
+it to a remedy, so codes a vendor adds later flow through with no release on
+either side. The record's `safeMessage` already quotes it beside the error it
+explains, and an untyped `harness_error` record names it in its first next action. A pinned account the vendor refused with no reopening time
+(`usage_limit_exceeded` also means a workspace out of credits, which no timer
+reopens) is therefore never `subscription_window_exhausted`, the code that means
+waiting cures it: its record has `code: null`, `category: harness_unavailable`,
+`resetsAt: null` and `quotaRefusal.basis: provider_cooldown`, and an HTTP problem
+or `resumable.limitCode` names `vendor_limit_rejected`. Do not schedule a timed
+retry from it, even when another of the account's windows has a date, since that
+date belongs to that window. `credential_pool_exhausted` with `resetsAt: null`
+likewise promises no time, and one such member leaves the whole pool undated. A
+vendor-dated window with no such refusal beside it keeps
+`subscription_window_exhausted` and its `resetsAt`. No quota read retires the
+refusal (#318): only the engine's own bounded recheck lets a later run try the account.
 The failure's `poolAttempts` (on `summary.failure`, the run detail, the run list
 and MCP run results) lists every failed execution try in order, each with its account row,
 requested model, phase, typed category and its own redacted error text, so a
@@ -499,7 +723,11 @@ diagnostic evidence: classification, retry and routing never read it, and a
 record from an older engine decodes with an empty list.
 Web/tool evidence is projected from the engine-owned
 `final/telemetry.yaml`; runs that predate it report `available: false`. Unknown
-quota or spend remains unknown; do not render missing values as `$0`. The optional
+quota or spend remains unknown; do not render missing values as `$0`. When an
+included subscription reports no actual debit, the run budget's `spendUsd` is null
+while its `controllableSpendUsd` and `remainingUsd` carry the finite cap's known part;
+the decision record's `budget_summary` likewise keeps `spend_usd` null beside
+`controllable_cash_usd`. The optional
 `attemptExecution` array exposes compact per-attempt Processing and amount
 evidence through HTTP and MCP run reads; its [field map](ARCHITECTURE.md#8-artifact-layout)
 distinguishes observed components from prospective billing. General previews
@@ -520,11 +748,21 @@ already in place and have no separate apply/full-rollback promise. The source
 root, preimages, verifier and retention boundaries are defined once in
 [ARCHITECTURE](ARCHITECTURE.md#directory-execution).
 
+Gate `taken` on `runDecisionActions` in `GET /v2/agent-capabilities`. Once the
+caller has captured a terminal patch result, send `POST /v2/runs/:id/decision`
+with `{action: "taken", reason: "captured_result"}` and an `Idempotency-Key`.
+The acknowledgement leaves the engine's copy under ordinary retention; needs-decision,
+continuable and non-patch results return typed refusals. The eligibility and
+retention rules are defined in [ARCHITECTURE](ARCHITECTURE.md#7-control-api).
+For a non-ephemeral run whose registration is retired, `taken` returns 404
+`project_not_registered`, so send `taken` before retiring that registration.
+
 Unfinished work is continued, never restarted: a terminal run whose work is
 unfinished carries `resumable` on `GET /v2/runs/:id` (cause, the vendor's
 reset when known, the available `carriers`, the native session and where the
-tree is), and every continued try a `continuity` receipt (carrier, accounts,
-memory, the try's attested model). Continue it with `POST /v2/runs` and the
+tree is), and every continued try a `continuity` receipt (carrier, the actual
+source run/attempt/profile, accounts, memory, the try's attested model, and
+after a moved session whether its source was retired or not confirmed). Continue it with `POST /v2/runs` and the
 body `{continueFrom: <runId>, prompt: <next text, may be empty>}` and, to force
 a re-brief instead of a resume, `continueCarrier: "packet"`; read support from
 `continueFrom` in `GET /v2/agent-capabilities` `runControlKeys`, never from a
@@ -535,11 +773,52 @@ semantics are defined once in
 [ARCHITECTURE](ARCHITECTURE.md#7-control-api).
 
 Terminal state may include diagnostic non-success states such as
-`stuck_no_progress` (the same diff repeated while a required gate still failed).
+`stuck_no_progress` (the same accepted result repeated while a required gate still failed).
+A run's code result is exact Git objects of any size (`work_product.meta.git_result`,
+digest v1). When it is too large to render as one patch (judged by an estimate
+computed from the changed files' blob sizes, so a small edit of a very large file counts too,
+or by a render that still overflows the same limit,
+and `pr` refuses such a result typed `pr_unrendered_result` before any scan;
+scanning it for `pr` is a follow-up), `final/patch.diff` is
+absent with `meta.patch_view.available: false` and a bounded `change_inventory`;
+the artifact route answers 413 `patch_view_unavailable`, MCP results carry
+`objectResult` (run tools and read tools alike, in text and structured content),
+and apply, verify and revert still work. A render that fails for another cause
+is the same typed absence with `reason: render_failed`. A delivery that would
+overwrite what Git does not track (an ignored file at a path the result adds)
+refuses `delivery_path_occupied`, one that must address a name that is not
+valid UTF-8 (a name the result changes) refuses `result_path_encoding`, and in a
+sparse checkout one that adds, changes or removes a path outside its patterns
+refuses `delivery_outside_sparse_checkout` (a revert after the patterns were
+narrowed too), each naming the paths with nothing written; a name only your
+project changed stays as it is, and every path an operation does not address
+keeps its bytes, and its index mark except that in a sparse checkout Git itself
+clears the skip-worktree mark of a file that is present, which sticks once a
+`branch`, `commit` or `pr` delivery writes the index; such a write also drops
+the assume-unchanged mark of a path it changes. The sparse check needs Git 2.41 or newer
+(`git sparse-checkout check-rules`); with an older Git, a sparse checkout's
+deliveries, `apply/check` and reverts refuse `git_failed`, naming that need,
+before writing. `apply/check` answers a store, Git or filesystem fault with the
+same typed `refusal` as the delivery. A `branch`, `commit` or `pr` delivery
+commits onto HEAD and leaves what assume-unchanged or skip-worktree marks hide
+locally on disk and out of the commit; a result that changes such a file
+refuses `delivery_conflict`. A `revert_run` refused for anything but a later
+edit of what the run changed answers 409 `revert_refused` with
+`context.reason: reverse_apply_failed` and the typed cause as
+`context.refusalCode` (the message names a fixed remedy where one exists, such
+as widening the sparse checkout); only `postimage_diverged` means the revert is
+no longer available. A run whose changes could
+not be recorded exactly (no space, a stalled or signalled Git, a read error, a
+missing object) ends `failed` with reason `capture_refused`. Re-running is not its
+remedy: the answer stays the diagnostic primary output, live changes stay in place
+without a revert point, the failure's `captureFailure` keeps the typed cause and,
+when it could be read, a non-exact `inventory` of the largest changed files.
 Telemetry attempts can include adapter-declared transient failures; integrations
 should render those as infrastructure/retry evidence, not as model findings.
 
-`POST /v2/runs/:id/control` supports cancel for active daemon jobs.
+`POST /v2/runs/:id/control` supports cancel for active daemon jobs. The same
+call holds the run's pending next message, also for a run that already ended
+(see the next-message rules under MCP below).
 Interactive runs use the typed interaction surface instead of raw input
 forwarding: `interaction.requested` events carry the questions, the macOS app
 and `claudexor follow` answer via `POST /v2/runs/:id/interactions/:id/answer`,
@@ -569,7 +848,7 @@ engine older than 3.16.0 omits both the field and the route): Codex declares
 `next_tool_boundary` (the message is queued on the live stream-json stdin and
 picked up right after the current tool batch, or as the next native turn of
 the same run when it arrives during the final text; recorded on Claude Code
-2.1.283); Cursor, Antigravity, OpenCode, GitHub Copilot and raw-api declare `none` and answer
+2.1.283); Cursor, Antigravity, Grok Build, OpenCode, GitHub Copilot and raw-api declare `none` and answer
 `unsupported` without any native write. The message is admitted journal-first
 (`message.accepted`) and closed with `message.delivered` or `message.refused`
 on the run's event stream and timeline, where the text shows as the row detail;
@@ -609,7 +888,12 @@ and archives a turn's outputs before replacing them. A turn the daemon's
 restart terminalized (`resumable.cause: host_restart`) has unknown process
 custody and is not such a proof. Use a stable `Idempotency-Key` per thread and
 per round; an exact replay returns the accepted thread or turn even after a
-restart or after the workspace moved away. A missing workspace makes the turn
+restart or after the workspace moved away. To learn what a create whose answer
+was lost did without risking a new turn, send its saved body and key to
+`POST /v2/threads/:id/turns/lookup` (one-shot runs: `POST /v2/runs/lookup`)
+once the operation catalog lists it: `found`, `turn_only` or `not_found` in
+the named store, as [ARCHITECTURE](ARCHITECTURE.md#7-control-api) defines.
+`not_found` never authorizes creating it again. A missing workspace makes the turn
 fail with a retryable `delegated_workspace_unavailable`; restore it and call
 `POST /v2/threads/:id/turns/:turnId/retry`.
 
@@ -630,7 +914,7 @@ client's protocol revision (2025-11-25 down to 2024-10-07; Cursor's
 2025-06-18 handshake included), dispatches requests CONCURRENTLY (ping and
 tools/list answer while a long race runs), and validates arguments against
 the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
-the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
+run-control rules, reviewer-panel shapes) run inside the tool handlers
 and surface as `isError` tool results.
 
 MCP Tasks remain experimental and are not advertised. Run tools enqueue work
@@ -641,22 +925,27 @@ answer, finished work, or applyability.
 The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`,
 `claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
 `claudexor_thread_create`, `claudexor_thread_turn`, `claudexor_thread_read`,
+`claudexor_thread_history`, `claudexor_thread_prompt`,
 `claudexor_status`, `claudexor_account_resources` (the same rich quota read,
 with optional `refresh`, `target` and `model`), `claudexor_account_reset`
 (explicit reset with original `idempotency_key`, or receipt lookup by `operation_id`),
 `claudexor_capabilities`
-(the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
+(the derived AgentCapabilityCatalog: per-harness doctor-backed capabilities,
+possibly from a recent composition dated by `generatedAt` per
+[readiness projections](ARCHITECTURE.md#readiness-projections), modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
 `claudexor_accounts` (the server-authored credential-profile/readiness/quota
 view, including freshness and `next_up` state — the default read is the
 retained readiness observation, with its check time, composed with current
 quota and registry facts; `fresh: true` opts into the expensive atomic snapshot,
 which honors account/route rate-limit cooldowns and retained legacy vendor floors;
-the additive `routingEvidence` carries the model-scoped recent refusals and last
-service, absent for an older engine, and a failed evidence read adds one
+the additive `routingEvidence` carries model-scoped recent refusals, temporary
+per-model capability marks, model-scoped credential refusals, and last service, absent for an older engine, and a failed evidence read adds one
 `routingEvidenceProblem` while the listing stays authoritative),
 `claudexor_runs`, `claudexor_inspect`, `claudexor_run_status`,
-`claudexor_run_result`, `claudexor_run_cancel`,
+`claudexor_run_result`, `claudexor_run_cancel`, `claudexor_run_time_limit`,
+`claudexor_run_wait`, `claudexor_runs_wait`, `claudexor_task_group_runs`, `claudexor_run_event_read`, `claudexor_run_message`,
+`claudexor_run_continue`,
 `claudexor_run_interactions`, `claudexor_answer_interaction`,
 `claudexor_apply_check`, and
 `claudexor_journal_recovery`. The destructive
@@ -664,9 +953,9 @@ service, absent for an older engine, and a failed evidence read adds one
 explicit `quarantine_and_start_fresh` confirmation. One-shot runs and thread
 turns accept `credentialProfileId` (CLI `--profile`) as a strict account pin.
 Create a thread once, enqueue follow-ups with `claudexor_thread_turn`, then
-follow each returned `runId` with the ordinary status/result tools. If a turn
-returns only a queued `jobId`, use `claudexor_runs` to recover its `runId`
-after binding.
+follow each returned `runId` with the ordinary status/result tools. A turn that
+returns only a queued `jobId` is followed the same way: pass the `jobId` as
+`runId`, and the reads report the canonical `runId` once it binds.
 Creation starts no model. The default `workspace: in_place` lets write turns edit
 the project directory directly. Choose `workspace: isolated` for a persistent
 thread worktree created on the first write turn, then use thread Apply to merge
@@ -676,15 +965,863 @@ Control API section above and SECURITY.md); it is never applied to the project.
 The create result discloses the daemon's current `workspaceMode`,
 `workspaceRoot` and anchored `repoRoot`, including where write turns change
 files.
-Thread create/turn accept an optional caller-owned `idempotencyKey`. An omitted
+One-shot launches and thread create/turn accept an optional caller-owned
+`idempotencyKey`. An omitted
 key is generated per invocation; retry an unknown outcome with the same key
 and body, and use a new key for a deliberately new turn. Changed content under
-the same key conflicts. `claudexor_thread_turn` declares the durable
+the same key conflicts. A keyed one-shot launch names its project with an
+explicit `repoPath` (see below). `claudexor_thread_turn` declares the durable
 `McpThreadTurnResult` handle as its outputSchema. `claudexor_thread_read`
 returns daemon-owned thread, turn and session records without starting work or
 a daemon; with no daemon running it fails with retryable `daemon_unavailable`.
-Final output remains on the run result surface. Thread tools do not add a
-separate budget or lifecycle.
+`claudexor_thread_history` returns bounded answer previews and settled receipts;
+complete output remains on the addressed run artifact surface. Thread tools do not
+add a separate budget or lifecycle.
+
+**Paged conversation reads.** `claudexor thread history <id> [--limit N]
+[--cursor C | --before ID | --after ID | --around ID] [--expected-store-id ID]
+[--json]` and MCP `claudexor_thread_history` share the same existing-daemon read.
+MCP uses `threadId`, `limit`, `cursor`, `beforeTurnId`, `afterTurnId`,
+`aroundTurnId`, `expectedStoreId`. Limits are 1–20 (default 20); no selector reads
+the newest turns. `aroundTurnId` / `--around` returns the anchor and earlier turns;
+follow `newerCursor` for later turns. Rows ascend by ordinal. Follow the opaque emitted-edge cursors
+with the same limit, or use the actual mounted edge after eviction. Cursor walks
+freeze their tail; a fresh read includes later arrivals. Refresh fixed membership
+with `replayCursor`, consuming `replayNextCursor` when larger current facts need
+multiple bounded segments. Stale cursors require a resnapshot, not an empty feed.
+An empty page before the oldest turn still has `hasNewer`; an empty page after
+the newest still has `hasOlder`. The reverse cursor includes that boundary turn.
+
+**Exact export and conditional retirement.** `claudexor thread export <id> --out
+<dir> [--expected-store-id ID] [--json]` copies a thread's whole closure into a new
+directory, hashing every byte, and writes `manifest.json` first and `receipt.json`
+last; it exits 1 when the export is partial and leaves the bundle readable. A manifest
+`path` is an item's complete name, of any length. When the bundle's volume cannot name
+that path, the export still finishes: the bytes go to `relocated/<itemId>` (keeping a
+plain extension), the receipt records that as `placedAt` beside the complete `path`, and
+`--json` counts `relocatedItems`. Items that need one name that the volume can hold keep
+refusing (`thread_export_path_collision`) unless they hold the same bytes.
+`claudexor thread-retire <id> --export <dir> [--operation-id ID] [--json]` purges the
+thread now if that bundle still matches its finished closure. Before it sends a new
+operation it re-hashes every byte the bundle received and, in that same pass, syncs each
+of those files, the manifest, the receipt, the directories holding them and every
+directory above the bundle on its volume. A recursive `--out` creates an entry for the
+bundle and each missing parent, the topmost in the first directory that already existed;
+no record says which those were, so the pass asks all of them. That is more than it needs:
+a directory holding no new entry is asked too. A sync that fails, including at any of
+those directories this user may not open, refuses before anything is sent
+(`thread_export_bundle_unsynced`): restore its access or move the bundle, then repeat.
+Only a new retirement needs this, not an export or an operation the engine already bound.
+A link on the path counts as the directory it names, and what is above that directory is
+not reached. Windows cannot sync a directory, so there only file contents are; this asks
+the volume for durability and proves no power-loss outcome. It
+keeps that request in the bundle (`retire-request.json`) before sending it, created
+exclusively so it never replaces another, and synced. A concurrent invocation sends the request kept first
+once it reads whole, syncing it again, and refuses before sending while it does not
+(`thread_retirement_request_incomplete`); one left incomplete by a writer that
+stopped keeps refusing until it is removed, and exclusive creation is only as atomic
+as the volume makes it. An answer that does not settle the operation names its
+`operationId`, and repeating the command repeats it; a 200 that binds it (accepted,
+for a retirement) or a settled refusal releases it, and a 200 that binds no outcome
+to it settles nothing. From a bundle that changed or cannot be synced since, or whose
+kept request cannot be (every command syncs it again before sending it, one a
+concurrent invocation kept first included), only an operation the engine already bound
+is repeated; an unbound one is held, naming its `operationId`
+(`thread_export_bundle_unsynced`).
+`claudexor thread-retire <id> --abandon --operation-id ID [--json]` settles an
+unanswered operation so it can never accept, and `claudexor thread retirement <id>
+[--operation-id ID] [--expected-store-id ID] [--json]` reads the state back. None of
+them start a daemon. A host speaks the routes directly; catalog presence of
+`POST /v2/threads/:id/retire` is the feature marker. Its digests are
+`threadExportDigest`: one `<itemId> <sha256 hex> <size>\n` per file and symlink item,
+in byte order, hashed as UTF-8, over the whole transfer and over its `lane` plane.
+Keep each item where your volume can hold it and find it again by `itemId`, since a
+`path` may be too long to name there. An acceptance deletes the lane, so make every byte
+you kept durable (files, the directories holding them and any directory you created
+above those) before you send a new operation, and do not send it if that fails.
+Persist `operationId` and the digests before sending. Clear that intent only from a
+200, a problem whose context says settled, or a non-null `operation` on the read: a null
+one settles nothing. Repeat the same body to join an unknown outcome, or abandon it
+when it must not accept. See
+[the contract](ARCHITECTURE.md#thread-export-and-conditional-retirement).
+
+Prompt previews are at most 32 KiB, answers 64 KiB, and the complete page 2 MiB of
+minified JSON. Byte truncation is explicit; full text lengths are only
+reported when known. `claudexor thread prompt <id> <turn-id> [--offset N]
+[--max-bytes N] [--expected-store-id ID] --json` and MCP
+`claudexor_thread_prompt` (`threadId`, `turnId`, `offset`, `maxBytes`,
+`expectedStoreId`) read a full prompt in UTF-8 parts, including runless refusals.
+Follow `nextOffset` through `totalBytes`, then verify `sha256`; leading U+FEFF is
+preserved, including at a part offset. A pruned command leaves its turn visible
+with `runStatus: "not_retained"`, `run: null`, and
+`primaryOutputStatus: "not_retained"`; an unbound turn has `runStatus: "unbound"`.
+The header's `headRunStatus` discloses the same distinction. Retention can remove
+the addressed artifact locator before file GC, so null output does not prove
+that bytes no longer exist on disk. Oversized apply evidence sets
+`applyEligibilityCoverage: "unavailable"` and null eligibility. An unverifiable
+recorded decision is disclosed in `unverifiedOperatorDecision` with
+`operatorDecisionCoverage: "unavailable"`; it never grants authority. Failure
+messages have an 8 KiB preview, honest `failureMessageInfo`, and their original
+`rawDetailRef`. Read errors still fail typed; unavailable facts never become a
+zero receipt count. These reads
+never start a daemon or submit model work. The full cursor, revision and client
+reconciliation contract is in [Architecture](ARCHITECTURE.md#bounded-thread-history).
+
+### Document ingress and resource references
+
+Every public one-shot run tool (Ask, Plan, Agent, Best-of, Create and Run Continue), the
+Delegate belt's run tools, and `claudexor_thread_turn` accept optional
+`attachments: [{resourceId}]`; the CLI spelling is `--attach-resource
+<resourceId[,resourceId...]>` on ask/agent/best-of/plan. Only immutable resource
+IDs returned by a keyed import or by finalize are accepted; local paths, base64
+and internal resolved Attachment objects are invalid run references. Omission
+keeps the existing run behavior. The ordinary daemon admission, model-purpose
+resource rejection, and selected lanes' finite
+MIME/size/count limits still apply. A ready resource is reusable by any later
+run, turn or task of the same store.
+
+Public MCP exposes `claudexor_store_identity`, `claudexor_upload_import`,
+`claudexor_upload_create`, `claudexor_upload_import_local`,
+`claudexor_upload_status`, `claudexor_upload_finalize` and
+`claudexor_upload_cancel`. The Delegate belt exposes no upload controls. These
+tools require an already-running daemon and perform one finite operation;
+they add no upload store, retry loop or automatic cancellation. The corresponding
+CLI verbs are `store-identity`, `upload-import`, `upload-create`,
+`upload-import-local`, `upload-status`, `upload-finalize` and `upload-cancel`,
+with the same request/result schemas.
+
+#### Keyed import
+
+A keyed import turns one source into one immutable resource under a caller-owned
+key, on the existing upload owner (the same upload, idempotency and blob
+records; no separate document registry). Before the first import the caller reads
+the store identity, `claudexor_store_identity` or `claudexor store-identity --json`
+(the opt-in `POST /v2/handshake` with `X-Claudexor-Store-Identity: 1`), and
+durably saves that `storeId` together with the key and exact arguments. Every
+replay sends the saved store id unchanged and never adopts a later store answer.
+
+```bash
+claudexor upload-import /absolute/host/brief.md --expected-store-id "$STORE_ID" --idempotency-key "$IMPORT_KEY" --json
+claudexor ask "Summarize the brief" --attach-resource "$RESOURCE_ID" --json
+```
+
+`claudexor_upload_import({expectedStoreId, path, idempotencyKey, kind?, mime?,
+name?})` imports an explicit absolute regular file **on the MCP-server host**
+(the same source custody as stage import below; `kind`, `mime` and `name` default
+from the path). It first asks the daemon about the key, before it stats or opens
+the file. A completed import returns its original resource even when the file has
+since changed or been deleted. Only an unfinished import reads the file: it
+hashes it, binds that content, sends the bytes once and asks again. Success
+always means `state: ready` with `resource`. Typed failures carry `uploadId`,
+`state` and the bound `content` when a key is bound:
+
+- `store_mismatch`: the saved store id names another store;
+  `upload_import_unavailable` (HTTP 503): the daemon has no durable store
+  identity. Either way nothing ran and no file was touched.
+- `idempotency_conflict`: the key is bound to other arguments (`kind`, `mime`,
+  `name` or the source path); `upload_import_content_conflict`: it owns other
+  bytes. Neither has effects; a new edition of a file needs a new key.
+- `upload_import_source_changed` / `upload_import_source_unavailable`: the import
+  is unfinished and its source no longer matches or no longer exists. Restoring
+  the same bytes and repeating completes it.
+- `sensitive_resource_rejected`: the host source path is a credential-store
+  path class (for example `~/.ssh`, `~/.aws`, a `.env` file), refused before
+  the file is read. Display names and file contents are never a reason to
+  refuse (INV-146).
+- `digest_mismatch` / `upload_not_open` (HTTP 409, passed through with the import
+  context): the byte send raced with a change to the file, or with another
+  transfer or a cancel of the same upload. Repeat the identical call; it answers
+  from the import's current state.
+- `upload_import_in_progress`, `upload_import_incomplete` (no verified bytes yet)
+  and `upload_import_uncertain` (retryable): repeat the identical call.
+  `upload_import_cancelled`: the import ended without a resource; a new attempt
+  needs a new key. `upload_import_released`: the key's managed resource was
+  released (see managed lifetime below); a new attachment needs a new key.
+
+Over HTTP the same contract is `POST /v2/uploads/imports` with a required
+`Idempotency-Key` and a `ControlUploadImportRequest` body `{expectedStoreId, kind,
+mime, name, source?, content?}`; it answers `ControlUploadImport` `{storeId, state,
+uploadId, content, receivedBytes, resource?}`. A remote client sends bytes, never
+a path for the daemon to open. `source` is an optional opaque caller identity of
+the selected source (the local import uses its absolute path); it is bound into
+the key and the daemon never reads, resolves or stores it. The key binds `kind`,
+`mime`, `name` and `source`; the first declared `content` (`sizeBytes` and
+`sha256:<64 hex>`) binds the bytes. Omitting `content` only reads or replays a
+bound key, so a client can replay before it touches its source; an unbound key
+then answers `404 upload_import_not_found`. That 404 means this store retains no
+binding for the key now. It does not prove the key was never accepted: upload
+bindings are pruned 30 days after their resource was released or expired
+(model-purpose resources and released managed imports), and another `storeId` is
+another store. After an unknown outcome a client replays its saved request and never
+silently mints a new key.
+
+| `state` | Next step |
+| --- | --- |
+| `open` | `PUT /v2/uploads/:uploadId/bytes` with exactly the bound bytes, then repeat the POST |
+| `uploading` | another transfer is in flight; repeat the POST later |
+| `ready` | use `resource.resourceId`; no source access |
+| `cancelled` | finished without a resource; a new attempt needs a new key |
+| `released` | a managed import's resource was released by its caller (below); `resource` and `releasedAt` describe it; a new attachment needs a new key |
+
+**Managed lifetime.** A keyed import may opt in with `lifetime: "managed"`, bound
+into the key like `kind`, `mime`, `name` and `source` (every replay sends it).
+Its resource carries `lifetime: "managed"`; stages, CLI `--attach` and MCP stage
+and import tools keep today's indefinite reuse. `POST /v2/resources/:id/release`
+with `{expectedStoreId, sha256}` relinquishes every FUTURE reference to that ID
+and answers `ControlResourceRelease` `{storeId, resourceId, sha256, state:
+"released", releasedAt}`; a repeat answers the first release unchanged. It
+refuses typed, without effect: `store_mismatch`, `resource_release_unavailable`
+(503, no durable store identity), `resource_not_found`,
+`resource_purpose_mismatch` (model resources keep their own acknowledgement),
+`resource_digest_mismatch`, `resource_lifetime_indefinite` (a default or legacy
+resource) and `resource_unavailable` (publication in progress; repeat). Release
+is not deletion. A new reference afterwards (a new run, `continueFrom`, Exact
+Retry, a thread turn or its retry, a next-message create or replace) is refused
+`410 resource_released` inside the transaction that would accept it, so a release
+racing an admission yields one of refused or accepted. A same-key, same-body
+repeat of an already accepted request is answered as that operation while its
+command is retained. Accepted work keeps the bytes: a queued or running command
+resolves its refs at execution, an accepted thread turn keeps its stored path for
+its own first dispatch and execution, also when the request that recorded it (a
+turn create or an Exact Retry) is repeated with the same key after a refusal
+recorded before any dispatch or after the daemon stopped before that dispatch.
+The turn's first accepted command records its dispatch durably, beyond command
+retention, so a Turn Retry, or any dispatch after that first one, is new. Such a
+Turn Retry answers and records `retryable: false`: no repeat can pass, and the
+remedy is a new import under a new key. An
+accepted next message passes its hold to the run it dispatches, a delivery of a
+run's retained result (apply, discard, revert) is no new reference and takes no
+hold, and thread export reads retained history: a resource is missing from an
+export only when no retained document's own holder can read it. Bytes go right after the commit that retires the last accepted
+holder through its existing owner (command retention, next-message replace, clear
+or dispatch, thread purge, including a project removal that purges its trash) when
+no other live resource shares the digest; nothing promises a size. The
+`POST /v2/resources/:id/release` descriptor in `GET /v2/operations` marks support
+for both the field and the route; an engine without it refuses the field (strict
+schema), so a client sends it only where the descriptor exists.
+
+The daemon hashes every upload's bytes while receiving them, and an import still
+checks that digest against the one it declared. `receivedBytes` changes when the
+PUT finishes, not as each chunk lands; a status read during the PUT sees
+`uploading` and `receivedBytes: 0`. Concurrent uploads leave two libuv threads
+free of those writes, so name lookup and other pool work still run while parts
+are being written. An upload waiting for its next bytes holds no pool slot, so a
+slow or silent client does not hold up other uploads. Finalize of that same
+process uses the digest it just computed and does not read the part again; a
+duplicate of an existing blob, a replay, and recovery still read the bytes.
+A digest mismatch
+(`409 digest_mismatch`), a short, oversized or interrupted transfer, or a daemon
+restart during the transfer returns that upload to `open` with zero bytes, so the
+same key resends from byte zero; ordinary uploads keep their single-shot
+cancellation. Complete verified bytes are a durable receipt that survives a
+daemon restart: the next POST publishes them with the bound digest, needing
+neither the source nor a client digest. As for every engine commit, a power loss
+before the store's next durability barrier (INV-143) can discard that receipt;
+the import then reads `open` again and needs its bytes. `POST /v2/uploads/:id/finalize` refuses an
+import's upload with `409 upload_import_owned`; `DELETE /v2/uploads/:id` cancels
+it terminally. Discovery uses existing seams, with no protocol bump: the
+`POST /v2/uploads/imports` descriptor in `GET /v2/operations` marks support, and
+`GET /v2/agent-capabilities` keeps each lane's `attachmentInputs` limits. An
+older engine without the descriptor has no keyed replay; clients must not
+emulate one with the stages.
+
+#### Upload stages
+
+1. Save a caller-owned create key and exact `request` before calling
+   `claudexor_upload_create({idempotencyKey, request: {kind, mime, name, sizeBytes}})`.
+   This ingress creates ordinary attachments only; it has no `purpose: model`
+   input. Save the returned `uploadId` before sending bytes.
+2. Call `claudexor_upload_import_local({uploadId, path})` with an explicit
+   absolute regular file **on the MCP-server host**. A remote client's path
+   does not identify a file on that host. Import does not expand globs, fetch
+   URLs, traverse directories, follow a final symlink or buffer the whole file.
+   Sensitive source paths, including resolved parent aliases, are rejected.
+   The bounded stream verifies descriptor/path identity, size and timestamps
+   before and after reading. Save the returned `expectedSha256` and status.
+3. Save a separate finalize key and exact request, then call
+   `claudexor_upload_finalize({uploadId, idempotencyKey, request: {expectedSha256}})`.
+   Use its `resourceId` in the run or thread turn's `attachments` array.
+
+After an unknown create or finalize response, replay the same key and body.
+After an uncertain PUT, read status once: `uploaded` means finalize with the
+saved digest; `uploading` means observe again later; `cancelled` requires an
+explicit new upload. An `open` status permits an explicitly requested import.
+Never PUT over `uploaded` bytes. Repeating import on an uploaded part only hashes
+the explicit local file to recover a lost digest; finalize still verifies that
+digest against the daemon's actual bytes. Source errors and uncertain PUT
+failures preserve upload identity and any completed digest in typed error context.
+An early interruption can leave the digest unknown. A finalized upload's status
+can return 404; the original finalize key/body remains the replay authority.
+Never cancel automatically after an uncertain finalize. Cancel is an explicit
+caller decision about an unfinished upload.
+
+The CLI stage spellings use the same caller-owned identities:
+
+```bash
+claudexor upload-create --request-json '{"kind":"file","mime":"text/plain","name":"brief.txt","sizeBytes":8}' --idempotency-key "$CREATE_KEY" --json
+claudexor upload-import-local "$UPLOAD_ID" /absolute/host/brief.txt --json
+claudexor upload-status "$UPLOAD_ID" --json
+claudexor upload-finalize "$UPLOAD_ID" --request-json '{"expectedSha256":"sha256:<saved-digest>"}' --idempotency-key "$FINALIZE_KEY" --json
+```
+
+Ordinary CLI `--attach`/`--image` retain their existing local-file convenience
+flow, including best-effort cancellation on failure. That uploader does not
+provide caller-owned recovery identities; `upload-import` followed by
+`--attach-resource` is the recoverable CLI path.
+
+Codex accepts file references for plain text, Markdown, JSON, PDF and DOCX
+(`text/plain`, `text/markdown`, `application/json`, `application/pdf` and
+`application/vnd.openxmlformats-officedocument.wordprocessingml.document`). Its
+declared document limits are 20 MiB per file and 20 files. The adapter verifies
+the daemon-owned bytes and passes one escaped JSON reference record as untrusted
+user context, alongside the unchanged prompt, on both app-server and legacy exec
+transports. It does not copy documents into the project, convert their contents
+to prompt text, or grant additional sandbox access. Images retain their native
+transport. Every selected lane must still admit the same mandatory resources.
+
+This is byte access, with no built-in PDF/DOCX parsing, extraction or OCR promise.
+Native readability under the selected sandbox and the vendor's document tools
+require separate acceptance; source payload tests and the offline text-fixture
+canary do not certify them. A remote MCP client's source must first exist on the
+MCP-server host; the finalized reference subsequently names that daemon's store,
+not a portable path on the client. See the [feature ledger](FEATURES.md) for
+remaining qualification.
+
+### Observing and directing an existing run
+
+A controller saves the exact launch arguments and key before calling a run
+tool, keeps the returned handle, observes it, answers questions or sends
+independent messages, and reads the terminal result. A successor is then
+started explicitly, or it was reserved earlier as an editable next message
+(below) that the daemon sends as one ordinary continuation only after an
+eligible settled success. Each step projects the daemon's existing authority:
+MCP adds no scheduler, handle registry, automatic retry or reconnect.
+
+**Launch handles.** Run tools return the accepted `jobId` beside `runId`. A job
+still queued after the daemon's binding wait (about 30 seconds) returns
+`runId: null` and `status: "queued"`; a job that failed before any run started
+returns `status: "failed"` with its typed `failure`. Pass the `jobId` as `runId`
+to the wait, status, result and message tools: reads report the canonical
+`runId` once the run binds, and a message to a still-queued job answers
+`not_active`/`no_live_session` with nothing sent. Refusals before acceptance stay
+tool errors.
+
+**Replay.** A keyed one-shot launch requires an explicit absolute `repoPath`
+(`idempotency_repo_path_required`); it never follows the MCP server's working
+directory. After an unknown response, repeat the identical arguments and key
+from any MCP process or directory: the daemon returns the accepted handle and
+starts nothing new, while changed arguments conflict (`idempotency_conflict`).
+Recovery assumes the same registered project root is still available at that
+path. A missing, moved or unmounted root is refused (`project_root_missing`)
+before the replay lookup, so nothing is replayed or started; `claudexor_runs`
+still lists the earlier run.
+
+**Telling absence from another store.** A `no such run` answer speaks for one
+engine store, so it never proves on its own that a run did not start. An MCP or
+CLI launch result names the store that accepted the run as `storeId`: keep it and
+compare it with the store that answered; see
+[the store identity contract](ARCHITECTURE.md#engine-store-identity).
+
+**Recovering a retained task group.** On supporting daemons, public one-shot
+launches accept an optional caller-generated UUID `taskGroupId` (CLI
+`--task-group-id`). It is immutable accepted metadata. Tagged receipts carry
+both `taskGroupId` and the accepting `storeId`, including queued job-only
+receipts. Each member still has its own request key. The group is optional
+correlation, with no scheduler, permissions or budget authority.
+
+For example, a controller can keep the following record in its own durable
+storage outside the ephemeral MCP process. Save G, KA, KB and the exact request
+bodies **before** the first launch; then save each accepted receipt and its
+`storeId` before continuing. These are illustrative UUIDs, not defaults:
+
+```js
+const G = "11111111-1111-4111-8111-111111111111";
+const KA = "22222222-2222-4222-8222-222222222222";
+const KB = "33333333-3333-4333-8333-333333333333";
+const A = { prompt: "Review the parser", repoPath: "/absolute/project", taskGroupId: G, idempotencyKey: KA };
+const B = { prompt: "Review the tests", repoPath: "/absolute/project", taskGroupId: G, idempotencyKey: KB };
+// Persist { G, KA, KB, A, B } in caller-owned storage before calling either tool.
+// Call claudexor_ask(A), then persist its complete accepted receipt + storeId.
+// Call claudexor_ask(B), then persist its complete accepted receipt + storeId.
+```
+
+If individual handles and request keys are lost but G and the accepting store's
+identity survive, reconnect to the same backend and call `claudexor_task_group_runs` with
+`{taskGroupId: G, expectedStoreId: saved.storeId, limit: 50}`. This read needs
+neither a launch, request keys nor the original project directory. Keep the original
+`jobId` handles and actual nullable `runId` values: a queued job has
+`runId: null` until binding. If `hasMore` is true, explicitly request the next
+page with the returned `nextCursor`; the tool does not follow it automatically.
+The CLI and HTTP expose the same single-page read:
+
+```bash
+claudexor task-group-runs 11111111-1111-4111-8111-111111111111 --expected-store-id "$SAVED_STORE_ID" --limit 50 --json
+```
+
+HTTP clients use `GET /v2/task-groups/:id/runs` with optional query parameters
+`expectedStoreId`, `limit`, lifecycle `state`, and `cursor`. Supply the saved
+`expectedStoreId` for recovery. Limit is
+1..200 (default 50); a cursor is at most 2048 characters. The group UUID
+matches in any letter case, and the answer echoes the spelling of the request.
+Logical result JSON
+is capped at 131072 UTF-8 bytes, so a page can contain fewer than the requested
+number of members. The cursor binds group, filter, store and served view
+(`viewToken` names that view; clients pass cursors back and need not read it);
+`store_mismatch` and `stale_cursor` refuse incompatible recovery. A cursor
+issued while group matching was case-sensitive is stale after the upgrade; read
+the first page again. A changed
+served view requires a fresh traversal, not a silent cursor reset. Commands and
+tools are usable only when advertised by the selected supporting engine. An
+older or unavailable backend fails typed; it is not an empty successful group.
+Observation requires an existing daemon and never starts one.
+
+Now pass the recovered job handles to `claudexor_runs_wait`. Save its per-target
+tokens and echo them as `seen` to suppress unchanged attention. Fetch a pending
+question with `claudexor_run_interactions` and answer it separately under the
+existing approval rules. Fetch output separately with `claudexor_run_result`;
+terminal attention does not prove readable output. Event replay has its own
+`nextSeq`/`afterSeq` cursor, independent of group cursors and `seen` tokens.
+
+Every page declares `visibility: "current_served_generations"` and
+`retention: "retained_only"`. Pruning, project archive or generation retirement
+can hide accepted members. An empty page is not proof of never-accepted work or
+a complete historical roster; `hasMore: false` ends only this retained traversal.
+Missing membership does not authorize resubmission. Group reads and waits never
+launch, retry, resume, answer or cancel work. A daemon crash can leave a recovered
+running job `interrupted`; discovery does not resume it.
+
+For an uncertain launch response, if its key and body remain available and the
+idempotency binding is retained, replay KA or KB with its **identical** saved
+body; changing or removing its group conflicts. Lost keys cannot be reconstructed
+from a group page and never justify a replacement launch. Exact Retry and a
+decision rerun (`rerun_with_feedback`) retain the accepted group; the rerun's
+answer carries `newJobId` and the group receipt. A tagged launch, Exact Retry or
+rerun on a backend without a durable store identity is refused before acceptance
+(`store_identity_unavailable`, retryable). A deliberately new continuation may explicitly supply `taskGroupId`, but
+omission does not inherit it. Thread turns, Delegate tools and ACP session
+settings do not take group input. Groups confer no rights or budget inheritance,
+and there is no app UI handoff contract. See the
+[storage compatibility caveat](ARCHITECTURE.md#sqlite-engine-store) before opening
+an existing store with a new engine.
+
+For routine observation, use attention waits plus the events stream; fetch full detail for inspection, resnapshot or terminal output collection (see [the observation contract](ARCHITECTURE.md#observation-and-bulk-retained-reads)).
+
+**Waiting for several jobs.** `claudexor_runs_wait` observes attention from
+1..1000 existing job/run handles with one `POST /v2/runs/wait-many`. Pass
+`targets: [{runId, seen?}, ...]` and optional `waitMs` (integer 0..50000,
+default 25000). The CLI exposes the same read:
+
+```bash
+claudexor runs-wait --targets-json '[{"runId":"job-a"},{"runId":"job-b"}]' --wait-ms 25000 --json
+```
+
+`summaries[i]` corresponds to `targets[i]`, including duplicates. Each row
+contains only lifecycle `status`, `pending`, `token` and `problem`; failed
+observations keep status/pending/token null and name the problem.
+`attention` contains ascending input indexes whose terminal lifecycle or pending
+question has an unseen token. Echo a row's token as that target's `seen` to
+suppress unchanged attention, allowing another job's question or terminal to
+wake the next call. Replacing a question changes its token even at the same
+pending count. Tokens acknowledge only current observation: they are neither
+event cursors, answers, authorization nor output-readiness claims. Read question
+bodies with `claudexor_run_interactions` and output with `claudexor_run_result`.
+
+`waitMs: 0` reads once. `waitMs` bounds the wait between reads, not a read: a
+read under way at the deadline finishes and its complete facts are the answer,
+so a positive `waitMs` shorter than one read returns that read. An answer after
+the deadline rests on a fresh read of every target. Ordinary progress does not
+wake a call, and neither do pruning, project archive or generation changes: a
+target they hide shows `not_found` in the read at the deadline. A daemon that
+stops during a wait answers `503 daemon_stopping` (retryable); reconnect and
+repeat the wait. Healthy attention takes precedence
+over per-target problems, which remain visible. Results are capped at 128 KiB
+of logical JSON and requests at 1 MiB; MCP text mirrors the structured result.
+CLI `--json-stream` emits one compact line, including on error. Observation flags
+do not set run limits. Discovery gets 5s and HTTP, including its body read, gets
+`waitMs+5s`, for a total of up to `waitMs+10s`. Host abort closes only the read;
+the existing read-only discovery handshake may settle in the background. Missing
+or unsupported daemons fail without auto-start, reconnect or fallback to
+individual waits. This tool is absent from the Delegate belt.
+
+A `problems` response still contains the healthy targets. Keep their handles and
+tokens; reconcile each problematic position separately. A problem row's `token`
+is `null`: echo that `null` as the target's `seen` to acknowledge the problem,
+and the next call waits for the other targets instead of returning at once. The
+acknowledged target wakes a call again once it is observed with a pending
+question or a terminal lifecycle. Clients that predate this contract refuse
+`seen: null` locally, and an older daemon refuses a request that carries it;
+there, omit `seen` for problem rows, and an unchanged problematic target makes
+every call return immediately.
+
+| Per-target problem | Controller action |
+| --- | --- |
+| `not_found` | Check the serving store identity, saved receipts and retained group view. Remove a target from the active watch only when reconciled as obsolete; retain unresolved receipt history. Absence does not authorize resubmission. |
+| `snapshot_unavailable` | Keep the target and retry the read with bounded backoff. A temporary read failure supplies no lifecycle fact. |
+| `not_observed` | Keep the target: no completed read covered it yet. Read again when observation is wanted. |
+
+For example, if `[A, B, old]` returns healthy A/B summaries and `not_found` for
+`old`, continue watching A/B with their own `seen` tokens while reconciling `old`.
+Do not discard the entire batch or busy-loop the unchanged three-target request.
+
+**Waiting on events.** `claudexor_run_wait` reads the run's event stream after `afterSeq`
+(the previous `nextSeq`, never `snapshotSeq`). Events already written at its
+first snapshot, the `snapshotSeq` fence, are returned first in a bounded page
+(50 events and 64 KiB by default), whether or not a question is pending. Then
+`wake: "batch"` (default) keeps collecting until the page fills, the page
+includes a question event (`interaction.requested`, also one written before the
+wait), the run ends, or `waitMs` elapses; `wake: "event"` returns as soon as
+any event is available. A question already pending before the cursor never ends
+a wait by itself: `pendingInteractions` reports it (bodies bounded to 32 KiB;
+`claudexor_run_interactions` returns them complete). `waitMs: 0` returns only
+the already available page. `wakeReason` names why the call returned; `terminal`
+ends the run, not its events, so keep reading until `nextSeq` reaches
+`snapshotSeq` or a page returns no events with
+`eventOmission: "stream_ended"`: the stream, which ends only for a terminal run,
+cannot serve the rest, for example a last line a crash left unterminated (the
+event-part route answers it `run_event_not_found` too). Nothing was skipped,
+and the same call returns the same page until the log changes. `waitMs` bounds
+only the event stage: discovery, each snapshot read and a zero wait's replay
+have separate 5-second budgets, so a call can take `waitMs` plus about 15
+seconds; keep `waitMs` below the host's tool-call timeout. A timeout,
+disconnect or cancelled call closes only that read; the worker continues.
+
+**Oversized events.** An event no page can hold, such as a long `run.created`
+prompt, message or question (which still wakes `interactions`), is named in
+`oversizedEvent`, and the cursor stays before it. `claudexor_run_event_read {runId, seq, offset?,
+maxBytes?}` reads bounded parts (32 KiB by default, at most 64 KiB) of the exact
+line the event stream delivers, with `totalBytes`, `nextOffset` and the
+whole event's `sha256`; parts never split a character, and the text content
+repeats the part after one header line. A partial read does not consume the
+event: after the last part (`nextOffset` equals `totalBytes`) and verification,
+resume the wait with `afterSeq` set to that `seq`. Reads are addressed by run
+and seq only (`GET /v2/runs/:id/events/:seq`), never by path, artifact or whole
+log; an absent or invalid event is refused (`run_event_not_found`,
+`run_event_invalid`), and an invalid stream frame still stops a page
+(`invalid_event`) instead of being skipped.
+
+**Questions and messages.** Answer a pending question with
+`claudexor_answer_interaction`, using the ids and option labels from
+`claudexor_run_interactions` (its text content is the complete JSON). A refusal
+keeps its typed status as the failure code: `not_found`, `already_resolved` or
+`rejected`. A `rejected` answer (a question id the interaction does not list,
+one question answered twice, or a row with neither a selected label nor
+non-blank free text) commits nothing, so the question stays pending for a
+corrected answer. Selected labels are passed to the harness as given.
+`delivered` means the daemon committed the answer and handed it to the run's
+live session; whether the harness then read it is not reported. Answers carry no replay key, and `already_resolved` never proves
+that this answer was the one delivered. `claudexor_run_message` sends an
+independent message `{runId, text, idempotencyKey, expectedAttemptId?}` through
+the [live-input channel](ARCHITECTURE.md#live-messages-into-a-running-run); its
+required key is the message id. While a blocking question is pending it
+answers `not_active`/`interaction_pending`; an async question (`delivery:
+async`, the worker keeps going) does not refuse it, and no message answers a
+question. `accepted` means native
+acceptance only; consumption later appears as a `harness.event` status
+`live_input_delivered` carrying the same `message_id`. `delivered` means
+consumption was observed; neither proves obedience. After `delivery_unknown`,
+keep the same key and body; after `not_active` nothing was sent, so a later
+attempt needs a new key. Host cancellation stops the HTTP request, not the run.
+
+**Successors.** `claudexor_run_continue` starts one successor of a terminal
+single-candidate Agent or Ask run through the existing `continueFrom` admission
+and returns the launch handle. The engine inherits only the mode, scope,
+execution, harness and model groups and the prompt-cache lifetime, which this
+tool cannot change: another lifetime, Default included, needs a new run. Every other control takes its ordinary
+new-run default, not the predecessor's value, unless restated: `access`, `web`
+or `externalContextPolicy`, `credentialProfileId`, `effort` and `efforts` (an
+`efforts` entry wins for its harness), `paidBudget`, `maxSeconds` and
+`timeLimitMode`, `review`, `reviewerPanel`, `reviewerModels`,
+`reviewerEfforts`, and `continueCarrier` (`auto` or `packet`). A successor of a
+`readonly` Agent run therefore resolves the project's default access, normally
+`workspace_write`, unless `access: "readonly"` is restated. Budget and time
+limits govern that successor alone, never the chain's remaining allowance. An
+empty prompt is valid. `claudexor_run_status` and `claudexor_run_result` project
+`continueFrom`, `resumable`, `continuity` and `retainedEnvelope` (omitted when
+the daemon detail did not carry them) for deciding whether and how to continue.
+An MCP server older than the daemon validates receipts strictly, so a receipt
+with the newer `sourceRetirement` field drops its `continuity` list until that
+server is updated. A settlement failure's `workspace.settlement_failed` warning
+is a timeline event and does not appear in these MCP facts.
+A second successor of the same predecessor is refused `continuation_superseded`
+with the chain `head` to continue instead; recover an unknown response with the
+original key and arguments. A successor is a new command, not resurrection of a
+terminated process.
+
+Optional `attachments: [{resourceId}]` supplies new immutable resource references
+for that successor through the [document ingress contract](#document-ingress-and-resource-references).
+Omission adds no new refs; `[]` is forwarded as an explicit empty list. A
+successor inherits no attachments under either carrier, so pass the refs again
+when it needs the documents. These controls do not alter retained conversation
+history. Paths, base64 and internal
+resolved attachment objects are rejected. Save the exact attachment list with
+the original key and body for replay.
+
+These existing-run controls are not exposed by the Delegate belt and cannot
+expand a child's authority. They add no automatic retries, worker restarts,
+approval decisions or separate lifecycle.
+
+Operator-only `claudexor_next_message` and `claudexor_next_message_read`
+provide editable deferred one-shot follow-ups. The built stdio/HTTP/SQLite MCP
+controller story passed with fake harnesses; native vendor, GUI and
+cross-platform acceptance remain manual. See [the feature ledger](FEATURES.md)
+for qualification limits. The mutation envelope is `{request, idempotencyKey}`.
+For example:
+
+```json
+{"request":{"action":"create","predecessorId":"job-…","prompt":"Verify the previous work","attachments":[],"controls":{"continueCarrier":"packet"}},"idempotencyKey":"verify-next-1"}
+```
+
+`replace` supplies `draftId`, exact `expectedRevision`, and the complete
+`prompt`/`attachments` list; `[]` clears refs. `clear` supplies only `draftId`
+and exact `expectedRevision`. Controls are captured at creation and cannot be
+edited. A waiting or held draft reserves the predecessor's single continuation
+claim. Exact accepted replays keep their original applied revision and current
+handles. Failure, cancellation, interruption, incompatible typed outcome,
+unknown process custody, Stop, restart or admission refusal holds without retry;
+editing a held draft never rearms it. One exception: a draft held only for unknown
+process custody (`settlement_unknown`) returns by itself when a later bounded
+settlement of the predecessor's run, by the live daemon that ran it, proves its
+processes gone ([process scope](ARCHITECTURE.md)), and only while the draft is
+unchanged since that hold: a replace or clear keeps it held, and a Stop replaces
+the hold with `stop_requested`. It then takes the ordinary revision and admission
+path, which holds it again for any other reason; its projection shows
+`resumed: {from, reason: "process_scope_settled", at}`. A restart ends that return
+for the earlier daemon's scopes. Native transient HTTP429/`willRetry`
+progress does not settle the predecessor. On Windows the run-scope process
+census is unsupported, so a predecessor's process custody is never proven:
+every draft holds as `settlement_unknown`, and an automatic next message is not
+available there.
+
+Stop is `claudexor_run_cancel` (HTTP `POST /v2/runs/:id/control`) on the
+predecessor. Before acceptance it holds the waiting draft (`stop_requested`)
+whatever the predecessor's lifecycle, including while dispatch validation runs
+after the predecessor ended, and returns the held draft as `deferredMessage`;
+promotion rechecks the Stop inside its acceptance transaction, so a stopped
+draft is never sent. If the hold cannot be saved, the draft stays waiting but
+unsent (the daemon keeps it fenced and a restart holds it), and Stop answers
+503 `next_message_hold_failed` instead of a held draft, after it has stopped a
+live predecessor; retry the Stop to record the hold. Stop never cancels an
+accepted successor: a terminal predecessor whose draft was dispatched answers 409
+`next_message_dispatched`, whose problem context carries the draft as
+`deferredMessage`, including the successor job and run; stop the successor by
+its own handle. A terminal run without a pending draft keeps the plain 409
+(nothing to stop).
+
+A held draft is not rearmed. After reading the predecessor result, clear the
+draft and, if a successor is still wanted, start it deliberately with
+`claudexor_run_continue`, which applies ordinary admission and new-run defaults.
+A new draft on the same predecessor meets the same outcome gate.
+
+The successor is an ordinary continuation with the predecessor's execution.
+A successful isolated (`envelope`) Agent run keeps no envelope, so its
+successor starts from the project base and receives only the path of the
+unapplied saved patch (`final/patch.diff`). The patch is not the successor's
+tree, and nothing is applied automatically, so such a step can review the diff
+but not test the changed files. A result too large to render as one patch has
+no `final/patch.diff`: its successor receives no patch path and no changed-file
+list, so it cannot read those changes (the predecessor's attempt record keeps
+only a bounded, non-exact inventory of the largest changed files). To test or
+read them, run the predecessor in a live caller-owned workspace, or Apply its
+result and continue explicitly.
+
+Promotion resolves the captured request through current canonical project
+routing in the same transaction as acceptance. A relinked root or a different
+project generation holds the draft without changing its captured scope.
+Execution-default snapshots are internal accepted-command data; public inputs
+cannot supply them. Native tool allow/deny lists always use current operator
+settings, including when an older accepted snapshot retained tool lists. Exact Retry recovers
+execution preferences from the accepted source and
+still applies ordinary fresh admission, including `continuation_superseded`.
+Run Again and decision rerun omit these private preferences and disclose that
+current settings apply to the editable follow-up.
+
+HTTP uses `POST /v2/runs/next-message` with the mutation body and required
+`Idempotency-Key`, plus addressed `GET /v2/runs/next-message/:id` for full editing
+content. CLI uses `claudexor next-message '<envelope JSON>' --json` and
+`claudexor next-message-read <draft-id> --json`. MCP reads bound the prompt to
+4096 UTF-8 bytes and refs to 32, with explicit omission counts and a full detail
+path. Their `controls` show the frozen values by origin: `capturedAt`;
+`inherited`, the continuation groups taken from the predecessor; `resolved`, the
+create-time controls (explicit, otherwise ordinary new-run defaults at creation,
+so an omitted `access` is the project default even after a readonly
+predecessor); and `settings`, the captured Settings execution preferences.
+Tool permissions, account and harness enablement, trust, quota, capabilities
+and paid-fallback policy are not frozen and are checked at dispatch. The
+compact state supplies the exact existing predecessor result path
+and predecessor/successor job/run handles; use `claudexor_run_result` for output.
+No second output store is created. Detail/status/result/wait include
+`deferredMessage`; a terminal `run_wait` wake describes only the predecessor,
+so inspect the draft separately for dispatch resolution. Reads never send work.
+
+The tools are absent from the Delegate belt. Raw/HTTP/MCP belt callers and engine
+Delegate child targets receive typed `delegation_forbidden`; ordinary external
+controller-owned one-shot workers remain supported. Thread targets return
+`use_thread_turn`. No persistent thread, FIFO, fork or rate-limit policy is added.
+
+### Controller-independent approval handback
+
+The controlling client can be any MCP-capable agent or host, not necessarily
+Codex. It launches the worker, retains its `runId`, inspects pending interactions
+and submits typed answers through the tools below. The controller decides only
+within its existing user mandate and policy; a request never grants authority
+by itself. Requests needing additional user permission can stay pending under
+`interaction_timeout_ms: null`. This does not make a stopped controller answer
+automatically or restore a lost native process.
+
+Worker-specific approval protocols stay inside their harness adapters. The
+Codex mapping below uses the same generic interaction contract as other
+interactive harnesses; timer controls are likewise independent of the
+controller and worker model.
+
+#### Codex native approvals
+
+The Codex app-server transport relays `item/fileChange/requestApproval` and
+`item/commandExecution/requestApproval` through the existing interaction channel.
+The legacy exec transport does not declare this capability. Managed vendor
+approval policy remains authoritative; Claudexor does not bypass it.
+
+For `workspace_write`, thread start/resume and each turn use native
+`approvalPolicy: on-request` with `approvalsReviewer: auto_review` (the
+app-server equivalent of `codex exec --approve-for-me`). `never` creates no
+requests for the native reviewer. The base sandbox remains `workspace-write`;
+automatic review is not a guarantee that every admitted action stays inside it.
+Readonly and other access profiles keep their existing approval policy.
+
+Auxiliary writable roots ride only the run's `turn/start.sandboxPolicy`: the
+thread start/resume echo with its native writable roots, network and temp
+fields kept and the granted roots added; thread params never carry them, and
+omission sends no turn policy at all. On codex-cli 0.162.1 (real tool writes
+under the native sandbox, fresh app-server per resume) roots in thread config
+became permanent runtime workspace roots of the native thread, while a turn
+grant did not survive a fresh-process resume, so a later run whose effective
+execution carries no list (a new turn without one; a `continueFrom` successor
+that omits `execution` inherits its predecessor's) is back on native defaults. The authorized auto-review retry turn repeats the same
+policy. A non-`workspaceWrite` echo refuses
+`codex_auxiliary_roots_unavailable` before the turn, and the legacy exec
+transport refuses the list because a `-c` root could not be revoked later.
+
+When native automatic review denies a command, execve or correlatable MCP tool call, Claudexor waits
+for that root turn to settle, then returns its exact action, rationale and final
+output through the same interaction channel. There are no timed checkpoints.
+The controller can decline if the action is unnecessary or outside its authority,
+or explicitly select `Authorize one retry` for an already authorized action:
+
+```json
+{"runId":"<run>","interactionId":"<pending interaction>","answers":[{"questionId":"approval","selectedLabels":["Authorize one retry"]}]}
+```
+
+This records the server-derived action through native
+`thread/approveGuardianDeniedAction` and starts one more model turn on the same
+session under the same native review policy; that turn consumes usage like any
+other and is not a promise of success or of a separate charge. It is not native
+`accept`, a full access fallback, or a policy amendment. The native RPC
+acknowledges submission, not execution; inspect the follow-up result.
+
+For MCP tool denials, the original server, tool and arguments are shown only when
+the same root turn's started tool item matches the review's target item, server,
+tool and connector identity. The authorization submitted to Codex is a contextual
+note in the thread naming only that server, tool and connector, not a one-call
+permission bound to the displayed arguments: the one extra model turn is asked to
+retry the original call, but the model can change the arguments, native review may
+deny it again, and later native reviews in that thread may consider the note. Do
+not claim argument-bound enforcement, execution or a lasting bypass from it.
+
+Separately, simple empty-form MCP elicitations in a workspace-write
+session are delivered as blocking interactions. Their origin and complete
+request details are untrusted: an elicitation is not proven to be a native tool-call
+approval, and its server may already be executing the tool. The controller
+may accept or decline that particular request; no persistent approval is
+sent. Other access profiles, missing channels, stale requests, nonempty forms,
+URL and verification modes are declined. They emit
+`codex_mcp_elicitation_not_offered` rather than assuming a decision.
+
+Claudexor never offers a denial it cannot present exactly: missing/unknown
+action fields, oversized details, unsupported actions (automatic-review
+patch notifications carry only file names, not a diff, so patch, network and
+permission grants are never offered), MCP call evidence that is missing,
+ambiguous, oversized, unmatched or beyond its turn's retained bound (4,096 started
+calls, details of the latest 256), review timeouts, aborted reviews, a run
+without a workspace-write interaction channel, and a repeated denial of an
+already authorized action (for MCP, the same server, tool and arguments under
+any item ID). For those the native denial simply stands, as a
+sandbox refusal did before: the worker already saw it and finished its turn, the
+declined item remains tool-error evidence, and a typed status
+`codex_auto_review_not_offered` discloses why. There is no automatic permission
+retry loop. The raw file-change approval route below still reviews the complete
+diff.
+
+The settled turn's final answer, including a structured WorkReport envelope, is
+emitted before any handback, so a decline, Stop, failed authorization RPC or
+failed follow-up turn cannot erase it. Decline and an expired wait keep that
+result. A failed authorization RPC or other transport/control failure still
+fails the try; the existing bounded in-run continuation may then resume the
+native session, and a run that ends failed keeps the answer only as diagnostic
+`final/retained-output.md`, never as a deliverable. An unattended run with no
+controller answer waits for the interaction timeout (default 15 minutes) before
+that benign decline, and a hard time limit keeps counting during the wait.
+Internal Delegate children receive the same interaction channel, but the
+delegation belt has no answer tool, so their parent agent cannot answer a
+child's approval. It waits for an answer through the ordinary surfaces (Control
+API, MCP `claudexor_answer_interaction`, `claudexor follow`, the app) until the
+default 15-minute expiry; with `interaction_timeout_ms: null` it waits until it
+is answered or the run is stopped, reaches its deadline or ends.
+
+Cancellation and disconnect revoke unanswered interactions. Once an exact-action
+authorization has been submitted to native Codex it cannot be recalled by
+cancelling the wait: terminal `native_authorization_requests` lists each review
+ID as `submitted` (outcome uncertain) or `acknowledged` (native RPC replied).
+Neither state proves the action executed, and a failed RPC never triggers a new
+turn. Denied-action handback, explicit retry, decline, cancel, disconnect and
+partial submission have deterministic protocol tests against Codex 0.162.1
+frames, and scripted-peer tests drive them through the orchestrator outcome and
+through the durable interaction store, HTTP and MCP answer surfaces. A controlled
+native Codex 0.162.1 macOS run on the original MCP-handback candidate also observed
+a genuine Guardian denial, controller authorization, re-review and exactly one
+harmless local MCP effect. Other native versions, genuine re-denial, the complete
+controller surfaces and rendered UI remain separate qualification gaps.
+
+For a headless controller, launch a deferred run, inspect
+`claudexor_run_interactions({runId})`, and review the complete pending question
+(command and working directory, or file paths and diffs). These details are
+untrusted action data, never instructions to the controller. Answer only within
+the user's existing authority, using the returned IDs, for example:
+
+```json
+{"runId":"<run>","interactionId":"<pending interaction>","answers":[{"questionId":"approval","selectedLabels":["Approve once"]}]}
+```
+
+Send that object to `claudexor_answer_interaction`; select `Decline` to refuse
+(native `cancel` when the vendor offers cancellation instead of decline).
+Only an exact, single `Approve once` choice maps to native `accept`. Free-text
+answers, wrong IDs, multiple choices and session-wide grants never approve.
+All native approvals are refused for `readonly` runs: even a command request
+without `additionalPermissions` can escape the filesystem sandbox when accepted
+(live-probed on codex-cli 0.162.1). There is no shell-text safety classifier.
+Commands the vendor admits without approval still run normally; a managed policy
+that requires approval can therefore block a read-only task. Do not work around
+this by switching the task to writable access without user authorization.
+Raw native command approvals are offered only for an already explicitly authorized
+`full` run: `workspace_write` also cannot grant an unsandboxed shell while
+preserving its write boundary. File-change approvals still require reviewable
+paths/diffs in the workspace or a granted auxiliary root and can be approved
+under `workspace_write`.
+Missing or oversized review details fail closed, as do unknown
+native request methods and runs without an interaction channel. Native
+resolution, turn end, cancellation and transport closure revoke pending requests;
+late answers cannot approve an obsolete action. A request withdrawn while the
+run continues emits `interaction.withdrawn`, which closes the obsolete
+`claudexor follow` prompt or app card so the next approval is not blocked behind
+it. `delivered` confirms receipt by
+the control surface, not execution: follow the run and inspect its actual result.
+These answers and the timer controls are authorized by the daemon's local
+bearer token, which identifies a local engine client, not a particular run or
+controller. Workers run as the same OS user without an outer boundary
+([SECURITY.md](../SECURITY.md#scope-and-posture)); a worker process that can
+read that token and reach the loopback API is not technically prevented from
+using these routes. The delegation belt does not expose them, which is a product
+guard, not per-run isolation.
+TTY `claudexor follow` can also present questions; JSON follow does not prompt.
+There is no separate CLI answer verb.
 
 Tools declare MCP behavior annotations (readOnlyHint for every non-agent
 route — ask/plan are read-only) and, for run tools and
@@ -703,11 +1840,12 @@ exactly `run_facts_invalid` and `invalid_service_response` to a schema-valid
 minimal handle that keeps the caller's runId, nulls the receipt and sibling
 authority fields, and carries a typed secret-redacted `detailProblem`, while
 404, auth, daemon-loss, untyped 500, and transport failures remain ordinary
-tool errors. The same read tools also return `secretLike`: the INV-062
-disclosure of a run whose output held secret-like strings (hidden-match counts,
-changed-file paths, withheld binaries and images, whether the saved patch is a
-redacted copy and whether its exact object was recorded), or `null` when
-nothing was hidden. `run_result` answers with the primary output first, so this
+tool errors. The same read tools also return `secretLike`: the historical
+disclosure of a run written under the retired INV-062 whose saved copies hid
+secret-like strings (hidden-match counts, changed-file paths, withheld binaries
+and images, whether the saved patch is a redacted copy and whether its exact
+object was recorded), or `null` for current runs, which save exact bytes
+(INV-146). `run_result` answers with the primary output first, so this
 field is the only place that fact reaches an MCP host.
 
 Current operational behavior:
@@ -965,6 +2103,32 @@ The same projection distinguishes deadline exhaustion from user cancellation:
 a terminal `cancelled` lifecycle with `wall_clock_exceeded` returns ACP
 `refusal`, while an explicit ACP/session Stop returns `cancelled`.
 
+Tool activity streams as `tool_call` (`in_progress`) followed by one closing
+`tool_call_update`. `claudexor acp serve` reads it from the run's own event
+stream, the one that also carries its timer notices: tool calls, their results
+and the refinements below, never narration or thinking, so the answer arrives
+once when the turn ends. If that stream fails, the client is told that live tool
+and time-limit updates are unavailable. Each ACP call id names the run and try
+that issued the native call (`<run>/<attempt>/<session>/<native id>`, each part
+URI-encoded), so tries of a race, or turns of one session, that reuse a native
+id stay separate calls; an event without a run or try (a custom runner's) keeps
+the bare native id. A turn's calls are forgotten when the turn ends. The update
+is `completed` only for a result that is not an error and does not report an
+unconfirmed command. An error is `failed`, and so is a command that was handed
+to a background shell, timed out, or has an unknown outcome: ACP v1 has no other
+terminal status short of success. Such an update carries the state as text
+content and the typed facts at `_meta.claudexor.commandOutcome`. When the vendor
+later reports the end of a background command (the engine's
+`command_outcome_refined` status), that one call gets one more
+`tool_call_update` with `content` and `_meta` only: the report replaces "Handed
+off to background; completion not observed", and leaving `status` out keeps the
+terminal `failed`, because a report without an exit code is not a `completed`
+success. The protocol allows partial updates and does not say whether a client
+keeps reading a call after its terminal status; one that stops, as Claudexor's
+own ACP client does, keeps the handoff text. A report that names no handoff its
+own try closed in this turn sends nothing, and `session/load` replays only
+prompts and answers, so it replays no tool calls.
+
 `session/load` replays the conversation on reopen by fetching one run detail
 per turn. That fan-out is bounded to the most recent 50 turns: an older thread
 replays only its tail, and the omitted count is disclosed as a leading
@@ -980,16 +2144,23 @@ Questions the surface can answer:
   sending the next prompt on the same session.
 - **Single-choice mid-run questions** are answered inline through the ACP
   permission request (one `session/requestPermission` per question).
-- **Multi-select mid-run questions** are answered inline by iterating one
-  include/skip permission round per option, so more than one label can be
-  selected (a single permission request returns exactly one option and would
-  collapse the choice).
+- **Multi-select mid-run questions** are answered inline by one include/skip
+  permission round per option, each showing every option, so several labels
+  can be selected (one permission request returns exactly one option).
 - **Free-text (option-less) mid-run questions** cannot be answered through ACP
   (its permission mechanism is choice-only). They are NEVER silently skipped:
   the surface discloses them as turn text naming the remedy, and the run stays
   paused — answer via `claudexor follow <run>` or
   `POST /v2/runs/:id/interactions/:id/answer` (see the `docs/FEATURES.md`
   `acp/interactions` row).
+
+An open prompt never holds the turn, though a blocking question still parks the
+agent until it is settled. A prompt closes when its question leaves the run's
+pending list (answered elsewhere, expired, withdrawn), on `session/cancel` or
+when the turn ends: the client gets `$/cancel_request`, the tool call ends
+`failed` and this surface sends no answer. The turn never waits for the editor's
+reply, so an editor that ignores the cancel may keep showing the prompt, and its
+later reply is discarded.
 
 ## Project Instruction Files (AGENTS.md)
 
@@ -1044,8 +2215,8 @@ ships as a signed Go binary with no npm artifact and no source repository, so
 its wire shapes are pinned by fixtures rather than by reading vendor code.
 `packages/harness-agy/fixtures/manifest.yaml` says which is which: the run,
 schema-envelope and auth-error streams were RECORDED from live sessions, the
-resume stream is synthesized from those recorded shapes, and the empty-SUCCESS
-soft-deny below has no fixture at all (it is sourced to an upstream report).
+resume stream is synthesized from those shapes. Native headless refusal evidence
+is sanitized in `native-completion.test.ts`; empty output alone proves no cause.
 Every claim below is re-verified when the pinned vendor version moves.
 
 Discovery/manifests describe static capabilities and possible auth sources.
@@ -1057,7 +2228,11 @@ its exact profile probe. Only a genuinely profile-less/default fallback depends
 on aggregate doctor. OpenCode and the raw-API adapter currently report
 `degraded` even with a key (no isolated smoke proves their default routes yet),
 so they are skipped by auto-pools unless a supported exact profile route proves
-ready, and explicitly selecting an `unavailable` route fails loudly.
+ready, and explicitly selecting an `unavailable` route fails loudly. An explicit
+selection of a `degraded` route runs the intents its doctor still enables: a
+client offering that choice reads harness status `enabledIntents`, while
+`routableIntents` answers only Auto eligibility
+([Routing](ARCHITECTURE.md#4-routing)).
 
 Adapters must translate native I/O into Claudexor events and artifacts. They must
 not orchestrate, arbitrate, manage budgets, or decide review policy.
@@ -1071,12 +2246,19 @@ maps its typed policy onto those native surfaces and records observed tool
 evidence rather than relying on final-answer claims.
 
 Raw API, including the built-in OpenRouter instance, uses non-streaming Chat
-Completions HTTP JSON rather than a native CLI stream. Its terminal semantics
+Completions HTTP JSON rather than a native CLI stream. It reads no project files:
+it serves Ask without a project and Agent implementation through a Git patch
+packet, and it does not plan a project or review changes, which belong to harnesses
+that read files themselves. Its terminal semantics
 are pinned by adapter unit tests, not a recorded stream fixture: an explicit
-terminal provider error yields a bounded, redacted typed `error`, followed by
-`usage` and `completed` events, and never yields a message or patch. Ordinary
+terminal provider error yields a bounded typed `error` whose provider report is
+masked while the model's partial text (`partial_output`) stays exact, followed
+by `usage` and `completed` events, and never yields a message or patch. Ordinary
 `finish_reason: "stop"` and `finish_reason: "length"` remain successful
-completions.
+completions. That provider report, the body of a non-OK HTTP answer other than
+429 and a failed model-catalog read's detail are masked whole and only then cut
+to their bound. These cuts and the cut of the partial text never separate the
+two halves of a surrogate pair.
 
 ### Harness Stream Reference
 
@@ -1171,7 +2353,10 @@ shared process-tree death proof; unconfirmed termination is an error.
 
 Frames are limited to 8 MiB, process and event queues to 16 entries each,
 and independently drained stderr to its last 64 KiB. Unknown updates retain
-their original wire line in the redacted transcript. ACP `usage_update`
+their original wire line in the transcript. The transcript and the answer keep
+the agent's text exact (INV-146); the adapter removes only the managed token it
+injected, and masks credential-shaped text in stderr, error events and the
+agent's JSON-RPC error frames. ACP `usage_update`
 reports context occupancy, not billable token counts; cumulative USD cost
 is converted to deltas for run spend. Missing/non-USD cost stays unknown.
 Model choices come from `session/new.configOptions` with category `model`,
@@ -1201,11 +2386,43 @@ and Task tools also carry plan progress); `user` tool_result blocks →
 `stream_event` text deltas → `payload.delta === true` messages. Finality: the
 terminal `result` is the typed final answer — `final: true` is stamped ONLY on
 a success result (`structured_output` verbatim when present, else the result
-text); error subtypes never claim finality, and `error_max_turns` /
-structured-output-retries-exhausted are benign turn-control outcomes, not run
-failures. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
+text); error subtypes never claim finality. `error_max_turns` is one typed
+`error` carrying `turn_limit` (the run ends `interrupted / turn_limit_reached`
+and is never resumed under the same cap; ARCHITECTURE, context signals), and
+structured-output retries exhausted stay a benign conformance outcome, not a
+run failure. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
 frames surface (flagged `delta`); subagent frames (`parent_tool_use_id`) and
-block/lifecycle frames never do — the complete message always follows.
+block/lifecycle frames never do. A complete message follows only a block the
+CLI completes: a stream cut short leaves its fragments without one.
+Speech identity: the parser keys only observed main-conversation lifecycles.
+Each `message_start` … `message_stop` is one response incarnation, and each
+text block in it (`content_block_start` … `content_block_stop`) gets one opaque
+key, namespaced per parser instance. Fragments carry `speech.op: "fragment"`. A
+complete `assistant` frame carries `op: "complete"` only when it holds exactly
+one text block, carries the incarnation's own `message.id`, and arrives while
+that keyed block is the single open block (2.1.311 emits each block's complete
+frame just before its stop). It is never linked in a `text_runs_joined`
+incarnation, which defers frames past their stops, or after a duplicate start of
+the index. Such an incarnation instead defers each run of adjacent text blocks
+into one frame after the run's last stop (recorded on 2.1.311); that frame names
+the run's keys in `payload.joined_speech_keys`, completing none of them, only
+when it holds one non-empty text block with the incarnation's own id (and no
+`api_message_id` naming another response), is not an `aborted` partial, arrives
+with no block open, and every block of the run is keyed and uncompleted. Any
+other text frame ends the run unnamed. Disagreeing ids, missing ids, `aborted`
+partials and non-streaming frames stay unkeyed. A frame whose own
+`api_message_id` names another response is never authoritative: such a
+`message_start` keys nothing in its incarnation, such a `content_block_stop`
+drops that block's key without closing it, and such
+a `message_stop` drops every key of the incarnation without ending it or
+stating abandonment. A replay that reuses a message id is a new incarnation
+with new keys. Only the CLI's own `message_stop.abandoned_blocks` adds an
+`op: "abandoned"` status for an uncompleted keyed block; its fragments stay.
+The terminal `result` states no link to any response, so its final never
+carries `speech`, even when its text equals the last completion; thinking, the
+ExitPlanMode plan message and tool events carry none. Pins: the four
+`recorded-partial-*.jsonl` controlled-endpoint fixtures (2.1.311) and
+`packages/harness-claude/src/speech.test.ts`.
 Plumbing: other `system` subtypes and `control_response`/`control_cancel_request`
 frames are recognized and consumed, never timeline events. `rate_limit_event`
 additionally preserves measured `unifiedWindows` and the reported current window
@@ -1218,8 +2435,41 @@ run. Fresh lanes use `thread/start`; later lane turns use `thread/resume`; input
 verified local images and output schema ride `turn/start`. `turn/started`
 provides the exact active turn id. `item/*` maps `reasoning` → `thinking`,
 `commandExecution`/`mcpToolCall`/`webSearch` → `tool_call`+`tool_result`,
-`fileChange` → `file_change`, `agentMessage` → `message`; `turn/plan/updated`
-maps plan progress and `thread/tokenUsage/updated` maps usage.
+`fileChange` → one `file_change` per changed path typed `phase: started` /
+`completed` (the completed item's native status, when present, is the outcome:
+`completed` → ok, `failed` → error, `declined` → denied; each event's payload
+keeps the complete `path`, its own `change` and the item without its
+`changes` list), `agentMessage` →
+`message`; `turn/plan/updated` maps plan progress and
+`thread/tokenUsage/updated` maps usage.
+A finished `mcpToolCall` with status `completed` is `ok` and keeps the text
+blocks of its result (structured content when no text came back) with their
+line breaks as bounded, unmasked `content_summary`; status `failed` covers an
+`isError` result and a call that returned nothing, and keeps `error.message`,
+else the result text on one line, as `error_summary`. Any other status stays
+statusless. The tool identity stays the native tool name with `server:tool` as
+target, which Browser and Delegate evidence match.
+Codex starts an explicitly selected Browser as an optional MCP server in the
+background. A server not ready about one second after `turn/start` is absent from
+that first model request, both from code-mode `ALL_TOOLS` and from `tool_search`
+results; a later request or turn can include it. So when Browser is injected the
+adapter holds `turn/start`, after `thread/start` and `thread/resume` alike, until
+`mcpServer/startupStatus/updated` reports Browser `ready`, `failed` or `cancelled`.
+Codex keeps its own 90-second `startup_timeout_sec`; the adapter holds the turn at
+most five seconds longer, a grace for the status to arrive, so a failure Codex
+reports at its limit (observed at about 90.06 s) keeps Codex's own reason and a
+missing status cannot hold the turn longer. Stop ends the wait as `user_cancelled`
+without starting a turn. Other optional servers are not waited for. Browser's startup never
+decides the run: one nonterminal `status` event follows `started`, with
+`payload.code: codex_browser_startup`, `status` (`ready`, `failed`, `cancelled`,
+`starting` or `not_observed`), `waited_ms` and Codex's own reason as masked `error`,
+and the Control timeline shows it as an `info` row. The engine records the same
+receipt as the attempt's `browser.startup` and the run summary as the route's
+`browserStartup`; a Browser that was handed to a route but reported nothing stays
+null there. The macOS Browser badge reads it as `prepared`, `ready`,
+`startup failed`, `startup cancelled` or `startup unconfirmed`, never as a failed
+run. The turn goes on without Browser, so work needing a page stays unmet unless a
+page was actually read.
 `account/rateLimits/updated` maps measured known-scope windows to independent
 status+quota events from that same running process, without token usage or a
 cooldown. The full quota reader shares the native window codec; supplied RPC
@@ -1230,6 +2480,57 @@ An `error` notification with `willRetry: true` maps to nonterminal `status`
 payload. The vendor owns that in-turn retry: no retry count, delay, category,
 `transient` or `rate_limit` signal is inferred. Other `error` notifications keep
 the existing terminal and dropped-event handling.
+Native warnings map to nonterminal `status` events with
+`payload.code: codex_native_warning`, the vendor's `native_method` and its
+`native_params`, verbatim except for diagnostic masking: Codex may quote
+configuration, so a secret in the text or the params is masked by the adapter
+itself with the shared secret redaction (the params through their JSON text,
+else the masked text), and a warning without a secret is unchanged.
+`configWarning` (`{summary, details?, path?,
+range?}`) reports a recoverable configuration or initialization problem, such
+as the Linux bubblewrap user-namespace check Codex runs at startup; it arrives
+right after `initialize`, before the thread exists, and is delivered after
+`started`. Its text is `summary: details` when details are present (the
+composition Codex's TUI shows), else the summary. `warning` (`{threadId?,
+message}`) keeps its message; without a thread id it belongs to the run, and a
+sub-agent's carries the usual sub-agent tags. Each frame is one event, never
+merged with a repeat, and none is an error, a verdict or a host diagnosis:
+lifecycle, outcome, access and tool-error telemetry are unchanged, and the
+Control timeline shows them as `info` rows. A frame without its required text
+stays a dropped unrecognized event once the run reads it. A warning the run had
+not read when it stopped is still delivered, in arrival order, ahead of the
+`completed` event (and of a failure's `error`): one queued behind a refused
+`thread/start` or `turn/start`, one queued behind a `thread/resume` whose
+recovered identity does not match (still refused before any turn), one that
+arrives while the settled thread is read, and one that arrives while the process
+stops. After an explicit Stop the Ask, Agent and Plan attempts keep reading the
+cancelled stream, and then close it, within the inactivity watchdog's one
+existing cleanup deadline, counted from their next read after Stop; what arrives
+then, warnings included, is stored as evidence only: it is not published to live
+observers and never becomes the cancelled attempt's final answer, telemetry or
+tool-error verdict. Recorded assistant text can still appear in the diagnostic
+`final/retained-output.md` used by continuation; it does not make the run successful
+or label individual blocks as received after Stop. A directory-mode attempt still
+collects the typed file paths those late events name, so a file already written
+before Stop stays in the
+captured result bytes; this reads paths from evidence and starts no work. A late
+`patch_produced` raw patch is not accepted or materialized, and its response
+bytes are not kept; one accepted before Stop is still consumed after the stream,
+so Stop is not a general guarantee that no raw patch is applied. A warning the
+process reports after that deadline is not recorded. A run stopped during its
+preamble status does not start the Codex process. An unread frame without its required text is never delivered. Pin:
+`fixtures/app-server/synthetic-native-warnings-0.162.1.jsonl`.
+
+Codex's Linux sandbox prefers the system `bwrap` from `PATH`; its bundled
+fallback is not covered by a profile for `/usr/bin/bwrap`. On Ubuntu 24.04
+with AppArmor's unprivileged-user-namespace restriction enabled, the vendor's
+[sandbox prerequisites](https://learn.chatgpt.com/docs/sandboxing?surface=app#app-prerequisites)
+describe loading the packaged `bwrap-userns-restrict` profile. This is an explicit
+administrator action affecting every user of `/usr/bin/bwrap` on that host;
+Claudexor does not apply or repair it. [Diagnostic run 41001897998](https://github.com/razzant/claudexor/actions/runs/41001897998)
+exercised a real managed readonly run with a write-negative check against a
+scripted provider. It does not qualify native login, the originally reported
+Codex 0.153.3, package installation or a reboot.
 
 Finality is quiescence-based: an individual `turn/completed` is intermediate
 while the native thread is active, its goal is active, or a background terminal
@@ -1250,7 +2551,50 @@ record once after exit and attaches it to the terminal `completed` payload as
 `vendor_failure` (`source: "codex_rollout"`), verbatim and uninterpreted; a
 tagged-object variant yields its variant name. Skipped for an aborted run and
 under `evidence_policy: stream_only`. Pin: `fixtures/rollout/recorded-*.jsonl`
-(session-rollout records, not stream captures).
+(session-rollout records, not stream captures). The one native code the
+adapter translates is the typed usage refusal (`usage_limit_exceeded` here,
+`usageLimitExceeded` on a failed app-server turn or a non-retrying `error`
+frame): it adds a typed `rate_limit` with `reopening: "unknown"` and no reset to
+the same event, once per try, never from the message words. Only root-thread
+frames of the current root turn count, whether they arrive before or after a
+`systemError` settles the run; a sub-agent's refusal never limits the root.
+When the rollout yields no record, the root turn's own wire record
+(`codexErrorInfo` and its words) stays as `vendor_failure` with
+`source: "codex_app_server"`; a readable rollout record replaces it.
+
+Every rollout reader (observed model, rollout quota, vendor failure, continuity
+locate and move) goes through one boundary in `rollout-file.ts`. `X.jsonl` and
+`X.jsonl.zst` are two representations of one logical part. The transcript
+readers read the thread's newest part through its plain `.jsonl`; when that part
+exists only compressed, or only as or below a link, the model, quota and vendor
+failure stay unknown and no older part is read in its place. Each lookup stops
+after the first day with a matching part, visits no older days and remembers no
+absence, so a plain copy written later is read by the next lookup. Nothing is decompressed. Locate names that
+newest part as the holder, and a move copies every part, compressed history
+included. The run's selected `CODEX_HOME` is canonicalized first, so a home
+that is a link or sits
+under one stays usable. Below it nothing is read through a link: a part that is
+a link, or lies below a linked `sessions` or date directory, is never read or
+copied, and a part is opened without following a link and must still name the
+inode it was opened as. A move compares the two homes by directory identity, so
+two spellings of one store (the default home through a link and a profile
+registered at its real path) are the same home and nothing is copied; the copy
+also refuses a destination that is its own source before truncating anything.
+Reads go in fixed 1 MiB chunks up to the size captured
+at open and carry at most one 8 MiB line. A longer line is never parsed; when it
+carries a reader's marker it counts as an unreadable record (the scanned model is
+unknown, a vendor failure is absent, the quota keeps its previous reading), the
+same as a torn line. The event decoration keeps one
+cursor per run, so the model and the quota read only bytes appended since the
+previous event, and the model comes only from the `turn_context` of the turn
+the app-server `started` event named (`native_turn_id`): codex writes that
+record seconds after a resumed turn starts, and a goal continuation's later turn
+recorded before the next read does not displace it. A later unreadable `turn_context`
+prevents that read from supplying a model. Once decoration has retained model
+evidence, it keeps that observation rather than selecting it again. The retained exec `--json` mapper
+names no turn, so on it the last recorded `turn_context` is taken as before.
+Bounded memory does not make a cold read fast: the first read of a run still
+scans the whole rollout once, synchronously.
 
 **Cursor** — binary: `CLAUDEXOR_CURSOR_BIN`, else `cursor-agent` on the harness
 PATH, else Cursor's primary `agent` only when its realpath is the installer's
@@ -1274,7 +2618,38 @@ the complete flush; `thinking`/`reasoning` → `thinking`; variant-keyed
 `tool_call` objects (`shellToolCall`, `writeToolCall`, …) → `tool_call` on
 `started`, `tool_result` (+ `file_change`) on `completed`/`failed`, nothing
 on `updated`; a native `{failure:{exitCode|error}}` result is an ERROR even
-when the outer subtype says completed. On successful terminal `result`, the
+when the outer subtype says completed, and so is a shell `spawnError`. A shell
+result also carries typed `command_outcome` facts beside its tool-call status:
+an observed exit with its exit code and signal; `timed_out` for `timeout` or a
+`failure` aborted by its timeout; `backgrounded` for a `success` that carries a
+background shell handle (`shellId`, `backgroundReason` or result-level
+`isBackground`), whose protobuf-default `exitCode: 0` is not an exit; and
+`unknown` for an ok result in an unrecognized shape. Such an unconfirmed result
+keeps tool status `ok`, names its state in the event text, and keeps its
+complete native result, exactly, as `payload.native_result` of the durable
+`harness.event`. A handoff reads "Handed off to background; completion not
+observed", never "still running". The adapter keeps each handoff by its shell
+id; when a later `system/task_notification` frame names that shell
+(`task_id` = the result's `shellId`, from the same native session), it emits
+one `status` event with `payload.code: command_outcome_refined` for the SAME
+call: its `tool` carries the call's `use_id` and the handoff facts with state
+`completion_reported` and the vendor's `completion_status` (`success`, `error`
+or `aborted`, the words 2026.08.11 defines for a shell), and the complete native
+frame rides as `payload.native_notification`. The exit code stays unknown, even
+for `success`: the frame has no typed exit code, a free-text `detail` such as
+`exit_code=1` stays unparsed in the kept frame, and Claudexor does not read
+Cursor's own terminal records. So the text is "Completion reported; exit code
+unknown", or "Completion reported (error); exit code unknown", followed by the
+handoff. A notification that names no pending handoff of that session (an unknown
+or progress id, a duplicate, a shell id two pending handoffs share) or carries
+any other status consumes nothing, leaves the handoff standing and stays counted
+in `dropped_unrecognized_events`. These shapes follow the `agent.v1` shell
+protocol and the stream-json writer of cursor-agent 2026.08.11, and
+razzant/claudexor#546 reports one native run with its timeout and requested
+handoffs and `success` notifications. `error`, `aborted` and progress ids come
+only from reading that build's code. The repository holds no sanitized
+recording, so the shape remains a hypothesis until one exists.
+On successful terminal `result`, the
 adapter finalizes the LAST complete assistant flush
 (`final_source: assistant_message`) rather than Cursor's concatenated `result`
 string; it falls back to `result` only when no complete assistant frame exists.
@@ -1294,23 +2669,94 @@ generic `error` events — honest degradation, never invented status.
 prompt on piped stdin, without a print flag (agy 1.1.13 selects print mode
 from non-empty non-TTY stdin)
 (`--dangerously-skip-permissions` for full access; `--conversation <id>`
-resumes). Events: `init` → `started` (the vendor `conversation_id` is the
-resumable native session id); `step_update` with `step_type: "tool"` → a
-`tool_call` on `state: "ACTIVE"` and a `tool_result` on `state: "DONE"`
-(+ `file_change` for a writing tool) — every OTHER state, including a future
-one, is a recognized no-op, never a fabricated success; `step_update` with
-`text_delta` → a `message` narration segment (complete segments, not display
-deltas); terminal `result` → the typed final from `response`
-(`final_source: result`), or from a serialized `structured_output` envelope
-when a schema is passed — a branch no shipped path reaches today, because the
-adapter passes no `--json-schema` and the manifest declares
-`json_schema_output` false. `status: "SUCCESS"` with an EMPTY response is the
-vendor's soft-deny class (upstream #794) and surfaces as a typed `error`, not
-an empty success. A login timeout also exits 0, but it is a different shape:
-it carries `status: "ERROR"` with the failure text
-(`packages/harness-agy/fixtures/error-auth.jsonl`). `usage` carries
-input/output/cache-read tokens; `thinking_tokens` has no schema home and is
-dropped rather than folded into output. No typed rate-limit path exists. The CLI has no config-dir env var
+resumes). agy keeps only the first 192,000 bytes of a larger piped prompt,
+counting a 15-byte wrapper (measured on 1.1.13 through 1.5.3; also all 24
+retained inputs of an 8 November 2026 triage). Input over Claudexor's conservative
+128 KiB limit is therefore never sent inline: the caller's instructions and
+task are saved unchanged, in parts of at most 32 KiB, under the run's own
+`context/` directory (`input_file_dir`, outside every worktree and retired
+with the run; a thread's summary pass uses its enclosing run's), and stdin
+carries a short engine bootstrap that names the directory once and each
+section's numbered range of parts, instructions first, so its size does not
+grow with the input; the engine notes stay inline. An
+`agy_input_file_delivery` status records sizes and digests, never that the
+model read them. Model-free probes on sampled versions from 1.1.13 through 1.5.3 returned
+32 KiB unbroken lines whole; a live run also read a 32,042-byte line and returned its end marker. Without a run-owned directory, or when agy might not be
+allowed to read outside its workspace, the input is refused before anything
+is sent. Before a run the adapter ensures the profile's own
+`.gemini/antigravity-cli/settings.json` allows `read_file(*)`, which the vendor
+documents as matching all files on the system, keeping every other key and
+rule. The agent then reads any path in every access profile, as claude and
+codex agents do; without it a headless plan-mode run auto-denies any read
+outside its workspace folder. The vendor evaluates Deny > Ask > Allow, so a
+`read_file` deny rule in that file still wins, and `toolPermission: "strict"`
+prompts before every read even when an allow rule matches. Settings the
+adapter cannot read, parse or write are never rewritten, and a non-full run
+reports `agy_read_grant_unavailable`. In a headless run plan mode's ask for
+a command cannot be answered and ends the whole turn, so a readonly run also
+passes session-only settings in a private file (`--settings`) that deny `command(*)` and `write_file(*)`, including commands the
+profile allows. agy merges that object into the profile settings but replaces
+each permission list it names and refuses unknown keys, so it carries only
+`permissions` with all three lists copied from the profile as read, the read
+grant included, and the denials appended (`agy_readonly_session_policy`). A
+denied call then fails as its own tool step and the model continues. When only
+saving the read grant fails, the session settings still carry it. When the
+settings cannot be read or a list has another shape, the readonly run is
+refused before it starts (`agy_readonly_session_policy_unavailable`). The
+flag needs agy 1.4.10 or newer: official 1.1.13 and the tested releases from
+1.3.4 through 1.4.9 reject it while parsing arguments, before any model or account
+access, and 1.4.10 through 1.5.3 accept it. On an older CLI a readonly run
+therefore stops with `agy_session_settings_unsupported` and an update remedy,
+and doctor reports `readonly_min_version`; full and workspace_write runs are
+unaffected, and nothing updates agy. This minimum is separate from the 1.1.13
+fixture and transport pin. Other asking categories (`read_url`,
+`execute_url`, `mcp`) may still end a turn. The instructions end with an
+engine note naming the denial (`agy_readonly_access_note`). Events:
+`init` → `started` (the vendor `conversation_id` is the
+resumable native session id); tool steps emit `tool_call` on `ACTIVE`.
+`DONE` emits an error `tool_result` for native tool errors, a successful
+`tool_result` (+ a completed `file_change` for writers) only with reported
+output, otherwise a diagnostic `status`; `ERROR` (a denied or failed step)
+emits that call's error `tool_result` and never a `file_change`. Each carries
+the recorded `step_index` as its use id (`step-N`), which pairs a result with
+its own call. Other states are recognized no-ops. Each `text_delta`
+is a non-final stream fragment (`payload.delta`), kept byte-exact, whitespace-only
+and repeated frames included: in retained tries every typed final equals the
+exact concatenation of its narration frames, across steps and tools. In Agent
+candidates, fragments count toward the per-attempt live preview cap of 4,000: past it live
+observers get no further fragments (one status says so), while the journal,
+replay and retained output keep every frame. Terminal
+`SUCCESS` emits the `response` final (`final_source: result`); object
+`structured_output` is parsed but unreachable in shipped runs
+(`json_schema_output` is false).
+Empty `SUCCESS` is a cause-unknown error, never proof of permission denial. A
+non-`SUCCESS` result is never answer material: a non-empty `response` and an
+object `structured_output` ride exact retained evidence (`buffered` messages
+marked `non_success_result`, never live display), and its error carries the
+result's own `status` and error words as `vendor_failure` (`source:
+agy_result`), attached to the run loop's single `completed`; it is opaque and
+no retry, rotation or cooldown reads it (synthetic
+`fixtures/fragment-error-run.jsonl`). A stream that ends without its `result`
+frame and without an error is an honest failure ("agy ended without its
+terminal result"), not a narration answer or an empty success. Why the vendor
+ends a streamed turn with an error is not established by these facts. The
+vendor's own stderr record of that failure, `AGY_ERROR: {json}` (agy then exits
+3), is read for one fact: when a try voiced its failure and its last record says
+exactly `retryable: false`, the try carries the `vendor_not_retryable` request
+refusal with the record's `error_id`, so the run fails without a retry, an in-run
+continuation or an account rotation. Any other record or value, malformed JSON,
+the same line in model text or a warning without a voiced failure decides
+nothing.
+Only the native `jetski` headless auto-denial stderr diagnostic establishes
+`permission_denial`: without a final it is a terminal refusal; with a retained
+final it is a typed warning, not failed output (INV-044). No retry or access
+elevation is inferred. A zero-exit login timeout instead carries `ERROR` and
+failure text (`fixtures/error-auth.jsonl`). `usage` carries input/output/cache-read
+tokens; `thinking_tokens` is dropped, never folded into output. When AGY's structured
+`result.error` says `Individual quota reached`, the adapter emits the existing typed
+`rate_limit` signal with `reopening: "unknown"` and no reset or retry delay, while
+retaining the exact `vendor_failure` record. This is evidence for the continuation
+consumer; it does not infer a reopening time. The CLI has no config-dir env var
 (upstream #155), so a named identity is a Claudexor-owned `HOME` — which also
 relocates the vendor's conversation and cache state, so one profile HOME holds
 every thread's vendor state. Credential custody is platform-shaped: on Linux
@@ -1328,6 +2774,27 @@ not claim per-HOME Google identity isolation. Doctor `/model` and quota
 immediately. These checks cannot enter interactive sign-in; explicit managed
 login retains its terminal input. Ambiguous authentication timeouts are probe
 failures, not credential revocation. Local token-file presence is not readiness.
+
+**Grok Build (`grok`)** — wire: `grok --no-auto-update --prompt-file <file>
+--cwd <cwd> --output-format streaming-messages-json` plus the access flags in
+the [adapter README](../packages/harness-grok/README.md) (`--resume <id>`
+resumes on the same named account). Events: the `system/init` frame → `started`
+(native session id, model); it is also the only confirmation of the scoped tool
+policy and of the credential source (`apiKeySource`). A contradicting frame ends
+the try; a source other than `oauth` is the typed `credential_source_unconfirmed`
+request refusal, which also stops retries and account rotation, whatever else
+the frame reports. A tool-policy contradiction alone is an ordinary failure, so
+the engine's bounded retry and rotation apply. Error text is never read as an
+authentication verdict. Assistant
+`tool_use` / user `tool_result` pairs map to tool
+events, with `file_change` only for a successful `search_replace`/`write`; a
+statusless result is a diagnostic `status`. The terminal `result` emits the
+final (`final_source: result`, or its `structured_output`) and one aggregate
+`usage` with cache reads and writes; `total_cost_usd` is not read. A top-level
+`error` frame fails the turn, and a later `result` adds only its usage. Quota
+and rate failures from the stream or stderr become typed `rate_limit` signals.
+Fixtures were recorded with CLI 1.0.67 on Windows; the quota stream is
+synthetic.
 
 **OpenCode** — markerless: no typed final message; the engine's
 AnswerAssembly falls back to joining narration (the documented degradation
@@ -1347,8 +2814,23 @@ Known traps (class → CURRENT rule → pin):
   `thinking`. Pin: manifest `thinking_events` exact counts.
 - Delta chunks joined into the answer: display-stream chunks concatenated as
   if they were messages. Rule: delta messages carry `payload.delta === true`
-  and the complete message always follows; assemblers skip flagged deltas.
+  and assemblers skip them; a complete message follows only completed blocks,
+  so abandoned fragments never get one.
   Pins: `stream-deltas.jsonl` + `delta_messages` expectations.
+- Text twins reconciled by prose or native ids: a reader merges fragments,
+  complete snapshots and the final because their words or message ids match.
+  Rule: identity is only the adapter-issued `speech.key` of one observed text
+  block lifecycle; equal words or equal native ids under different or absent
+  keys stay separate, and a final carries a key only when its link is proven.
+  Retained output and continuation evidence group keyed text by that key and
+  never drop a block because carried text contains its words; their unkeyed
+  merges are an exact adjacent delta, flush or final repetition of the same
+  try's last text block and a joined frame whose text is exactly the keyed run
+  its adapter names (ARCHITECTURE, retained output).
+  Pins: `packages/harness-claude/src/speech.test.ts`;
+  `run-timeline-text.test.ts`; `packages/event-log/src/retained-output.test.ts`;
+  `packages/orchestrator/src/continuation-identity.integration.test.ts`;
+  `packages/orchestrator/src/continuation-live-finals.test.ts`.
 - Rate limit read from prose: retry/limit conditions scraped from message
   text. Rule: adapters attach the typed `rate_limit`/`transient` fields (or a
   typed `status` event for a harness-owned `api_retry`); consumers never regex
@@ -1391,8 +2873,20 @@ One `daemon/engine.sqlite` under the selected config root owns command,
 project, thread and event state. Project run artifacts retain the external
 `~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/` namespace; the target
 repository's `.claudexor/` remains user-owned config. No-project Ask uses a
-synthetic cwd and writes artifacts under `~/.claudexor/v3/runs/`. An explicitly
+synthetic cwd and writes artifacts under `~/.claudexor/v3/runs/`; a one-shot run of an
+explicitly ephemeral root (`scope.ephemeral`) writes under `~/.claudexor/v3/one-shot/runs/`. A thread
+created on such a root stays unregistered with its commands in the global partition,
+while its turns share that root's project namespace with the thread's lanes. An explicitly
 bound host data root keeps its own location.
+
+The current SQLite schema is version 7. Its atomic 6→7 upgrade adds the
+managed-resource holders and two next-message columns without rewriting any row.
+The 5→6 upgrade moved task-group membership into a lower-case column, backfilled
+from accepted summaries, and rebuilt both group indexes on it. Earlier versions
+follow 1→2 (account service), 2→3 (task-group indexes), 3→4 (deferred messages),
+4→5 (the guarded plan-answer index for thread history), 5→6, then 6→7. Reopening
+version 7 is write-free; older readers refuse an upgraded store. See [SQLite engine store](ARCHITECTURE.md#sqlite-engine-store)
+for migration and complete-backup downgrade precautions.
 
 The 4.0 migration requires Node 24.15.0 or newer with supported bundled SQLite.
 Desktop application 4.0 is required before engine 4.0; the existing updater
@@ -1420,7 +2914,12 @@ for retained-stream changes.
 
 - Schema and generated JSON Schema are the data-shape source of truth.
 - Unknown modes and unavailable harnesses fail loudly.
-- Raw secrets never become run artifacts or docs.
+- Claudexor never writes the credentials it manages into run artifacts, and
+  docs and fixtures never contain real credentials. Working content (prompts,
+  answers, patches) is kept exactly and tool output as unmasked bounded
+  summaries, credential-shaped or not; see
+  [Exact working content](ARCHITECTURE.md#exact-working-content) for that rule
+  and the `pr` publication scan.
 - No regex governance for risk, permissions, tool success, web-required
   detection, winners, or tests-passed. Use typed contracts, settings, events,
   gates, artifacts, and reviewer evidence.
@@ -1480,22 +2979,26 @@ subscription sessions are always preferred.
 
 | Variable | Owner | Effect |
 |---|---|---|
-| `CLAUDEXOR_CONFIG_DIR` | util | Relocates the whole config/state root (default `~/.claudexor/v3`; tests and CI use a disposable absolute path). |
+| `CLAUDEXOR_CONFIG_DIR` | util | Relocates the whole config/state root (default `~/.claudexor/v3`; tests and CI use a disposable absolute path). That root may itself be a link; a link below it is no relocation, and cleanup keeps what it leads to. |
 | `CLAUDEXOR_DAEMON_OWNER` | CLI | Explicit `standalone` (default) or `external` lifecycle; external requires an absolute root. See [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_HOST_BINDING_VERSION` | plugins / mcp-server | Declared dynamic binding format, independently of the manifest's generator version; see [external host integrations](#externally-owned-host-integrations). |
 | `CLAUDEXOR_BUILD_SHA` | util | Build-time stamp of the engine's git commit SHA (packaging sets it); without it a dev checkout reads `git rev-parse HEAD` and packaged builds report `unknown`. Reported in the handshake build identity. |
+| `CLAUDEXOR_BETTERLEAKS_PATH` | delivery | Explicit path to the publication scanner used by `pr` delivery and the repository CI scan; when set it is the only candidate and must match the pinned Betterleaks 1.9.0 binary digest. Without it, the copy bundled with the macOS app, update closure or SSH runtime is used, then the copy `claudexor scanner prepare` provisions; npm installs bundle none (see [ARCHITECTURE.md](ARCHITECTURE.md#publication-scanner)). |
 | `CLAUDEXOR_DISABLE_STORED_SECRETS` | secrets | Ignore v2 file-stored secret refs entirely (hermetic runs; native sessions still work). |
-| `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` / `CLAUDEXOR_AGY_BIN` / `CLAUDEXOR_COPILOT_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
+| `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` / `CLAUDEXOR_AGY_BIN` / `CLAUDEXOR_COPILOT_BIN` / `CLAUDEXOR_GROK_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
 | `CLAUDEXOR_CODEX_API_KEY` / `CLAUDEXOR_ANTHROPIC_API_KEY` / `CLAUDEXOR_CURSOR_API_KEY` | adapters | Claudexor-scoped API-key overrides (take precedence over provider env names). |
 | `CLAUDEXOR_CODEX_MODEL` | codex adapter | Default model override for the codex route. |
 | `CLAUDEXOR_CODEX_NATIVE_HOME` / `CLAUDEXOR_CLAUDE_NATIVE_DIR` | adapters | Explicit Claudexor-owned Codex profile or Claude native config directory overrides. |
+| `CLAUDEXOR_FAKE_NATIVE_STORE` | fake harness | Test fixture store where `fake-session` writes its own session files; absent means none are written. |
 | `CLAUDEXOR_PROFILE_LOCATOR` | engine → adapter `continuity` (internal, never a child env) | The registry `isolation_locator` of the credential profile whose store holds (or will hold) a native session, named by the engine on the EnvMap it hands to the adapter's `continuity.locate` / `continuity.move`; the adapter maps it onto its own vendor store variable. Users never set it. |
-| `CLAUDEXOR_RUN_SCOPE_<id>` | orchestrator / daemon (internal child env) | The run's process-scope marker (`CLAUDEXOR_RUN_SCOPE_<32 hex>=1`), minted before the first launch and carried into every harness child of the run (it survives `clean` inheritance, which also forwards an enclosing host's markers of the same grammar). At the run's terminal and at the next daemon start after a crash, every live process still carrying it — plus the groups and descendants the daemon recorded — is ended by measured identity before the run's terminal is published, and the outcome is disclosed in `final/process_scope.yaml` (best-effort evidence: when that write fails the verdict is still published and the run has no record) (on macOS the census reads the environments only of processes no older than the scope, selected by `ps` elapsed time so that both sides come from the same clock at the same moment; a process older than the run cannot carry its marker; a backward wall-clock step of more than a minute during the run can hide a marker-only member) (INV-144; `completeness` is `complete` only on Linux when the census read every same-uid environment, `not_provable` on macOS and Windows or after an unreadable or deadline-bound census). `GET /v2/runs/:id` always carries `summary.processScope`: the compact record once the run is terminal and the record is readable and valid, otherwise an explicit `null` that means unknown, never clean (the run is still live, the record is absent — a run that predates it or whose write failed — or it is unreadable or invalid); engines that predate the field omit the key, which is equally unknown, and the generated JSON Schema lists the property as optional (it declares a default of `null`) although this engine always sends it. The list projection (`GET /v2/runs`) always leaves `processScope` null — read the detail. A host that must act while the daemon is dead may read `daemon/run-scopes.json` (`{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`, `state` (`open` \| `unresolved`), `opened_at` (ISO time: the floor the daemon uses while no lstart birth exists), `scope_start` (lstart text or null), `root_groups[{pgid, leader_pid, leader_birth \| null, leader_identity?}]` — `leader_identity` is the daemon's opaque kernel birth token, comparable only by the daemon's own identity helper — and `captured[{pid, pgid, birth}]`; births in the C-locale `ps -o lstart=` spelling. A host without the identity helper, when `leader_birth` is null: a live process with `pid == pgid` cannot be verified as the recorded leader, so skip that group; when no process with `pid == pgid` is alive, the group's remaining members born at or after the floor belong to the scope, because the kernel never hands out a pid that is still a live process-group id) and end recorded members by measured identity. Users never set it. |
+| `CLAUDEXOR_RUN_SCOPE_<id>` | orchestrator / daemon (internal child env) | The run's process-scope marker (`CLAUDEXOR_RUN_SCOPE_<32 hex>=1`), minted before the first launch and carried into every harness child of the run (it survives `clean` inheritance, which also forwards an enclosing host's markers of the same grammar). A daemon outlives any run, so the CLI launcher sheds an inherited run marker, and a host that starts `claudexord` itself must too: otherwise the daemon's recorded groups and descendants attach to the inherited marker and only the environment census reaches its runs' processes. At the run's terminal and at the next daemon start after a crash, every live process still carrying it — plus the groups and descendants the daemon recorded — is ended by measured identity before the run's terminal is published, and the outcome is disclosed in `final/process_scope.yaml` (best-effort evidence: when that write fails the verdict is still published and the run has no record) (on macOS the census reads the environments only of processes no older than the scope, selected by `ps` elapsed time so that both sides come from the same clock at the same moment; a process older than the run cannot carry its marker; a backward wall-clock step of more than a minute during the run can hide a marker-only member) (INV-144; `completeness` is `complete` only on Linux when the census read every same-uid environment, `not_provable` on macOS and Windows or after an unreadable or deadline-bound census). `GET /v2/runs/:id` always carries `summary.processScope`: the compact record once the run is terminal and the record is readable and valid, otherwise an explicit `null` that means unknown, never clean (the run is still live, the record is absent — a run that predates it or whose write failed — or it is unreadable or invalid); engines that predate the field omit the key, which is equally unknown, and the generated JSON Schema lists the property as optional (it declares a default of `null`) although this engine always sends it. The list projection (`GET /v2/runs`) always leaves `processScope` null — read the detail. `summary.processScopeLater` is the latest later, separately bounded settlement attempt the live owning daemon made after the terminal (`final/process_scope_later.yaml`, beside the unchanged terminal record; null when none ran or it is unreadable: unknown, never clean). The index is written compactly; a row the engine cannot parse stays in `entries` verbatim and unknown. A host that must act while the daemon is dead may read `daemon/run-scopes.json` (`{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`, `state` (`open` \| `unresolved`), `opened_at` (ISO time: the floor the daemon uses while no lstart birth exists), `scope_start` (lstart text or null), `root_groups[{pgid, leader_pid, leader_birth \| null, leader_identity?}]` — `leader_identity` is the daemon's opaque kernel birth token, comparable only by the daemon's own identity helper — and `captured[{pid, pgid, birth}]`; births in the C-locale `ps -o lstart=` spelling. A host without the identity helper, when `leader_birth` is null: a live process with `pid == pgid` cannot be verified as the recorded leader, so skip that group; when no process with `pid == pgid` is alive, the group's remaining members born at or after the floor belong to the scope, because the kernel never hands out a pid that is still a live process-group id) and end recorded members by measured identity. Users never set it. |
+| `CLAUDEXOR_MAINTENANCE_PROTOCOL` | CLI (internal child env) | Enables durable before-mutation acknowledgments between the maintenance service and its custodied CLI child. Users never set it. |
+| `CLAUDEXOR_MAINTENANCE_EVIDENCE` | CLI (internal protocol marker, not an environment variable) | Prefix on stderr evidence frames acknowledged by the parent before the child may mutate the installation. |
 | `CLAUDEXOR_HOME_SCOPED` | orchestrator / review (internal child env) | `1` when the harness runs under a scoped native-state HOME (delegated, read-only and reviewer sessions). A fact for the model, not containment. |
 | `CLAUDEXOR_OPERATOR_HOME` | orchestrator / review (internal child env) | The operator's own home directory, captured from the daemon's unscoped env before HOME is rebased, so a scoped session knows where host caches live instead of searching for them. Set only together with `CLAUDEXOR_HOME_SCOPED`; `PLAYWRIGHT_BROWSERS_PATH` is exported alongside when the operator's Playwright cache exists and no explicit value (including `0`) was set. |
 | `CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE` | Claude adapter (internal child env) | Marker for the capability-declared macOS Keychain bridge in a disposable Claude-only HOME (`ready` / `unavailable`). Users never set it; generic scoped homes and other harnesses do not receive it (INV-067). |
-| `CLAUDEXOR_RAWAPI_BASE_URL` / `CLAUDEXOR_RAWAPI_KEY` / `CLAUDEXOR_RAWAPI_MODEL` | raw-api adapter | OpenAI-compatible endpoint, key, and model for the raw-API route. |
-| `CLAUDEXOR_OPENROUTER_BASE_URL` / `CLAUDEXOR_OPENROUTER_MODEL` | openrouter route | Base URL and default model for the built-in OpenRouter raw-API instance (key: `OPENROUTER_API_KEY`). |
+| `CLAUDEXOR_RAWAPI_BASE_URL` / `CLAUDEXOR_RAWAPI_KEY` / `CLAUDEXOR_RAWAPI_MODEL` | raw-api adapter | OpenAI-compatible endpoint, key, and optional operator model for the raw-API route, used below a run's model and `harnesses.raw-api.default_model`. |
+| `CLAUDEXOR_OPENROUTER_BASE_URL` / `CLAUDEXOR_OPENROUTER_MODEL` | openrouter route | Base URL and optional operator model for the built-in OpenRouter raw-API instance (key: `OPENROUTER_API_KEY`), used below a run's model and `harnesses.openrouter.default_model`. Neither route has a built-in model: with no choice at all it refuses `model_selection_required` before sending anything. |
 | `CLAUDEXOR_CONTROL_PORT` | daemon | Pin the control-API port (default: OS-assigned loopback port). |
 | `CLAUDEXOR_NO_CONTROL_API` | daemon | Start the daemon without the HTTP control API (socket only). A recovery-required startup verdict overrides it and binds the control API anyway — the `/recovery/*` surface is the recovery plane's point — and the override is disclosed in the daemon log. |
 | `CLAUDEXOR_DAEMON_SOCK` | daemon | Override the daemon's UNIX socket path. |
@@ -1508,7 +3011,7 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_ROOT_MODE` | plugins / mcp-server | Provenance marker (`explicit`) alongside an operator-chosen or externally owned `CLAUDEXOR_CONFIG_DIR`; its absence next to a frozen non-default root is treated as legacy skew and refused. Standalone default-root installs serialize neither. |
 | `CLAUDEXOR_MANAGED` | plugins | Generated-artifact ownership marker; does not select daemon lifecycle ownership. |
 | `CLAUDEXOR_DELEGATION_PARENT_RUN_ID` / `CLAUDEXOR_DELEGATION_REPO_ROOT` / `CLAUDEXOR_DELEGATION_DEPTH` / `CLAUDEXOR_DELEGATION_MAX_SUBRUNS` / `CLAUDEXOR_DELEGATION_BUDGET` | mcp-server (delegation belt) | Injected by the daemon into the `agent --delegate` belt process (`claudexor mcp serve-belt`); carry the parent run id, the original normalized user-project root, nesting depth (belt refuses depth>0), the per-parent sub-run cap, and the resolved parent budget used to bind children to one live daemon-owned paid-budget authority. The bound root prevents a child from falling into the parent harness envelope or being redirected by a raw tool argument. These bootstrap values seed a conservative process-local refusal ledger so the belt can fail closed between daemon responses; daemon family accounting remains the authoritative cap, every child reports its own spend, and the parent reports the aggregate. Never set by hand. |
-| `CLAUDEXOR_DELEGATION_PROCESSING_PREFERENCE` / `CLAUDEXOR_DELEGATION_WORKSPACE_KIND` / `CLAUDEXOR_DELEGATION_SCOPE_PATHS` | orchestrator / mcp-server (delegation belt) | Injected captured Processing preference, workspace kind and JSON array of selected relative paths. The belt carries them into child requests with the parent's bound project; omission preserves the legacy request. These are internal transport fields, never user-set overrides. |
+| `CLAUDEXOR_DELEGATION_PROCESSING_PREFERENCE` / `CLAUDEXOR_DELEGATION_PROMPT_CACHE_TTL` / `CLAUDEXOR_DELEGATION_WORKSPACE_KIND` / `CLAUDEXOR_DELEGATION_SCOPE_PATHS` | orchestrator / mcp-server (delegation belt) | Injected captured Processing preference, prompt-cache lifetime, workspace kind and JSON array of selected relative paths. The belt carries them into child requests with the parent's bound project; omission preserves the legacy request. These are internal transport fields, never user-set overrides. |
 | `CLAUDEXOR_REVIEWER_TIMEOUT_MS` | config | Per-reviewer timeout override for review panels. |
 | `CLAUDEXOR_REVIEW_WAVE_ID` | release review | Operator-generated UUID identifying one release review wave; each operator reviewer artifact's metadata must carry it, and the sealed release attestation refuses mixed or sequential wave artifacts. |
 | `CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS` | config | Inactivity window before a silent harness stream is failed (not a wall-clock cap). |

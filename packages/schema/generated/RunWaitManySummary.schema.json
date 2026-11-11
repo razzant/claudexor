@@ -1,0 +1,75 @@
+{
+  "$ref": "#/definitions/RunWaitManySummary",
+  "definitions": {
+    "RunWaitManySummary": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "interrupted"
+              ],
+              "description": "Control-plane run state = the run LIFECYCLE (D8): queued/running while live, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks/review/delivery) is orthogonal — see outcomeFacts."
+            },
+            "pending": {
+              "type": "boolean"
+            },
+            "token": {
+              "type": "string",
+              "minLength": 43,
+              "maxLength": 43,
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "problem": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "status",
+            "pending",
+            "token",
+            "problem"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "null"
+            },
+            "pending": {
+              "type": "null"
+            },
+            "token": {
+              "type": "null"
+            },
+            "problem": {
+              "type": "string",
+              "enum": [
+                "not_found",
+                "snapshot_unavailable",
+                "not_observed"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "pending",
+            "token",
+            "problem"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

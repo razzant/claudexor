@@ -1,10 +1,22 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { killWindowsProcessTree } from "@claudexor/core";
-import { describe, expect, it } from "vitest";
+import { SetupLoginRunnerState, SetupNativeCommandErrorCode } from "@claudexor/schema";
+import { describe, expect, it, vi } from "vitest";
+import {
+  describeRemaining,
+  inAppSidecarFacts,
+  preferCapturedSidecars,
+  probeProcess,
+  readInAppSidecars,
+  remainingProcesses,
+  settleInAppOutcome,
+  type InAppSidecarFacts,
+  type RecordedProcess,
+} from "../../../scripts/lib/win32-agy-acceptance-diagnostics.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(packageRoot, "..", "..");
@@ -17,6 +29,10 @@ const fixture = resolve(
   "claudexor-conpty-test-child.exe",
 );
 const worker = resolve(repoRoot, "scripts", "win32-agy-print-acceptance-worker.mjs");
+const sidecarVocabulary = {
+  errorCodes: SetupNativeCommandErrorCode.options,
+  stages: SetupLoginRunnerState.shape.stage.options,
+};
 
 interface FakeEvidence {
   mode: "print" | "hang" | "interactive";
@@ -31,23 +47,26 @@ interface FakeEvidence {
   providerKeysAbsent: boolean;
 }
 
+interface InAppDiagnostics {
+  runnerPid: number;
+  workerPid?: number;
+  helperPid?: number;
+  vendorPid?: number;
+  runnerExit?: { code: number | null; signal: NodeJS.Signals | null };
+  runnerClosed?: boolean;
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  codeEchoObserved?: boolean;
+  sidecars?: InAppSidecarFacts;
+}
+
 interface AcceptanceSummary {
   ok: boolean;
   stage?: string;
   workerPid: number;
-  observedPids: number[];
+  observedProcesses: RecordedProcess[];
   error?: string;
-  inAppDiagnostics?: {
-    runnerPid: number;
-    workerPid?: number;
-    helperPid?: number;
-    vendorPid?: number;
-    runnerExit?: { code: number | null; signal: NodeJS.Signals | null };
-    runnerClosed?: boolean;
-    stdoutBytes?: number;
-    stderrBytes?: number;
-    codeEchoObserved?: boolean;
-  };
+  inAppDiagnostics?: InAppDiagnostics;
   paths: {
     config: string;
     evidenceB: string;
@@ -136,27 +155,27 @@ describe.skipIf(process.platform !== "win32")("Win32 agy acceptance", () => {
     if (!child.pid) throw new Error("console host PID was not assigned");
     const hostPid = child.pid;
     let summary: AcceptanceSummary | null = null;
+    let runFailure: { error: unknown } | undefined;
     try {
       let completed: CollectedChild;
       try {
         completed = await withTimeout(collect(child), 75_000, "agy acceptance console host");
       } catch (error) {
-        if (existsSync(resultPath)) {
-          summary = JSON.parse(readFileSync(resultPath, "utf8")) as AcceptanceSummary;
-        }
+        summary = readSummary(resultPath);
         const message = error instanceof Error ? error.message : String(error);
         // Capture typed facts before finally kills the tree and deletes its
         // sidecars. Never include the pasted input, OAuth URL, or raw output.
-        throw new Error(
-          `${message}; stage=${summary?.stage ?? "not_started"}; inApp=${JSON.stringify(inAppTimeoutDiagnostics(root, summary))}`,
-        );
+        throw new Error(`${message}; ${failureFacts(root, summary)}`);
       }
-      if (existsSync(resultPath)) {
-        summary = JSON.parse(readFileSync(resultPath, "utf8")) as AcceptanceSummary;
-      }
-      expect(completed.code, summary?.error ?? completed.stderr).toBe(0);
-      expect(completed.signal).toBeNull();
-      expect(summary?.ok, summary?.error).toBe(true);
+      summary = readSummary(resultPath);
+      // A worker that failed on its own carries the same typed facts.
+      const failure =
+        completed.code === 0 && completed.signal === null && summary?.ok === true
+          ? undefined
+          : `${summary?.error ?? completed.stderr}; ${failureFacts(root, summary)}`;
+      expect(completed.code, failure).toBe(0);
+      expect(completed.signal, failure).toBeNull();
+      expect(summary?.ok, failure).toBe(true);
       if (!summary?.ok) throw new Error(summary?.error ?? "acceptance worker failed");
 
       expect(parseConsoleState(completed.stdout, "HOST_BEFORE")).toEqual({
@@ -270,43 +289,339 @@ describe.skipIf(process.platform !== "win32")("Win32 agy acceptance", () => {
         expect(row.pid).toBeGreaterThan(0);
       }
 
-      const observedPids = [
-        hostPid,
-        summary.workerPid,
-        summary.timeout.pids.vendor,
-        summary.timeout.pids.descendant,
-        summary.login.runnerPid,
-        ...inAppPids,
-        ...summary.observedPids,
-        ...summary.evidence.map((row) => row.pid),
-        ...summary.control.evidence.map((row) => row.pid),
-      ];
-      await expectPidsGone(observedPids, 5_000);
+      await expectProcessesGone(recordedProcesses(hostPid, summary), 5_000);
+    } catch (error) {
+      runFailure = { error };
+      throw error;
     } finally {
-      const exactPids = new Set<number>([hostPid]);
-      if (summary) {
-        exactPids.add(summary.workerPid);
-        for (const pid of summary.observedPids ?? []) exactPids.add(pid);
-        exactPids.add(summary.timeout?.pids.vendor ?? 0);
-        exactPids.add(summary.timeout?.pids.descendant ?? 0);
-        for (const row of summary.evidence ?? []) exactPids.add(row.pid);
-        for (const row of summary.control?.evidence ?? []) exactPids.add(row.pid);
-        exactPids.add(summary.inAppLogin?.runnerPid ?? 0);
-        exactPids.add(summary.inAppLogin?.workerPid ?? 0);
-        exactPids.add(summary.inAppLogin?.helperPid ?? 0);
-        exactPids.add(summary.inAppLogin?.vendorPid ?? 0);
-      }
-      for (const pid of exactPids) {
-        if (pid > 0 && pidAlive(pid)) killWindowsProcessTree(pid);
-      }
-      try {
-        await expectPidsGone([...exactPids], 5_000);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+      // The run's own failure carries its stage, exit and receipt facts; a
+      // cleanup failure is appended to it, never put in its place.
+      await cleanUpAfter(runFailure, async () => {
+        const processes = recordedProcesses(hostPid, summary);
+        for (const pid of new Set(processes.map((entry) => entry.pid))) {
+          if (pid > 0 && probeProcess(pid).state !== "gone") killWindowsProcessTree(pid);
+        }
+        await confirmCleanup(processes, root, 5_000);
+      });
     }
   }, 90_000);
 });
+
+// Portable controls of the failure path above: a real child exits, the worker's
+// own outcome check reads real sidecars through the real receipt decoder, and
+// the summary goes through the same reader and message as the acceptance.
+describe("Win32 agy acceptance failure facts", () => {
+  const privateOutput =
+    "CODE: one-shot-win32-code-77 https://accounts.google.com/o/oauth2/auth?state=claudexor-conpty-fixture";
+
+  it("pass a clean in-app outcome through the worker's check", async () => {
+    await withInAppJob(async (_root, paths, protocol) => {
+      protocol.atomicPrivateJson(paths.receipt, runnerReceipt({}));
+      const runner = exitingChild(0);
+      const diagnostics: InAppDiagnostics = { runnerPid: runner.pid };
+      let persisted = 0;
+      const outcome = await settleInAppOutcome({
+        finished: runner.finished,
+        diagnostics,
+        paths,
+        decodeReceipt: protocol.readRunnerResult,
+        vocabulary: sidecarVocabulary,
+        persist: () => (persisted += 1),
+      });
+      expect(outcome.exit).toMatchObject({ code: 0, signal: null });
+      expect(outcome.receipt).toMatchObject({ commandStarted: true, exitCode: 0, signal: null });
+      expect(persisted).toBe(1);
+    });
+  });
+
+  it("keep an exit-1 runner's receipt facts after the worker removes its input", async () => {
+    await withInAppJob(async (root, paths, protocol) => {
+      protocol.atomicPrivateJson(
+        paths.receipt,
+        runnerReceipt({
+          exitCode: 1,
+          errorCode: "terminal_transport_failed",
+          outputTail: privateOutput,
+        }),
+      );
+      protocol.atomicPrivateJson(paths.input, { ...loginJob, consumed: true, submittedAt });
+      writeFileSync(paths.state, JSON.stringify({ ...loginJob, stage: "running" }));
+      const runner = exitingChild(1);
+      const diagnostics: InAppDiagnostics = { runnerPid: runner.pid };
+      const persisted: string[] = [];
+      await expect(
+        settleInAppOutcome({
+          finished: runner.finished,
+          diagnostics,
+          paths,
+          decodeReceipt: protocol.readRunnerResult,
+          vocabulary: sidecarVocabulary,
+          persist: () => persisted.push(JSON.stringify(diagnostics)),
+        }),
+      ).rejects.toThrow("in-app runner exited 1");
+      // The facts were kept and persisted before the exit check failed.
+      expect(persisted.map((text) => JSON.parse(text))).toEqual([diagnostics]);
+      rmSync(paths.input);
+
+      const message = failureMessage(root, diagnostics);
+      expect(message).not.toContain("one-shot-win32-code-77");
+      expect(message).not.toContain("accounts.google.com");
+      const inApp = inAppFacts(message);
+      expect(inApp.runnerExit).toEqual({ code: 1, signal: null });
+      expect(inApp.sidecars).toEqual({
+        input: {
+          source: "worker",
+          exists: true,
+          readable: true,
+          consumed: true,
+          valueRetained: false,
+        },
+        state: { source: "worker", exists: true, readable: true, stage: "running" },
+        receipt: {
+          source: "worker",
+          exists: true,
+          readable: true,
+          commandStarted: true,
+          exitCode: 1,
+          signal: null,
+          errorCode: "terminal_transport_failed",
+          decoded: true,
+        },
+      });
+      expect(inApp.processes[0]).toMatchObject({ role: "runnerPid", pid: runner.pid });
+    });
+  });
+
+  it("keep the exit facts when the receipt is malformed", async () => {
+    await withInAppJob(async (root, paths, protocol) => {
+      writeFileSync(paths.receipt, '{"commandStarted":true,"exitCode":');
+      const runner = exitingChild(1);
+      const diagnostics: InAppDiagnostics = { runnerPid: runner.pid };
+      await expect(
+        settleInAppOutcome({
+          finished: runner.finished,
+          diagnostics,
+          paths,
+          decodeReceipt: protocol.readRunnerResult,
+          vocabulary: sidecarVocabulary,
+          persist: () => undefined,
+        }),
+      ).rejects.toThrow("in-app runner exited 1");
+
+      const inApp = inAppFacts(failureMessage(root, diagnostics));
+      expect(inApp.runnerExit).toEqual({ code: 1, signal: null });
+      expect(inApp.sidecars.receipt).toEqual({
+        source: "worker",
+        exists: true,
+        readable: false,
+        commandStarted: null,
+        exitCode: null,
+        signal: null,
+        errorCode: null,
+        decoded: false,
+      });
+    });
+  });
+
+  it("keep the exit facts when the receipt decoder throws", async () => {
+    await withInAppJob(async (root, paths, protocol) => {
+      protocol.atomicPrivateJson(paths.receipt, runnerReceipt({ exitCode: 1 }));
+      const runner = exitingChild(1);
+      const diagnostics: InAppDiagnostics = { runnerPid: runner.pid };
+      await expect(
+        settleInAppOutcome({
+          finished: runner.finished,
+          diagnostics,
+          paths,
+          decodeReceipt: () => {
+            throw new Error("receipt decoder failed");
+          },
+          vocabulary: sidecarVocabulary,
+          persist: () => undefined,
+        }),
+      ).rejects.toThrow("receipt decoder failed");
+
+      const inApp = inAppFacts(failureMessage(root, diagnostics));
+      expect(inApp.runnerExit).toEqual({ code: 1, signal: null });
+      expect(inApp.sidecars.receipt).toMatchObject({ source: "worker", exitCode: 1 });
+      expect(inApp.sidecars.receipt).not.toHaveProperty("decoded");
+    });
+  });
+
+  it("read sidecars late only when the worker captured none", async () => {
+    await withInAppJob(async (root, paths) => {
+      writeFileSync(paths.state, JSON.stringify({ ...loginJob, stage: "awaiting_permit" }));
+      const inApp = inAppFacts(failureMessage(root, { runnerPid: 0 }));
+      expect(inApp.sidecars).toEqual({
+        input: {
+          source: "test",
+          exists: false,
+          readable: false,
+          consumed: false,
+          valueRetained: false,
+        },
+        state: { source: "test", exists: true, readable: true, stage: "awaiting_permit" },
+        receipt: {
+          source: "test",
+          exists: false,
+          readable: false,
+          commandStarted: null,
+          exitCode: null,
+          signal: null,
+          errorCode: null,
+        },
+      });
+    });
+  });
+
+  it("append a cleanup failure to the run's failure instead of replacing it", async () => {
+    const runFailure = new Error(
+      'in-app runner exited 1; stage=in_app_runner_exited; inApp={"runnerExit":{"code":1,"signal":null}}',
+    );
+    const survivors = [{ pid: 4242, role: "console host" }];
+    const survived = "processes survived cleanup: 4242 unknown EPERM (console host)";
+    // EPERM leaves every probe undecided, so no recorded process is proven gone;
+    // the spy answers the probes, so no real process receives anything.
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+    });
+    const roots = [0, 1].map(() => mkdtempSync(join(tmpdir(), "claudexor-win32-agy-cleanup-")));
+    try {
+      const combined = await cleanUpAfter({ error: runFailure }, () =>
+        confirmCleanup(survivors, roots[0]!, 50),
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(combined).toBeInstanceOf(AggregateError);
+      expect((combined as AggregateError).message).toBe(
+        `${runFailure.message}; cleanup also failed: ${survived}`,
+      );
+      expect((combined as AggregateError).errors[0]).toBe(runFailure);
+      expect((combined as AggregateError).cause).toBe(runFailure);
+      expect(existsSync(roots[0]!)).toBe(false);
+
+      // Without a run failure the cleanup failure is reported on its own.
+      await expect(
+        cleanUpAfter(undefined, () => confirmCleanup(survivors, roots[1]!, 50)),
+      ).rejects.toThrow(survived);
+      expect(existsSync(roots[1]!)).toBe(false);
+      expect(kill.mock.calls.every(([pid, signal]) => pid === 4242 && signal === 0)).toBe(true);
+    } finally {
+      kill.mockRestore();
+      for (const root of roots) rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+interface ProtocolModule {
+  atomicPrivateJson(path: string, value: unknown): void;
+  readRunnerResult(path: string): unknown;
+}
+
+const loginJob = { version: 2, jobId: "setup-win32-agy-in-app", executionId: "win32-agy-in-app-1" };
+const submittedAt = "2026-10-28T02:09:20.000Z";
+
+function runnerReceipt(outcome: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...loginJob,
+    commandDigest: "a".repeat(64),
+    manifestDigest: "b".repeat(64),
+    permitIssuedAt: submittedAt,
+    commandStarted: true,
+    exitCode: 0,
+    signal: null,
+    finishedAt: submittedAt,
+    ...outcome,
+  };
+}
+
+async function withInAppJob(
+  run: (
+    root: string,
+    paths: ReturnType<typeof inAppSidecarPaths>,
+    protocol: ProtocolModule,
+  ) => Promise<void>,
+): Promise<void> {
+  const protocol = (await import(
+    pathToFileURL(join(repoRoot, "packages", "cli", "dist", "setup-login-protocol.js")).href
+  )) as ProtocolModule;
+  const root = mkdtempSync(join(tmpdir(), "claudexor-win32-agy-facts-"));
+  try {
+    mkdirSync(join(root, "in-app-job"));
+    await run(root, inAppSidecarPaths(root), protocol);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function exitingChild(code: number): { pid: number; finished: Promise<CollectedChild> } {
+  const child = spawn(process.execPath, ["-e", `process.exit(${code})`], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (!child.pid) throw new Error("control child PID was not assigned");
+  return { pid: child.pid, finished: collect(child) };
+}
+
+/** Run a cleanup after work that may have failed. Its failure is thrown alone
+ * only when the work passed; otherwise it is appended to the work's failure,
+ * which stays first and stays the cause. */
+async function cleanUpAfter(
+  workFailure: { error: unknown } | undefined,
+  cleanUp: () => Promise<void>,
+): Promise<void> {
+  try {
+    await cleanUp();
+  } catch (cleanupError) {
+    if (workFailure === undefined) throw cleanupError;
+    throw new AggregateError(
+      [workFailure.error, cleanupError],
+      `${errorMessage(workFailure.error)}; cleanup also failed: ${errorMessage(cleanupError)}`,
+      { cause: workFailure.error },
+    );
+  }
+}
+
+/** Wait for the recorded processes to go, then remove the run's root; a failed
+ * removal is appended to a survivor failure the same way. */
+async function confirmCleanup(
+  processes: readonly RecordedProcess[],
+  root: string,
+  timeoutMs: number,
+): Promise<void> {
+  let survivors: { error: unknown } | undefined;
+  try {
+    await expectProcessesGone(processes, timeoutMs);
+  } catch (error) {
+    survivors = { error };
+    throw error;
+  } finally {
+    await cleanUpAfter(survivors, async () => rmSync(root, { recursive: true, force: true }));
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The message the acceptance reports for a worker that failed with these
+ * diagnostics, after its summary round-trips through the result file. */
+function failureMessage(root: string, inAppDiagnostics: InAppDiagnostics): string {
+  const resultPath = join(root, "acceptance-result.json");
+  writeFileSync(
+    resultPath,
+    `${JSON.stringify({ ok: false, stage: "in_app_runner_exited", workerPid: process.pid, observedProcesses: [], error: "in-app runner exited 1", inAppDiagnostics }, null, 2)}\n`,
+  );
+  return failureFacts(root, readSummary(resultPath));
+}
+
+function inAppFacts(message: string) {
+  return JSON.parse(message.slice(message.indexOf("inApp=") + "inApp=".length)) as {
+    runnerExit?: { code: number | null; signal: string | null };
+    sidecars: Record<keyof InAppSidecarFacts, Record<string, unknown>>;
+    processes: Array<Record<string, unknown>>;
+  };
+}
 
 interface CollectedChild {
   code: number | null;
@@ -315,41 +630,70 @@ interface CollectedChild {
   stderr: string;
 }
 
-function inAppTimeoutDiagnostics(root: string, summary: AcceptanceSummary | null) {
+function readSummary(resultPath: string): AcceptanceSummary | null {
+  return existsSync(resultPath)
+    ? (JSON.parse(readFileSync(resultPath, "utf8")) as AcceptanceSummary)
+    : null;
+}
+
+/** Typed facts of a failed or timed-out run. Never the pasted input, the OAuth
+ * URL or raw output. */
+function failureFacts(root: string, summary: AcceptanceSummary | null): string {
+  return `stage=${summary?.stage ?? "not_started"}; inApp=${JSON.stringify(inAppFailureDiagnostics(root, summary))}`;
+}
+
+function inAppFailureDiagnostics(root: string, summary: AcceptanceSummary | null) {
   const diagnostics = summary?.inAppDiagnostics;
-  const [input, state, receipt] = [
-    "runner-input.json",
-    "runner-state.json",
-    "runner-result.json",
-  ].map((name) => {
-    const path = join(root, "in-app-job", name);
-    try {
-      return { exists: true, value: JSON.parse(readFileSync(path, "utf8")) };
-    } catch {
-      return { exists: existsSync(path), value: null };
-    }
-  });
+  const late = inAppSidecarFacts(readInAppSidecars(inAppSidecarPaths(root)), sidecarVocabulary);
   return {
     ...diagnostics,
+    sidecars: preferCapturedSidecars(diagnostics?.sidecars, late),
     processes: (["runnerPid", "workerPid", "helperPid", "vendorPid"] as const).map((role) => {
       const pid = diagnostics?.[role];
-      return { role, pid: pid ?? null, alive: pid ? pidAlive(pid) : null };
+      return { role, pid: pid || null, ...(pid ? probeProcess(pid) : { state: null }) };
     }),
-    input: {
-      exists: input!.exists,
-      readable: input!.value !== null,
-      consumed: input!.value?.consumed === true,
-    },
-    state: { exists: state!.exists, stage: state!.value?.stage ?? null },
-    receipt: {
-      exists: receipt!.exists,
-      readable: receipt!.value !== null,
-      commandStarted: receipt!.value?.commandStarted ?? null,
-      exitCode: receipt!.value?.exitCode ?? null,
-      signal: receipt!.value?.signal ?? null,
-      errorCode: receipt!.value?.errorCode ?? null,
-    },
   };
+}
+
+function inAppSidecarPaths(root: string) {
+  const jobDir = join(root, "in-app-job");
+  return {
+    input: join(jobDir, "runner-input.json"),
+    state: join(jobDir, "runner-state.json"),
+    receipt: join(jobDir, "runner-result.json"),
+  };
+}
+
+/** Every process the run recorded, with the role it was recorded in. */
+function recordedProcesses(hostPid: number, summary: AcceptanceSummary | null): RecordedProcess[] {
+  const processes: RecordedProcess[] = [{ pid: hostPid, role: "console host" }];
+  if (!summary) return processes;
+  processes.push(
+    { pid: summary.workerPid, role: "acceptance worker" },
+    ...(summary.observedProcesses ?? []),
+  );
+  if (summary.timeout) {
+    processes.push(
+      { pid: summary.timeout.pids.vendor, role: "timeout vendor" },
+      { pid: summary.timeout.pids.descendant, role: "timeout descendant" },
+    );
+  }
+  if (summary.login) processes.push({ pid: summary.login.runnerPid, role: "client_pty runner" });
+  if (summary.inAppLogin) {
+    processes.push(
+      { pid: summary.inAppLogin.runnerPid, role: "in-app runner" },
+      { pid: summary.inAppLogin.workerPid, role: "in-app worker" },
+      { pid: summary.inAppLogin.helperPid, role: "ConPTY helper" },
+      { pid: summary.inAppLogin.vendorPid, role: "in-app vendor" },
+    );
+  }
+  for (const row of summary.evidence ?? []) {
+    processes.push({ pid: row.pid, role: `fake agy ${row.mode} ${row.command}` });
+  }
+  for (const row of summary.control?.evidence ?? []) {
+    processes.push({ pid: row.pid, role: `console control ${row.mode} ${row.command}` });
+  }
+  return processes;
 }
 
 async function collect(child: ChildProcess): Promise<CollectedChild> {
@@ -401,20 +745,17 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   }
 }
 
-async function expectPidsGone(pids: number[], timeoutMs: number): Promise<void> {
-  const unique = [...new Set(pids.filter((pid) => pid > 0))];
+async function expectProcessesGone(
+  processes: readonly RecordedProcess[],
+  timeoutMs: number,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (unique.some(pidAlive)) {
-    if (Date.now() >= deadline) throw new Error(`processes survived cleanup: ${unique.join(",")}`);
+  for (;;) {
+    const remaining = remainingProcesses(processes, probeProcess);
+    if (remaining.length === 0) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`processes survived cleanup: ${describeRemaining(remaining)}`);
+    }
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
-  }
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }

@@ -95,8 +95,7 @@ struct ThreadWorkspacePanel: View {
     }
 
     private var runIds: [String] {
-        let parents = detail.map(Self.threadRunIds) ?? []
-        return Self.workspaceRunIds(parentRunIds: parents, tasks: model.tasks)
+        model.workspaceRunIDs
     }
 
     /// The receipt filter: the run the panel is scoped/highlighted to, or nil for
@@ -121,6 +120,18 @@ struct ThreadWorkspacePanel: View {
     }
 
     var body: some View {
+        panel
+            .task(id: model.selectedLocatedThreadID) {
+                model.workspaceHistoryVisible = true
+                await model.loadWorkspaceHistory()
+            }
+            .onDisappear {
+                model.workspaceHistoryVisible = false
+                model.selectedThreadDetail = nil
+            }
+    }
+
+    @ViewBuilder private var panel: some View {
         if let detail {
             // WHOLE-PANEL tabs (round-3 item 2): the tab bar sits at the very top
             // (directly under the panel title) and EVERYTHING below it switches
@@ -152,11 +163,9 @@ struct ThreadWorkspacePanel: View {
             // review, diagnostics) — the run-filtered view IS the demoted detail.
             .task(id: "\(model.selectedExecutionLocation.rawValue)|\(filterRunId ?? "")") {
                 let locationID = model.selectedExecutionLocation
-                if let id = filterRunId,
-                   model.task(id, at: locationID)?.isLive == true
-                {
+                if let id = filterRunId {
                     if locationID == .local {
-                        await model.ensureRunDetail(id)
+                        await model.ensureRunDetail(id, insertingIfMissing: model.task(id, at: locationID) == nil)
                     } else {
                         await model.loadRunDetail(id, locationID: locationID)
                     }
@@ -172,6 +181,13 @@ struct ThreadWorkspacePanel: View {
                 autoSelectDefaultTab()
             }
             .onAppear { autoSelectDefaultTab() }
+        } else if model.selectedThreadId != nil {
+            VStack {
+                Text(model.workspaceHistoryError ?? "Loading workspace…")
+                if model.workspaceHistoryError != nil {
+                    Button("Retry loading workspace") { Task { await model.loadWorkspaceHistory() } }
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             EmptyStateView(
                 title: "No thread open",

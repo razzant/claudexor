@@ -44,7 +44,7 @@ describe("Claude auth-status resilience", () => {
 
     const first = probeClaudeAuthStatus("/bin/claude", options(runCapture));
     const second = probeClaudeAuthStatus("/bin/claude", options(runCapture));
-    expect(calls).toBe(1);
+    await vi.waitFor(() => expect(calls).toBe(1));
     release();
     await expect(Promise.all([first, second])).resolves.toEqual([
       { loggedIn: true, authed: true, authMethod: "claude.ai", probeError: null },
@@ -108,6 +108,42 @@ describe("Claude auth-status resilience", () => {
     expect(probe.stale).toBeUndefined();
     expect(probe.probeError).toContain("authentication rejected (401)");
   });
+
+  it.each(["EFTYPE", "ENOEXEC"])(
+    "treats a %s launch failure as structural: one attempt and no last-known-good",
+    async (code) => {
+      let calls = 0;
+      const runCapture = async () => {
+        calls += 1;
+        if (calls === 1) return result('{"loggedIn":true,"authMethod":"claude.ai"}');
+        throw Object.assign(new Error(`Cannot launch /bin/claude (${code})`), { code });
+      };
+      await probeClaudeAuthStatus("/bin/claude", options(runCapture));
+      const probe = await probeClaudeAuthStatus("/bin/claude", options(runCapture));
+      expect(calls).toBe(2);
+      expect(probe.stale).toBeUndefined();
+      expect(probe).toMatchObject({
+        authed: false,
+        probeError: `Cannot launch /bin/claude (${code})`,
+      });
+    },
+  );
+
+  it.each(["EACCES", "EBUSY", "ENOENT", "UNKNOWN"])(
+    "keeps a %s spawn failure transient: one retry, then last-known-good",
+    async (code) => {
+      let calls = 0;
+      const runCapture = async () => {
+        calls += 1;
+        if (calls === 1) return result('{"loggedIn":true,"authMethod":"claude.ai"}');
+        throw Object.assign(new Error(`spawn /bin/claude ${code}`), { code });
+      };
+      await probeClaudeAuthStatus("/bin/claude", options(runCapture));
+      const probe = await probeClaudeAuthStatus("/bin/claude", options(runCapture));
+      expect(calls).toBe(3);
+      expect(probe).toMatchObject({ authed: true, stale: true, probeError: null });
+    },
+  );
 
   it("does not accept a typed verdict flushed by a signaled child", async () => {
     let calls = 0;

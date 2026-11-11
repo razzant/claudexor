@@ -1,8 +1,12 @@
 import type { ArtifactStore, RunPaths } from "@claudexor/artifact-store";
 import type { BudgetLedger } from "@claudexor/budget";
-import { EventLog, type TerminalPersistenceHook } from "@claudexor/event-log";
+import {
+  EventLog,
+  type TerminalPersistenceHook,
+  type TerminalStagingHook,
+} from "@claudexor/event-log";
 import type { ModeKind, QuotaSnapshot, RunEvent, TaskContract } from "@claudexor/schema";
-import { redactSecrets, safeInvoke } from "@claudexor/util";
+import { safeInvoke } from "@claudexor/util";
 import { writeContinuationSources } from "@claudexor/workspace";
 import type { DelegationBudgetAuthority } from "./delegationBudgetAuthority.js";
 import type { RunInput } from "./orchestrator.js";
@@ -13,6 +17,7 @@ interface RunEventLogInput {
   threadId?: string;
   onEventPersist?: (event: RunEvent) => void;
   onTerminalPersist?: TerminalPersistenceHook;
+  onTerminalStage?: TerminalStagingHook;
   onEvent?: (event: RunEvent) => void;
 }
 
@@ -45,6 +50,7 @@ export function createRunEventLog(
     input.onEvent,
   );
   if (input.onTerminalPersist) log.setTerminalPersistence(input.onTerminalPersist);
+  if (input.onTerminalStage) log.setTerminalStaging(input.onTerminalStage);
   return log;
 }
 
@@ -107,7 +113,7 @@ export function beginAnnouncedRun(
       const from = input.continuation.from;
       writeContinuationSources(paths.root, [from, ...(from.ancestors ?? [])]);
     }
-    log.emit("run.created", { mode, prompt: redactSecrets(start.prompt) });
+    log.emit("run.created", { mode, prompt: start.prompt });
     return preparedLedger;
   });
   const runContext = announcedRunContext(

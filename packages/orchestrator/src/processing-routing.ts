@@ -27,7 +27,16 @@ export async function prepareRoutedProcessing(
         credentialProfile: route.quotaAdmission.profile,
         authPreference: input.authPreference,
         allowPaid: route.processingAllowPaid,
+        // Exact Retry keeps its source's inherited intent, like a later try does.
+        ...(!input.processingPreference && input.processingIntent?.[route.adapter.id]
+          ? { chosen: input.processingIntent[route.adapter.id] }
+          : {}),
       });
+      // The lane's intent is the earliest typed selection: the Exact Retry
+      // original when given, else this routing-time receipt.
+      if (!input.processingPreference)
+        route.processingIntent =
+          input.processingIntent?.[route.adapter.id] ?? route.processing.receipt;
     }),
   );
 }

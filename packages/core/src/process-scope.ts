@@ -58,6 +58,13 @@ export function inheritedScopeMarkers(source: NodeJS.ProcessEnv): Record<string,
   return out;
 }
 
+/** `env` without Claudexor per-run markers: the spawn env of a process handed
+ * to a longer-lived custodian. Every other marker, an enclosing host's
+ * included, is kept. */
+export function withoutRunScopeMarkers<V>(env: Record<string, V>): Record<string, V> {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !isRunScopeMarkerName(name)));
+}
+
 /** The run scope marker NAME carried by a composed spawn env, if any (never its value). */
 export function runScopeMarkerOf(env: NodeJS.ProcessEnv): string | undefined {
   return Object.keys(env).find((key) => isRunScopeMarkerName(key) && env[key] === "1");

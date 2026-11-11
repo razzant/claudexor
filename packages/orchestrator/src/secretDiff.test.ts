@@ -1,29 +1,23 @@
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { WorkspaceError } from "@claudexor/core";
-import type { HarnessEvent, WorkspaceEnvelope } from "@claudexor/schema";
-import { projectRuntimeDir, sha256 } from "@claudexor/util";
-import { readRevertAnchor, type WorkspaceManager } from "@claudexor/workspace";
+import type { GitObjectResult, WorkspaceEnvelope } from "@claudexor/schema";
+import { projectRuntimeDir, sha256, prunePatchObjects } from "@claudexor/util";
+import {
+  createRevertAnchorFromPatchOrNull,
+  readRevertAnchor,
+  type WorkspaceManager,
+} from "@claudexor/workspace";
 
-import { PERSISTED_PATCH_NOTICE } from "./persistedPatch.js";
 import {
   attemptDisclosure,
   captureCandidateWorkspace,
-  CountedAnswerAssembly,
   persistFinalPatch,
-  summaryDisclosure,
+  resultSummaryDisclosure,
+  resultSummaryLines,
 } from "./secretDiff.js";
 
 const envelope = {
@@ -43,7 +37,7 @@ function tempRoot(prefix: string): string {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 /** Fake credentials are assembled at runtime; no secret-shaped literal lives here. */
 const fakeKey = (fill: string): string => ["sk", fill.repeat(24)].join("-");
@@ -62,15 +56,17 @@ function textPatch(path: string, line: string): string {
 function fakeManager(
   capture: () => Promise<{
     diff: string;
-    binarySecretPaths: string[];
     captureIncomplete: boolean;
+    excludedNestedRepositories?: string[];
   }>,
   retained: string[] = [],
+  keptArtifacts: string[] = [],
 ): WorkspaceManager {
   return {
     captureDiff: capture,
     ownedArtifactRelativeDirectory: () => null,
     retainEnvelope: (env: WorkspaceEnvelope) => retained.push(env.id),
+    keepArtifactDirectory: (env: WorkspaceEnvelope) => keptArtifacts.push(env.id),
   } as unknown as WorkspaceManager;
 }
 
@@ -100,32 +96,54 @@ const capture = (
       } as WorkspaceEnvelope;
     })(),
     inPlace,
-    projectRoot: tempRoot("claudexor-v4c-project-"),
     holder: { runId: "run-test", runDir: tempRoot("cx-capture-run-") },
-    answerMatches: 0,
+    contract: { tests: { commands: [] }, review_requested: false },
     ...extra,
   });
 
-describe("capture refusal is the only capture-time refusal (INV-062)", () => {
+describe("capture refusal is the only capture-time refusal", () => {
   it.each([
     { inPlace: true, disposition: "manual_cleanup" },
     { inPlace: false, disposition: "retained" },
   ] as const)(
-    "names a capture exception honestly for inPlace=$inPlace without echoing it",
+    "names a capture exception honestly for inPlace=$inPlace without echoing a secret",
     async ({ inPlace, disposition }) => {
-      const wsm = fakeManager(async () => {
-        throw new Error("sensitive capture sentinel");
-      });
+      const retained: string[] = [];
+      const keptArtifacts: string[] = [];
+      const secret = fakeKey("s");
+      const wsm = fakeManager(
+        async () => {
+          throw new Error(`sensitive capture sentinel ${secret}`);
+        },
+        retained,
+        keptArtifacts,
+      );
 
       const result = await capture(wsm, inPlace);
 
       expect(result.diff).toBe("");
       expect(result.captureRefusal?.disposition).toBe(disposition);
-      expect(result.captureRefusal?.detail).not.toContain("sensitive capture sentinel");
-      expect(result.captureRefusal?.detail).toMatch(
-        inPlace ? /changed files are untouched/ : /retained/,
+      // #535 F11: the prose carries the typed failure's diagnostic, masked: an
+      // engine diagnostic is not working content (INV-146).
+      expect(result.captureRefusal?.detail).toContain(
+        "Detail: sensitive capture sentinel [redacted].",
       );
-      expect(result.secretLike).toBeUndefined();
+      expect(result.captureRefusal?.detail).not.toContain(secret);
+      // The receipt names what was not recorded and what is kept, never a retry.
+      expect(result.captureRefusal?.detail).toMatch(/^The changes could not be captured exactly/);
+      expect(result.captureRefusal?.detail).toContain(
+        inPlace
+          ? "Not recorded: the exact result; a revert point; apply eligibility."
+          : "Not recorded: the exact result; apply eligibility.",
+      );
+      expect(result.captureRefusal?.detail).toMatch(
+        inPlace
+          ? /changed files in .* \(already in place, not reviewed\)/
+          : /retained isolated source/,
+      );
+      // Live media keep their run-owned directory; an isolated envelope is kept whole.
+      expect(keptArtifacts).toEqual(inPlace ? ["env-test"] : []);
+      expect(retained).toEqual(inPlace ? [] : ["env-test"]);
     },
   );
 
@@ -153,7 +171,6 @@ describe("capture refusal is the only capture-time refusal (INV-062)", () => {
   it("turns an incomplete capture into a refusal instead of a fabricated empty result", async () => {
     const wsm = fakeManager(async () => ({
       diff: "",
-      binarySecretPaths: [],
       captureIncomplete: true,
     }));
 
@@ -161,216 +178,44 @@ describe("capture refusal is the only capture-time refusal (INV-062)", () => {
 
     expect(result.diff).toBe("");
     expect(result.captureRefusal).toMatchObject({ disposition: "manual_cleanup" });
-    expect(result.captureRefusal?.detail).toMatch(/could not be captured as a complete patch/);
+    expect(result.captureRefusal?.detail).toMatch(/could not be captured exactly/);
   });
 });
 
-describe("secret-like content is kept and only hidden in saved copies (INV-062)", () => {
-  it("keeps the exact in-place diff and never rolls anything back", async () => {
+describe("credential-shaped content is ordinary exact work (#555)", () => {
+  it("keeps the exact in-place diff, with no saved-copy mask or disclosure", async () => {
     const secret = fakeKey("r");
     const patch = textPatch("LEAK.txt", secret);
-    // The repo path does not exist: any rollback attempt would have to fail loudly.
     const wsm = fakeManager(async () => ({
       diff: patch,
-      binarySecretPaths: [],
-      captureIncomplete: false,
-    }));
-
-    const result = await capture(wsm, true, { answerText: "done", answerMatches: 2 });
-
-    expect(result.captureRefusal).toBeUndefined();
-    expect(result.diff).toBe(patch);
-    expect(result.persistedDiff?.startsWith(PERSISTED_PATCH_NOTICE)).toBe(true);
-    expect(result.persistedDiff).not.toContain(secret);
-    expect(result.persistedDiff).toContain("+[redacted]");
-    expect(result.secretLike).toEqual({
-      files: [{ path: "LEAK.txt", matches: 1, kinds: ["openai_compatible_api_key"] }],
-      binary_paths: [],
-      media_withheld: [],
-      answer_matches: 2,
-      total_matches: 3,
-    });
-    expect(JSON.stringify(result.secretLike)).not.toContain(secret);
-  });
-
-  it("leaves a clean candidate byte-exact with no notice and no disclosure", async () => {
-    const patch = textPatch("SAFE.txt", "safe");
-    const wsm = fakeManager(async () => ({
-      diff: patch,
-      binarySecretPaths: [],
-      captureIncomplete: false,
-    }));
-
-    const result = await capture(wsm, false);
-
-    expect(result).toEqual({ diff: patch });
-  });
-
-  it("withholds only the flagged binary payload in the saved copy and names its path", async () => {
-    const patch =
-      "diff --git a/assets/x.bin b/assets/x.bin\n" +
-      "new file mode 100644\n" +
-      "index 0000000..1111111\n" +
-      "GIT binary patch\n" +
-      "literal 12\n" +
-      "TcmZQzU|?imU|`^5\n" +
-      "\n" +
-      "literal 0\n" +
-      "HcmV?d00001\n" +
-      "\n" +
-      textPatch("SAFE.txt", "safe");
-    const wsm = fakeManager(async () => ({
-      diff: patch,
-      binarySecretPaths: ["assets/x.bin"],
       captureIncomplete: false,
     }));
 
     const result = await capture(wsm, true);
 
-    expect(result.diff).toBe(patch);
-    expect(result.diff).toContain("TcmZQzU|?imU|`^5");
-    expect(result.persistedDiff).toContain(
-      "GIT binary patch\n# Claudexor: binary payload withheld",
+    expect(result).toEqual({ diff: patch });
+  });
+
+  it("discloses the nested repositories a capture left out, exactly", async () => {
+    const patch = textPatch("notes.txt", "plain text");
+    const name = `.review-evidence/${fakeKey("n")}`;
+    const kept = await capture(
+      fakeManager(async () => ({
+        diff: patch,
+        captureIncomplete: false,
+        excludedNestedRepositories: [name, ".review-evidence/base-copy"],
+      })),
+      true,
     );
-    expect(result.persistedDiff).not.toContain("TcmZQzU|?imU|`^5");
-    expect(result.persistedDiff).toContain("+safe");
-    expect(result.secretLike).toMatchObject({
-      files: [],
-      binary_paths: ["assets/x.bin"],
-      total_matches: 0,
+    expect(kept.diff).toBe(patch);
+    expect(attemptDisclosure(kept)).toEqual({
+      excluded_nested_repositories: [".review-evidence/base-copy", name].sort(),
     });
-  });
-
-  it("discloses an unsaved oversized linked image without touching the candidate files", async () => {
-    const repo = tempRoot("claudexor-secret-outside-patch-");
-    writeFileSync(join(repo, "preview.png"), Buffer.alloc(16 * 1024 * 1024 + 1));
-    writeFileSync(join(repo, "SAFE.txt"), "safe\n");
-    const patch = textPatch("SAFE.txt", "safe");
-    const wsm = fakeManager(async () => ({
-      diff: patch,
-      binarySecretPaths: [],
-      captureIncomplete: false,
-    }));
-
-    const result = await captureCandidateWorkspace({
-      wsm,
-      envelope: { ...envelope, repo_root: repo, worktree_path: repo },
-      inPlace: true,
-      projectRoot: repo,
-      holder: { runId: "run-test", runDir: repo },
-      answerText: "![preview](preview.png)",
-      answerMatches: 0,
-    });
-
-    // Nothing is removed: the candidate's file and the image both stay in place.
-    expect(readFileSync(join(repo, "SAFE.txt"), "utf8")).toBe("safe\n");
-    expect(existsSync(join(repo, "preview.png"))).toBe(true);
-    expect(result.captureRefusal).toBeUndefined();
-    expect(result.diff).toBe(patch);
-    expect(result.persistedDiff).toBeUndefined();
-    expect(result.secretLike).toMatchObject({ media_withheld: ["preview.png"], total_matches: 0 });
-  });
-
-  it("discloses a symlinked image as unsaved and leaves the link and its target alone", async () => {
-    const root = tempRoot("claudexor-secret-symlink-target-");
-    const repo = join(root, "repo");
-    const outside = join(root, "outside");
-    const target = join(outside, "leak.png");
-    const link = join(repo, "preview.png");
-    mkdirSync(repo, { recursive: true });
-    mkdirSync(outside, { recursive: true });
-    symlinkSync(target, link);
-    writeFileSync(link, Buffer.alloc(64));
-    const patch =
-      "diff --git a/preview.png b/preview.png\n" +
-      "new file mode 120000\n" +
-      "--- /dev/null\n" +
-      "+++ b/preview.png\n" +
-      "@@ -0,0 +1 @@\n" +
-      `+${target}\n` +
-      "\\ No newline at end of file\n";
-    const wsm = fakeManager(async () => ({
-      diff: patch,
-      binarySecretPaths: [],
-      captureIncomplete: false,
-    }));
-
-    const result = await captureCandidateWorkspace({
-      wsm,
-      envelope: { ...envelope, repo_root: repo, worktree_path: repo },
-      inPlace: true,
-      projectRoot: repo,
-      holder: { runId: "run-test", runDir: repo },
-      answerText: "![preview](preview.png)",
-      answerMatches: 0,
-    });
-
-    expect(lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(existsSync(target)).toBe(true);
-    expect(result.captureRefusal).toBeUndefined();
-    expect(result.diff).toBe(patch);
-    expect(result.secretLike?.media_withheld).toEqual(["preview.png"]);
-  });
-});
-
-describe("exact bytes of an isolated candidate survive its envelope (INV-062)", () => {
-  it("writes the private exact patch object while the envelope still exists", async () => {
-    const projectRoot = tempRoot("claudexor-v4c-exact-");
-    const patch = textPatch("LEAK.txt", fakeKey("e"));
-    const retained: string[] = [];
-    const wsm = fakeManager(
-      async () => ({ diff: patch, binarySecretPaths: [], captureIncomplete: false }),
-      retained,
+    const plain = await capture(
+      fakeManager(async () => ({ diff: patch, captureIncomplete: false })),
+      true,
     );
-
-    const result = await capture(wsm, false, { projectRoot });
-
-    expect(result.persistedDiff).toBeDefined();
-    expect(readRevertAnchor(projectRoot, sha256(patch))).toBe(patch);
-    expect(retained).toEqual([]);
-  });
-
-  it("keeps the envelope when the exact object cannot be written", async () => {
-    const projectRoot = tempRoot("claudexor-v4c-exact-fail-");
-    // A regular file where the object store directory must be makes the write fail.
-    mkdirSync(projectRuntimeDir(projectRoot), { recursive: true });
-    writeFileSync(join(projectRuntimeDir(projectRoot), "anchors"), "not a directory");
-    roots.push(projectRuntimeDir(projectRoot));
-    const patch = textPatch("LEAK.txt", fakeKey("f"));
-    const retained: string[] = [];
-    const wsm = fakeManager(
-      async () => ({ diff: patch, binarySecretPaths: [], captureIncomplete: false }),
-      retained,
-    );
-
-    const result = await capture(wsm, false, { projectRoot });
-
-    // The candidate is still a working candidate with its exact diff and saved copy...
-    expect(result.captureRefusal).toBeUndefined();
-    expect(result.diff).toBe(patch);
-    expect(result.persistedDiff).not.toContain(fakeKey("f"));
-    // ...and the only other holder of the exact bytes is not deleted.
-    expect(retained).toEqual(["env-test"]);
-    // The diagnostic says where those bytes still are.
-    expect(result.exactBytesRetainedAt).toMatch(/cx-secret-envelope-.*\/tree$/);
-    expect(attemptDisclosure(result)).toMatchObject({
-      exact_bytes_retained_at: result.exactBytesRetainedAt,
-      secret_like: { total_matches: 1 },
-    });
-  });
-
-  it("does not write an exact object for an in-place candidate at capture time", async () => {
-    const projectRoot = tempRoot("claudexor-v4c-inplace-");
-    const patch = textPatch("LEAK.txt", fakeKey("i"));
-    const wsm = fakeManager(async () => ({
-      diff: patch,
-      binarySecretPaths: [],
-      captureIncomplete: false,
-    }));
-
-    await capture(wsm, true, { projectRoot });
-
-    expect(() => readRevertAnchor(projectRoot, sha256(patch))).toThrow();
+    expect(attemptDisclosure(plain)).not.toHaveProperty("excluded_nested_repositories");
   });
 });
 
@@ -382,147 +227,97 @@ describe("persistFinalPatch", () => {
     return { repo, store, paths: store.createRun("run-v4c") };
   }
 
-  it("saves the redacted copy, binds the digest to the exact patch and stores the exact object", () => {
+  it("shares the real attempt, final and anchor writers without changing their readers", async () => {
+    const repo = tempRoot("claudexor-shared-patch-");
+    const store = new ArtifactStore(repo);
+    roots.push(store.claudexorDir);
+    const paths = store.createRun("run-shared");
+    const diff = textPatch("SAFE.txt", "ordinary output");
+    const attempt = join(paths.attemptsDir, "a01", "patch.diff");
+    store.writePatch(attempt, diff);
+    const final = persistFinalPatch(store, paths.finalDir, { diff });
+    const anchor = createRevertAnchorFromPatchOrNull(repo, diff)!;
+    const anchorPath = join(store.claudexorDir, "anchors", "objects", `${anchor.slice(7)}.patch`);
+    expect(
+      new Set(
+        [attempt, join(paths.finalDir, "patch.diff"), anchorPath].map(
+          (path) => lstatSync(path).ino,
+        ),
+      ).size,
+    ).toBe(1);
+    expect(readRevertAnchor(repo, anchor)).toBe(diff);
+    expect(final.patchSha256).toBe(anchor);
+    rmSync(paths.root, { recursive: true });
+    expect(await prunePatchObjects(store.claudexorDir, false)).toBe(0);
+    expect(readRevertAnchor(repo, anchor)).toBe(diff);
+  });
+
+  it("saves the exact patch and binds the digest to those same bytes", () => {
     const { repo, store, paths } = storeFor("claudexor-v4c-final-");
     const secret = fakeKey("p");
     const diff = textPatch("LEAK.txt", secret);
 
     const saved = persistFinalPatch(store, paths.finalDir, { diff });
 
-    const copy = readFileSync(join(paths.finalDir, "patch.diff"), "utf8");
-    expect(copy.startsWith(PERSISTED_PATCH_NOTICE)).toBe(true);
-    expect(copy).not.toContain(secret);
-    // The digest is of the EXACT patch, so the copy can never pass the apply gate.
-    expect(saved.patchSha256).toBe(sha256(diff));
-    expect(sha256(copy)).not.toBe(saved.patchSha256);
-    expect(saved.meta).toEqual({
-      persisted_patch: "redacted",
-      exact_patch_object: saved.patchSha256,
-    });
-    expect(readRevertAnchor(repo, saved.patchSha256)).toBe(diff);
-  });
-
-  it("leaves a clean patch byte-exact with no extra meta", () => {
-    const { repo, store, paths } = storeFor("claudexor-v4c-final-clean-");
-    const diff = textPatch("SAFE.txt", "safe");
-
-    const saved = persistFinalPatch(store, paths.finalDir, { diff });
-
     expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).toBe(diff);
     expect(saved).toEqual({ patchSha256: sha256(diff), meta: {} });
-    expect(() => readRevertAnchor(repo, saved.patchSha256)).toThrow();
+    // No parallel exact-object store is written for the final patch.
+    expect(() => readRevertAnchor(repo, saved.patchSha256!)).toThrow();
   });
 
-  it("records a null exact object when it cannot be stored; the copy is still saved", () => {
-    const { repo, store, paths } = storeFor("claudexor-v4c-final-nostore-");
-    mkdirSync(projectRuntimeDir(repo), { recursive: true });
-    writeFileSync(join(projectRuntimeDir(repo), "anchors"), "not a directory");
-    const diff = textPatch("LEAK.txt", fakeKey("n"));
+  it("records the nested repositories the patch left out", () => {
+    const { store, paths } = storeFor("claudexor-v4c-final-nested-");
+    const diff = textPatch("SAFE.txt", "safe");
 
-    const saved = persistFinalPatch(store, paths.finalDir, { diff });
-
-    expect(saved.meta).toEqual({ persisted_patch: "redacted", exact_patch_object: null });
-    expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).not.toContain(fakeKey("n"));
-    // With a kept envelope the record points at the surviving exact bytes.
-    expect(
-      persistFinalPatch(store, paths.finalDir, { diff, exactBytesRetainedAt: "/kept/tree" }).meta,
-    ).toEqual({
-      persisted_patch: "redacted",
-      exact_patch_object: null,
-      exact_bytes_retained_at: "/kept/tree",
+    const saved = persistFinalPatch(store, paths.finalDir, {
+      diff,
+      excludedNestedRepositories: [".review-evidence/copy", ".review-evidence/copy"],
     });
+
+    expect(readFileSync(join(paths.finalDir, "patch.diff"), "utf8")).toBe(diff);
+    expect(saved.meta).toEqual({ excluded_nested_repositories: [".review-evidence/copy"] });
   });
 });
 
-describe("answer match counting happens before the first redaction", () => {
-  const message = (text: string, extra: Partial<HarnessEvent> = {}): HarnessEvent =>
-    ({ type: "message", session_id: "s", ts: "t", text, ...extra }) as HarnessEvent;
-  const redactedTwin = (raw: HarnessEvent, secret: string): HarnessEvent =>
-    ({ ...raw, text: raw.text?.split(secret).join("[redacted]") }) as HarnessEvent;
+describe("work-product summary lines (#535 composed with #555)", () => {
+  const result: GitObjectResult = {
+    schema: "git_objects/v1",
+    object_format: "sha1",
+    base_tree: "a".repeat(40),
+    candidate_tree: "b".repeat(40),
+    base_commit: null,
+    store_boundary_commit: null,
+    digest: `sha256:${"c".repeat(64)}`,
+  };
+  const omitted = [
+    { path: "big.png", reason: "over_file_cap" as const, bytes: 16 * 1024 * 1024 + 1 },
+  ];
+  const imagesLine =
+    "- Images not saved: 1 (big.png: over the 16 MiB per-image cap, 16777217 bytes)";
 
-  it("counts on the raw event while the assembly only ever sees the redacted one", () => {
-    const secret = fakeKey("a");
-    const answer = new CountedAnswerAssembly();
-    const raw = message(`first ${secret} then ${secret}`);
-
-    answer.observeCounted(raw, redactedTwin(raw, secret));
-
-    expect(answer.text()).toBe("first [redacted] then [redacted]");
-    expect(answer.text()).not.toContain(secret);
-    expect(answer.secretLikeMatches()).toBe(2);
+  it("names unsaved images exactly as main's summary did, and nothing for a clean run", () => {
+    expect(resultSummaryLines({ result, producedOmitted: omitted })).toBe(imagesLine);
+    expect(resultSummaryDisclosure({ result, producedOmitted: omitted })).toBe(`\n${imagesLine}`);
+    expect(resultSummaryDisclosure({ result, producedOmitted: [] })).toBe("");
+    expect(resultSummaryLines(undefined)).toBeNull();
   });
 
-  it("lets a typed final replace the narration count and ignores streamed deltas", () => {
-    const secret = fakeKey("b");
-    const answer = new CountedAnswerAssembly();
-    const narration = message(`thinking about ${secret}`);
-    const delta = message(`del ${secret}`, { payload: { delta: true } });
-    const final = message(`final answer mentions ${secret} once`, { final: true });
-
-    answer.observeCounted(narration, redactedTwin(narration, secret));
-    answer.observeCounted(delta, redactedTwin(delta, secret));
-    expect(answer.secretLikeMatches()).toBe(1);
-    answer.observeCounted(final, redactedTwin(final, secret));
-
-    expect(answer.secretLikeMatches()).toBe(1);
-    expect(answer.text()).toBe("final answer mentions [redacted] once");
-  });
-});
-
-describe("answer match counting mirrors the assembly's selection", () => {
-  const message = (text: string, extra: Partial<HarnessEvent> = {}): HarnessEvent =>
-    ({ type: "message", session_id: "s", ts: "t", text, ...extra }) as HarnessEvent;
-  const clean = (raw: HarnessEvent, secret: string): HarnessEvent =>
-    ({ ...raw, text: raw.text?.split(secret).join("[redacted]") }) as HarnessEvent;
-
-  it("counts an empty enveloped final as the shown answer, and ignores an empty plain one", () => {
-    const secret = fakeKey("e");
-    const narration = message(`notes ${secret}`);
-    const enveloped = message("", {
-      final: true,
-      payload: { work_report_envelope: '{"work_report":{"state":"completed"},"output":""}' },
-    });
-    const answer = new CountedAnswerAssembly();
-    answer.observeCounted(narration, clean(narration, secret));
-    answer.observeCounted(enveloped, enveloped);
-    expect(answer.text()).toBe("");
-    expect(answer.secretLikeMatches()).toBe(0);
-
-    const plain = new CountedAnswerAssembly();
-    const emptyFinal = message("", { final: true });
-    plain.observeCounted(narration, clean(narration, secret));
-    plain.observeCounted(emptyFinal, emptyFinal);
-    expect(plain.text()).toBe("notes [redacted]");
-    expect(plain.secretLikeMatches()).toBe(1);
-  });
-
-  it("counts a repeated narration line once, as it is shown once", () => {
-    const secret = fakeKey("r");
-    const line = message(`step ${secret}`);
-    const answer = new CountedAnswerAssembly();
-    answer.observeCounted(line, clean(line, secret));
-    answer.observeCounted(line, clean(line, secret));
-    expect(answer.text()).toBe("step [redacted]");
-    expect(answer.secretLikeMatches()).toBe(1);
-  });
-});
-
-describe("summary disclosure line", () => {
-  it("names files and counts, never a value, and is empty for a clean run", () => {
-    expect(summaryDisclosure(undefined)).toBe("");
-    const line = summaryDisclosure({
-      files: [
-        { path: "a.txt", matches: 2, kinds: ["jwt"] },
-        { path: "b.txt", matches: 1, kinds: ["github_token"] },
-      ],
-      binary_paths: ["x.bin"],
-      media_withheld: ["shot.png"],
-      answer_matches: 1,
-      total_matches: 4,
-    });
-    expect(line).toBe(
-      "\n- Secret-like strings: 3 in 2 changed file(s) (a.txt, b.txt) — kept in the changed files, hidden in saved copies; " +
-        "1 secret-like or uninspectable binary payload(s) withheld from the saved patch (x.bin); 1 hidden in the answer; 1 image(s) not saved (shot.png)",
-    );
+  it("keeps both the unsaved images and the unrendered result, images first", () => {
+    const lines = resultSummaryLines({
+      result,
+      patchViewUnavailable: {
+        reason: "exceeds_view_limit",
+        limitBytes: 268_435_456,
+        estimatedBytes: 300_000_000,
+      },
+      inventory: { exact: false, changedFiles: 1, largest: [] },
+      producedOmitted: omitted,
+    })?.split("\n");
+    expect(lines).toEqual([
+      imagesLine,
+      `- Result: kept exactly as Git objects (sha256:${"c".repeat(64)}); too large to show as one patch` +
+        " (estimated 300000000 bytes, view limit 268435456). It can still be verified, applied and reverted.",
+      "  Largest changed files (inventory, not exact, not a patch): 1 changed, 1 not listed",
+    ]);
   });
 });

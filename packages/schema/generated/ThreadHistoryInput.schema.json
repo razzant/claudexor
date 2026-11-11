@@ -1,0 +1,48 @@
+{
+  "$ref": "#/definitions/ThreadHistoryInput",
+  "definitions": {
+    "ThreadHistoryInput": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Thread id."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 20
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "beforeTurnId": {
+          "$ref": "#/definitions/ThreadHistoryInput/properties/threadId",
+          "description": "Thread id."
+        },
+        "afterTurnId": {
+          "$ref": "#/definitions/ThreadHistoryInput/properties/threadId",
+          "description": "Thread id."
+        },
+        "aroundTurnId": {
+          "$ref": "#/definitions/ThreadHistoryInput/properties/threadId",
+          "description": "Thread id."
+        },
+        "expectedStoreId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

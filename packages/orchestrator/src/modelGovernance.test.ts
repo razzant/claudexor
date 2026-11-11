@@ -1,11 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HarnessAdapter } from "@claudexor/core";
-import { HarnessRunSpec, CredentialProfile } from "@claudexor/schema";
+import { RoutingPreflightError } from "@claudexor/budget";
+import {
+  HarnessUnavailableError,
+  ModelCatalogUnavailableError,
+  RawContextRefusalError,
+  dispatchModelCatalog,
+  withDispatchModelCatalog,
+  type HarnessAdapter,
+  type RawRequestCapacity,
+} from "@claudexor/core";
+import { HarnessRunSpec, CredentialProfile, type RawContextPacket } from "@claudexor/schema";
 import {
   assertRouteModelsAllowed,
+  isDispatchRefusal,
   runModelGovernedRoute,
   type ModelGovernedRoute,
 } from "./modelGovernance.js";
+import { ProcessingBudgetAdmissionError } from "./processing-dispatch.js";
 
 describe("runModelGovernedRoute", () => {
   it("uses the exact spawn profile/state and refuses before adapter.run", async () => {
@@ -215,6 +226,36 @@ describe("profile-less auto is answered as auto, never rewritten", () => {
       expect(runSpecs[0]?.auth_preference).toBe("auto");
     },
   );
+
+  it("a run stopped at a pre-dispatch disclosure is never handed to its adapter", async () => {
+    const runSpecs: HarnessRunSpec[] = [];
+    const routed: ModelGovernedRoute = {
+      adapter: autoAdapter("generic", [], runSpecs),
+      knownModels: [],
+      authRouteEstimate: null,
+      quotaAdmission: { profile: null },
+      settings: null,
+    };
+    const stop = new AbortController();
+    const spec = HarnessRunSpec.parse({
+      session_id: "ses-stopped-preamble",
+      intent: "audit",
+      prompt: "review",
+      cwd: "/repo",
+      env: { HOME: "/state" },
+      auth_preference: "auto",
+      model_hint: "bound-model",
+    });
+    spec.extra["abortSignal"] = stop.signal;
+    const seen: unknown[] = [];
+    // A consumer that keeps reading after Stop (to drain teardown evidence).
+    for await (const event of runModelGovernedRoute(routed, spec)) {
+      seen.push(event);
+      stop.abort();
+    }
+    expect(seen).not.toEqual([]);
+    expect(runSpecs).toEqual([]);
+  });
 
   it("an undecidable admission route no longer refuses a profile-less auto run", async () => {
     const modelSpecs: unknown[] = [];
@@ -477,5 +518,429 @@ describe("route-scoped live model producer", () => {
       /truth source: api.*cannot verify models/,
     );
     expect(models).toHaveBeenCalledWith({ cwd: "/repo", credentialProfile: nativeProfile });
+  });
+});
+
+/**
+ * A raw-api-shaped producer: authoritative, with a TYPED catalog read (#393)
+ * and declared routing variants (#145). The gates must tell a failed read from
+ * an empty catalog and admit a variant without rewriting the spawned spec.
+ */
+describe("typed catalog reads at the run gates (#393, #145)", () => {
+  type Read = Awaited<ReturnType<NonNullable<HarnessAdapter["modelCatalog"]>>>;
+  const rawish = (read: Read, runSpecs: HarnessRunSpec[] = []): ModelGovernedRoute => ({
+    adapter: {
+      id: "openrouter",
+      models: async () => (read.status === "listed" ? read.models : []),
+      modelCatalog: async () => read,
+      run: (spec: HarnessRunSpec) =>
+        (async function* () {
+          runSpecs.push(spec);
+          yield* [];
+        })(),
+    } as unknown as HarnessAdapter,
+    knownModels: [],
+    modelInventory: {
+      model_routing_variants: [
+        { suffix: ":nitro", billing: "service_tier" },
+        { suffix: ":exacto", billing: "base" },
+      ],
+      model_refused_variants: [{ suffix: ":online", reason: "provider_web_search" }],
+    },
+    authRouteEstimate: "api_key",
+    quotaAdmission: { profile: null },
+    settings: null,
+  });
+  const listed = (...ids: string[]): Read => ({
+    status: "listed",
+    models: ids.map((id) => ({ id, label: null, context_window: null, routes: null })),
+  });
+  const runSpec = (model: string) =>
+    HarnessRunSpec.parse({
+      session_id: `ses-${model.replace(/\W+/g, "-")}`,
+      intent: "implement",
+      prompt: "edit",
+      cwd: "/repo",
+      model_hint: model,
+    });
+  const statuses = async (routed: ModelGovernedRoute, spec: HarnessRunSpec) => {
+    const texts: string[] = [];
+    for await (const event of runModelGovernedRoute(routed, spec))
+      if (event.type === "status" && event.text) texts.push(event.text);
+    return texts;
+  };
+
+  it("forwards an explicit model at BOTH gates on an UNAVAILABLE catalog, byte-identical, saying it could not be verified (decision A)", async () => {
+    const runSpecs: HarnessRunSpec[] = [];
+    const down = {
+      status: "unavailable" as const,
+      failure: { cause: "http_status" as const, httpStatus: 503, detail: "upstream down" },
+    };
+    const routed = rawish(down, runSpecs);
+    await assertRouteModelsAllowed([routed], { openrouter: "vendor/m" }, "/repo");
+    const spec = runSpec("vendor/m");
+    const notes = await statuses(routed, spec);
+    expect(notes).toEqual([
+      "the live model catalog could not be read (http_status; HTTP 503: upstream down), so " +
+        'model "vendor/m" could not be verified; it is sent unchanged on the same key and the ' +
+        "provider accepts or refuses it",
+    ]);
+    // The spawn carries the model as asked and the failed read itself.
+    const observed = { ...down, sourceProgram: null };
+    expect(runSpecs).toEqual([withDispatchModelCatalog(spec, observed)]);
+  });
+
+  it("refuses an explicit model at BOTH gates, typed, when the endpoint REJECTED the key", async () => {
+    const runSpecs: HarnessRunSpec[] = [];
+    const routed = rawish(
+      {
+        status: "unavailable",
+        failure: { cause: "auth_rejected", httpStatus: 401, detail: "invalid key" },
+      },
+      runSpecs,
+    );
+    const refusal =
+      "harness 'openrouter' refused model 'vendor/m' (truth source: api): the live model " +
+      "catalog could not be read (auth_rejected; HTTP 401: invalid key), so model " +
+      '"vendor/m" cannot be verified; the endpoint rejected the API key: replace it or check ' +
+      "its access";
+    const preflight = assertRouteModelsAllowed([routed], { openrouter: "vendor/m" }, "/repo");
+    await expect(preflight).rejects.toBeInstanceOf(ModelCatalogUnavailableError);
+    await expect(preflight).rejects.toMatchObject({
+      code: "model_catalog_unavailable",
+      category: "auth",
+      retryable: false,
+    });
+    await expect(preflight).rejects.toThrow(refusal);
+    const consume = async () => {
+      for await (const _event of runModelGovernedRoute(routed, runSpec("vendor/m"))) {
+        /* the refusal precedes every event */
+      }
+    };
+    await expect(consume()).rejects.toThrow(refusal);
+    expect(runSpecs).toEqual([]);
+  });
+
+  it("refuses a model absent from a SUCCESSFUL empty catalog without auth advice", async () => {
+    const routed = rawish(listed());
+    await expect(
+      assertRouteModelsAllowed([routed], { openrouter: "vendor/m" }, "/repo"),
+    ).rejects.toThrow(
+      "harness 'openrouter' refused model 'vendor/m' (truth source: api): model \"vendor/m\" is " +
+        "not in the harness's live model inventory (the catalog lists no models); " +
+        "run `claudexor models --harness openrouter`",
+    );
+  });
+
+  it("admits a declared routing variant of a listed row, discloses it and sends the original id", async () => {
+    const runSpecs: HarnessRunSpec[] = [];
+    const routed = rawish(listed("vendor/m"), runSpecs);
+    await assertRouteModelsAllowed([routed], { openrouter: "vendor/m:nitro" }, "/repo");
+    const spec = runSpec("vendor/m:nitro");
+    const [note] = await statuses(routed, spec);
+    expect(note).toContain(
+      'model "vendor/m:nitro" is listed model "vendor/m" with routing variant :nitro',
+    );
+    expect(note).toContain("service-tier rate");
+    // The request is sent as asked; the gate adds only its own catalog read.
+    expect(runSpecs).toEqual([withDispatchModelCatalog(spec, listed("vendor/m"))]);
+    expect(runSpecs[0]?.model_hint).toBe("vendor/m:nitro");
+  });
+
+  it("admits a documented any-order combination by its listed catalog-variant row", async () => {
+    const runSpecs: HarnessRunSpec[] = [];
+    const routed = rawish(listed("vendor/m", "vendor/m:free"), runSpecs);
+    await assertRouteModelsAllowed([routed], { openrouter: "vendor/m:nitro:free" }, "/repo");
+    const spec = runSpec("vendor/m:nitro:free");
+    const [note] = await statuses(routed, spec);
+    expect(note).toContain('is listed model "vendor/m:free" with routing variant :nitro;');
+    expect(runSpecs[0]?.model_hint).toBe("vendor/m:nitro:free");
+    await expect(
+      assertRouteModelsAllowed(
+        [rawish(listed("vendor/m"))],
+        { openrouter: "vendor/m:nitro:free" },
+        "/repo",
+      ),
+    ).rejects.toThrow(
+      /refused model 'vendor\/m:nitro:free'.*not in the harness's live model inventory/,
+    );
+  });
+
+  it("refuses an unknown suffix by exact membership and the declared :online on any read", async () => {
+    const consume = async (routed: ModelGovernedRoute, model: string) => {
+      for await (const _event of runModelGovernedRoute(routed, runSpec(model))) {
+        /* the refusal precedes every event */
+      }
+    };
+    const routed = rawish(listed("vendor/m"));
+    await expect(
+      assertRouteModelsAllowed([routed], { openrouter: "vendor/m:unknownsuffix" }, "/repo"),
+    ).rejects.toThrow("refused model 'vendor/m:unknownsuffix'");
+    await expect(consume(routed, "vendor/m:unknownsuffix")).rejects.toThrow(
+      /not in the harness's live model inventory/,
+    );
+    const online =
+      "harness 'openrouter' refused model 'vendor/m:online': model \"vendor/m:online\" carries " +
+      "the :online variant, which this harness refuses";
+    const down = rawish({
+      status: "unavailable",
+      failure: { cause: "timeout", httpStatus: null, detail: "no answer within 15s" },
+    });
+    for (const route of [routed, down]) {
+      await expect(
+        assertRouteModelsAllowed([route], { openrouter: "vendor/m:online" }, "/repo"),
+      ).rejects.toThrow(online);
+      await expect(consume(route, "vendor/m:online")).rejects.toThrow(online);
+    }
+  });
+});
+
+describe("one catalog read per spawn serves the model, the raw packet and the adapter (#147, #146)", () => {
+  type Read = Awaited<ReturnType<NonNullable<HarnessAdapter["modelCatalog"]>>>;
+  const PACKET = { packet_hash: "sha256:sized" } as RawContextPacket;
+  function raw(read: Read | Read[]) {
+    const runSpecs: HarnessRunSpec[] = [];
+    const rows: unknown[] = [];
+    // One answer per read, in order; the last answer repeats.
+    const answers = Array.isArray(read) ? [...read] : [read];
+    const modelCatalog = vi.fn(async () => (answers.length > 1 ? answers.shift()! : answers[0]!));
+    const adapter = {
+      id: "openrouter",
+      models: async () => [],
+      modelCatalog,
+      rawRequestCapacity: (
+        spec: HarnessRunSpec,
+        catalog: readonly { context_window: number | null }[],
+      ) => {
+        rows.push(catalog);
+        return {
+          model: spec.model_hint ?? "vendor/default",
+          contextWindow: catalog[0]?.context_window ?? null,
+          outputAllowance: 4_096,
+          outputAllowanceSource: "catalog",
+          framingTokens: 10,
+        } satisfies RawRequestCapacity;
+      },
+      run: (spec: HarnessRunSpec) =>
+        (async function* () {
+          runSpecs.push(spec);
+          yield* [];
+        })(),
+    } as unknown as HarnessAdapter;
+    const routed: ModelGovernedRoute = {
+      adapter,
+      knownModels: [],
+      authRouteEstimate: "api_key",
+      quotaAdmission: { profile: null },
+      settings: null,
+    };
+    const sized: Array<RawRequestCapacity | null> = [];
+    const notes: string[] = [];
+    const dispatched = vi.fn();
+    const send = async (
+      model?: string,
+      rawContext = async () => PACKET,
+      profile: CredentialProfile | null = null,
+    ) => {
+      const spec = HarnessRunSpec.parse({
+        session_id: "ses-raw",
+        intent: "implement",
+        prompt: "edit",
+        cwd: "/repo",
+        ...(model ? { model_hint: model } : {}),
+        ...(profile ? { credential_profile: profile } : {}),
+      });
+      spec.extra["markPhysicalDispatchStarted"] = dispatched;
+      const dispatch = {
+        rawContext: async (capacity: RawRequestCapacity | null) => {
+          sized.push(capacity);
+          return rawContext();
+        },
+      };
+      for await (const event of runModelGovernedRoute(routed, spec, dispatch))
+        if (event.type === "status" && event.text) notes.push(event.text);
+    };
+    return { routed, runSpecs, rows, modelCatalog, sized, notes, dispatched, send };
+  }
+  const window = (contextWindow: number): Read => ({
+    status: "listed",
+    models: [{ id: "vendor/m", label: null, context_window: contextWindow, routes: null }],
+  });
+  const failure = { cause: "http_status" as const, httpStatus: 503, detail: "upstream down" };
+  const failed: Read = { status: "unavailable", failure };
+
+  it("sizes the packet from the read that admitted the model and hands that read to the adapter", async () => {
+    const h = raw(window(50_000));
+    await h.send("vendor/m");
+    expect(h.modelCatalog).toHaveBeenCalledTimes(1);
+    expect(h.sized).toEqual([
+      expect.objectContaining({ model: "vendor/m", contextWindow: 50_000 }),
+    ]);
+    expect(h.runSpecs).toHaveLength(1);
+    expect(h.runSpecs[0]!.raw_context_packet).toBe(PACKET);
+    expect(dispatchModelCatalog(h.runSpecs[0]!)).toEqual(window(50_000));
+    expect(h.dispatched).toHaveBeenCalledTimes(1);
+  });
+
+  it("without an explicit model still reads once; a failed read leaves the window unknown and refuses nothing", async () => {
+    const h = raw(failed);
+    await h.send();
+    expect(h.modelCatalog).toHaveBeenCalledTimes(1);
+    expect(h.rows).toEqual([[]]);
+    expect(h.sized).toEqual([expect.objectContaining({ contextWindow: null })]);
+    expect(h.runSpecs[0]!.raw_context_packet).toBe(PACKET);
+    expect(dispatchModelCatalog(h.runSpecs[0]!)).toEqual({ ...failed, sourceProgram: null });
+  });
+
+  it("forwards an explicit model its unavailable read cannot verify, sized under an unknown window", async () => {
+    const h = raw(failed);
+    await h.send("vendor/m");
+    expect(h.sized).toEqual([expect.objectContaining({ model: "vendor/m", contextWindow: null })]);
+    expect(h.notes.join("\n")).toContain('model "vendor/m" could not be verified');
+    expect(h.runSpecs).toHaveLength(1);
+    expect(h.runSpecs[0]!.model_hint).toBe("vendor/m");
+    expect(h.dispatched).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an explicit model whose key the endpoint rejected before sizing, admitting or sending", async () => {
+    const h = raw({
+      status: "unavailable",
+      failure: { cause: "auth_rejected", httpStatus: 401, detail: "invalid key" },
+    });
+    const refusal = await h.send("vendor/m").catch((err: unknown) => err);
+    expect(refusal).toBeInstanceOf(ModelCatalogUnavailableError);
+    expect(refusal).toMatchObject({ category: "auth", retryable: false });
+    expect(isDispatchRefusal(refusal)).toBe(true);
+    expect(h.sized).toEqual([]);
+    expect(h.dispatched).not.toHaveBeenCalled();
+    expect(h.runSpecs).toEqual([]);
+  });
+
+  describe("an unavailable read keeps what this run already read at the same identity (#393 x #147)", () => {
+    const profile = (id: string) =>
+      CredentialProfile.parse({
+        profile_id: id,
+        harness_id: "openrouter",
+        display_name: id,
+        credential_kind: "api_key",
+        secret_ref: `openrouter:${id}`,
+        enabled: true,
+      });
+    /** The read as a producer that names its key reports it. */
+    const keyed = (read: Read, fingerprint = "fp-key-1"): Read => ({
+      ...read,
+      credential: { fingerprint },
+    });
+
+    it("admission knew a 50k window: the failed dispatch read sizes under it, says so and hands it on", async () => {
+      const h = raw([keyed(window(50_000)), keyed(failed)]);
+      await assertRouteModelsAllowed([h.routed], { openrouter: "vendor/m" }, "/repo");
+      await h.send("vendor/m");
+      expect(h.modelCatalog).toHaveBeenCalledTimes(2); // admission + dispatch, nothing more
+      expect(h.sized).toEqual([expect.objectContaining({ contextWindow: 50_000 })]);
+      // The earlier rows, handed on with the key this dispatch read checked.
+      expect(dispatchModelCatalog(h.runSpecs[0]!)).toEqual(keyed(window(50_000)));
+      expect(h.notes).toHaveLength(1);
+      expect(h.notes[0]).toMatch(
+        /^the live model catalog could not be read \(http_status; HTTP 503: upstream down\) at dispatch; this run's earlier catalog read with the same credentials \(\d{4}-.+\) answers for the model and its limits$/,
+      );
+    });
+
+    it("a successful newer read wins, and later failures fall back to it", async () => {
+      const h = raw([keyed(window(50_000)), keyed(window(64_000)), keyed(failed)]);
+      await assertRouteModelsAllowed([h.routed], { openrouter: "vendor/m" }, "/repo");
+      await h.send("vendor/m");
+      await h.send("vendor/m");
+      expect(h.sized.map((c) => c?.contextWindow)).toEqual([64_000, 64_000]);
+    });
+
+    it("another account's earlier read is never borrowed: its window stays unknown", async () => {
+      const h = raw([keyed(window(50_000)), keyed(failed)]);
+      h.routed.quotaAdmission = { profile: profile("acct-a") };
+      await assertRouteModelsAllowed([h.routed], { openrouter: "vendor/m" }, "/repo");
+      await h.send("vendor/m", undefined, profile("acct-b"));
+      expect(h.sized).toEqual([expect.objectContaining({ contextWindow: null })]);
+      expect(h.notes.join("\n")).toContain('model "vendor/m" could not be verified');
+      expect(h.notes.join("\n")).not.toContain("earlier catalog read");
+    });
+
+    it("another key under the same identity, or a read naming no key, never borrows it", async () => {
+      for (const reads of [
+        [keyed(window(50_000), "fp-key-1"), keyed(failed, "fp-key-2")],
+        [window(50_000), failed],
+      ]) {
+        const h = raw(reads);
+        await assertRouteModelsAllowed([h.routed], { openrouter: "vendor/m" }, "/repo");
+        await h.send("vendor/m");
+        expect(h.sized).toEqual([expect.objectContaining({ contextWindow: null })]);
+        expect(h.notes.join("\n")).not.toContain("earlier catalog read");
+      }
+    });
+
+    it("a pinned account's own admission read answers its failed dispatch read", async () => {
+      const h = raw([keyed(window(50_000)), keyed(failed)]);
+      h.routed.quotaAdmission = { profile: profile("acct-a") };
+      await assertRouteModelsAllowed([h.routed], { openrouter: "vendor/m" }, "/repo");
+      await h.send("vendor/m", undefined, profile("acct-a"));
+      expect(h.sized).toEqual([expect.objectContaining({ contextWindow: 50_000 })]);
+    });
+
+    it("a rejected key still refuses, whatever was read before", async () => {
+      const h = raw([
+        keyed(window(50_000)),
+        keyed({
+          status: "unavailable",
+          failure: { cause: "auth_rejected", httpStatus: 403, detail: "" },
+        }),
+      ]);
+      await assertRouteModelsAllowed([h.routed], { openrouter: "vendor/m" }, "/repo");
+      await expect(h.send("vendor/m")).rejects.toBeInstanceOf(ModelCatalogUnavailableError);
+      expect(h.sized).toEqual([]);
+      expect(h.runSpecs).toEqual([]);
+    });
+
+    it("a model the earlier successful read did not list is still refused", async () => {
+      const h = raw([keyed(window(50_000)), keyed(failed)]);
+      await assertRouteModelsAllowed([h.routed], { openrouter: "vendor/m" }, "/repo");
+      await expect(h.send("vendor/other")).rejects.toThrow(
+        /refused model 'vendor\/other'.*not in the harness's live model inventory/,
+      );
+      expect(h.runSpecs).toEqual([]);
+    });
+
+    it("nothing read before: the window is genuinely unknown", async () => {
+      const h = raw(failed);
+      await h.send();
+      expect(h.sized).toEqual([expect.objectContaining({ contextWindow: null })]);
+      expect(h.notes).toEqual([]);
+    });
+  });
+
+  it("an undeliverable packet refuses before admission and before the adapter runs", async () => {
+    const h = raw(window(50_000));
+    const refusal = await h
+      .send("vendor/m", async () => {
+        throw new RawContextRefusalError("raw_context_exceeds_window", "too big");
+      })
+      .catch((err: unknown) => err);
+    expect(isDispatchRefusal(refusal)).toBe(true);
+    expect(refusal).toMatchObject({ code: "raw_context_exceeds_window", category: "validation" });
+    expect(h.dispatched).not.toHaveBeenCalled();
+    expect(h.runSpecs).toEqual([]);
+  });
+
+  it("names exactly the refusals raised before anything is sent", () => {
+    const denial = { code: "hard_cap", reason: "cap" } as ConstructorParameters<
+      typeof ProcessingBudgetAdmissionError
+    >[0];
+    for (const refusal of [
+      new ProcessingBudgetAdmissionError(denial),
+      new RoutingPreflightError("no route"),
+      new ModelCatalogUnavailableError("unread", failure),
+      new RawContextRefusalError("raw_context_mandatory_unavailable", "missing"),
+    ])
+      expect(isDispatchRefusal(refusal)).toBe(true);
+    for (const other of [new HarnessUnavailableError("absent"), new Error("crash"), "text"])
+      expect(isDispatchRefusal(other)).toBe(false);
   });
 });

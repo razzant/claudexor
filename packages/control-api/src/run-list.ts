@@ -13,12 +13,13 @@
  *     instead of a wholesale clear-and-rehydrate thrash.
  */
 import { setImmediate } from "node:timers/promises";
-import type { DaemonRunRecord } from "./run-record.js";
-import { ControlRunState } from "@claudexor/schema";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { DaemonFacadeClient, DaemonRunRecord } from "./run-record.js";
+import { ControlRunListResponse, ControlRunState, type ControlRunSummary } from "@claudexor/schema";
 import { assertOnlyQueryParams, singleQuery } from "./query.js";
+import { requestGone } from "./request-liveness.js";
 
-import { decodeRunCursor, type RunListQuery } from "@claudexor/schema";
-export { selectRunListPage } from "@claudexor/schema";
+import { decodeRunCursor, selectRunListPage, type RunListQuery } from "@claudexor/schema";
 export type { RunListQuery } from "@claudexor/schema";
 
 /** Default page size when the caller sends no `limit` — newest-first, so the
@@ -111,15 +112,59 @@ export function lruSet<K, V>(map: Map<K, V>, key: K, value: V, cap: number): voi
   }
 }
 
-/** One synchronous summary per event-loop turn; other requests can run between them. */
+/** One summary per job/turn; other requests can run between them. */
 export async function summarizeRunPage<T>(
   page: readonly DaemonRunRecord[],
-  summarize: (record: DaemonRunRecord) => T,
+  summarize: (record: DaemonRunRecord) => T | Promise<T>,
+  active: () => boolean = () => true,
 ): Promise<T[]> {
   const summaries: T[] = [];
   for (const [i, record] of page.entries()) {
-    summaries.push(summarize(record));
+    if (!active()) break;
+    summaries.push(await summarize(record));
     if (i + 1 < page.length) await setImmediate();
   }
   return summaries;
+}
+
+interface RunListContext {
+  daemon: DaemonFacadeClient;
+  summarize(record: DaemonRunRecord): ControlRunSummary | Promise<ControlRunSummary>;
+  requestError(res: ServerResponse, error: unknown): void;
+  json(res: ServerResponse, status: number, body: unknown): void;
+}
+
+/** Existing GET /v2/runs handler, extracted without changing page semantics. */
+export async function serveRunList(
+  ctx: RunListContext,
+  url: URL,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let query: RunListQuery;
+  try {
+    query = parseRunListQuery(url);
+  } catch (error) {
+    return ctx.requestError(res, error);
+  }
+  const { page, hasMore, nextCursor } = selectRunListPage(
+    await ctx.daemon.list({ page: query }),
+    query,
+  );
+  if (requestGone(req, res)) return;
+  const runs = await summarizeRunPage(
+    page,
+    (r) => ctx.summarize(r),
+    () => !requestGone(req, res),
+  );
+  if (requestGone(req, res)) return;
+  return ctx.json(
+    res,
+    200,
+    ControlRunListResponse.parse({
+      runs,
+      nextCursor,
+      hasMore,
+    }),
+  );
 }

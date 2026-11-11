@@ -367,6 +367,11 @@ const RETIRED_CONTRACT_CLAIMS = [
     "an unanswered question declines benignly after the configurable `interaction_timeout_ms`",
   ],
   ["README.md", "Pass `--reviewers`"],
+  // INV-074: no tmp redirect or verified host-side-effect mode exists.
+  ["README.md", "explicitly verified host side-effect"],
+  ["README.md", "verified host-side-effect mode"],
+  ["docs/ARCHITECTURE.md", "explicitly verified host side-effect"],
+  ["docs/ARCHITECTURE.md", "project tmp requests default to"],
   ["packages/schema/src/control.ts", "CLI `--reviewers"],
   [
     "apps/macos/ClaudexorApp/Sources/ClaudexorApp/DomainModels.swift",
@@ -822,7 +827,6 @@ function collectSourceHaystack() {
       "capabilities --json",
       "docs/reference/endpoints.json",
       "claudexor decision",
-      "inline_secret_rejected",
     ]) {
       if (!onboarding.includes(anchor))
         failures.push(`docs/AGENT_ONBOARDING.md no longer mentions '${anchor}'`);

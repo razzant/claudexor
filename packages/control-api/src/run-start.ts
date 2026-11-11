@@ -8,25 +8,37 @@ import { mkdirSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
 import {
-  ControlQueuedRunInfo,
   ControlRunStartRequest,
   PROJECT_NOT_REGISTERED_REQUIRED_ACTIONS,
   RecordedControlRunStartRequest,
   RETIRED_EXTERNAL_SANDBOX_FULL,
   runAccessStrategyViolation,
+  runAuxiliaryWritableRootsViolation,
   runExecutionWorkspaceRootAllowed,
   runExecutionWorkspaceViolation,
   runStartStrategyViolations,
+  taskGroupLaunchMetadata,
 } from "@claudexor/schema";
 import {
-  assertNoInlineSecretValues,
   noProjectRepoRoot,
   safeProblemContext,
   safeProblemMessage,
   safeProblemRequiredActions,
 } from "@claudexor/util";
+import {
+  assertAuxiliaryWritableRootSpelling,
+  auxiliaryWritableRootDirectory,
+} from "@claudexor/workspace";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 import { assertContinuationAdmissible, resolveContinuationBody } from "./run-continuation-start.js";
+import { prepareRunStart } from "./run-start-preparation.js";
+import { requireTaskGroupStoreIdentity, respondToAcceptedJob } from "./run-start-receipt.js";
+export {
+  acceptedRunReceipt,
+  requireTaskGroupStoreIdentity,
+  unboundRunStartResponse,
+  wantsStoreIdentity,
+} from "./run-start-receipt.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -103,6 +115,7 @@ export function normalizeRunStart(
   parsed: ControlRunStartRequest,
   options: RunStartNormalizationOptions = {},
 ): ControlRunStartRequest {
+  taskGroupLaunchMetadata(parsed);
   const mode = parsed.mode ?? "agent";
   // Empty chat is never a silent no-op (Bible): reject a blank prompt at the
   // engine boundary. Fail loud (400) rather than enqueue a doomed run that
@@ -169,8 +182,11 @@ export function normalizeRunStart(
   // this filesystem-only normalizer does not own. The project-aware preflight
   // resolves that default and applies the same shared requirement below; only
   // an explicitly mutating request can be decided at this boundary.
+  // The same split decides auxiliary roots: mode and an explicit access here,
+  // the configured default in the preflight; engine admission canonicalizes.
   const workspaceViolation =
-    parsed.access === undefined ? null : runExecutionWorkspaceViolation(parsed, parsed.access);
+    (parsed.access === undefined ? null : runExecutionWorkspaceViolation(parsed, parsed.access)) ??
+    runAuxiliaryWritableRootsViolation({ ...parsed, mode }, parsed.access);
   if (workspaceViolation) {
     throw Object.assign(new Error(workspaceViolation.message), {
       status: 400,
@@ -178,6 +194,11 @@ export function normalizeRunStart(
       retryable: workspaceViolation.retryable,
       requiredActions: [...workspaceViolation.requiredActions],
     });
+  }
+  for (const root of parsed.execution?.auxiliaryWritableRoots ?? []) {
+    if (options.deferExecutionWorkspaceAvailability === true)
+      assertAuxiliaryWritableRootSpelling(root);
+    else auxiliaryWritableRootDirectory(root);
   }
   if (parsed.scope.kind === "project") {
     // Existence is the only filesystem precondition here: a NON-GIT folder is
@@ -219,7 +240,6 @@ export function normalizeRunStartRequest(
   raw: unknown,
   options: RunStartNormalizationOptions = {},
 ): ControlRunStartRequest {
-  assertNoInlineSecretValues(raw);
   return normalizeRunStart(ControlRunStartRequest.parse(raw ?? {}), options);
 }
 
@@ -240,6 +260,20 @@ function recordedRunStartReplayProjection(
       ephemeral: parsed.scope.ephemeral,
     },
   };
+}
+
+/** The recorded request a continuation-resolved start body binds its key to. Create replay
+ * and the read-only start lookup share it, so a lookup reads what the create accepted. */
+export function recordedRunStart(body: unknown): RecordedControlRunStartRequest {
+  return recordedRunStartReplayProjection(RecordedControlRunStartRequest.parse(body));
+}
+
+/** The accepted-command query of a one-shot start: its recorded request under the caller's key. */
+export function acceptedRunQuery(recorded: RecordedControlRunStartRequest, idempotencyKey: string) {
+  return [
+    recorded,
+    { idempotencyKey, clientId: "control-api", idempotencyRequest: recorded },
+  ] as const;
 }
 
 function retiredAccessProfileError(): Error {
@@ -289,12 +323,48 @@ function lookupProblemEvidence(error: unknown): Record<string, unknown> {
   };
 }
 
+/**
+ * The typed answer to a failed accepted-command read. Only the daemon's canonical key/project
+ * refusals are definite; any other failure leaves custody unknown and asks for the same key again.
+ */
+export function acceptedLookupFailure(
+  error: unknown,
+  stage: string,
+  extra: Record<string, unknown> = {},
+): Error {
+  const unregistered = projectNotRegisteredError(error);
+  if (unregistered) return unregistered;
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "idempotency_conflict" || error.code === "invalid_idempotency_key")
+  ) {
+    // CommandStore supplies code/status but no retryable property; expose
+    // the definite refusal explicitly without changing other lookup errors.
+    return Object.assign(error, { retryable: false });
+  }
+  return Object.assign(
+    new Error(
+      "idempotency status is temporarily unavailable; retry the same operation with the same Idempotency-Key",
+      { cause: error },
+    ),
+    {
+      status: 503,
+      code: "idempotency_status_unavailable",
+      retryable: true,
+      requiredActions: ["Retry the same operation with the same Idempotency-Key."],
+      context: safeProblemContext({ stage, cause: lookupProblemEvidence(error), ...extra }),
+    },
+  );
+}
+
 export interface RunCreateRouteContext {
   daemon: DaemonFacadeClient;
   readBody(req: IncomingMessage): Promise<unknown>;
   requestError(res: ServerResponse, error: unknown, fallbackStatus?: 400 | 500): void;
   json(res: ServerResponse, status: number, body: unknown): void;
-  respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void>;
+  waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
+  storeId?: () => string | undefined;
   validateResources?: (refs: NonNullable<ControlRunStartRequest["attachments"]>) => Promise<void>;
   preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
 }
@@ -319,35 +389,12 @@ export async function findAcceptedAroundPreflight<T>(
     try {
       return await findAccepted();
     } catch (error) {
-      const unregistered = projectNotRegisteredError(error);
-      if (unregistered) throw unregistered;
-      if (
-        error instanceof Error &&
-        "code" in error &&
-        (error.code === "idempotency_conflict" || error.code === "invalid_idempotency_key")
-      ) {
-        // CommandStore supplies code/status but no retryable property; expose
-        // the definite refusal explicitly without changing other lookup errors.
-        throw Object.assign(error, { retryable: false });
-      }
-      throw Object.assign(
-        new Error(
-          "idempotency status is temporarily unavailable; retry the same operation with the same Idempotency-Key",
-          { cause: error },
-        ),
-        {
-          status: 503,
-          code: "idempotency_status_unavailable",
-          retryable: true,
-          requiredActions: ["Retry the same operation with the same Idempotency-Key."],
-          context: safeProblemContext({
-            stage,
-            cause: lookupProblemEvidence(error),
-            ...(stage === "lookup_after_preflight"
-              ? { preflight: lookupProblemEvidence(preflightError) }
-              : {}),
-          }),
-        },
+      throw acceptedLookupFailure(
+        error,
+        stage,
+        stage === "lookup_after_preflight"
+          ? { preflight: lookupProblemEvidence(preflightError) }
+          : {},
       );
     }
   };
@@ -361,52 +408,6 @@ export async function findAcceptedAroundPreflight<T>(
     throw preflightError;
   }
   return null;
-}
-
-export function unboundRunStartResponse(
-  rec: DaemonRunRecord,
-  terminal: boolean,
-  terminalContext: Record<string, unknown> = {},
-): { status: number; body: Record<string, unknown> } {
-  // errorStatus is served verbatim only inside the failure range; anything
-  // else (absent, or a non-4xx/5xx value from a defective writer) must not
-  // turn a terminal failure body into a 2xx/3xx response.
-  const errorStatus =
-    typeof rec.errorStatus === "number" &&
-    Number.isInteger(rec.errorStatus) &&
-    rec.errorStatus >= 400 &&
-    rec.errorStatus <= 599
-      ? rec.errorStatus
-      : 500;
-  const queued = ControlQueuedRunInfo.parse({
-    jobId: rec.id,
-    state: rec.state,
-    error: rec.error,
-  });
-  if (!terminal) return { status: 202, body: queued };
-  return {
-    status: errorStatus,
-    body: {
-      ...queued,
-      ...(rec.errorCode ? { code: rec.errorCode } : {}),
-      // The daemon producer owns retryability when it supplied the fact. A
-      // legacy typed refusal without the field keeps the prior conservative
-      // non-retryable fallback; an untyped terminal makes no claim.
-      ...(rec.errorRetryable !== undefined
-        ? { retryable: rec.errorRetryable }
-        : rec.errorCode
-          ? { retryable: false }
-          : {}),
-      requiredActions: rec.errorRequiredActions ?? [],
-      context: {
-        ...(rec.errorContext ?? {}),
-        // Server-owned handles override any producer context with the same key.
-        jobId: rec.id,
-        state: rec.state,
-        ...terminalContext,
-      },
-    },
-  };
 }
 
 /** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle.
@@ -425,9 +426,7 @@ export async function handleRunCreate(
   let recorded: RecordedControlRunStartRequest;
   try {
     idempotencyKey = requiredIdempotencyKey(req);
-    const body = await resolveContinuationBody(ctx.daemon, await ctx.readBody(req));
-    assertNoInlineSecretValues(body);
-    recorded = recordedRunStartReplayProjection(RecordedControlRunStartRequest.parse(body));
+    recorded = recordedRunStart(await resolveContinuationBody(ctx.daemon, await ctx.readBody(req)));
   } catch (error) {
     return ctx.requestError(res, error);
   }
@@ -442,22 +441,17 @@ export async function handleRunCreate(
   try {
     const prior = await findAcceptedAroundPreflight(
       () =>
-        ctx.daemon.findAccepted?.(recorded, {
-          idempotencyKey,
-          clientId: "control-api",
-          idempotencyRequest: recorded,
-        }) ?? Promise.resolve(null),
+        ctx.daemon.findAccepted?.(...acceptedRunQuery(recorded, idempotencyKey)) ??
+        Promise.resolve(null),
       async () => {
         if (recorded.access === RETIRED_EXTERNAL_SANDBOX_FULL) {
           throw retiredAccessProfileError();
         }
         await assertContinuationAdmissible(ctx.daemon, recorded);
-        params = normalizeRunStart(ControlRunStartRequest.parse(recorded));
-        await ctx.validateResources?.(params.attachments ?? []);
-        await ctx.preflightRunRequirements?.(params);
+        params = await prepareRunStart(recorded, ctx);
       },
     );
-    if (prior) return ctx.respondToAcceptedJob(res, prior.id);
+    if (prior) return respondToAcceptedJob(ctx, req, res, prior.id);
   } catch (error) {
     return ctx.requestError(res, error);
   }
@@ -510,6 +504,7 @@ export async function handleRunCreate(
   }
   let job: { id: string };
   try {
+    requireTaskGroupStoreIdentity(params, ctx.storeId);
     job = await ctx.daemon.enqueue(params, {
       idempotencyKey,
       clientId: "control-api",
@@ -521,8 +516,15 @@ export async function handleRunCreate(
     return ctx.requestError(res, projectNotRegisteredError(error) ?? error, 500);
   }
   try {
-    return await ctx.respondToAcceptedJob(res, job.id);
+    return await respondToAcceptedJob(ctx, req, res, job.id);
   } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "store_identity_unavailable"
+    )
+      return ctx.requestError(res, error, 500);
     return ctx.json(res, 500, {
       error: `job ${job.id} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
       jobId: job.id,

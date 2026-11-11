@@ -1,0 +1,52 @@
+{
+  "$ref": "#/definitions/McpUploadImportInput",
+  "definitions": {
+    "McpUploadImportInput": {
+      "type": "object",
+      "properties": {
+        "expectedStoreId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Store UUID from the opt-in handshake, saved with the key BEFORE the first import and replayed unchanged; never replaced by the current store. A different store is refused before any effect."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Explicit absolute regular file on the MCP-server host, never the remote client's filesystem."
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "maxLength": 256,
+          "description": "Caller-owned key for this one import. Save it with the exact arguments before calling and repeat both after any uncertainty; a completed import returns its original resource without reading the file again. A new edition of the file needs a new key."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "file"
+          ],
+          "description": "Default: image when the effective MIME type starts with image/, otherwise file."
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Default from the file extension (unknown extensions are application/octet-stream)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name. Default: the file's base name."
+        }
+      },
+      "required": [
+        "expectedStoreId",
+        "path",
+        "idempotencyKey"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

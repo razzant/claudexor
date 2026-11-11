@@ -10,7 +10,7 @@ import { runEquivalence } from "./test-support/store-equivalence.js";
 const roots: string[] = [];
 afterEach(() => {
   for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const output = () => {
   const root = mkdtempSync(join(tmpdir(), "cx-equivalence-driver-"));
   roots.push(root);

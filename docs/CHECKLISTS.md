@@ -43,7 +43,10 @@ These are LOCKED rules for all future work. Do not re-litigate them.
   and why existing trust, review, custody, and rollback controls are insufficient.
   If a restriction touches a supported path, its acceptance proof includes a
   positive production-shaped E2E of the promised capability, not only a denial
-  or policy-shape assertion; capability loss blocks the restriction.
+  or policy-shape assertion; capability loss blocks the restriction. Mapping an
+  access profile onto a vendor mode is such a restriction: its proof is the
+  battery's capability row for that profile, which needs content only a real
+  read can produce.
 - **Staged-field rule.** A schema field ships only WITH a real producer AND a real
   consumer in the SAME change; otherwise it is deleted, never left as a dead or
   fake knob. This is exactly what `pnpm knip` plus the docs-truth gate enforce.
@@ -136,14 +139,17 @@ pnpm test
 - Account catalog views must be negotiated through the operation catalog. Check
   strict legacy shapes, all enabled account inventories, exact pins, independent
   failures, and original observation/provenance. A union must not manufacture a
-  maximum capability or weaken fresh execution admission. The same holds for
-  `GET /v2/accounts/routing-evidence`: an older engine (404) shows nothing new,
-  any other failure keeps the listing with one diagnostic, and `next_up` stays
-  labelled as the configured default model's verdict.
+  maximum capability or weaken fresh execution admission. First-party reads of
+  `GET /v2/accounts/routing-evidence` are bounded rather than negotiated per query:
+  an older engine (404) shows nothing new, one that rejects an opt-in query (400)
+  is read again without it, once per query, any other failure, a 500 included, is
+  not retried and keeps the listing with one diagnostic, a model-scoped refusal
+  never changes the row's status, and `next_up` stays labelled as the configured
+  default model's verdict.
 - Tool success, web evidence, and tmp/workspace claims must be evidence-based:
-  preserve redacted tool error detail; `tool_result.is_error === true` blocks
-  claimed success unless verified recovery exists; absolute `/tmp/...` is not
-  project diff evidence.
+  preserve the tool's exact error detail; `tool_result.is_error === true` blocks
+  claimed success unless verified recovery exists; a write outside the
+  execution root, such as absolute `/tmp/...`, is not project diff evidence.
 - No regex governance for risk, permissions, tool success, web-required
   detection, winners, or tests-passed.
 - Live input into active runs ships only as a declared per-adapter channel
@@ -256,9 +262,13 @@ pnpm test
 
 ## Security And Secrets
 
-- Raw secrets must not appear in jobs, task contracts, events, summaries,
-  served artifacts, persisted patch copies, PR text, docs, or logs; exact output
-  follows [INV-062 keep-and-mask](../CLAUDEXOR_BIBLE.md#6-secrets-never-become-artifacts).
+- Engine-owned credentials (daemon tokens, provider keys, OAuth stores,
+  account homes) must not enter working content, logs, docs or PR text; their
+  diagnostics may be masked. Authorized working content (prompts,
+  attachments, answers, events, patches, review evidence, served artifacts)
+  stays exact and is never refused or masked for looking like a credential
+  ([INV-146](../CLAUDEXOR_BIBLE.md#6-engine-credentials-stay-private-work-stays-exact)).
+  Publication (`pr`) is the one content check.
 - Native/subscription routes should not inherit provider API-key env vars unless
   an API-key source is explicit.
 - A native login may pass only after fresh `native_session = available + passed`;
@@ -358,6 +368,10 @@ pnpm test
 - npm packages publish in dependency order with provenance. Existing versions
   require exact tag/commit/source/digest proof; differing bytes are collisions.
   Clean installed-package smokes pass on the supported Node floor and pin.
+- Before re-running a publish run that stopped after npm accepted a package,
+  reconcile the versions its log shows as sent with read-only reconciliation
+  ([DEVELOPMENT](DEVELOPMENT.md#development-commands)): a re-run sends a new
+  publish request for every version npm does not expose yet.
 - Confirm npm `latest` and `next` point to the published version. Exact-pinned
   embedding hosts do not follow those tags.
 - Asset upload never clobbers. The remote asset set is checked before/after
@@ -383,6 +397,12 @@ pnpm test
   over overfit; meta over patch.
 - Reject scope drift and overengineering that does not serve the accepted user
   intent.
+- Look for lost capability as hard as for excess power: a promised capability
+  that fails on a real path is a serious finding, never demoted as hardening.
+- Refute a finding only with evidence that exercises its own scenario; a probe
+  that never touches what the finding names is not a refutation. A finding
+  that says the owner should know something reaches the owner summary with its
+  disposition, even when rejected.
 - Use the release protocol below for this repository. An empty, erroneous, or
   wrong-tree review is not evidence; obtain a complete independent review.
 - If a change intentionally edits existing protected gate/test files, record the
@@ -411,7 +431,8 @@ pnpm test
   The native harness reads files directly and may use the internet where source
   verification is useful.
 - Reviewer workspaces must project one frozen source inventory: Git-visible
-  files plus exact diff-touched paths, or the explicit complete selected postimage
+  files plus exact diff-touched paths, only the exact changed paths of a Git
+  result with no rendered patch, or the explicit complete selected postimage
   manifest for directory work. The legacy no-inventory path remains diff-only.
   Prove unrelated local files stay absent while every selected file, including
   unchanged inputs and generated binary paths, remains available with an empty
@@ -456,12 +477,13 @@ pnpm test
 - Diff demand loading: controls derive patch availability from metadata, a tab
   opened before metadata retriggers, and 413/network/non-text failures show
   reason + path + Retry rather than spinning forever.
-- Bounded primary output: test exactly 256 KiB, +1 byte, the redaction overlap
-  boundary, and split UTF-8; every omitted byte sets `truncated=true`.
-- Persist local/redacted per-reviewer telemetry: requested model/effort, observed
+- Bounded primary output: test exactly 256 KiB, +1 byte and split UTF-8; every
+  omitted byte sets `truncated=true`.
+- Persist local per-reviewer telemetry: requested model/effort, observed
   model/source, route proof, start/first-event/completion-or-timeout timestamps,
   duration, raw normalized stream or transcript, parsed JSON blocks, and parse
-  errors.
+  errors. Reviewer text, transcripts and parsed JSON stay exact; only diagnostic
+  copies (errors, progress and metadata telemetry) are masked.
 - Bind each reviewer to the exact candidate and complete evidence (diff,
   accepted intent, decisions and tests). Keep private dialogue in a separate
   private packet. Use new output locations for independent executions; never

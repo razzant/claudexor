@@ -66,7 +66,7 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
 
     /// A scratch `runtime/` root that is cleaned up.
     private func tempRoot() -> URL {
-        let url = FileManager.default.temporaryDirectory
+        let url = runtimeTestTemporaryDirectory
             .appendingPathComponent("claudexor-runtime-test-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
@@ -226,7 +226,7 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
         #expect(first == .decided(.available(RuntimeManifest.verified(manifestData, authority: try testAuthority())!)))
 
         // Install completes and is handshake-verified as 3.4.0.
-        await updater.recordInstalledVersion("3.4.0", appVersion: "dev")
+        await updater.recordObservedVersion("3.4.0", appVersion: "dev")
         #expect(await updater.cachedDecision == .upToDate)
 
         // The next check must NOT reuse the stale .available on a 304, and it must

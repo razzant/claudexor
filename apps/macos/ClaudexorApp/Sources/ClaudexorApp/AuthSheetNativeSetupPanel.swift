@@ -65,6 +65,8 @@ struct AuthSheetApiKeyPanel: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 SectionLabel("API-key fallback", systemImage: "key")
                 SecureField("\(name) key", text: $secretValue).textFieldStyle(.roundedBorder)
+                    // Return stores the typed key, the same action as Store Key.
+                    .onSubmit { if enabled { storeKey() } }
                 Button(action: storeKey) { Label("Store Key", systemImage: "key.fill") }
                     .buttonStyle(.bordered)
                     .disabled(!enabled)

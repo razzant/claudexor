@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { validateRunControls } from "./validate.js";
 
 describe("ACP run-control applicability", () => {
+  it("accepts explicit soft or legacy hard limits and rejects malformed timer controls", () => {
+    expect(validateRunControls({ maxSeconds: 60, timeLimitMode: "soft" })).toBeNull();
+    expect(validateRunControls({ maxSeconds: 60 })).toBeNull();
+    expect(validateRunControls({ maxSeconds: 0 })?.message).toContain("maxSeconds");
+    expect(validateRunControls({ maxSeconds: 604801 })?.message).toContain("maxSeconds");
+    expect(validateRunControls({ timeLimitMode: "forever" })?.message).toContain("timeLimitMode");
+  });
   it("accepts the shared execution object and validates its complete shape", () => {
     expect(
       validateRunControls({
@@ -11,6 +18,12 @@ describe("ACP run-control applicability", () => {
         reviewerPanel: [{ harness: "claude", processingPreference: "fast" }],
       }),
     ).toBeNull();
+    expect(
+      validateRunControls({ execution: { auxiliaryWritableRoots: ["/srv/cache"] } }),
+    ).toBeNull();
+    expect(validateRunControls({ execution: { auxiliaryWritableRoots: [""] } })?.message).toContain(
+      "auxiliaryWritableRoots",
+    );
     expect(validateRunControls({ processingPreference: "fastest" })?.message).toContain(
       "processingPreference",
     );
@@ -59,12 +72,12 @@ describe("ACP run-control applicability", () => {
     );
   });
 
-  it("rejects inline secret fixtures with the typed ACP error code", () => {
-    const rejected = validateRunControls({
-      mode: "agent",
-      prompt: `use sk-${"a".repeat(32)}`,
-    });
-    expect(rejected).toMatchObject({ code: "inline_secret_rejected" });
-    expect(rejected?.message).toMatch(/secret-like/i);
+  it("accepts credential-shaped fixtures in the prompt exactly (INV-146)", () => {
+    expect(
+      validateRunControls({
+        mode: "agent",
+        prompt: `review: sk-${"a".repeat(32)} and Authorization: Bearer ${"b".repeat(32)}`,
+      }),
+    ).toBeNull();
   });
 });

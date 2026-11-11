@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { credentialProfileUnpinned } from "@claudexor/core";
 import type { CredentialProfile } from "@claudexor/schema";
 import {
@@ -359,6 +359,14 @@ describe("effectiveLimitAction (A6 kind-aware auto — ONE resolver)", () => {
 });
 
 describe("profileHeadroomBreach (W5.4 preflight)", () => {
+  // Headroom judges each window at the decision instant (#457): decide one
+  // minute after the fixtures' observation.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-07-17T12:01:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it("flags a window at/over the threshold with typed evidence", () => {
     const breach = profileHeadroomBreach([snap("work", 0.95)], "claude", "work", 0.9);
     expect(breach).toMatchObject({ constraint_id: "five_hour", used_ratio: 0.95, threshold: 0.9 });
@@ -390,6 +398,14 @@ describe("profileHeadroomBreach (W5.4 preflight)", () => {
 });
 
 describe("nextEligibleProfile (W5.4 rotation order)", () => {
+  // Headroom judges each window at the decision instant (#457): decide one
+  // minute after the fixtures' observation.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-07-17T12:01:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   const a = { ...work, profile_id: "a" };
   const b = { ...work, profile_id: "b" };
   const c = { ...work, profile_id: "c", enabled: false };
@@ -550,6 +566,14 @@ describe("rotationRetryEligible (sol #30 predicate)", () => {
 });
 
 describe("default-subject auto-balance (INV-135 owner scope)", () => {
+  // Headroom judges each window at the decision instant (#457): decide one
+  // minute after the fixtures' observation.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-07-17T12:01:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
   const a = { ...work, profile_id: "a" };
   const b = { ...work, profile_id: "b" };
   const keyed = {
@@ -763,7 +787,7 @@ describe("default-subject auto-balance (INV-135 owner scope)", () => {
       attemptId: "a01",
       policy,
       registry: [a],
-      snapshots: [],
+      quotaSnapshots: () => [],
       probeReadyProfiles: async () => ready("a"),
       markers: { sawAgentProgress: false, fileChanges: 0 },
       sawTypedLimit: true,
@@ -805,7 +829,7 @@ describe("default-subject auto-balance (INV-135 owner scope)", () => {
       attemptId: "a01",
       policy,
       registry: [a],
-      snapshots: [],
+      quotaSnapshots: () => [],
       probeReadyProfiles: async () => {
         probed += 1;
         return ready("a");
@@ -1091,7 +1115,7 @@ describe("A7 differential probe wiring in rotateSpecOnTypedLimit", () => {
     attemptId: "a01",
     policy,
     registry: [a, b],
-    snapshots: [],
+    quotaSnapshots: () => [],
     markers: { sawAgentProgress: false, fileChanges: 0 },
     sawTypedLimit: true,
     sawRetryable: true,
@@ -1193,7 +1217,7 @@ describe("A7 differential probe wiring in rotateSpecOnTypedLimit", () => {
         ...base,
         sawTypedLimit: false,
         sawRetryable: false,
-        snapshots: [current, sibling],
+        quotaSnapshots: () => [current, sibling],
         probeReadyProfiles: async () => ready("a", "b"),
         triedProfiles: new Set<string>(),
       });

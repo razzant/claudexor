@@ -36,6 +36,7 @@ export function delegationBeltFor(
   const env = { ...input.delegationBelt.env };
   for (const [key, value] of [
     [DELEGATION_ENV.processingPreference, input.processingPreference],
+    [DELEGATION_ENV.promptCacheTtl, input.promptCacheTtl],
     [DELEGATION_ENV.workspaceKind, input.workspaceKind],
     [
       DELEGATION_ENV.scopePaths,

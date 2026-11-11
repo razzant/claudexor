@@ -4,16 +4,20 @@ import {
   ControlProjectOutputsResponse,
   ControlProjectRegisterResponse,
   ControlProjectRemoveReceipt,
+  ControlProjectRemoveTrashedThreads,
   type ControlProject as ControlProjectType,
 } from "@claudexor/schema";
-import type { ParsedArgs } from "./args.js";
+import { flagBool, type ParsedArgs } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
 import { controlProblemError, renderCliFailure } from "./cli-error.js";
+import { subcommandFlagScopeError } from "./command-scope.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 
 export async function projectCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const action = args._[1] ?? "list";
+  const scopeError = subcommandFlagScopeError("project", action, Object.keys(args.flags));
+  if (scopeError) return printUsageError(json, scopeError);
   try {
     if (action === "list") {
       if (args._.length !== 2 && args._.length !== 1) {
@@ -50,25 +54,24 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
     if (action === "remove") {
       const id = args._[2];
       if (!id || args._.length !== 3) {
-        return printUsageError(json, "usage: claudexor project remove <project-id>");
+        return printUsageError(
+          json,
+          "usage: claudexor project remove <project-id> [--purge-trashed-threads]",
+        );
       }
+      // #333: the explicit opt-in also purges the threads already in the trash.
+      const query = flagBool(args, "purge-trashed-threads")
+        ? `?trashedThreads=${ControlProjectRemoveTrashedThreads.enum.purge}`
+        : "";
       const { addr } = await ensureDaemon();
-      const response = await controlApiFetch(addr, `/projects/${encodeURIComponent(id)}`, {
+      const response = await controlApiFetch(addr, `/projects/${encodeURIComponent(id)}${query}`, {
         method: "DELETE",
       });
       const data = await responseJson(response);
       if (!response.ok) return failure(json, response.status, data);
       const receipt = ControlProjectRemoveReceipt.parse(data);
       if (json) printJson(receipt);
-      else {
-        print(`Removed project ${receipt.projectId} (${receipt.root}).`);
-        print(
-          receipt.journalPartitionArchived
-            ? `  Journal partition archived to ${receipt.archivedPartitionPath}.`
-            : "  No journal partition to archive.",
-        );
-        print("  Run artifacts left in place for normal garbage collection.");
-      }
+      else for (const line of projectRemovalLines(receipt)) print(line);
       return 0;
     }
     if (action === "outputs") {
@@ -172,6 +175,31 @@ export function projectListLines(project: ControlProjectType): string[] {
       `    ${n.relation === "inside" ? "nested inside" : "contains"} ${n.root}  (${n.projectId})`,
     );
   }
+  return lines;
+}
+
+/** Human `project remove` lines. A purge whose directory cleanup did not finish
+ * is a warning: the purge is committed and daemon startup retries the cleanup. */
+export function projectRemovalLines(receipt: ControlProjectRemoveReceipt): string[] {
+  const lines = [
+    `Removed project ${receipt.projectId} (${receipt.root}).`,
+    receipt.journalPartitionArchived
+      ? `  Journal partition archived to ${receipt.archivedPartitionPath}.`
+      : "  No journal partition to archive.",
+  ];
+  const purged = receipt.purgedThreads;
+  if (purged) {
+    lines.push(
+      purged.length === 0
+        ? "  No threads were in the trash."
+        : `  Purged ${purged.length} trashed thread(s): ${purged.map((t) => t.threadId).join(", ")}.`,
+    );
+    for (const thread of purged.filter((t) => t.cleanup === "pending"))
+      lines.push(
+        `warning: thread ${thread.threadId} cleanup pending (retried when the daemon next starts): ${thread.cleanupError}`,
+      );
+  }
+  lines.push("  Run artifacts left in place for normal garbage collection.");
   return lines;
 }
 

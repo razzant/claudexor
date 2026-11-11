@@ -512,9 +512,6 @@ private func lifecycleModel(_ server: LifecycleServer) -> AppModel {
         session: URLSession(configuration: config))
     let model = AppModel(client: client, requestNotificationAuthorization: false)
     model.health = .connected
-    // These tests are about local threads; drop any remote rows the model
-    // loaded from this machine's persisted remote cache (memory only).
-    model.remoteThreadCache = []
     return model
 }
 

@@ -1,33 +1,20 @@
 import {
+  appendHarnessEvent,
   observeCredentialExecution,
   bindCredentialExecutionObserverFactory,
   type CredentialExecutionObserverFactory,
   admitPreparedProcessing,
   stampCredentialProfileSelection,
-  type HarnessAdapter,
-  type PreparedHarnessProcessing,
   harnessHostFactsEnv,
 } from "@claudexor/core";
 import { prepareReviewerRunSpec, recordPreparedEffort } from "./reviewerPreparation.js";
 import { preflightEvidence, type DiffEvidence, writeDiffEvidence } from "@claudexor/context";
-import type {
-  AuthPreference,
-  CredentialProfile,
-  EffortHint,
-  HarnessEvent,
-  ProviderFamily,
-  ReviewFinding,
-  RouteProof,
-  ProcessingPreference,
-} from "@claudexor/schema";
+import type { HarnessEvent, ProviderFamily, ReviewFinding, RouteProof } from "@claudexor/schema";
 import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import {
-  appendLine,
-  containsSecretLikeToken,
   engineBuildIdentity,
   ensureDir,
   newId,
@@ -43,10 +30,14 @@ import {
   extractJsonBlocks,
   parseFindingsDetailed,
   parseSealedReviewEnvelopeDetailed,
-  sealedReviewTranscriptChunk,
   type ReviewerInfo,
 } from "./findings.js";
-import { buildReviewPrompt, SEALED_REVIEW_OUTPUT_SCHEMA } from "./reviewPrompt.js";
+import { ReviewerTextProjection } from "./reviewerText.js";
+import {
+  buildReviewPrompt,
+  CHANGED_PATHS_FILE,
+  SEALED_REVIEW_OUTPUT_SCHEMA,
+} from "./reviewPrompt.js";
 import { sealedReviewTranscriptFromEvents } from "./sealedReviewEnvelope.js";
 import {
   buildReviewerCandidateInventory,
@@ -56,53 +47,54 @@ import {
   isSameOrInside,
   prepareReviewerWorkspace,
   selectReviewerWorkspaceBaseDir,
+  uninspectableFacts,
 } from "./reviewerWorkspace.js";
 export { extractDiffPostimagePaths as __testExtractDiffPostimagePaths } from "./reviewerWorkspace.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
+import { requireReadingReviewers } from "./reviewerFileReading.js";
 import type {
   ReviewerArtifactContext,
   ReviewCandidateResult,
   ReviewerOutput,
   ReviewerProgressEvent,
+  ReviewerSpec,
   ReviewerWorkspace,
 } from "./reviewRuntimeTypes.js";
-export type { ReviewCandidateResult, ReviewerProgressEvent } from "./reviewRuntimeTypes.js";
+export type {
+  ReviewCandidateResult,
+  ReviewerProgressEvent,
+  ReviewerSpec,
+} from "./reviewRuntimeTypes.js";
 import { reviewerAuthMode, reviewerAuthSwitchFromEvent } from "./reviewRuntimeTypes.js";
+import { reportedUsageCostUsd } from "@claudexor/budget";
 import { ReviewerCostKnowledge } from "./reviewerCostKnowledge.js";
 import { ReviewerSpendAccumulator, type PartialReviewerSpend } from "./reviewerSpendAccumulator.js";
 import { WorkspaceManager } from "@claudexor/workspace";
 import {
+  appendTranscript,
   cleanupReviewerWorkspace,
   createReviewerArtifactContext,
   emitReviewerProgress,
   insufficientEvidenceFinding,
-  redactValue,
   safeFilePart,
   sleep,
   transientRetryDelayMs,
+  uninspectedManifestFindings,
   updateReviewerMetadata,
   writeParseError,
 } from "./reviewerArtifacts.js";
 
-export interface ReviewerSpec {
-  adapter: HarnessAdapter;
-  providerFamily: ProviderFamily;
-  requestedModel?: string | null;
-  requestedEffort?: EffortHint | null;
-  processingPreference?: ProcessingPreference;
-  processing?: PreparedHarnessProcessing;
-  processingAllowPaid?: boolean;
-  authPreference?: AuthPreference | null;
-  /** Exact resolved profile (null = pool/default); `profilePinned: false` = the pool chose it. */
-  credentialProfile?: CredentialProfile | null;
-  profilePinned?: boolean;
-}
-
 export interface ReviewCandidateInput {
   candidateLabel: string;
   diff: string;
-  /** Explicit selected postimage manifest for ordinary-folder review. */
+  /** Exactly the changed paths a reviewer copy holds, where no patch shows the change. */
   candidatePaths?: string[];
+  /** Those paths come with a FILES.json the caller wrote to the evidence packet (a
+   * directory result). Without it, the review writes the list as CHANGED_PATHS.json. */
+  candidatePathsHaveManifest?: boolean;
+  /** `cwd` is a copy of a result's saved files; one that failed is never read (see
+   * prepareReviewerWorkspace). What it names is a review fact whatever each reviewer does. */
+  savedCopy?: { unavailable: readonly { path: string; reason: string }[]; failed?: boolean };
   evidenceDir: string;
   artifactsDir?: string;
   evidenceReadOnly?: boolean;
@@ -111,8 +103,6 @@ export interface ReviewCandidateInput {
     candidateTree: string;
     packetManifestSha256: string;
   };
-  /** Sealed-packet delta; assertSealedDeltaScope checks base SHA and diff. */
-  deltaScope?: { baseSha: string };
   cwd: string;
   reviewers: ReviewerSpec[];
   reviewerTimeoutMs?: number;
@@ -151,82 +141,6 @@ function readExistingDiffEvidence(dir: string, diff: string): DiffEvidence {
     diffSha256: sha256(diffText),
     summary,
   };
-}
-
-/** Sealed delta evidence for an owner-amended delta-scope lane: DELTA.patch +
- * DELTA_SUMMARY.md ride the manifest-verified packet like every sealed file. */
-function readSealedDeltaEvidence(dir: string): DiffEvidence {
-  const diffPath = join(dir, "DELTA.patch");
-  const summaryPath = join(dir, "DELTA_SUMMARY.md");
-  const diffText = readTextSafe(diffPath);
-  const summary = readTextSafe(summaryPath);
-  if (diffText === null || summary === null) {
-    throw new Error("delta-scope review requires sealed DELTA.patch and DELTA_SUMMARY.md");
-  }
-  return { diffPath, summaryPath, diffSha256: sha256(diffText), summary };
-}
-
-/** The contract's sol slot rides the cursor harness (INV-125, owner decisions
- * 2026-08-04). The delta scope is PINNED to it — no other lane may take a
- * delta subject, so a mislabeled attestation cannot be produced upstream. */
-const SOL_DELTA_HARNESS_ID = "cursor";
-
-/** Verify the optional delta against the packet and exact frozen candidate;
- * the fixed reviewer slot remains outside caller control. */
-function assertSealedDeltaScope(
-  input: ReviewCandidateInput,
-  baseSha: string,
-): { deltaSha256: string } {
-  if (input.evidenceReadOnly !== true || !input.frozenIdentity) {
-    throw new Error("delta-scope review is only valid against a sealed packet");
-  }
-  const solLanes = input.reviewers.filter(
-    (reviewer) => reviewer.adapter.id === SOL_DELTA_HARNESS_ID,
-  );
-  if (solLanes.length !== 1) {
-    throw new Error(
-      `delta scope requires exactly one ${SOL_DELTA_HARNESS_ID} reviewer lane (the contract's sol slot), got ${solLanes.length}`,
-    );
-  }
-  const rawFingerprints = readTextSafe(join(input.evidenceDir, "FINGERPRINTS.json"));
-  if (rawFingerprints === null) {
-    throw new Error("delta-scope review requires sealed FINGERPRINTS.json");
-  }
-  let fingerprints: Record<string, unknown>;
-  try {
-    fingerprints = JSON.parse(rawFingerprints) as Record<string, unknown>;
-  } catch {
-    throw new Error("sealed FINGERPRINTS.json is not valid JSON");
-  }
-  const sealedBase = fingerprints["deltaBaseSha"];
-  const sealedDigest = fingerprints["deltaSha256"];
-  if (sealedBase !== baseSha) {
-    throw new Error(
-      `delta base ${baseSha} does not match the sealed FINGERPRINTS deltaBaseSha ${String(sealedBase)}`,
-    );
-  }
-  if (typeof sealedDigest !== "string" || !/^[0-9a-f]{64}$/.test(sealedDigest)) {
-    throw new Error("sealed FINGERPRINTS.json carries no valid deltaSha256");
-  }
-  const deltaText = readTextSafe(join(input.evidenceDir, "DELTA.patch"));
-  if (deltaText === null) throw new Error("delta-scope review requires sealed DELTA.patch");
-  // FINGERPRINTS digests are bare hex (shasum form), unlike util's prefixed
-  // sha256() used for DiffEvidence display digests.
-  const bareDigest = createHash("sha256").update(deltaText).digest("hex");
-  if (bareDigest !== sealedDigest) {
-    throw new Error("sealed DELTA.patch does not match the FINGERPRINTS deltaSha256");
-  }
-  const actual = execFileSync(
-    "git",
-    ["-C", input.cwd, "diff", "--binary", `${baseSha}..${input.frozenIdentity.candidateSha}`],
-    { maxBuffer: 512 * 1024 * 1024 },
-  );
-  if (!actual.equals(Buffer.from(deltaText, "utf8"))) {
-    throw new Error(
-      "sealed DELTA.patch is not the exact deltaBaseSha..candidateSha diff of the candidate",
-    );
-  }
-  return { deltaSha256: sealedDigest };
 }
 
 function reviewerRouteProof(
@@ -277,6 +191,7 @@ function reviewerInfo(
 }
 
 export async function reviewCandidate(input: ReviewCandidateInput): Promise<ReviewCandidateResult> {
+  await requireReadingReviewers(input.reviewers);
   const sourceRoot = resolve(input.cwd);
   const sourceExists = existsSync(sourceRoot);
   const canonicalSourceRoot = sourceExists ? realpathSync(sourceRoot) : sourceRoot;
@@ -327,6 +242,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     }),
   );
   const healthyReviewerIndexes = new Set<number>();
+  const uninspectable = [...(input.savedCopy?.unavailable ?? [])];
   const reviewerSpend = new ReviewerSpendAccumulator(input.reviewers.length);
   const streamedPaid = Array<number>(input.reviewers.length).fill(0);
   const budgetAbort = new AbortController();
@@ -361,11 +277,6 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         };
       })()
     : {};
-  if (containsSecretLikeToken(input.diff || "(empty diff)\n")) {
-    throw new Error(
-      "diff evidence contains a secret-like token; refusing to persist raw DIFF.patch",
-    );
-  }
   if (input.evidenceReadOnly) {
     const packetDiff = readTextSafe(join(input.evidenceDir, "DIFF.patch"));
     const normalizedDiff = input.diff.endsWith("\n") ? input.diff : `${input.diff}\n`;
@@ -375,9 +286,6 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   } else {
     writeDiffEvidence(input.evidenceDir, input.diff);
   }
-  const verifiedDeltaScope = input.deltaScope
-    ? assertSealedDeltaScope(input, input.deltaScope.baseSha)
-    : null;
   const preflight = preflightEvidence(input.evidenceDir);
   if (!preflight.ok) {
     const parts = [
@@ -394,6 +302,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
     postimagePaths,
     input.evidenceReadOnly === true,
     input.candidatePaths,
+    input.candidatePathsHaveManifest,
   );
   const artifactsBaseDir = input.artifactsDir ?? join(input.evidenceDir, "reviewer-artifacts");
   if (
@@ -414,6 +323,8 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const persistentPatch = input.evidenceReadOnly
     ? readExistingDiffEvidence(persistentEvidenceDir, input.diff)
     : writeDiffEvidence(persistentEvidenceDir, input.diff);
+  if (candidateInventory.mode === "explicit_paths")
+    writeJson(join(persistentEvidenceDir, CHANGED_PATHS_FILE), input.candidatePaths);
   writeJson(
     input.evidenceReadOnly
       ? join(artifactsBaseDir, "evidence-metadata.json")
@@ -461,18 +372,13 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         excludeRoots: [artifactsBaseDir, ...candidateEvidenceExcludeRoots],
         postimagePaths,
         candidateCopyPaths: candidateInventory.copyPaths,
+        candidatePaths: input.candidatePaths,
+        savedCopy: input.savedCopy,
         preserveEvidenceBytes: input.evidenceReadOnly === true,
       });
-      // Only the fixed delta slot uses the delta; other lanes read the full context.
-      const deltaBase =
-        verifiedDeltaScope && reviewer.adapter.id === SOL_DELTA_HARNESS_ID
-          ? input.deltaScope!.baseSha
-          : undefined;
-      const reviewerPatch = deltaBase
-        ? readSealedDeltaEvidence(reviewerWorkspace.evidenceDir)
-        : input.evidenceReadOnly
-          ? readExistingDiffEvidence(reviewerWorkspace.evidenceDir, input.diff)
-          : writeDiffEvidence(reviewerWorkspace.evidenceDir, input.diff);
+      const reviewerPatch = input.evidenceReadOnly
+        ? readExistingDiffEvidence(reviewerWorkspace.evidenceDir, input.diff)
+        : writeDiffEvidence(reviewerWorkspace.evidenceDir, input.diff);
       updateReviewerMetadata(artifact, {
         candidate_evidence_dir: reviewerWorkspace.evidenceDir,
         candidate_root: reviewerWorkspace.root,
@@ -485,10 +391,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         diff_sha256: persistentPatch.diffSha256,
         candidate_inventory_mode: candidateInventory.mode,
         candidate_inventory_reason: candidateInventory.reason,
-        review_scope: deltaBase ? "delta" : "full",
-        ...(deltaBase
-          ? { delta_base_sha: deltaBase, delta_sha256: verifiedDeltaScope!.deltaSha256 }
-          : {}),
+        uninspectable_files: reviewerWorkspace.uninspectable,
         ...frozenMetadata,
       });
       const runtimePrompt = buildReviewPrompt(
@@ -499,7 +402,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         {
           sealed: input.evidenceReadOnly === true,
           candidateInventoryMode: candidateInventory.mode,
-          ...(deltaBase ? { deltaScopeBaseSha: deltaBase } : {}),
+          uninspectableFiles: reviewerWorkspace.uninspectable,
         },
       );
       spec = HarnessRunSpec.parse({
@@ -520,6 +423,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         processing: reviewer.processing?.receipt,
         processing_cost_basis: reviewer.processing?.costBasis,
         processing_allow_paid: reviewer.processingAllowPaid,
+        prompt_cache_ttl: reviewer.promptCacheTtl,
         auth_preference: reviewer.authPreference ?? "auto",
         credential_profile: reviewer.credentialProfile ?? null,
         env_inheritance: input.envInheritance ?? "mirror_native",
@@ -672,11 +576,17 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       streamObservedModel ?? null,
       streamObservedCredentialProfileId,
     );
+    const missed = reviewerWorkspace.uninspectable;
+    uninspectable.push(...missed);
+    findingsByReviewer[index]?.push(
+      ...uninspectedManifestFindings(info, candidateInventory.mode, missed),
+    );
     const sealedParse = input.evidenceReadOnly
       ? parseSealedReviewEnvelopeDetailed(text, info)
       : null;
     const jsonBlocks = sealedParse?.blocks ?? extractJsonBlocks(text);
-    writeJson(artifact.parsedPath, redactValue(jsonBlocks));
+    // The reviewer's parsed findings are its work product, kept exact (INV-146).
+    writeJson(artifact.parsedPath, jsonBlocks);
     if (sealedParse && (sealedProjectionError || sealedParse.error)) {
       const detail = sealedProjectionError ?? sealedParse.error ?? "invalid sealed review output";
       writeParseError(artifact, {
@@ -804,6 +714,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       crossFamilyVerified: observedFamilies.length >= 2,
       distinctProviders: observedFamilies,
       ...reviewerSpend.summary(),
+      ...uninspectableFacts(uninspectable),
     };
   } finally {
     await cleanupTemporaryReviewerWorkspaceBaseDir(reviewerWorkspaceBaseDir, artifactsBaseDir);
@@ -882,7 +793,11 @@ async function collectReviewerOutput(
     );
     currentIter = iter;
     let text = "";
+    const partialPrefix = partialText;
+    const reviewerText = new ReviewerTextProjection();
     let sawTransient = false;
+    // #558: a typed refusal naming no reopening time is never replayed on the same account.
+    let refusedAccount = false;
     let sawError = false;
     let lastError: string | null = null;
     let attemptObservedModel: string | undefined;
@@ -891,8 +806,8 @@ async function collectReviewerOutput(
     const sealedMessageEvents: unknown[] = [];
     for await (const ev of iter) {
       const eventTime = nowIso();
-      const persistedEvent = redactValue(ev);
-      appendLine(artifact.eventsPath, JSON.stringify(persistedEvent));
+      // Reviewer text is kept exact; diagnostics are masked by the shared seam.
+      const persistedEvent = appendHarnessEvent(artifact.eventsPath, ev);
       const ignored = ev.payload?.["ignored_settings"];
       if (Array.isArray(ignored)) {
         for (const item of ignored) if (typeof item === "string") ignoredSettings.add(item);
@@ -903,6 +818,7 @@ async function collectReviewerOutput(
       if (ev.effort_resolution)
         updateReviewerMetadata(artifact, { effort_resolution: ev.effort_resolution });
       if (ev.transient) sawTransient = true;
+      if (ev.rate_limit?.reopening === "unknown") refusedAccount = true;
       if (ev.type === "error") {
         sawError = true;
         lastError = redactSecrets(ev.error ?? ev.text ?? "reviewer emitted an error event");
@@ -937,20 +853,11 @@ async function collectReviewerOutput(
           at: eventTime,
         });
       }
-      if (
-        ev.type === "usage" &&
-        typeof ev.usage?.cost_usd === "number" &&
-        Number.isFinite(ev.usage.cost_usd) &&
-        ev.usage.cost_usd >= 0
-      ) {
-        costUsd += ev.usage.cost_usd;
-        if (ev.usage.estimated) costEstimated = true;
-        costKnowledge.observeUsage(
-          currentAuthMode,
-          ev.usage.cost_usd,
-          ev.usage.estimated === true,
-          ev,
-        );
+      const reportedUsd = ev.type === "usage" ? reportedUsageCostUsd(ev) : undefined;
+      if (reportedUsd !== undefined) {
+        costUsd += reportedUsd;
+        if (ev.usage?.estimated) costEstimated = true;
+        costKnowledge.observeUsage(currentAuthMode, reportedUsd, ev.usage?.estimated === true, ev);
         cashUsd = costKnowledge.totals.cashUsd;
         valuationUsd = costKnowledge.totals.valuationUsd;
         unknownUsd = costKnowledge.totals.unknownUsd;
@@ -969,19 +876,15 @@ async function collectReviewerOutput(
       if (sealed && ev.type === "message" && ev.final === true) {
         sealedMessageEvents.push(persistedEvent);
       }
-      if (ev.type === "message" && ev.text && ev.payload?.["auth_switched"] !== true) {
-        const safeText = sealedReviewTranscriptChunk(persistedEvent);
-        if (safeText !== null) {
-          if (sealed) {
-            // Keep the long-running transcript visibly active for monitors. A
-            // clean completion replaces these progress bytes with the exact
-            // typed-final projection used by the sealed parser and sealer.
-            appendLine(artifact.transcriptPath, safeText);
-          } else {
-            text += safeText;
-            partialText += safeText;
-            appendLine(artifact.transcriptPath, safeText);
-          }
+      const chunk = reviewerText.next(persistedEvent);
+      if (chunk !== null) {
+        // Keep the long-running transcript visibly active for monitors. A clean
+        // sealed completion replaces these progress bytes with the exact
+        // typed-final projection used by the sealed parser and sealer.
+        appendTranscript(artifact.transcriptPath, chunk.transcript);
+        if (!sealed) {
+          text = chunk.parsed;
+          partialText = partialPrefix + text;
         }
       }
       if (ev.observed_model) {
@@ -1021,6 +924,7 @@ async function collectReviewerOutput(
     }
     if (
       sawTransient &&
+      !refusedAccount &&
       text.trim() === "" &&
       nativeTry < transientRetryPolicy.maxRetries &&
       !timedOut &&
@@ -1130,6 +1034,8 @@ async function collectReviewerOutput(
           partialValuationUsd: valuationUsd,
           partialUnknownUsd: unknownUsd,
           partialCashKnowledge: knowledge.cashKnowledge,
+          partialAllowanceDebitUnobserved: knowledge.allowanceDebitUnobserved,
+          partialObservedAmounts: knowledge.observedAmounts,
           partialValuationKnowledge: knowledge.valuationKnowledge,
           partialObservedModel: observedModel,
           partialObservedCredentialProfileId: observedCredentialProfileId,
@@ -1184,6 +1090,8 @@ async function collectReviewerOutput(
             partialValuationUsd: valuationUsd,
             partialUnknownUsd: unknownUsd,
             partialCashKnowledge: knowledge.cashKnowledge,
+            partialAllowanceDebitUnobserved: knowledge.allowanceDebitUnobserved,
+            partialObservedAmounts: knowledge.observedAmounts,
             partialValuationKnowledge: knowledge.valuationKnowledge,
             partialObservedModel: observedModel,
             partialObservedCredentialProfileId: observedCredentialProfileId,
@@ -1228,6 +1136,8 @@ async function collectReviewerOutput(
         partialValuationUsd: valuationUsd,
         partialUnknownUsd: unknownUsd,
         partialCashKnowledge: knowledge.cashKnowledge,
+        partialAllowanceDebitUnobserved: knowledge.allowanceDebitUnobserved,
+        partialObservedAmounts: knowledge.observedAmounts,
         partialValuationKnowledge: knowledge.valuationKnowledge,
         partialObservedModel: observedModel,
         partialObservedCredentialProfileId: observedCredentialProfileId,

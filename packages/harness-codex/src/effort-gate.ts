@@ -26,13 +26,14 @@ import {
  * `claudeSnapshotTrustedForVersion`.
  *
  * The installed version string is whatever `codex --version` printed
- * (e.g. `codex-cli 0.156.1`), so the comparison extracts the full dotted
- * numeric token and requires it to EQUAL the snapshot stamp exactly. An
- * unknown or unparseable version can never vouch for the snapshot.
+ * (e.g. `codex-cli 0.156.1`), so the comparison extracts the full version
+ * token — dotted numbers plus any pre-release or build suffix, which exact
+ * installs can select — and requires it to EQUAL the snapshot stamp exactly.
+ * An unknown or unparseable version can never vouch for the snapshot.
  */
 export function codexSnapshotTrustedForVersion(installedVersion: string | null): boolean {
   if (installedVersion === null) return false;
-  const token = installedVersion.match(/\d+(?:\.\d+)+/);
+  const token = installedVersion.match(/\d+(?:\.\d+)+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/);
   return token !== null && token[0] === CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST;
 }
 

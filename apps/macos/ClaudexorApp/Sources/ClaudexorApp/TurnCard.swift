@@ -15,6 +15,7 @@ import ClaudexorKit
 
 struct TurnCard: View {
     @Environment(AppModel.self) private var model
+    @Environment(ConversationPresentation.self) private var presentation: ConversationPresentation?
     let turn: ThreadTurnInfo
     let target: TurnStartTarget
     /// Current per-turn routing choices shared with plan-card actions. Strategy,
@@ -24,6 +25,7 @@ struct TurnCard: View {
     /// and transcript file links resolve there, never in a delegated thread's
     /// project; nil leaves only the run's own directory in scope.
     let executionRoot: String?
+    var historyRow: ThreadHistoryTurn? = nil
 
     /// Roots whose files this turn's answer and transcript may open or render.
     static func fileScopeRoots(executionRoot: String?, runDir: String?) -> [String] {
@@ -44,14 +46,30 @@ struct TurnCard: View {
     @State private var applied = false
     /// nil => follow the run state (expanded while active, collapsed when done);
     /// a user toggle pins it.
-    @State private var transcriptExpanded: Bool?
+    @State private var localTranscriptExpanded: Bool?
+    private var transcriptExpanded: Bool? {
+        get { presentation?.transcripts[turn.id] ?? localTranscriptExpanded }
+        nonmutating set {
+            if let presentation { presentation.transcripts[turn.id] = newValue }
+            else { localTranscriptExpanded = newValue }
+        }
+    }
     /// True while an "Implement plan" turn is being sent.
     @State private var implementingPlan = false
     /// W22: a LONG final answer starts height-collapsed with a Show more toggle.
-    @State private var answerExpanded = false
+    @State private var localAnswerExpanded = false
+    private var answerExpanded: Bool {
+        get { presentation?.expanded["answer:" + turn.id] ?? (presentation?.latestTurnID == turn.id || localAnswerExpanded) }
+        nonmutating set {
+            if let presentation { presentation.expanded["answer:" + turn.id] = newValue }
+            else { localAnswerExpanded = newValue }
+        }
+    }
 
     private var run: TaskRun? {
-        turn.runId.flatMap { model.task($0, at: target.locationID) }
+        let live = turn.runId.flatMap { model.task($0, at: target.locationID) }
+        if let historyRow { return model.selectedHistory?.renderedRun(for: historyRow, live: live) }
+        return live
     }
 
     private var planImplementAccessSelection: ComposerThreadAccessSelection {
@@ -91,31 +109,12 @@ struct TurnCard: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             // W-C5: the user's message is a right-aligned BUBBLE above the
             // assistant card — the feed reads as a conversation.
-            HStack(alignment: .top) {
-                Spacer(minLength: 48)
-                // Bounded before layout (sol #16): a pasted megabyte prompt must
-                // not lay out unbounded on the main thread.
-                Text(turn.prompt.count > 8_000 ? String(turn.prompt.prefix(8_000)) + "…" : turn.prompt)
-                    .font(.body)
-                    // D-12 (owner dogfood): the user bubble is a clearly accent-
-                    // TINTED steel-blue fill with PRIMARY text — the sender/receiver
-                    // convention (tinted sender vs the assistant's NEUTRAL answer
-                    // bubble). Not a saturated accent slab: that outshouted the
-                    // answer and broke light-theme contrast. No stroke; identity =
-                    // right alignment + the blue tint. The final answer bubble
-                    // stays the loudest element in the feed.
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.sm)
-                    // D-12 round 2: a tinted frosted material so the bubble reads as
-                    // genuinely translucent (it sits over the behind-window desktop
-                    // frost — rich content the material can blur) — solid under
-                    // Reduce Transparency.
-                    .bubbleFill(tint: Theme.bubbleUser, radius: Theme.Radius.bubble)
-            }
+            PromptBubble(prompt: turn.prompt, turnID: turn.id, promptInfo: historyRow?.promptInfo,
+                fullPrompt: { try await model.fullHistoryPrompt(turnID: turn.id,
+                    locationID: target.locationID, threadID: turn.threadId) })
             assistantSection
         }
+        .environment(\.proseMessageID, turn.id)
     }
 
     /// The assistant side of the turn — its own card surface under the user
@@ -149,13 +148,15 @@ struct TurnCard: View {
                 }
                 // ONE persistent receipt row: the whole row toggles inline activity.
                 TurnReceiptRow(
-                    run: run, runId: runId,
+                    run: run, runId: runId, locationID: target.locationID,
                     expanded: transcriptExpanded ?? run.phase.isActive,
                     onToggle: {
-                        if model.transcriptBlocks(runId).isEmpty { model.openRun(run.id) }
+                        if (model.transcript(runId, at: target.locationID)?.blocks ?? []).isEmpty {
+                            model.openRun(run.id)
+                        }
                         else { transcriptExpanded = !(transcriptExpanded ?? run.phase.isActive) }
                     },
-                    onOpenWorkspace: { model.openRun(run.id) })
+                    onOpenWorkspace: { model.openRun(run.id) }, historyRun: historyRow?.run)
                 if let warning = DelegationPresentation.warning(run.delegation, phase: run.phase) {
                     DelegationWarningRow(warning: warning)
                 }
@@ -164,7 +165,7 @@ struct TurnCard: View {
                 // rule; native vendor subagents never appear in this list.
                 ForEach(model.delegatedChildren(
                     of: run,
-                    projectedIds: turn.run?.delegatedChildRunIds ?? []
+                    projectedIds: turn.run?.delegatedChildRunIds ?? [], at: target.locationID
                 )) { child in
                     DelegatedRunRow(child: child)
                 }
@@ -182,21 +183,21 @@ struct TurnCard: View {
                 // PlanQuestionCard placement below. D42 retired TaskDetailView, the
                 // pinned InteractionCard's only surface, leaving AppModel
                 // .answerInteraction with no UI caller — this restores it so a
-                // pending interaction is always answerable in default config.
-                ForEach(run.pendingInteractions) { pending in
+                // question is answerable while the run is live (`openQuestions`).
+                ForEach(run.openQuestions) { pending in
                     InteractionCard(interaction: pending)
                 }
                 // D17: a plan that came back needs_answers surfaces its open
                 // questions inline; answering submits a follow-up plan turn.
                 if run.mode == .plan, run.planReadiness?.state == "needs_answers", !run.planQuestions.isEmpty {
-                    let submitted = PlanAnswerSubmission.acceptedTurn(
-                        sourcePlanRunId: runId,
-                        turns: model.selectedThreadDetail?.turns ?? [])
-                    if submitted != nil || model.selectedThreadDetail?.thread.headRunId == runId {
+                    let submitted = historyRow?.answeredByTurnId
+                    if historyRow?.planAnswerComplete == false {
+                        Text("Plan answer status is unavailable.").font(.caption).foregroundStyle(.secondary)
+                    } else if submitted != nil || model.selectedHistory?.header?.headRun?.runId == runId {
                         PlanQuestionCard(
                             questions: run.planQuestions,
                             sourcePlanRunId: runId,
-                            submittedPrompt: submitted?.prompt,
+                            submittedPrompt: submitted == nil ? nil : historyRow?.answeredByPrompt?.prompt ?? "",
                             target: target,
                             routingOptions: routingOptions)
                     } else {
@@ -213,6 +214,7 @@ struct TurnCard: View {
                 if let result = turn.run?.result, result.kind == "plan" {
                     planImplementRow(result)
                 }
+                if let historyRow { HistoryEvidenceNotice(row: historyRow, locationID: target.locationID) }
                 decisionAndApply(run)
                 // A4: the honest DELIVERY-state line — a terminal run whose patch
                 // was applied under a BLOCKED review ("Applied · review blocked"),
@@ -221,12 +223,15 @@ struct TurnCard: View {
                 // state, so D42 must not leave a project mutation visible only in
                 // the workspace Outcome facts (INV-093 honest outcome).
                 applyStateLine(run)
-                // Inline failure card: a terminal-FAILED turn with nothing to show.
-                if isSilentFailure(run) { failureCard(run) }
+                // Inline failure card: a terminal-FAILED turn with nothing to show,
+                // or a typed refusal (#147/#393/#551) that an earlier round's output
+                // or a collapsed transcript would otherwise leave unexplained.
+                if isSilentFailure(run) || TurnFailureCard.namesRefusal(run) { failureCard(run) }
             } else if let refusal = turn.enqueueError {
                 TurnRefusalCard(turn: turn, refusal: refusal, target: target)
-            } else if let state = turn.run?.state {
-                Text(state).font(.caption).foregroundStyle(.secondary)
+            } else if historyRow?.runStatus == "not_retained" {
+                Text("Run details are no longer kept.").font(.caption).foregroundStyle(.secondary)
+                    .help("Saved prompts outlive run retention. This run’s receipt and output can no longer be read from its run record.")
             }
             if let actionError {
                 Text(actionError).font(.caption).foregroundStyle(.red).textSelection(.enabled)
@@ -237,41 +242,6 @@ struct TurnCard: View {
         // The assistant remains a neutral content card with one quiet accent
         // hairline — same design family as the user bubble, distinct hierarchy.
         .cardSurface(strokeColor: Theme.accent.opacity(0.22), hover: run != nil)
-        // A decision-flow run needs its detail loaded so the receipt can gate apply
-        // on the server eligibility (item f) — the DecisionBar path also loads it,
-        // this covers an already-decided run reopened cold.
-        .task(id: applyLoadKey) {
-            if let run, isDecisionFlow(run), run.applyEligibility == nil, model.task(run.id) != nil {
-                await model.ensureRunDetail(run.id)
-            }
-        }
-        // A cold reload may no longer include an older child in the bounded
-        // global runs page. Hydrate Delegate parents once so their direct-child
-        // snapshot can restore the same flat rows without an unbounded list.
-        .task(id: delegationChildLoadKey) {
-            if let runId = turn.runId,
-               (run?.delegation ?? turn.run?.delegation)?.requested == true {
-                await model.ensureRunDetail(
-                    runId, insertingIfMissing: model.task(runId) == nil)
-            }
-        }
-    }
-
-    /// Re-key the eligibility load on the run's decision-flow signals AND on the
-    /// local risk-accept (B6): accepting risk makes the run eligible server-side,
-    /// so the reload must re-fire to pull the fresh eligibility — the stale
-    /// `run.applyEligibility` (blocked) would otherwise hide Apply until an
-    /// unrelated refresh.
-    private var applyLoadKey: String {
-        DecisionApplyPresentation.applyLoadKey(run, riskAccepted: riskAccepted)
-    }
-
-    private var delegationChildLoadKey: String {
-        guard let runId = turn.runId,
-              (run?.delegation ?? turn.run?.delegation)?.requested == true else {
-            return "delegate-children:none"
-        }
-        return "delegate-children:\(runId):\(run?.phase.rawValue ?? turn.run?.state ?? "unknown")"
     }
 
     // MARK: Answer bubble
@@ -279,22 +249,10 @@ struct TurnCard: View {
     @ViewBuilder
     private func answerBubble(_ run: TaskRun) -> some View {
         if let answer = run.answerText, !answer.isEmpty, run.phase.isTerminal {
-            let long = Self.isLongAnswer(answer)
-            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                // Collapsed = a bounded PREFIX (the W23 hang class): frame+clip
-                // alone still lays out the full text on the main thread.
-                MarkdownOutputView(markdown: long && !answerExpanded ? String(answer.prefix(4_000)) : answer,
-                                   fileScopeRoots: Self.fileScopeRoots(
-                                       executionRoot: executionRoot, runDir: run.runDir),
-                                   remoteFileScope: Self.remoteFileScope(run, executionRoot: executionRoot),
-                                   bodyFont: .body)
-                    .frame(maxHeight: long && !answerExpanded ? 260 : nil, alignment: .top)
-                    .clipped()
-                if long {
-                    Button(answerExpanded ? "Show less" : "Show more") { answerExpanded.toggle() }
-                        .buttonStyle(.borderless).font(.caption)
-                }
-            }
+            ConversationAnswerText(answer: answer,
+                expanded: Binding(get: { answerExpanded }, set: { answerExpanded = $0 }),
+                fileScopeRoots: Self.fileScopeRoots(executionRoot: executionRoot, runDir: run.runDir),
+                remoteFileScope: Self.remoteFileScope(run, executionRoot: executionRoot))
             .padding(Theme.Spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
             // D-12 round 2: the same tinted-material recipe as the user bubble
@@ -316,11 +274,12 @@ struct TurnCard: View {
 
     @ViewBuilder
     private func inlineActivity(_ run: TaskRun, runId: String) -> some View {
-        let blocks = model.transcriptBlocks(runId)
+        let transcript = model.transcript(runId, at: target.locationID)
+        let blocks = transcript?.blocks ?? []
         if !blocks.isEmpty, (transcriptExpanded ?? run.phase.isActive) {
             TranscriptView(blocks: blocks,
-                           trimmedOlder: model.transcriptTrimmedCount(runId),
-                           truncatedChars: model.transcriptTruncatedChars(runId),
+                           trimmedOlder: transcript?.trimmed ?? 0,
+                           truncatedChars: transcript?.truncatedChars ?? 0,
                            fileScopeRoots: Self.fileScopeRoots(
                                executionRoot: executionRoot, runDir: run.runDir),
                            remoteFileScope: Self.remoteFileScope(run, executionRoot: executionRoot))
@@ -368,7 +327,7 @@ struct TurnCard: View {
                         ?? "Start an Agent turn with \(planImplementAccessDescription) access and override the plan-readiness gate although questions remain")
             } else {
                 Button(implementingPlan ? "Implementing…" : "Implement plan") { implementPlan(override: false) }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
                     .disabled(
                         implementingPlan
                             || model.isThreadBusy(target.threadID, at: target.locationID)
@@ -403,14 +362,21 @@ struct TurnCard: View {
     private func decisionAndApply(_ run: TaskRun) -> some View {
         // The review gate needs a human: the decision controls live HERE, inline.
         if DecisionApplyPresentation.showsDecisionBar(run, riskAccepted: riskAccepted) {
-            DecisionBar(runId: run.id) {
+            DecisionBar(runId: run.id, offersRiskDecisions: DecisionApplyPresentation.offersRiskDecisions(run)) {
                 riskAccepted = true
+                Task { await model.selectedHistory?.refresh() }
                 // DecisionBar owns the one post-mutation detail refresh before
                 // invoking this callback. The receipt is therefore current; a
                 // second GET here would only duplicate the same snapshot.
             }
         }
-        if applied {
+        if historyRow?.run?.applyEligibilityCoverage == "unavailable" {
+            HStack {
+                Button("Apply patch") {}
+                Button("Apply as branch") {}
+            }.buttonStyle(.bordered).disabled(true)
+                .help("Apply eligibility is unavailable because the retained evidence could not be verified. Open the workspace for details.")
+        } else if applied {
             Label("Applied to project", systemImage: "checkmark.seal.fill")
                 .font(.caption).foregroundStyle(Theme.status(.positive))
         } else if DecisionApplyPresentation.showsApply(run) {
@@ -421,7 +387,7 @@ struct TurnCard: View {
                 Button("Apply as branch") { apply(run, mode: "branch") }
                 Spacer()
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
+            .buttonStyle(.borderedProminent).tint(Theme.accentSolid).controlSize(.small)
         }
     }
 
@@ -468,44 +434,18 @@ struct TurnCard: View {
     // MARK: Silent-failure card (honest inline failure)
 
     /// A turn that finished in a genuinely FAILURE-shaped terminal state but
-    /// produced no visible content (no answer, no transcript, no diff).
+    /// produced no visible content (no answer, no executor transcript, no diff).
+    /// An engine notice (e.g. what its copy was prepared with) is not output.
     private func isSilentFailure(_ run: TaskRun) -> Bool {
         guard run.phase.isFailureShaped else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasTranscript = !(turn.runId.map { model.transcriptBlocks($0) } ?? []).isEmpty
+        let hasTranscript = TurnPresentation.hasExecutorActivity(
+            blocks: turn.runId.flatMap { model.transcript($0, at: target.locationID)?.blocks } ?? [])
         return !hasAnswer && !hasTranscript && !run.hasPatchArtifact
     }
 
     private func failureCard(_ run: TaskRun) -> some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.status(.negative))
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Text(RunReasonLabel.label(run.outcomeFacts?.reason) ?? run.phase.label)
-                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.negative))
-                    if let category = run.failureCategory, category != "unknown" {
-                        Text(category.replacingOccurrences(of: "_", with: " "))
-                            .font(.caption2)
-                            .padding(.horizontal, Theme.Spacing.xs)
-                            .background(Theme.status(.negative).opacity(0.12), in: Capsule())
-                            .foregroundStyle(Theme.status(.negative))
-                    }
-                    if let route = run.authRoute, let effective = route.effective, effective != "unknown" {
-                        Text("route: \(RunFacts.authModeLabel(effective))")
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .help("Auth route this turn ran under — requested: \(route.requested), reason: \(route.reason).")
-                    }
-                }
-                Text(failureReason(run))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            }
-            Spacer()
-            Button("Open run") { model.openRun(run.id) }
-                .buttonStyle(.link)
-                .help("Open this run in the thread workspace — failure detail, evidence, logs")
-        }
-        .padding(Theme.Spacing.sm)
-        .background(Theme.status(.negative).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        TurnFailureCard(run: run, reason: failureReason(run), openRun: { model.openRun(run.id) })
     }
 
     private func failureReason(_ run: TaskRun) -> String {
@@ -552,6 +492,13 @@ enum DecisionApplyPresentation {
     /// has not just accepted risk locally.
     static func showsDecisionBar(_ run: TaskRun, riskAccepted: Bool) -> Bool {
         run.reviewNeedsDecision && !riskAccepted
+    }
+
+    /// Accept risk and Override appear only where the engine admits them: it
+    /// refuses both on unfinished work (`work_state_needs_input`) before it looks
+    /// at review or checks. Rerun is admitted either way.
+    static func offersRiskDecisions(_ run: TaskRun) -> Bool {
+        run.unfinishedWorkLabel == nil
     }
 
     /// Apply renders on the receipt for a decision-flow run ONCE the SERVER

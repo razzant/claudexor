@@ -3,7 +3,7 @@ import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claud
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { canonicalIsolationLocator } from "@claudexor/core";
 import { namespacedSecretRefBase } from "@claudexor/secrets";
-import { claudeNativeEnv, BIN, type ClaudeProfileRuntimeDeps } from "./index.js";
+import { claudeNativeEnv, resolveClaudeBin, type ClaudeProfileRuntimeDeps } from "./index.js";
 
 /**
  * Canonicalize a profile's isolation locator (INV-135): absolute, trailing
@@ -54,7 +54,11 @@ export async function resolveClaudeProfileRoute(
       // configDir rides EXPLICITLY (round-17 BLOCK): the production probe
       // re-normalizes its env, and without the explicit dir it would inspect
       // the DEFAULT store while claiming to verify the profile.
-      const probe = await runtime.probeAuthStatus(BIN, { env: nativeEnv, configDir, abortSignal });
+      const probe = await runtime.probeAuthStatus(resolveClaudeBin(), {
+        env: nativeEnv,
+        configDir,
+        abortSignal,
+      });
       if (probe.authed) {
         subscriptionSource = "native_session";
         authStatusStale = probe.stale === true;
@@ -107,7 +111,7 @@ export async function probeClaudeCredentialProfile(
   try {
     if (profile.credential_kind === "config_dir_login") {
       const dir = canonicalProfileConfigDir(profile.isolation_locator ?? "");
-      const probe = await runtime.probeAuthStatus(BIN, {
+      const probe = await runtime.probeAuthStatus(resolveClaudeBin(), {
         env: claudeNativeEnv(undefined, dir),
         configDir: dir,
         abortSignal,

@@ -1,7 +1,9 @@
+import { HarnessProgramIdentity } from "./harness-program.js";
 import { z } from "zod/v3";
 import { Id, IsoTimestamp, NonBlankString } from "./primitives.js";
-import { HarnessModel } from "./harness.js";
+import { HarnessModel, ModelRoutingVariants } from "./harness-model.js";
 import { AccountCatalogAvailability } from "./model-operation.js";
+import { ControlProblem } from "./problem.js";
 
 /**
  * Models enumerable for one harness. `source` is honest about provenance:
@@ -13,6 +15,7 @@ import { AccountCatalogAvailability } from "./model-operation.js";
 export const ControlHarnessModelsResponse = z
   .object({
     harnessId: z.string().describe("Harness the models belong to."),
+    sourceProgram: HarnessProgramIdentity.nullable().default(null),
     models: z
       .array(HarnessModel)
       .default([])
@@ -31,17 +34,29 @@ export const ControlHarnessModelsResponse = z
       .describe(
         "Vendor CLI version the manifest hints were last verified against; null for api/none sources.",
       ),
+    problem: ControlProblem.optional().describe(
+      "Present only when the live catalog read failed (code model_catalog_unavailable; context.cause names no_credential, auth_rejected, http_status, network, timeout, malformed or incomplete): models is then empty and is NOT an empty catalog.",
+    ),
+    routingVariants: ModelRoutingVariants.optional().describe(
+      "The harness's declared request-time routing suffixes, so a surface finds the listed row of a variant id (#146); omitted when none are declared.",
+    ),
   })
   .describe("Models enumerable for one harness, with honest provenance.");
 export type ControlHarnessModelsResponse = z.infer<typeof ControlHarnessModelsResponse>;
 
-export const ControlHarnessAccountCatalog = ControlHarnessModelsResponse.extend({
-  credentialProfileId: Id,
-  observedAt: IsoTimestamp.nullable().describe(
-    "Original account catalog observation, or null for manifest hints whose observation time is unknown.",
-  ),
-  provenance: NonBlankString,
-}).strict();
+// An account row reports a failed read on its availability row, never inside a catalog.
+export const ControlHarnessAccountCatalog = ControlHarnessModelsResponse.omit({
+  problem: true,
+  routingVariants: true,
+})
+  .extend({
+    credentialProfileId: Id,
+    observedAt: IsoTimestamp.nullable().describe(
+      "Original account catalog observation, or null for manifest hints whose observation time is unknown.",
+    ),
+    provenance: NonBlankString,
+  })
+  .strict();
 export type ControlHarnessAccountCatalog = z.infer<typeof ControlHarnessAccountCatalog>;
 export const ControlHarnessAccountModelsResponse = z
   .object({

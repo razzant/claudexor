@@ -7,10 +7,12 @@ import {
   OUTPUT_SCHEMA_DIALECTS,
   RUN_START_CLIENT_REJECTED_KEYS,
   RunApplyState,
+  RunDecisionAction,
   WorkspaceMode,
   WorkspaceKind,
   type CatalogHarness,
   type ControlHarnessModelsResponse,
+  type HarnessCapabilityProfile,
 } from "@claudexor/schema";
 import { loadConfig } from "@claudexor/config";
 import { validateModel } from "@claudexor/core";
@@ -44,6 +46,13 @@ const NO_PROJECT_ROOT = "/nonexistent-claudexor-project";
  * service, the `claudexor capabilities` verb, and the MCP
  * `claudexor_capabilities` tool — three views, one composer.
  */
+/** The negotiated access-control row: capability-profile facts, never a harness name. */
+export function catalogAccessControl(
+  profile: HarnessCapabilityProfile | undefined,
+): CatalogHarness["accessControl"] {
+  return { auxiliaryWritableRoots: profile?.access_control.auxiliary_writable_roots ?? false };
+}
+
 export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCatalog> {
   const [statuses, git] = await Promise.all([
     buildGateway({ includeFakes: false }).statusAll({ cwd: NO_PROJECT_ROOT }),
@@ -72,6 +81,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
             models: [],
             source: "none",
             verifiedAgainst: null,
+            sourceProgram: null,
           } satisfies ControlHarnessModelsResponse,
           // An unreachable vendor CLI verifies nothing: the stored model is
           // reported invalid exactly as before, never admitted on a guess.
@@ -97,15 +107,18 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
           source: truth.source,
           count: truth.models.length,
           verifiedAgainst: truth.verifiedAgainst,
+          ...("problem" in truth && truth.problem ? { problem: truth.problem } : {}),
         },
         webPolicy: s.manifest?.capabilities.web_policy ?? "none",
         attachmentInputs: [...(profile?.attachment_inputs ?? [])],
         effortLevels: [...(s.manifest?.capabilities.effort_levels ?? [])],
         processingPreferences: [...(s.manifest?.capabilities.processing_preferences ?? [])],
+        promptCacheTtls: [...(profile?.prompt_cache_ttls ?? [])],
         accountCatalog: true,
         accessProfilesSupported: [...(s.manifest?.access_profiles_supported ?? [])],
         readonlyMechanism: profile?.access_control.readonly_mechanism ?? "none",
         writeMechanism: profile?.access_control.write_mechanism ?? "none",
+        accessControl: catalogAccessControl(profile),
         delegation: delegationCapabilityFor(s.manifest),
         liveInput: profile?.live_input ?? "none",
         setupLogin: await effectiveSetupLoginCapability(s.id, {
@@ -132,6 +145,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
     availableHarnesses: harnesses.filter((h) => h.status === "ok" && h.enabled).map((h) => h.id),
     modes: [...ModeKind.options],
     runControlKeys,
+    runDecisionActions: [...RunDecisionAction.options],
     outputSchemaDialects: OUTPUT_SCHEMA_DIALECTS.map((dialect) => ({ ...dialect })),
     mutability: {
       workspaceKinds: [...WorkspaceKind.options],

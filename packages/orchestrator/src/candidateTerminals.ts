@@ -3,9 +3,13 @@ import { join } from "node:path";
 import type { ArtifactStore, RunPaths } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import type { BudgetLedger } from "@claudexor/budget";
-import { makeOutcomeFacts, type ModeKind } from "@claudexor/schema";
+import { makeOutcomeFacts, type ModeKind, type RunOutcomeFacts } from "@claudexor/schema";
 import type { OrchestratorResult } from "./orchestrator.js";
 import {
+  candidateCaptureRefusals,
+  candidateCause,
+  declaredFailureSpeaks,
+  hasCandidateChanges,
   partitionCandidates,
   unanimousDeclaredFailure,
   type CandidateRun,
@@ -33,6 +37,7 @@ import {
   type ContinuityTerminalFacts,
 } from "./continuity-terminal.js";
 import { poolFailure } from "./pool-attempt-evidence.js";
+import { captureInventorySummary } from "./captureRefusal.js";
 
 interface CandidateTerminalContext {
   ledger: BudgetLedger;
@@ -54,6 +59,7 @@ export async function cancelledCandidatesResult(
     git?: {
       live: boolean;
       execRoot: string;
+      projectRoot: string;
       preTurnSha: string | null;
       postTurnSha: string | null;
     };
@@ -69,7 +75,9 @@ export async function cancelledCandidatesResult(
       taskId,
       attemptId: candidate.attemptId,
       harnessId: candidate.harnessId,
-      facts: makeOutcomeFacts("cancelled", { noChanges: candidate.files.noChanges }),
+      facts: makeOutcomeFacts("cancelled", {
+        noChanges: candidate.continuationRefusal ? null : candidate.files.noChanges,
+      }),
       log,
     });
   if (runs.length === 1 && input.git) {
@@ -91,18 +99,19 @@ export async function cancelledCandidatesResult(
     } else {
       await publishUnverifiedGitCandidate({
         ...output,
-        facts: makeOutcomeFacts("cancelled", { noChanges: !run.diff.trim() }),
+        facts: makeOutcomeFacts("cancelled", { noChanges: !hasCandidateChanges(run) }),
       });
     }
-  } else if (runs.some((run) => run.diff.trim() && !run.captureRefusal)) {
-    const patches = runs.filter((run) => run.diff.trim() && !run.captureRefusal);
+  } else if (runs.some((run) => hasCandidateChanges(run) && !run.captureRefusal)) {
+    const patches = runs.filter((run) => hasCandidateChanges(run) && !run.captureRefusal);
     store.writeText(
       join(paths.finalDir, "retained-changes.md"),
       "# Unverified candidate changes\n\nNo candidate was selected or applied.\n\n" +
         patches
-          .map(
-            (run) =>
-              `- [${run.attemptId} · ${run.harnessId}](../attempts/${run.attemptId}/patch.diff)`,
+          .map((run) =>
+            run.patchViewUnavailable
+              ? `- ${run.attemptId} · ${run.harnessId}: ${run.patchViewUnavailable.reason === "render_failed" ? "its patch view could not be rendered" : "too large to render as one patch"}; its exact result is recorded in ../attempts/${run.attemptId}/attempt.yaml`
+              : `- [${run.attemptId} · ${run.harnessId}](../attempts/${run.attemptId}/patch.diff)`,
           )
           .join("\n"),
     );
@@ -133,6 +142,68 @@ export async function cancelledCandidatesResult(
   );
 }
 
+/**
+ * The arbitration failure record of an ERRORED winner (a candidate that changed
+ * files, then its harness failed) speaks for that winner's own facts, as the
+ * no-working-candidate terminal does: its vendor evidence (#414) and, when its
+ * try ended on a typed refusal (a pinned limit, a spent pool, a request
+ * refusal), that refusal's code, reset and basis with the matching remedy
+ * (#558). Without a typed refusal, arbitration's own classification stands.
+ */
+export function erroredWinnerFailure(
+  winner: CandidateRun | undefined,
+  keptSources: readonly string[],
+): Partial<Parameters<typeof writeFailure>[2]> {
+  if (!winner?.errored) return {};
+  const declared = winner.declaredFailure;
+  if (!declaredFailureSpeaks(declared))
+    return { vendorFailure: attemptVendorFailure([winner], winner.attemptId) };
+  const category = dominantHarnessFailureCategory(winner.telemetry.transientFailures);
+  return {
+    ...declared,
+    category: declared.category ?? "harness_error",
+    vendorFailure: attemptVendorFailure([winner], winner.attemptId),
+    nextActions: [
+      ...harnessFailureNextActions(category),
+      "Inspect candidate artifacts",
+      ...keptSources,
+    ],
+  };
+}
+
+/**
+ * The race terminal's statement before its account attempts: arbitration's
+ * ranking line, led by an ERRORED winner's own cause (#621), the first line
+ * route health groups by and the retained-output notice follows. Only the
+ * winner speaks, never a loser; a review or check block keeps its statement,
+ * and the phase and category stay arbitration's typed axis.
+ */
+export function raceStatement(
+  winner: CandidateRun | undefined,
+  decisionBlock: boolean,
+  whyWinner: string,
+): string {
+  return winner?.errored && !decisionBlock ? `${candidateCause(winner)}\n${whyWinner}` : whyWinner;
+}
+
+/**
+ * The convergence terminal's lead, the same rule for its last attempt: a loop
+ * that ended not converged on an ERRORED last attempt names that attempt's own
+ * cause (#633), never an earlier attempt's. A budget mapping, a review or check
+ * block, a stall, an interruption and a cancellation keep their own statements,
+ * and the loop's phase and category stay as they were. Null otherwise.
+ */
+export function convergenceCause(
+  lastRun: CandidateRun | null | undefined,
+  facts: RunOutcomeFacts,
+  budgetSpeaks: boolean,
+): string | null {
+  const block = facts.review === "blocked" || facts.checks === "failed";
+  return lastRun?.errored && facts.reason === "not_converged" && !budgetSpeaks && !block
+    ? candidateCause(lastRun)
+    : null;
+}
+
 /** A review/arbitration failure still owns the completed candidates' continuity
  * and names every failed try of the run's attempts (default: those candidates). */
 export function failAfterCandidates(
@@ -144,9 +215,12 @@ export function failAfterCandidates(
   error: unknown,
 ): OrchestratorResult {
   const { log, store, paths, runId, taskId, mode, ledger, runs } = input;
+  const refusals = candidateCaptureRefusals(runs);
   return failTerminally(log, store, paths, runId, taskId, mode, phase, error, ledger.spend(), {
     continuity: runs,
     attempts: input.attempts,
+    captureFailure: refusals[0]?.failure,
+    followUps: refusals.flatMap(secretDiff.captureInspectionActions),
   });
 }
 
@@ -233,6 +307,9 @@ export async function failedCandidatesResult(
 ): Promise<OrchestratorResult> {
   const { store, paths, log, runId, taskId, mode, ledger, runs, writeTelemetry } = input;
   const first = runs[0] as CandidateRun;
+  // Every kept source is named, in attempt order; the first candidate's own
+  // refusal (when it has one) still leads the record below.
+  const refusals = candidateCaptureRefusals(runs);
   // A lease denial, or a budget terminal the ledger settled on a candidate
   // whose capture then failed (stream hard cap, exact overshoot, unverifiable
   // cash), owns the terminal: the shared classifier leads and the capture
@@ -270,17 +347,21 @@ export async function failedCandidatesResult(
     winner: null,
     facts,
     why_winner: rootCause,
-    evidence_facts: runs.map(
-      (r) =>
-        `${r.attemptId} ${r.captureRefusal ? "capture incomplete" : "produced no work"}: ${r.errors[0] ?? "unknown"}`,
-    ),
+    evidence_facts: runs.flatMap((r) => [
+      `${r.attemptId} ${r.captureRefusal ? "capture incomplete" : "delivered no accepted result"}: ${r.errors[0] ?? "unknown"}`,
+      ...(r.continuationRefusal
+        ? [
+            `${r.continuationRefusal.attemptId} capture incomplete: ${r.continuationRefusal.refusal.detail}`,
+          ]
+        : []),
+    ]),
     apply_recommendation: "continue",
     budget_summary: decisionBudgetSummary(ledger),
   });
   writeTelemetry();
   store.writeText(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}\n- Phase: ${phase}\n\n${rootCause}\n`,
+    `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${phase}\n\n${rootCause}\n${captureInventorySummary(refusals[0]?.failure)}`,
   );
   const existingEventRefs = runs
     .map((r) => `attempts/${r.attemptId}/events.jsonl`)
@@ -306,19 +387,24 @@ export async function failedCandidatesResult(
     runDir: paths.root,
     resetsAt: unanimous?.resetsAt ?? null,
     requestRefusal: unanimous?.requestRefusal,
-    captureFailure: first.captureRefusal?.failure,
+    quotaRefusal: unanimous?.quotaRefusal,
+    rawContextShortfall: unanimous?.rawContextShortfall,
+    captureFailure: refusals[0]?.failure,
     // The first candidate speaks (like harnessId/attemptId); a budget terminal speaks for itself.
     vendorFailure: budget ? null : attemptVendorFailure([first], first.attemptId),
-    nextActions: first.captureRefusal
-      ? secretDiff.captureRefusalNextActions(first.captureRefusal)
-      : phase === "workspace"
-        ? ["Check the project folder", "Open diagnostics", "Retry the run"]
-        : harnessFailureNextActions(harnessCategory),
+    nextActions: [
+      ...(first.captureRefusal
+        ? secretDiff.captureRefusalNextActions(first.captureRefusal)
+        : phase === "workspace"
+          ? ["Check the project folder", "Open diagnostics", "Retry the run"]
+          : harnessFailureNextActions(harnessCategory)),
+      ...refusals.flatMap(secretDiff.captureRefusalNextActions),
+    ],
     ...(budget
       ? budgetFailureRecord(budget, {
           eventRefs: existingEventRefs,
           runDir: paths.root,
-          followUps: secretDiff.captureInspectionActions(first.captureRefusal),
+          followUps: refusals.flatMap(secretDiff.captureInspectionActions),
         })
       : {}),
     // After the budget record: every terminal speaks the same message and list.

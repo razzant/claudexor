@@ -73,10 +73,15 @@ public struct RunOutcomeFacts: Codable, Sendable, Equatable, Hashable {
     public let reviewRequested: Bool?
     /// Typed reason qualifying a non-clean terminal; null on a clean success.
     public let reason: String?
+    /// D-16 model-attested work outcome, orthogonal to the lifecycle; absent on
+    /// runs without a work report and from older engines. Arbitration may give
+    /// `reason` a harder review/checks failure while this stays unfinished.
+    public let workState: RunWorkState?
 
     private enum CodingKeys: String, CodingKey {
         case lifecycle, noChanges, checks, review, reason
         case reviewRequested = "review_requested"
+        case workState = "work_state"
     }
 
     public init(lifecycle: String, noChanges: Bool?, checks: String, review: String, reason: String?, reviewRequested: Bool? = nil) {
@@ -86,6 +91,40 @@ public struct RunOutcomeFacts: Codable, Sendable, Equatable, Hashable {
         self.review = review
         self.reviewRequested = reviewRequested
         self.reason = reason
+        self.workState = nil
+    }
+
+    /// The engine's non-overridable `needsOperatorInput` (status-projection):
+    /// the process succeeded, but the attested work is unfinished. Separate from
+    /// the risk-overridable review/checks decision; no decision resolves it.
+    public var needsOperatorInput: Bool {
+        lifecycle == "succeeded" && (workState?.state == "needs_input" || workState?.state == "incomplete")
+    }
+}
+
+/// The `work_state` axis. `state` stays a plain string, so a state a newer engine
+/// adds still decodes and vetoes nothing. The rest of the engine's object (source,
+/// required inputs) is carried verbatim and unread: the server's banner and required
+/// actions already name what the run needs.
+public struct RunWorkState: Codable, Sendable, Equatable, Hashable {
+    public let state: String
+    private let wire: JSONValue
+
+    public init(from decoder: Decoder) throws {
+        wire = try JSONValue(from: decoder)
+        guard let state = wire["state"]?.stringValue else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath, debugDescription: "work_state has no string state"))
+        }
+        self.state = state
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try wire.encode(to: encoder)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(state)
     }
 }
 

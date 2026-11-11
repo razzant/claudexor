@@ -1,4 +1,4 @@
-import { BudgetLedger } from "@claudexor/budget";
+import { BudgetLedger, type CashSettledCallback } from "@claudexor/budget";
 import { MAX_DELEGATED_CHILDREN } from "@claudexor/schema";
 
 interface ParentAuthority {
@@ -86,13 +86,7 @@ export class DelegationBudgetAuthority {
     admissionId: string,
     childRunId: string,
     taskId: string,
-    onCashSettled?: (
-      cashSpendUsd: number,
-      valuationUsd: number,
-      cashEstimated: boolean,
-      valuationKnowledge: "exact" | "estimated" | "unknown",
-      cashKnowledge: "exact" | "estimated" | "unknown",
-    ) => void,
+    onCashSettled?: CashSettledCallback,
   ): BudgetLedger {
     const parent = this.parents.get(parentRunId);
     if (!parent || !parent.pendingAdmissions.has(admissionId)) {

@@ -53,6 +53,10 @@ export type SetupProfile = {
 };
 
 export const SETUP_PROFILES: Record<ControlHarnessSetupHarness, SetupProfile> = {
+  grok: {
+    guideUrl: "https://docs.x.ai/build/overview",
+    note: "Grok Build uses grok.com device authentication inside the selected isolated profile HOME.",
+  },
   codex: {
     guideUrl: "https://developers.openai.com/codex/auth/",
     note: "Codex native login updates the official vendor-owned CLI session. Exact subscription setup never falls back to a managed API key.",
@@ -168,7 +172,7 @@ export function resolveLoginProfileBinding(
 }
 
 /**
- * A harness with no default binding store (agy — owner decision Л-4) can only
+ * A harness with no default binding store (agy, grok) can only
  * start login under a named binding. Refusing at CREATE time keeps the runner
  * from targeting vendor state/login artifacts at the daemon's own HOME; the
  * effective platform policy separately owns credential custody. The caller

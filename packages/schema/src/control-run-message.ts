@@ -17,7 +17,7 @@ export const ControlRunMessageRequest = z
       .min(1)
       .max(LIVE_MESSAGE_MAX_UTF16_UNITS)
       .describe(
-        "The message to place into the run's active attempt. 1..65536 UTF-16 code units (the JS string length, not bytes or visible characters); an over-long body is a 400, never truncated. Secret-like values are refused (inline_secret_rejected) like every prompt ingress.",
+        "The message to place into the run's active attempt. 1..65536 UTF-16 code units (the JS string length, not bytes or visible characters); an over-long body is a 400, never truncated. The text is delivered exactly, like every prompt ingress.",
       ),
     expectedAttemptId: z
       .string()
@@ -77,7 +77,7 @@ export const LiveMessageReason = z
     "response_timeout",
   ])
   .describe(
-    "Why the outcome is not delivered: no_active_turn (the harness has no active native turn), run_terminal, attempt_mismatch (expectedAttemptId is not the live attempt), no_live_session (no registered live attempt, no adapter channel, or no native session yet), multi_attempt (several live attempts and no expectedAttemptId), thread_bound (thread turns are not steerable in v1), interaction_pending (a question is open; the message was not sent), rpc_refused (the vendor refused the steer on a still-active turn), admission_persist_failed (the daemon could not journal admission; nothing was sent), transport_lost, response_timeout.",
+    "Why the outcome is not delivered: no_active_turn (the harness has no active native turn), run_terminal, attempt_mismatch (expectedAttemptId is not the live attempt), no_live_session (no registered live attempt, no adapter channel, or no native session yet), multi_attempt (several live attempts and no expectedAttemptId), thread_bound (thread turns are not steerable in v1), interaction_pending (a blocking question is open; the message was not sent), rpc_refused (the vendor refused the steer on a still-active turn), admission_persist_failed (the daemon could not journal admission; nothing was sent), transport_lost, response_timeout.",
   );
 export type LiveMessageReason = z.infer<typeof LiveMessageReason>;
 

@@ -75,52 +75,16 @@ extension ThreadsScreen {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             OptionSection(title: "Harness pool — Best-of runs these; the primary answers in chat") {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                    FlowLayout(spacing: Theme.Spacing.sm) {
-                        // Leading Auto chip (owner F9): SELECTED by default. Auto =
-                        // an empty sticky pool = the engine routes across all
-                        // available (the wire body the composer already sends for
-                        // "no explicit pool"). Tapping it clears any explicit subset.
-                        let auto = HarnessPoolPresentation.isAuto(pool: model.effectiveEligiblePool)
-                        // The Auto chip is a toggle like the harness chips; its
-                        // SELECTED state carries the app's standard checkmark so
-                        // "Auto is on" reads unambiguously next to the highlighted
-                        // (included-by-Auto) harness chips (batch-6 item d).
-                        FilterChip(label: "Auto", systemImage: auto ? "checkmark" : "wand.and.stars",
-                                   isActive: auto, tint: Theme.accent) {
-                            Task { await model.setEligiblePool(HarnessPoolPresentation.selectingAuto()) }
-                        }
-                        .help("Auto — the engine routes across every available harness. Pick specific harnesses to pin an explicit subset.")
-                        ForEach(poolFamilies) { family in
-                            let avail = model.availability(for: family, mode: composerMode)
-                            let descriptor = HarnessPoolPresentation.chipDescriptor(
-                                family.rawValue,
-                                pool: model.effectiveEligiblePool,
-                                available: availablePoolIds,
-                                availability: .init(
-                                    available: avail.available,
-                                    reason: avail.reason
-                                )
-                            )
-                            // In Auto every available harness renders highlighted-as-
-                            // included (distinct from a user-excluded chip); tapping one
-                            // switches to explicit-subset mode. Never synthesize a
-                            // "<glyph>.slash" (no such SF Symbol → blank icon); disabled
-                            // dimming + the hover reason convey unavailability.
-                            FilterChip(label: family.label,
-                                       iconImage: HarnessIconImage.image(for: family),
-                                       isActive: descriptor.included, tint: family.color) {
-                                togglePool(family)
-                            }
-                            .disabled(!avail.available)
-                            .help(descriptor.help)
-                            .accessibilityValue(descriptor.accessibilityValue)
-                        }
-                    }
-                    Text(HarnessPoolPresentation.caption(pool: model.effectiveEligiblePool))
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                // Auto chip + Auto-eligible harnesses, then the Manual only group
+                // (#133). The sticky pool is the thread's explicit selection; the
+                // primary chip stays a preference that Auto may route around.
+                HarnessPoolSection(
+                    entries: poolEntries,
+                    pool: model.effectiveEligiblePool,
+                    selectAuto: {
+                        Task { await model.setEligiblePool(HarnessPoolPresentation.selectingAuto()) }
+                    },
+                    toggle: togglePool)
             }
             OptionSection(title: "Models — per harness for THIS turn") {
                 ComposerModelsSection(
@@ -413,19 +377,25 @@ extension ThreadsScreen {
         }
     }
 
-    /// The available harness ids (the ones a chip can toggle) in canonical order —
-    /// the "all" set Auto stands for, and the order the explicit-subset wire body
-    /// follows.
+    /// One lane per pool harness for the current intent and project scope (#133).
+    var poolEntries: [HarnessPoolSection.Entry] {
+        poolFamilies.map {
+            .init(family: $0, lane: model.poolLane(for: $0, mode: composerMode, projectScoped: threadHasProject))
+        }
+    }
+
+    /// The Auto-eligible harness ids in canonical order — the "all" set Auto
+    /// stands for, and the order the explicit-subset wire body follows. Manual
+    /// lanes are selectable too but never part of this set.
     private var availablePoolIds: [String] {
-        poolFamilies
-            .filter { model.availability(for: $0, mode: composerMode).available }
-            .map(\.rawValue)
+        HarnessPoolSection.autoAvailable(poolEntries)
     }
 
     /// Tapping a harness chip: in Auto this materializes the "all available" set as
     /// an explicit subset (Auto deselects) with this harness toggled; in explicit
     /// mode it toggles within the subset. Emptying it falls back to Auto (empty =
-    /// auto — the same wire truth). The wire body is unchanged in Auto mode.
+    /// auto — the same wire truth). The wire body is unchanged in Auto mode. A
+    /// manual-only harness joins the subset instead of being dropped.
     private func togglePool(_ family: HarnessFamily) {
         let next = HarnessPoolPresentation.toggling(
             family.rawValue, pool: model.effectiveEligiblePool, available: availablePoolIds)

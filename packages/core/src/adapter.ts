@@ -1,3 +1,5 @@
+import type { NativeHomeLifetime } from "./native-home-lifetime.js";
+import type { CredentialProfileProbeOptions } from "./credential-selection.js";
 import type {
   AccountIdentity,
   AuthPreference,
@@ -53,12 +55,86 @@ export interface HarnessModelSpec extends DoctorSpec {
   credentialProfile?: CredentialProfile | null;
 }
 
+/** Why one live model-catalog read produced no catalog (INV-104: a failed read
+ * is never a successful empty catalog). `auth_rejected` is an HTTP 401/403
+ * answer, `http_status` any other non-OK answer, `incomplete` an answer that
+ * declares more rows than it carries, `malformed` a body that is not a complete
+ * catalog (unparseable, no list, or one invalid row). */
+export interface ModelCatalogFailure {
+  cause:
+    | "no_credential"
+    | "auth_rejected"
+    | "http_status"
+    | "network"
+    | "timeout"
+    | "malformed"
+    | "incomplete";
+  /** The endpoint's HTTP status when it answered; null otherwise. */
+  httpStatus: number | null;
+  /** Bounded, redacted diagnostic for disclosure; never parsed. */
+  detail: string;
+}
+
+/** The key one catalog read sent, as its producer names it. Only the
+ * non-secret fingerprint is public; the producer may keep the key on the same
+ * object, private, so the request of the spawn whose dispatch gate made that
+ * read sends exactly the key the read checked (#393 x #147). */
+export interface ModelCatalogCredential {
+  readonly fingerprint: string;
+}
+
+/** One typed read of a live model catalog at one credential identity and time.
+ * `listed` proves presence; an empty `listed` answer is a successful empty
+ * catalog. `unavailable` proves nothing about any model. `credential` names
+ * the key the read sent, absent when the producer names none: two reads share
+ * a credential only when both carry the same fingerprint. */
+export type ModelCatalogObservation =
+  | { status: "listed"; models: HarnessModel[]; credential?: ModelCatalogCredential }
+  | { status: "unavailable"; failure: ModelCatalogFailure; credential?: ModelCatalogCredential };
+
+/**
+ * What one request that inlines a RawContextPacket may spend, derived for a
+ * spec before its packet exists (#147) from the catalog the dispatch gate read
+ * for that spawn. Token figures are ceil(characters / 4) estimates of the text
+ * the model receives, never a tokenizer count.
+ */
+export interface RawRequestCapacity {
+  /** Model the request names: the spec's model hint, else the instance's choice. */
+  model: string;
+  /** Window of that model's catalog row (a routing variant resolves to its
+   * listed row); null when unknown: no row, no field, or a failed read. */
+  contextWindow: number | null;
+  /** Tokens kept free for the answer, and whether the catalog supplied them. */
+  outputAllowance: number;
+  outputAllowanceSource: "catalog" | "default";
+  /** Estimated tokens the request carries outside the packet: instructions,
+   * user text, the patch protocol and attachments as sent. */
+  framingTokens: number;
+}
+
+/**
+ * A route whose request cannot omit a model (#395): a chat-completions body needs
+ * one and no vendor CLI picks it. The engine invents none, so an operator chooses.
+ */
+export interface RouteModelRequirement {
+  /** The operator's choice for this instance outside Settings (an instance
+   * argument or an environment variable) and where it was made; null when none. */
+  instanceChoice: { model: string; source: string } | null;
+  /** The variable that can make that choice, named by a refusal's remedy. */
+  env?: string;
+}
+
 export interface HarnessProcessingSpec extends HarnessModelSpec {
   preference?: ProcessingPreference;
   model: string | null;
   effort: string | null;
   /** Existing monetary policy; false requests ordinary fallback before paid work. */
   allowPaid?: boolean;
+  /** Receipt this work unit already chose without a preference (routing-time or an
+   * earlier try). An adapter that honours it (Codex today) keeps that intent across a
+   * retry, rotation or continuation instead of adopting another account's native
+   * setting; an adapter that does not implement it ignores the field. */
+  chosen?: ProcessingReceipt;
 }
 
 export interface PreparedHarnessProcessing {
@@ -71,6 +147,10 @@ export interface PreparedHarnessProcessing {
    * disclosure cannot disagree. Absent when the level is a separate flag the
    * adapter resolves at spawn, or when the harness has no effort control. */
   effort?: EffortResolution;
+  /** The account inventory this preparation read for the spec's own profile,
+   * env and cwd. The per-spawn gate resolves that spawn's observed model label
+   * against it and nothing else. Absent = no catalog proof. */
+  catalog?: HarnessModel[];
 }
 
 /**
@@ -105,6 +185,20 @@ export interface LiveMessageResult {
  * logic. External adapters may implement this as an in-tree HarnessAdapter implementation (the out-of-tree JSON-RPC bridge package was removed in v0.9).
  */
 export interface HarnessAdapter {
+  readonly program?: import("@claudexor/schema").HarnessProgram;
+  /** Explicit maintenance only. The adapter enumerates obsolete profile program files, never credentials. */
+  planProfileProgramCleanup?(
+    profiles: readonly import("@claudexor/schema").CredentialProfile[],
+    selected: import("@claudexor/schema").SelectedHarnessProgram,
+    options?: { recoverOnly?: boolean },
+  ): {
+    paths: string[];
+    limitations: string[];
+    execute(observe: () => import("@claudexor/schema").SelectedHarnessProgram): {
+      removed: string[];
+      limitations: string[];
+    };
+  };
   readonly id: string;
   /** Native effort carrier the adapter resolves at its final route: a separate
    * flag (`--effort`, `model_reasoning_effort`), or `--model` when the level is
@@ -146,8 +240,29 @@ export interface HarnessAdapter {
    * implement this (e.g. raw-api via OpenAI-compatible `GET /v1/models`);
    * native-CLI adapters that cannot enumerate simply omit it. Must fail soft
    * (return [] on network/auth error) — never throw into a picker/consumer.
+   * Consumers read through `readModelCatalog`, which prefers `modelCatalog`.
    */
   models?(spec?: HarnessModelSpec): Promise<HarnessModel[]>;
+
+  /**
+   * Optional typed read of the same catalog for a producer that can tell a
+   * failed read from an empty catalog. Its `models()` is then only the
+   * fail-soft projection of this answer. Never throws.
+   */
+  modelCatalog?(spec?: HarnessModelSpec): Promise<ModelCatalogObservation>;
+
+  /** Capacity facts for a spec whose transport inlines a RawContextPacket
+   * (#147), from `catalog`: the rows of the dispatch gate's own read for this
+   * spawn's credential identity ([] when that read failed). Reads nothing; null
+   * when the spec names no model, which no capacity can be read for. */
+  rawRequestCapacity?(
+    spec: HarnessRunSpec,
+    catalog: readonly HarnessModel[],
+  ): RawRequestCapacity | null;
+
+  /** Declared only by a route that cannot omit a model; absent means the vendor
+   * chooses when a run names none. */
+  readonly modelRequirement?: RouteModelRequirement;
 
   /** Translate service intent using this account's inventory before ranking or
    * reserving spend. Discovery only; never starts a generation or changes auth. */
@@ -177,6 +292,7 @@ export interface HarnessAdapter {
   probeCredentialProfile?(
     profile: CredentialProfile,
     abortSignal?: AbortSignal,
+    options?: CredentialProfileProbeOptions,
   ): Promise<CredentialProfileStatus>;
 
   /**
@@ -196,6 +312,68 @@ export interface HarnessAdapter {
    * engine-side session-id comparison.
    */
   continuity?: HarnessContinuityCapability;
+  /** Adapter owns its native store format and safe retirement boundary. */
+  nativeHomeLifetime?: NativeHomeLifetime;
+  /** Where one exact session's material lives, for a thread's exact export. Absent
+   * leaves every session of this harness a named gap that cannot retire. */
+  nativeSessionExport?: NativeSessionExport;
+  /**
+   * The HOME this adapter's vendor child actually receives for `spec` when the
+   * adapter replaces the engine-scoped HOME with a named account's own
+   * Claudexor-owned HOME (a vendor store selected only by HOME). Applied
+   * attempt facts record this path. Absent or null: the child receives
+   * `spec.env.HOME`.
+   */
+  childHome?(spec: HarnessRunSpec): string | null;
+  /**
+   * The vendor access setting this adapter passes for `spec`, in the vendor's
+   * own spelling, computed by the SAME helper that builds the argv or request
+   * (#413). Disclosure only, recorded on the per-spawn route receipt. Absent
+   * or null: the adapter passes no access setting or does not disclose it.
+   */
+  nativeAccess?(spec: HarnessRunSpec): string | null;
+}
+
+/** One display string for native arguments: empty or spaced tokens are quoted. */
+export function formatNativeArgs(args: readonly string[]): string | null {
+  if (args.length === 0) return null;
+  return args.map((arg) => (arg === "" || /\s/.test(arg) ? JSON.stringify(arg) : arg)).join(" ");
+}
+
+/** A recorded session's reach. It never extends to another version or entry. */
+export interface NativeSessionFormatEvidence {
+  fixture: string;
+  /** Exact vendor versions recorded; a session's own transcript must name only these. */
+  vendorVersions: readonly string[];
+  /** The platforms a session was actually recorded on; no other host's copy qualifies. */
+  platforms: readonly NodeJS.Platform[];
+  /** The store-relative JSONL transcript a recorded entry of this session belongs
+   * with (the transcript itself for the transcript), or null when the recording
+   * never held such an entry. A copy holding an entry without its transcript is
+   * missing required material; the transcript is read for its versions and store
+   * references. Entries the recording held without one stay optional. */
+  transcriptOf(rel: string, nativeSessionId: string): string | null;
+  /** The transcript's top-level vendor-version field; null for a format that has none. */
+  versionField: string | null;
+}
+
+/** An adapter's declaration of its on-disk session material. Export reads only
+ * these locations, by exact session id, and copies bytes it never interprets. */
+export interface NativeSessionExport {
+  /** The store this env selects: a named profile's or the default native one. */
+  storeRoot(env: EnvMap): string | null;
+  /** Store directories holding session-bound entries, with those entries' depth
+   * below each (`todos/<sid>` is 1, `projects/<cwd>/<sid>.jsonl` is 2). */
+  sessionLocations: Readonly<Record<string, number>>;
+  /** Exact credential stores a lane's HOME can hold, relative to it. Never opened. */
+  laneCredentialStores: readonly string[];
+  /** What a recorded real on-disk session proves about this layout, and no more:
+   * those vendor versions and those entries. Anything else stays a named
+   * `native_format_unqualified` gap: its bytes are preserved, and the thread
+   * cannot retire. Null means no such session has been recorded. */
+  formatEvidence: NativeSessionFormatEvidence | null;
+  /** Known vendor state no record binds to a session, named on every manifest. */
+  outOfClosure: readonly { source: string; reason: string }[];
 }
 
 /** A registry of available adapters keyed by harness id. */
@@ -275,22 +453,47 @@ export interface HarnessContinuityCapability {
  *
  * The adapter calls `request()` when its native session raises a user
  * question (e.g. Claude's AskUserQuestion via the stream-json control
- * protocol) and BLOCKS that tool until the promise resolves:
+ * protocol). A blocking request holds that tool until the promise settles; an
+ * async one (`delivery: "async"`) is consumed without holding the event pump:
  * - resolved with answers -> the adapter delivers them into the live session;
- * - resolved with null (timeout / decline / no listener) -> the adapter
- *   declines benignly and the model continues with assumptions.
+ * - resolved with null (an explicit decline, an expiry, a withdrawal or the
+ *   run's end; the run's interaction events say which) -> nothing answers the
+ *   question: a blocking one declines benignly and the model continues with
+ *   assumptions, an async one sends nothing;
+ * - rejected with {@link InteractionChannelError} -> the answer surface itself
+ *   failed, so nobody was asked or no answer can arrive. That is never the
+ *   user's decline; the adapter says so in its own record.
  *
  * The channel is smuggled through `spec.extra` (duck-typed, same pattern as
  * the abort signal) because HarnessRunSpec is a serializable schema shape.
  */
 export interface InteractionChannel {
-  request(req: InteractionRequest): Promise<InteractionAnswerSet | null>;
+  /** Optional signal revokes only this obsolete native request, not the run. */
+  request(req: InteractionRequest, signal?: AbortSignal): Promise<InteractionAnswerSet | null>;
   /** Number of questions currently awaiting an answer. Lets stream watchdogs
    * treat waiting-on-user as legitimate silence instead of a wedged harness. */
   pendingCount?(): number;
   /** Monotonic begin/end transition counter. Unlike a boolean poll, this lets
    * watchdogs detect a complete wait-and-answer cycle between timer ticks. */
   suspensionVersion?(): number;
+}
+
+/** The answer surface behind an InteractionChannel failed (it could not
+ * register or keep the question). `cause` is the surface's own failure. */
+export class InteractionChannelError extends Error {
+  readonly code = "answer_channel_failed" as const;
+
+  constructor(cause: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === "string" && cause
+          ? cause
+          : "the interaction answer surface failed",
+      { cause },
+    );
+    this.name = "InteractionChannelError";
+  }
 }
 
 export function interactionChannelFromSpec(spec: HarnessRunSpec): InteractionChannel | undefined {

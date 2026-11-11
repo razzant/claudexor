@@ -1,0 +1,12 @@
+{
+  "schema": "ThreadPromptPart",
+  "value": {
+    "totalBytes": 13,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "offset": 0,
+    "nextOffset": 13,
+    "text": "Question 😀",
+    "threadId": "th-history",
+    "turnId": "turn-refused"
+  }
+}

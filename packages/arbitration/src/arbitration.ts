@@ -312,6 +312,8 @@ export function arbitrate(
      * so the decision record carries the reviewer-inclusive totals (not just
      * the cash figure). */
     cashUsd?: number | null;
+    /** Cap-governed cash beside an unknown total (unobserved included debit). */
+    controllableCashUsd?: number | null;
     valuationUsd?: number | null;
     valuationKnowledge?: "exact" | "estimated" | "unknown";
   } = {},
@@ -509,9 +511,13 @@ export function arbitrate(
       `blockers ${openBlockerCount(winner)}`,
     ],
     budget_summary: {
-      spend_usd: opts.spendUsd ?? winner.costUsd ?? null,
+      // An explicit null is the ledger's unknown total, not a missing figure.
+      spend_usd: opts.spendUsd !== undefined ? opts.spendUsd : (winner.costUsd ?? null),
       estimated: opts.estimatedSpend ?? false,
       cash_usd: opts.cashUsd ?? null,
+      ...(opts.controllableCashUsd !== undefined
+        ? { controllable_cash_usd: opts.controllableCashUsd }
+        : {}),
       valuation_usd: opts.valuationUsd ?? null,
       ...(opts.valuationKnowledge ? { valuation_knowledge: opts.valuationKnowledge } : {}),
     },

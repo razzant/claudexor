@@ -16,7 +16,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   sandbox.dispose();
-});
+}, 0); // synchronous cleanup: no deadline (#376, see vitest.setup.ts)
 
 describe("ordinary Agent review intent", () => {
   it.each([{ controls: [] }, { controls: ["--no-review", "--attempts", "3"] }])(

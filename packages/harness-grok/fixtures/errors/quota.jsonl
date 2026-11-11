@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"fixture-native","model":"grok-4.7","apiKeySource":"oauth","permissionMode":"dontAsk","tools":["read_file","list_dir","grep"]}
+{"type":"result","subtype":"error_during_execution","is_error":true,"code":"quota_exceeded","errors":["Subscription quota exhausted"],"retry_after":60,"usage":{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":0}}

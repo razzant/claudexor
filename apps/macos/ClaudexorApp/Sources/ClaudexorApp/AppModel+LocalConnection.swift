@@ -4,9 +4,14 @@ import ClaudexorKit
 // MARK: - Local engine connection and exact runtime coherence
 
 extension AppModel {
-    func connect() async {
+    func connect(ifCurrentGeneration expected: Int? = nil, allowInitialLaunch: Bool = true) async {
+        if let expected, connectionGeneration != expected { return }
         connectionGeneration += 1
         let generation = connectionGeneration
+        // A loop that may start an engine itself no longer depends on one.
+        if allowInitialLaunch { localSuccessorPending = false }
+        retireLocalDaemonBuildSwitchProgress()
+        retireLocalDaemonBuildSwitchOffer()
         // Retire the previous exact client synchronously, before the new
         // generation's first suspension. Every projection owner can now reject
         // an old response by client identity even while discovery/handshake for
@@ -16,7 +21,23 @@ extension AppModel {
         engineIdentity = nil
         health = .connecting
         cancelAllStreams()
-        let recovery = LocalConnectionRecoveryLoop(
+        await localConnectionRecovery(generation: generation).run(launchAvailable: allowInitialLaunch)
+    }
+
+    /// Keep polling the exact client an explicit build-switch request left
+    /// serving, under that request's generation: nothing is retired, launched
+    /// or re-hydrated. Without a client there is nothing to resume.
+    func resumeLocalConnection(generation: Int) async {
+        guard connectionGeneration == generation else { return }
+        guard client != nil else {
+            await connect(ifCurrentGeneration: generation, allowInitialLaunch: false)
+            return
+        }
+        await localConnectionRecovery(generation: generation).run(resumingConnection: true)
+    }
+
+    private func localConnectionRecovery(generation: Int) -> LocalConnectionRecoveryLoop {
+        LocalConnectionRecoveryLoop(
             generation: generation,
             currentGeneration: { self.connectionGeneration },
             lifecycleOwner: localRuntimeLifecycleOwner,
@@ -25,20 +46,26 @@ extension AppModel {
                 self.cancelAllStreams()
             },
             probe: { await self.tryConnect(generation: generation) },
+            engineAnswers: { await self.localEngineAnswers() },
             pollConnected: {
                 guard self.client != nil else { return .unavailable }
                 return await self.pollLocalConnection(generation: generation)
             },
-            startDaemon: { DaemonLauncher.startIfNeeded() },
-            enterOffline: { self.enterHardOffline() },
+            startDaemon: { DaemonLauncher.startIfNeeded(launchPermit: $0) },
+            enterOffline: { self.enterLocalOffline() },
+            lifecycleRefused: { refusal in
+                self.setLocalDaemonReconciliationNotice(refusal.map {
+                    "Claudexor did not start the engine: \($0.reason)."
+                })
+            },
             pause: { try? await Task.sleep(for: .seconds(3)) })
-        await recovery.run()
     }
 
     /// Drop every daemon-owned projection when the engine is unreachable. The
     /// reconnect path repopulates these from `/v2`; user preferences and the
     /// current composer draft remain local and are intentionally preserved.
     func enterHardOffline() {
+        localDaemonBuildSwitch = nil
         let keepRemoteSelection = activeExecutionLocation != .local
         health = .offline
         endpoint = ""
@@ -68,6 +95,7 @@ extension AppModel {
         if !keepRemoteSelection {
             selectedThreadId = nil
             selectedThreadDetail = nil
+            selectedHistory = nil
             threadStatus = nil
             threadLoadGeneration += 1
         }
@@ -134,42 +162,27 @@ extension AppModel {
         deferredOverflow.removeAll()
     }
 
-    private func daemonReconciliationOwner() -> LocalDaemonReconciler {
-        if let localDaemonReconciler { return localDaemonReconciler }
-        let reconciler = LocalDaemonReconciler(
-            daemon: makeDaemonControl(),
-            lifecycleOwner: localRuntimeLifecycleOwner)
-        localDaemonReconciler = reconciler
-        return reconciler
-    }
-
     /// Publish exact-closure coherence independently from update/install state.
     private func setLocalDaemonReconciliationNotice(_ notice: String?) {
         localDaemonReconciliationNotice = notice
     }
 
-    /// Reconcile one compatible handshake against the exact selected local
-    /// closure. Protocol compatibility remains the connection authority; an
-    /// unstampable identity is deliberately passed as nil and reduced to a safe,
-    /// visible keep-compatible policy before any lifecycle work.
-    func localDaemonPolicy(
-        for engine: EngineBuildIdentity?,
-        generation: Int? = nil
-    ) async -> LocalDaemonReconciliationPolicy {
-        let serving = engine.flatMap {
-            AppRuntimeDaemonControl.runtimeIdentity(version: $0.version, buildSha: $0.sha)
+    /// A lifecycle this app ran ended without an engine the loop will start by
+    /// itself: keep its reason visible and offer Retry until one is adopted.
+    func publishLocalLifecycleFailure(_ notice: String) {
+        localDaemonReconciliationNotice = notice
+        localEngineAwaitsRetry = true
+        localSuccessorPending = false
+    }
+
+    /// The connection loop's Offline transition. If the engine this app just
+    /// started was lost before any connection adopted it, the loop's start was
+    /// already spent on that lifecycle, so this is a lifecycle failure too.
+    func enterLocalOffline() {
+        enterHardOffline()
+        if localSuccessorPending {
+            publishLocalLifecycleFailure(LocalDaemonReconciliationPolicy.lostSuccessorNotice)
         }
-        let result = await daemonReconciliationOwner().reconcile(
-            serving: serving,
-            isCurrent: { @MainActor [weak self] in
-                guard let generation else { return true }
-                guard let self else { return false }
-                return !Task.isCancelled && self.connectionGeneration == generation
-            })
-        if let generation, !localConnectionGenerationIsCurrent(generation) {
-            return .superseded
-        }
-        return LocalDaemonReconciliationPolicy(result)
     }
 
     private func tryConnect(generation: Int) async -> LocalConnectionProbeResult {
@@ -184,6 +197,13 @@ extension AppModel {
             return localConnectionGenerationIsCurrent(generation)
                 ? .unavailable : .superseded
         }
+    }
+
+    /// One fresh discovery read and handshake that adopts nothing. Outage
+    /// recovery asks it while holding its lease, right before a launch.
+    private func localEngineAnswers() async -> Bool {
+        guard let candidate = try? ControlApiDiscovery.load().makeClient() else { return false }
+        return (try? await candidate.handshake())?.ok == true
     }
 
     /// Injected candidate seam for deterministic connection-generation tests.
@@ -207,16 +227,30 @@ extension AppModel {
                 // keeps product admission closed. Stay in the existing
                 // Connecting behavior — no adoption, no hydration, no
                 // reconciliation lifecycle, no fallback launch — and keep
-                // polling the handshake until normal admission opens.
-                if outcome.recoveryOnly { return .retryWithoutLaunch }
-                switch await localDaemonPolicy(for: outcome.engine, generation: generation) {
-                case let .useCompatible(notice):
+                // polling the handshake until normal admission opens. No build
+                // switch can be offered against it either.
+                if outcome.recoveryOnly {
+                    retireLocalDaemonBuildSwitchOffer()
+                    return .retryWithoutLaunch
+                }
+                let policy = await localDaemonPolicy(for: outcome.engine, generation: generation)
+                switch policy {
+                case .useCompatible, .unobserved:
                     guard localConnectionGenerationIsCurrent(generation) else {
                         return .superseded
                     }
                     endpoint = candidateEndpoint
                     adoptClientForReconnect(candidate)
-                    setLocalDaemonReconciliationNotice(notice)
+                    localEngineAwaitsRetry = false
+                    localSuccessorPending = false
+                    // A new connection publishes only its own observation.
+                    // Contention made none yet, so nothing earlier stays.
+                    if case let .useCompatible(notice) = policy {
+                        setLocalDaemonReconciliationNotice(notice)
+                    } else {
+                        localDaemonBuildSwitch = nil
+                        setLocalDaemonReconciliationNotice(nil)
+                    }
                     engineIdentity = outcome.engine
                     health = .connected
                     await refreshRuns()
@@ -272,7 +306,7 @@ extension AppModel {
                     guard localConnectionGenerationIsCurrent(generation) else {
                         return .superseded
                     }
-                    setLocalDaemonReconciliationNotice(notice)
+                    publishLocalLifecycleFailure(notice)
                     client = nil
                     engineIdentity = nil
                     return .lifecycleFailed
@@ -302,9 +336,19 @@ extension AppModel {
     /// transport loss (which earns one outage launch) from reconciliation that
     /// already launched, or attempted to launch, the selected closure.
     func pollLocalConnection(generation: Int? = nil) async -> LocalConnectionProbeResult {
-        guard let current = client, let outcome = try? await current.handshake(), outcome.ok else {
+        guard let current = client else {
             return requestedConnectionGenerationIsCurrent(generation)
                 ? .unavailable : .superseded
+        }
+        guard let outcome = try? await current.handshake(), outcome.ok else {
+            guard requestedConnectionGenerationIsCurrent(generation) else {
+                return .superseded
+            }
+            // The engine these facts described stopped answering. Connecting
+            // and Offline must not keep its build offer or its notice.
+            localDaemonBuildSwitch = nil
+            setLocalDaemonReconciliationNotice(nil)
+            return .unavailable
         }
         guard requestedConnectionGenerationIsCurrent(generation) else {
             return .superseded
@@ -312,13 +356,24 @@ extension AppModel {
         // A connected daemon that re-enters recovery (restart into a
         // recovery-needed root) closes product admission: fall back to the
         // Connecting discovery loop without inventing an outage launch.
-        if outcome.recoveryOnly { return .retryWithoutLaunch }
-        switch await localDaemonPolicy(for: outcome.engine, generation: generation) {
-        case let .useCompatible(notice):
+        if outcome.recoveryOnly {
+            retireLocalDaemonBuildSwitchOffer()
+            return .retryWithoutLaunch
+        }
+        let policy = await localDaemonPolicy(for: outcome.engine, generation: generation)
+        switch policy {
+        case .useCompatible, .unobserved:
             guard requestedConnectionGenerationIsCurrent(generation), client === current else {
                 return .superseded
             }
-            setLocalDaemonReconciliationNotice(notice)
+            if case let .useCompatible(notice) = policy {
+                setLocalDaemonReconciliationNotice(notice)
+            } else if engineIdentity != outcome.engine {
+                // Contention observed nothing, but this handshake names another
+                // engine: what was published for the previous one no longer applies.
+                localDaemonBuildSwitch = nil
+                setLocalDaemonReconciliationNotice(nil)
+            }
             engineIdentity = outcome.engine
             return .connected
         case .reconnect:
@@ -339,7 +394,7 @@ extension AppModel {
             guard requestedConnectionGenerationIsCurrent(generation) else {
                 return .superseded
             }
-            setLocalDaemonReconciliationNotice(notice)
+            publishLocalLifecycleFailure(notice)
             client = nil
             engineIdentity = nil
             cancelAllStreams()

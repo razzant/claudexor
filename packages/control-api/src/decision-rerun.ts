@@ -3,6 +3,7 @@ import {
   ControlRunDecisionResponse,
   ControlRunStartRequest,
   restoreRecordedRunReviewRequest,
+  decodeAcceptedRunStart,
   type ControlRunDecisionRequest,
 } from "@claudexor/schema";
 import type {
@@ -25,6 +26,8 @@ export interface DecisionRerunContext {
   services?: RerunServices;
   serializeThreadMutation<T>(threadId: string, work: () => Promise<T>): Promise<T>;
   waitForRunStart(id: string): Promise<DaemonRunRecord>;
+  storeId?: () => string | undefined;
+  wantsStoreId?: boolean;
   appendAudit(record: DaemonRunRecord, payload: Record<string, unknown>): void;
   json(response: ServerResponse, status: number, body: unknown): void;
 }
@@ -53,10 +56,12 @@ export async function rerunWithFeedback(
     planRef: _planRef,
     retryOf: _retryOf,
     protectedPathApprovals: _protectedPathApprovals,
+    deferredDefaults: _deferredDefaults,
     ...original
   } = source;
   let params: ControlRunStartRequest;
   try {
+    decodeAcceptedRunStart(source);
     params = runStart.normalizeRunStart(
       restoreRecordedRunReviewRequest(
         ControlRunStartRequest.parse({
@@ -103,6 +108,8 @@ export async function rerunWithFeedback(
     }
     let job: { id: string; reused?: boolean };
     try {
+      // The inherited group needs the same store identity as a direct launch.
+      runStart.requireTaskGroupStoreIdentity(params, ctx.storeId);
       job = await ctx.daemon.enqueue(
         { ...params, ...(turnId ? { turnId } : {}) },
         {
@@ -137,11 +144,17 @@ export async function rerunWithFeedback(
         ...(turnId ? { turnId } : {}),
       });
     }
+    const metadata = runStart.acceptedRunReceipt(run, ctx.storeId, ctx.wantsStoreId);
     if (!run.runId && TERMINAL_STATES.has(run.state)) {
-      const refusal = runStart.unboundRunStartResponse(run, true, {
-        ...(threadId ? { threadId } : {}),
-        ...(turnId ? { turnId } : {}),
-      });
+      const refusal = runStart.unboundRunStartResponse(
+        run,
+        true,
+        {
+          ...(threadId ? { threadId } : {}),
+          ...(turnId ? { turnId } : {}),
+        },
+        metadata,
+      );
       return ctx.json(res, refusal.status, refusal.body);
     }
     // The daemon command journal is the idempotency authority. Only the
@@ -150,6 +163,7 @@ export async function rerunWithFeedback(
     if (job.reused === false) {
       ctx.appendAudit(rec, {
         decision: body.action,
+        ...(_deferredDefaults ? { omitted_controls: ["deferredDefaults"] } : {}),
         ...(run.runId ? { new_run_id: run.runId } : { new_job_id: run.id }),
       });
     }
@@ -160,9 +174,13 @@ export async function rerunWithFeedback(
         accepted: true,
         status: "requeued",
         ...(run.runId ? { newRunId: run.runId } : {}),
-        message: run.runId
-          ? "follow-up run enqueued with reviewer feedback"
-          : "follow-up job enqueued; run start is still pending",
+        newJobId: run.id,
+        ...metadata,
+        message:
+          (run.runId
+            ? "follow-up run enqueued with reviewer feedback"
+            : "follow-up job enqueued; run start is still pending") +
+          (_deferredDefaults ? "; execution preferences resolve from current settings" : ""),
       }),
     );
   };

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   type HarnessEvent,
@@ -6,10 +6,13 @@ import {
   type WorkspaceEnvelope,
   type WorkspaceFilesManifest,
   WorkProduct,
+  WorkspacePreparedPayload,
+  workspacePreparationSummary,
 } from "@claudexor/schema";
 import {
   type WorkspaceManager,
   type CapturedWorkspaceFiles,
+  directoryPreparation,
   materializeWorkspaceFile,
   readWorkspaceFile,
   sameWorkspaceFile,
@@ -18,10 +21,37 @@ import {
 import { type ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { type EventLog } from "@claudexor/event-log";
 import { newId, sha256 } from "@claudexor/util";
-import type { CaptureRefusal } from "./secretDiff.js";
+import { directoryCaptureRefusal, type CaptureRefusal } from "./captureRefusal.js";
 
 export interface DirectoryCandidate extends CapturedWorkspaceFiles {
   artifactRoot: string;
+}
+
+/** A rejected recursive fs.rm can leave sibling deletes in flight. These paths
+ * are reused by later captures, so finish each async operation before returning
+ * or throwing; never follow a symlink and never block the event loop with rmSync. */
+async function removeCaptureTree(path: string): Promise<void> {
+  try {
+    const stat = await lstat(path);
+    if (!stat.isDirectory()) {
+      await rm(path, { force: true });
+      return;
+    }
+    let failure: { error: unknown } | undefined;
+    for (const name of await readdir(path)) {
+      try {
+        await removeCaptureTree(join(path, name));
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+    // Still remove every writable sibling; report the first real failure only
+    // after all operations have settled, leaving its named path in place.
+    if (failure) throw failure.error;
+    await rmdir(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 /** File-change paths are adapter facts; command/prose text never invents writes. */
@@ -41,31 +71,58 @@ export function observeDirectoryPaths(paths: Set<string>, event: HarnessEvent, c
   }
 }
 
+const announcedPreparations = new WeakSet<WorkspaceEnvelope>();
+
+/** An isolated copy's preparation fact, announced once per copy before its
+ * first executor starts, and the same fact as that executor's prompt notice.
+ * Worded for the copy's creation: a later round's copy also holds that round's work. */
+export async function directoryPreparationNotice(
+  envelope: WorkspaceEnvelope,
+  attemptId: string,
+  log: EventLog | undefined,
+): Promise<string | undefined> {
+  const prepared = await directoryPreparation(envelope);
+  if (!prepared) return undefined;
+  const payload = WorkspacePreparedPayload.parse({ attempt_id: attemptId, ...prepared });
+  if (!announcedPreparations.has(envelope)) {
+    announcedPreparations.add(envelope);
+    log?.emit("workspace.prepared", payload);
+  }
+  return `When this workspace was created: ${workspacePreparationSummary(payload).text}`;
+}
+
+/** Only the run's final capture passes `holder`: its refusal keeps the isolated
+ * copy for inspection. Per-try and stability captures are superseded, never kept. */
 export async function captureDirectoryCandidate(input: {
   manager: WorkspaceManager;
   envelope: WorkspaceEnvelope;
   artifactRoot: string;
   observedPaths: string[];
+  holder?: { runId: string; runDir: string };
 }): Promise<{ files?: DirectoryCandidate; refusal?: CaptureRefusal }> {
+  if (
+    input.envelope.policy_profile === "readonly" &&
+    input.envelope.worktree_path === input.envelope.repo_root
+  )
+    return {};
   try {
     const files = await input.manager.captureFiles(input.envelope, input.artifactRoot, {
       observedPaths: input.observedPaths,
     });
     return { files: { ...files, artifactRoot: input.artifactRoot } };
-  } catch {
-    await rm(join(input.artifactRoot, "final/files"), { recursive: true, force: true });
+  } catch (error) {
+    // The partial payload is no result and goes. One that cannot be removed stays,
+    // never in place of the capture's own cause: the refusal names it beside that.
+    try {
+      await removeCaptureTree(join(input.artifactRoot, "final/files"));
+    } catch (cleanupError) {
+      if (error instanceof Error && Object.isExtensible(error) && !("cleanupError" in error))
+        Object.defineProperty(error, "cleanupError", { value: cleanupError, enumerable: false });
+    }
+    const inPlace = input.envelope.worktree_path === input.envelope.repo_root;
+    const { manager: wsm, envelope, holder } = input;
     return {
-      refusal: {
-        disposition:
-          input.envelope.worktree_path === input.envelope.repo_root
-            ? "manual_cleanup"
-            : "discarded",
-        detail:
-          "Directory output capture or its sensitive-resource check failed; no file payload was published. Direct effects require inspection, not a fabricated rollback.",
-        // Directory results still fail closed on their content scan (the
-        // per-file manifest has no `withheld` form yet); keep its honest phase.
-        phase: "artifact_security",
-      },
+      refusal: directoryCaptureRefusal(error, inPlace, holder && { wsm, envelope, holder }),
     };
   }
 }
@@ -102,7 +159,7 @@ export async function prepareDirectoryReview(
 ): Promise<{ cwd: string; paths: string[]; dispose(): Promise<void> }> {
   const cwd = join(files.artifactRoot, "directory-review");
   await mkdir(cwd, { recursive: true });
-  await rm(join(evidenceDir, "final/files"), { recursive: true, force: true });
+  await removeCaptureTree(join(evidenceDir, "final/files"));
   const copied = new Set<string>();
   const paths: string[] = [];
   for (const entry of files.manifest.entries) {
@@ -132,7 +189,7 @@ export async function prepareDirectoryReview(
     paths.push(entry.path);
   }
   await writeFile(join(evidenceDir, "FILES.json"), JSON.stringify(files.manifest) + "\n");
-  return { cwd, paths, dispose: () => rm(cwd, { recursive: true, force: true }) };
+  return { cwd, paths, dispose: () => removeCaptureTree(cwd) };
 }
 
 /** Recheck the same captured footprint after review, keeping its sealed bytes intact. */
@@ -151,7 +208,7 @@ export async function directoryCandidateStable(
     });
     return current.files?.manifestSha256 === files.manifestSha256;
   } finally {
-    await rm(artifactRoot, { recursive: true, force: true });
+    await removeCaptureTree(artifactRoot);
   }
 }
 
@@ -201,7 +258,7 @@ export async function publishDirectoryCandidate(input: {
   });
   store.writeText(
     join(paths.finalDir, "files/result.md"),
-    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files prepared in a separate copy. The original folder is unchanged; the result is ready to inspect and apply."}\n\n${listing.join("\n")}\n`,
+    `${direct ? (files.changedPaths.length > 0 ? `${files.noChanges === false ? "Files updated" : "Files observed"} in ${files.manifest.executionRoot}.` : files.noChanges === null ? `Operation finished in ${files.manifest.executionRoot}. A complete file comparison was not recorded.` : "No file changes were found in the selected scope.") : "Files captured from a separate copy. Inspect the captured files; application is subject to the run's outcome and a delivery check."}\n\n${listing.join("\n")}\n`,
   );
   const product = WorkProduct.parse({
     id: newId("wp"),

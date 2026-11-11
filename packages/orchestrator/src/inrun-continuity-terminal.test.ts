@@ -148,7 +148,7 @@ it("a succeeded best-of run carries no losing candidate's continuation facts", a
               display_name: "clean reviewer",
               kind: "local_cli",
               provider_family: "openai",
-              capabilities: { review: true },
+              capabilities: { review: true, read_files: true },
             });
           },
           async doctor() {
@@ -189,8 +189,9 @@ it("a succeeded best-of run carries no losing candidate's continuation facts", a
 
 it("pool-exhausted resumable uses the same folded earliest reset as failure.yaml", async () => {
   const snapshots: QuotaSnapshot[] = [];
-  const early = "2026-10-07T10:00:00.000Z",
-    late = "2026-10-07T12:00:00.000Z";
+  // Future resets: an elapsed window is no longer evidence at the decision (#457).
+  const early = new Date(Date.now() + 3_600_000).toISOString(),
+    late = new Date(Date.now() + 7_200_000).toISOString();
   const o = await run({
     mode: "ask",
     profiles: ["a", "b"],
@@ -248,7 +249,7 @@ it("review failure after clean execution still carries continuation facts", asyn
               display_name: "fixture reviewer",
               kind: "local_cli",
               provider_family: "openai",
-              capabilities: { review: true },
+              capabilities: { review: true, read_files: true },
             });
           },
           async doctor() {

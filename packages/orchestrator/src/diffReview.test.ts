@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HarnessAdapter } from "@claudexor/core";
 import { FROZEN_REVIEW_EVIDENCE_FILES } from "@claudexor/context";
+import { HarnessManifest } from "@claudexor/schema";
 import { reviewCandidate, type ReviewerSpec } from "@claudexor/review";
 import { runDiffReview, type DiffReviewDeps, type FrozenDiffReviewInput } from "./diffReview.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -27,7 +28,11 @@ function reapMk(...args: Parameters<typeof mkdtempSync>): string {
 }
 __afterAllReap(() => {
   for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
+
+// #257: a frozen review always covers the complete sealed packet.
+type FrozenDeltaScopeWasRemoved = "deltaScope" extends keyof FrozenDiffReviewInput ? false : true;
+const frozenDeltaScopeWasRemoved: FrozenDeltaScopeWasRemoved = true;
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
@@ -66,7 +71,13 @@ function reviewer(): ReviewerSpec {
   const adapter: HarnessAdapter = {
     id: "sealed-reviewer",
     async discover() {
-      throw new Error("not used");
+      return HarnessManifest.parse({
+        id: "sealed-reviewer",
+        display_name: "sealed reviewer",
+        kind: "local_cli",
+        provider_family: "anthropic",
+        capabilities: { review: true, read_files: true },
+      });
     },
     async doctor() {
       throw new Error("not used");
@@ -134,7 +145,7 @@ function fixture(): {
 
 function deps(): DiffReviewDeps {
   return {
-    resolveReviewers: async (_root, _preference, onIgnoredSetting) => {
+    resolveReviewers: async (_run, onIgnoredSetting) => {
       onIgnoredSetting?.("reviewer family 'cursor' skipped: inventory unavailable");
       return [reviewer()];
     },
@@ -151,6 +162,10 @@ function deps(): DiffReviewDeps {
 }
 
 describe("frozen diff review", () => {
+  it("has no retired delta-scope input", () => {
+    expect(frozenDeltaScopeWasRemoved).toBe(true);
+  });
+
   it("reviews the exact candidate and leaves every sealed packet byte unchanged", async () => {
     const f = fixture();
     const before = packetFiles(f.packet);
@@ -259,5 +274,27 @@ describe("frozen diff review", () => {
       /artifacts directory already exists/,
     );
     expect(readFileSync(sentinel, "utf8")).toBe("keep me\n");
+  });
+});
+
+describe("diff review reviewer resolution (#532)", () => {
+  it("resolves the panel under the review's own cancellation", async () => {
+    const review = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    const deps: DiffReviewDeps = {
+      resolveReviewers: async (run) => {
+        seen.push(run.signal);
+        return [];
+      },
+      reviewScoped: () => {
+        throw new Error("no reviewer may run without a panel");
+      },
+      execRootOf: (root) => root,
+      envInheritance: () => "clean",
+    };
+    await expect(
+      runDiffReview({ repoRoot: "/repo", diff: "+ a line\n", signal: review.signal }, deps),
+    ).rejects.toThrow("no eligible reviewers");
+    expect(seen).toEqual([review.signal]);
   });
 });

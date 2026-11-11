@@ -1,3 +1,5 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CODEX_PROGRAM } from "./program.js";
 import {
   prepareHarnessCommand,
   killOwnedProcessTree,
@@ -17,7 +19,7 @@ import { EffortHint, effortLevelsForModel, mergeEffortLadders } from "@claudexor
 import { effortLadders, resolveEffortEvidence } from "@claudexor/core";
 import { readCodexProcessingModels } from "./processing.js";
 import type { ProcessingCapability, HarnessModel } from "@claudexor/schema";
-import { BIN, probeEnv } from "./missing-cli.js";
+import { resolveCodexBin, probeEnv } from "./missing-cli.js";
 import { CODEX_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
 export type CodexEffortCapability = Record<string, ModelEffortCapability>;
@@ -48,6 +50,10 @@ export interface CodexEffortCatalog {
  */
 export const CODEX_EFFORT_SNAPSHOT: CodexEffortCatalog = {
   models: {
+    "gpt-6.1-sol": {
+      levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      default: "low",
+    },
     "gpt-6-astra": {
       levels: ["low", "medium", "high", "xhigh", "max", "ultra"],
       default: "medium",
@@ -69,7 +75,7 @@ export const CODEX_EFFORT_SNAPSHOT: CodexEffortCatalog = {
     "gpt-5.3-codex-spark": { levels: ["low", "medium", "high", "xhigh"], default: "high" },
     "gpt-5.2": { levels: ["low", "medium", "high", "xhigh"], default: "medium" },
   },
-  defaultModel: "gpt-6-astra",
+  defaultModel: "gpt-6.1-sol",
 };
 
 /** Vendor CLI version `CODEX_EFFORT_SNAPSHOT` was captured from. Aliases the
@@ -209,6 +215,8 @@ export async function probeCodexEfforts(
       child = spawn(command.binary, command.args, {
         stdio: ["pipe", "pipe", "ignore"],
         env: command.env,
+        // A captured background probe: no console window for the direct child on Windows.
+        windowsHide: true,
       });
     } catch {
       resolve(null);
@@ -314,8 +322,8 @@ const CODEX_EFFORT_FAILURE_CACHE_TTL_MS = 60_000;
  * FRESH `mkdtemp` home per run — so in a long-lived daemon every such run inserts
  * a key that can never be read again. Expiry alone does not bound it: expiry is
  * only consulted on a later read of the SAME key, which for an ephemeral home
- * never comes, and `clearCodexEffortCache` is only reached from tests and the
- * doctor's `fresh` path. The cap is what makes the map's size provably bounded
+ * never comes, and `clearCodexEffortCache` runs only on a credential change or
+ * harness maintenance. The cap is what makes the map's size provably bounded
  * regardless of run volume or uptime. Generous next to the real population
  * (native home + one per credential profile, times installed binaries), so
  * eviction only ever bites the ephemeral keys it exists for.
@@ -329,9 +337,24 @@ interface CodexEffortCacheEntry {
   expiresAtMs: number;
 }
 const codexEffortCache = new Map<string, CodexEffortCacheEntry>();
+/** Moved by every clear; a probe that began under an earlier value stores nothing. */
+let codexEffortCacheGeneration = 0;
 
-/** Drop the cached effort probe (tests; and the doctor's `fresh` path). */
+/**
+ * Drop every cached catalog and void every probe still running. A login or other
+ * credential change keeps a home's key while changing the account behind it, so
+ * the daemon's credential invalidation calls this, as does harness maintenance. A
+ * probe that began earlier still answers its own caller, which asked before the
+ * change, and stores nothing. That invalidation also runs on every settings save
+ * and any harness's login window and this clear has no scope, so the next read of
+ * each home spawns one prompt-free app-server child again. The cache belongs to
+ * this process and nothing re-reads it on a schedule: after a change another
+ * process makes (a vendor login or logout the daemon did not run) a live answer
+ * stays until its first read past the TTL, an observed clear, a changed binary or
+ * a restart (docs/ARCHITECTURE.md).
+ */
 export function clearCodexEffortCache(): void {
+  codexEffortCacheGeneration += 1;
   codexEffortCache.clear();
 }
 
@@ -397,24 +420,30 @@ export async function codexEffortCapability(
   bin: string,
   env?: NodeJS.ProcessEnv,
 ): Promise<{ catalog: CodexEffortCatalog; live: boolean }> {
+  const generation = codexEffortCacheGeneration;
   const now = nowMs();
-  const key = codexEffortCacheKey(bin, env);
+  const program = await observeHarnessProgram(CODEX_PROGRAM, env, bin);
+  const key = JSON.stringify([codexEffortCacheKey(bin, env), program.key]);
   const cached = codexEffortCache.get(key);
-  if (cached && cached.expiresAtMs > now) {
+  if (generation === codexEffortCacheGeneration && cached && cached.expiresAtMs > now) {
     return { catalog: cached.catalog, live: cached.live };
   }
   const probed = await probe(bin, env);
   const live = probed !== null;
   const catalog = probed ?? CODEX_EFFORT_SNAPSHOT;
-  storeCodexEfforts(
-    key,
-    {
-      catalog,
-      live,
-      expiresAtMs: now + (live ? CODEX_EFFORT_CACHE_TTL_MS : CODEX_EFFORT_FAILURE_CACHE_TTL_MS),
-    },
-    now,
-  );
+  // A clear during the probe means this answer, or this failure, may describe the
+  // earlier account: its caller keeps it, and no later reader is handed it.
+  if (generation === codexEffortCacheGeneration) {
+    storeCodexEfforts(
+      key,
+      {
+        catalog,
+        live,
+        expiresAtMs: now + (live ? CODEX_EFFORT_CACHE_TTL_MS : CODEX_EFFORT_FAILURE_CACHE_TTL_MS),
+      },
+      now,
+    );
+  }
   return { catalog, live };
 }
 
@@ -432,7 +461,12 @@ export async function codexEffortsForEnv(
   deps: { probeEfforts: CodexEffortProbe; nowMs: () => number },
   envPatch?: Record<string, string | null | undefined>,
 ): Promise<{ catalog: CodexEffortCatalog; live: boolean }> {
-  return await codexEffortCapability(deps.probeEfforts, deps.nowMs, BIN, probeEnv(envPatch));
+  return await codexEffortCapability(
+    deps.probeEfforts,
+    deps.nowMs,
+    resolveCodexBin(),
+    probeEnv(envPatch),
+  );
 }
 
 /** The ONE effort result of a codex route: arg builders send `resolution.submitted`,

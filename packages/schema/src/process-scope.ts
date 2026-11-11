@@ -72,7 +72,7 @@ export const RunProcessScopeOutcome = z
       .array(z.number().int().positive())
       .default([])
       .describe(
-        "Recorded process groups skipped entirely because the pgid-reuse rule failed (a live process owns the id with another birth, or a member predates the scope); disclosed residual, never signalled.",
+        "Recorded process groups skipped entirely because the pgid-reuse rule failed; disclosed, never signalled. Another birth at the id proves the recorded group gone; any other skip (no floor, an unreadable birth, a member older than the scope, a leader that cannot be told) also lists its possibly owned live members in `unreadable`, so the scope does not settle.",
       ),
     settled: z
       .boolean()
@@ -102,3 +102,20 @@ export const RunProcessScopeOutcome = z
   .strict()
   .describe("What the whole-run terminal barrier found carrying the run's scope marker, and did.");
 export type RunProcessScopeOutcome = z.infer<typeof RunProcessScopeOutcome>;
+
+/**
+ * A later, separately bounded settlement attempt of a FINISHED run's scope
+ * (INV-144, #613), written beside the historical terminal record, never over
+ * it: `final/process_scope_later.yaml`, the latest attempt only. Its own fresh
+ * census and identity proof under its own budget; it never extends the expired
+ * terminal attempt.
+ */
+export const RunProcessScopeLater = z
+  .object({
+    attempt: z.number().int().positive().describe("Later attempts made by the owning daemon."),
+    at: z.string().min(1).describe("When this attempt finished (ISO-8601)."),
+    outcome: RunProcessScopeOutcome,
+  })
+  .strict()
+  .describe("Latest later settlement attempt of a finished run's process scope.");
+export type RunProcessScopeLater = z.infer<typeof RunProcessScopeLater>;

@@ -153,10 +153,10 @@ export async function runSetupLoginWorker(
     return runDeviceCodeLogin(manifest, permit, { now, spawnProcess });
   }
 
-  // `--device-auth` exists only since codex 0.46.0: probe `login --help`
-  // first so an old CLI yields a typed unsupported outcome. Fails OPEN — a
-  // broken probe falls through to the real spawn and its own diagnostics.
-  if (manifest.args.includes("--device-auth")) {
+  // `--device-auth` exists only since codex 0.46.0, so a codex login probes `login --help`
+  // first and an old CLI yields a typed unsupported outcome; Grok's login passes the same
+  // flag and is not probed. Fails OPEN — a broken probe falls through to the real spawn.
+  if (manifest.harness === "codex" && manifest.args.includes("--device-auth")) {
     const probe = await probeLoginHelp(
       manifest.binary,
       spawnProcess,
@@ -179,9 +179,9 @@ export async function runSetupLoginWorker(
   // and escalate stubborn descendants with KILL; the vendor child receives
   // the same group signal directly.
   const holdLeaderForEscalation = () => undefined;
-  // Daemon-hosted no-Terminal modes (owner directive 2026-08-04): the runner
-  // is detached, so nothing may inherit a TTY. with_input additionally pipes
-  // stdin so the daemon-delivered one-shot input can reach the vendor CLI.
+  // Daemon-hosted no-Terminal modes (owner directive 2026-08-04): the runner is detached, so
+  // nothing may inherit a TTY, and the console-less worker hides its child's console window.
+  // with_input additionally pipes stdin so the daemon-delivered one-shot input reaches the CLI.
   const urlDisclosure =
     manifest.loginMode === "url_disclosure" || manifest.loginMode === "url_disclosure_with_input";
   const withInput = manifest.loginMode === "url_disclosure_with_input";
@@ -265,7 +265,7 @@ export async function runSetupLoginWorker(
         // binding's exact environment/state root. Credential custody remains
         // platform-defined; absent = the harness default route as before.
         env: invocation.env,
-        ...(terminal?.backend === "windows_conpty" ? { windowsHide: true } : {}),
+        ...(terminal?.backend === "windows_conpty" || urlDisclosure ? { windowsHide: true } : {}),
         detached: false,
         stdio: urlDisclosure
           ? [withInput ? "pipe" : "ignore", "pipe", "pipe"]
@@ -383,8 +383,8 @@ async function runDeviceCodeLogin(
     child = spawnProcess(invocation.binary, invocation.args, {
       cwd: manifest.cwd,
       env: invocation.env,
-      detached: false,
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true, // no Terminal: the detached worker has no console to share
     });
   } catch {
     persistFailure(manifest, now, permit.issuedAt, "spawn_failed");
@@ -513,10 +513,10 @@ function probeLoginHelp(
     try {
       const invocation = interpretedCommand(binary, ["login", "--help"], probeEnv, interpreter);
       probe = spawnProcess(invocation.binary, invocation.args, {
-        // Same provider-secret-scrubbed allowlist env as the real vendor
-        // spawn — the probe must never inherit the Terminal's full env.
+        // The real vendor spawn's scrubbed allowlist env, never the Terminal's.
         env: invocation.env,
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true, // captured help, unlike the sign-in: no console window
       });
     } catch {
       settle(false);

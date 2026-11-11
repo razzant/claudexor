@@ -32,8 +32,11 @@ const adapter = (mode = "replay", fixture = basic) => {
     log,
     adapter: createAcpAdapter({
       ...copilot,
-      binary: process.execPath,
-      binaryEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      program: {
+        ...copilot.program,
+        launchers: [{ name: process.execPath }],
+        overrideEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      },
       flags: [join(fixtures, "agent.mjs"), mode, fixture, log],
     }),
   };
@@ -59,7 +62,7 @@ const commands = (path: string) =>
 beforeEach(() => {
   secrets.token = "fixture-managed-token";
 });
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+afterAll(() => rmSync(root, { recursive: true, force: true }), 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 
 describe("ACP adapter over stdio", () => {
   it.each(Object.entries(manifest.fixtures))(
@@ -170,15 +173,28 @@ describe("ACP adapter over stdio", () => {
     const request = spec();
     const result = collect(peer.adapter.run(request));
     let pids: Record<string, any> | undefined;
-    await vi.waitFor(() => {
-      pids = commands(peer.log).find((line) => line["pid"]);
-      expect(pids).toBeDefined();
-    });
-    await peer.adapter.cancel!(request.session_id);
-    const events = await result;
-    expect(events.at(-1)).toMatchObject({ type: "completed", payload: { aborted: true } });
-    for (const pid of [pids!["pid"], pids!["child"]]) expect(() => process.kill(pid, 0)).toThrow();
-    expect(commands(peer.log).some((line) => line["method"] === "session/cancel")).toBe(true);
+    try {
+      // Budget offline peer startup within the existing 30s test deadline.
+      await vi.waitFor(
+        () => {
+          pids = commands(peer.log).find((line) => line["pid"]);
+          expect(pids).toBeDefined();
+        },
+        { timeout: 10_000 },
+      );
+      await peer.adapter.cancel!(request.session_id);
+      const events = await result;
+      expect(events.at(-1)).toMatchObject({ type: "completed", payload: { aborted: true } });
+      for (const pid of [pids!["pid"], pids!["child"]])
+        expect(() => process.kill(pid, 0)).toThrow();
+      expect(commands(peer.log).some((line) => line["method"] === "session/cancel")).toBe(true);
+    } finally {
+      try {
+        await peer.adapter.cancel!(request.session_id);
+      } finally {
+        await result;
+      }
+    }
   });
 
   it("uses only the managed token and scoped home in the real child", async () => {
@@ -199,6 +215,55 @@ describe("ACP adapter over stdio", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  // INV-146: the answer is working content and arrives exact even when it holds
+  // a credential-shaped fixture; only the managed token the engine injected is
+  // removed, and the agent's JSON-RPC error diagnostics are masked.
+  it("keeps a credential-shaped answer exact and masks only the token and diagnostics", async () => {
+    const work = ["ghp", "AcpW0rk7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2"].join("_");
+    const vendor = ["sk-proj", "AcpVendor", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("-");
+    const [initialize, session] = readFileSync(basic, "utf8").split("\n");
+    const chunk = (text: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "native",
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+        },
+      });
+    const answered = join(root, "credential-shaped-answer.jsonl");
+    writeFileSync(
+      answered,
+      [
+        initialize,
+        session,
+        chunk(`Fixture: const token = "${work}"; managed fixture-managed-token.`),
+        JSON.stringify({ jsonrpc: "2.0", id: 2, result: { stopReason: "end_turn" } }),
+      ].join("\n"),
+    );
+    const events = await collect(adapter("replay", answered).adapter.run(spec()));
+    const final = events.find((e) => e.final);
+    expect(final?.text).toBe(`Fixture: const token = "${work}"; managed [REDACTED].`);
+    expect(JSON.stringify(events)).not.toContain("fixture-managed-token");
+
+    const failed = join(root, "credential-shaped-error.jsonl");
+    writeFileSync(
+      failed,
+      [
+        initialize,
+        session,
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          error: { code: -32603, message: `upstream rejected ${vendor}` },
+        }),
+      ].join("\n"),
+    );
+    const failure = await collect(adapter("replay", failed).adapter.run(spec()));
+    expect(failure.find((e) => e.type === "error")?.text).toContain("upstream rejected");
+    expect(JSON.stringify(failure)).not.toContain(vendor);
   });
 
   it("honors an already-aborted signal without starting a process", async () => {
@@ -392,8 +457,11 @@ describe("ACP discovery and free/explicit probes", () => {
     ]);
     const missing = createAcpAdapter({
       ...copilot,
-      binary: join(root, "missing"),
-      binaryEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      program: {
+        ...copilot.program,
+        launchers: [{ name: join(root, "missing") }],
+        overrideEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      },
     });
     expect(await checks(missing)).toEqual([
       ["installed", "fail", expect.stringContaining("not installed")],
@@ -414,8 +482,11 @@ describe("ACP discovery and free/explicit probes", () => {
     );
     const missing = createAcpAdapter({
       ...copilot,
-      binary: join(root, "missing"),
-      binaryEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      program: {
+        ...copilot.program,
+        launchers: [{ name: join(root, "missing") }],
+        overrideEnv: "CLAUDEXOR_TEST_ACP_BIN",
+      },
     });
     expect((await missing.doctor({ cwd: root })).status).toBe("unavailable");
     secrets.token = null;

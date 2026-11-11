@@ -9,11 +9,12 @@ import { PassThrough } from "node:stream";
 import { canonicalDefaultSocketPath } from "@claudexor/daemon";
 import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mcpSurfaceRunner } from "./mcp-runner.js";
 import * as launcher from "./daemon-launch.js";
 import { daemonCommand } from "./ops-commands.js";
 import { parseArgs } from "./args.js";
+import { afterEachClosed } from "./test-support/after-each-closed.js";
 
 function wire() {
   const read = new PassThrough();
@@ -61,8 +62,9 @@ describe("ordinary external MCP and CLI attachment", () => {
   let bridge: ReturnType<typeof wire> | undefined;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(realpathSync(tmpdir()), "cx-m-"));
-    root = join(dir, "root");
+    // Leave room for the canonical daemon socket under a long runner-owned TMPDIR.
+    dir = mkdtempSync(join(realpathSync(tmpdir()), "m-"));
+    root = join(dir, "r");
     mode = "normal";
     accepted = [];
     vi.stubEnv("HOME", dir);
@@ -75,19 +77,23 @@ describe("ordinary external MCP and CLI attachment", () => {
     vi.spyOn(launcher, "launchDetachedDaemon");
   });
 
-  afterEach(async () => {
-    await bridge?.close();
+  afterEachClosed(async () => {
+    // This test's handles, taken before their closes: a late close never reaches the next test's.
+    const [ownedBridge, ownedHttp, ownedSocket] = [bridge, http, socket];
     bridge = undefined;
-    if (http) {
-      http.closeAllConnections();
-      await new Promise<void>((done) => http!.close(() => done()));
-    }
-    if (socket) await new Promise<void>((done) => socket!.close(() => done()));
     http = undefined;
     socket = undefined;
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-    rmSync(dir, { recursive: true, force: true });
+    await ownedBridge?.close();
+    if (ownedHttp) {
+      ownedHttp.closeAllConnections();
+      await new Promise<void>((done) => ownedHttp.close(() => done()));
+    }
+    if (ownedSocket) await new Promise<void>((done) => ownedSocket.close(() => done()));
+    return () => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    };
   });
 
   async function connectWire() {

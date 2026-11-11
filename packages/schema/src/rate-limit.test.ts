@@ -49,10 +49,12 @@ describe("reactive cooldown source vocabulary (schema-owned, A4)", () => {
       codex: "codex_rollout",
       claude: "claude_api_retry",
       cursor: "cursor_rate_limit",
+      grok: "grok_rate_limit",
     });
   });
 
-  it("maps only post-v3.2.0 cursor evidence for rollback base records", () => {
+  it("maps post-v3.2.0 reactive evidence for rollback base records", () => {
+    expect(legacyV320QuotaSource("grok_rate_limit")).toBe("claude_api_retry");
     expect(legacyV320QuotaSource("cursor_rate_limit")).toBe("claude_api_retry");
     expect(legacyV320QuotaSource("claude_oauth_usage")).toBe("claude_oauth_usage");
     expect(legacyV320QuotaSource("codex_rollout")).toBe("codex_rollout");

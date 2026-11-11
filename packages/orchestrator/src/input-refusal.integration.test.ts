@@ -25,7 +25,7 @@ import {
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+}, 0); // synchronous removal: no deadline (#376, see vitest.setup.ts)
 const refusal: HarnessRequestRefusal = {
   kind: "input_too_large",
   scope: "turn_text",
@@ -545,6 +545,7 @@ it.each([
         "Update the Claude Code CLI at /fixture/claude",
       );
       expect(failure.nextActions.join(" ")).toContain(version);
+      expect(failure.nextActions.join(" ")).toContain("claudexor harness update claude --yes");
     }
   },
 );

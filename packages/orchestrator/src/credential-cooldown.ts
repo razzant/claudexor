@@ -1,17 +1,28 @@
 import type { QuotaRequestKind } from "@claudexor/schema";
 import type { CredentialUnusableObservation, QuotaSnapshot } from "@claudexor/schema";
-import { ControlProblem, quotaSnapshotAvailability } from "@claudexor/schema";
+import {
+  ControlProblem,
+  REOPENING_UNKNOWN_COOLDOWN_ID,
+  quotaSnapshotAvailability,
+} from "@claudexor/schema";
 
 /**
  * Typed verdict that a credential subject's own observed quota evidence blocks
  * spending right now (A4 cooldown reader). `kind` distinguishes a spent window
  * with a known future reset (`exhausted`) from a live rate-limit cooldown
- * (`cooldown`); `resets_at` is the earliest known release instant.
+ * (`cooldown`); `resets_at` is the earliest known release instant, and the
+ * id and kind describe the window that owns that instant.
  */
 export interface QuotaBlock {
   blocked: true;
   constraint_id: string | null;
+  /** Null while a usage refusal with no reopening time is active (#558): no
+   * time is known for the account, whatever its cooldown or other windows say. */
   resets_at: string | null;
+  /** Set only for that refusal: no reader may present it as a window a timer heals. */
+  reopening?: "unknown";
+  /** That refusal's bounded engine cooldown end: a recheck instant, never a reset. */
+  recheck_at?: string;
   kind: "exhausted" | "cooldown";
 }
 
@@ -64,24 +75,56 @@ export function profileQuotaBlock(
       : subjectRoute === "api_key"
         ? "managed_api_key"
         : null;
+  let dated: QuotaBlock | null = null;
   for (const snapshot of snapshots) {
     if (snapshot.subject.harness !== harnessId) continue;
     if ((snapshot.subject.subject_id ?? null) !== profileId) continue;
     if (wantRoute !== null && snapshot.subject.credential_route !== wantRoute) continue;
-    const availability = quotaSnapshotAvailability(snapshot, {
-      now,
-      model: model ?? null,
-      requestKind,
-    });
+    const opts = { now, model: model ?? null, requestKind };
+    const availability = quotaSnapshotAvailability(snapshot, opts);
     if (availability.state === "available") continue;
-    return {
+    // #558: an active, applicable usage refusal with no reopening time decides
+    // the account's verdict whatever else blocks it. Another window's date
+    // keeps its meaning for that window only and promises nothing about the
+    // account; the refusal's own cooldown end is a recheck, never a reset.
+    const refusal = snapshot.constraints.find(
+      (constraint) =>
+        constraint.id === REOPENING_UNKNOWN_COOLDOWN_ID &&
+        availability.blocking_constraints.includes(constraint.id),
+    );
+    if (refusal) {
+      const recheck = quotaSnapshotAvailability({ constraints: [refusal] }, opts).resets_at;
+      return {
+        blocked: true,
+        constraint_id: refusal.id,
+        resets_at: null,
+        reopening: "unknown",
+        ...(recheck ? { recheck_at: recheck } : {}),
+        kind: "cooldown",
+      };
+    }
+    if (dated) continue;
+    // One snapshot may block on several windows. Report the window whose own
+    // release is the projection's earliest recheck instant, with that window's
+    // kind, so id, kind and reset never come from different windows.
+    const controlling = snapshot.constraints
+      .filter((constraint) => availability.blocking_constraints.includes(constraint.id))
+      .map((constraint) => ({
+        id: constraint.id,
+        own: quotaSnapshotAvailability({ constraints: [constraint] }, opts),
+      }))
+      .find(({ own }) => own.resets_at === availability.resets_at);
+    dated = {
       blocked: true,
-      constraint_id: availability.blocking_constraints[0] ?? null,
+      constraint_id: controlling?.id ?? availability.blocking_constraints[0] ?? null,
       resets_at: availability.resets_at,
-      kind: availability.state,
+      kind:
+        controlling && controlling.own.state !== "available"
+          ? controlling.own.state
+          : availability.state,
     };
   }
-  return null;
+  return dated;
 }
 
 /**
@@ -94,7 +137,7 @@ export interface PoolExhaustionCandidate {
   profile_id: string;
   rejected: string;
   headroom: { resets_at: string | null } | null;
-  cooldown: { resets_at: string | null } | null;
+  cooldown: { resets_at: string | null; reopening?: "unknown" } | null;
   /** A7: a live `credential_unusable` verdict about this row's credential —
    * dead-credential evidence for the terminal's claim, and an exclusion from
    * the reset fold (a dead credential's windows promise no reopen). */
@@ -160,6 +203,8 @@ export function poolMemberEvidence(candidate: PoolExhaustionCandidate): boolean 
  */
 export function credentialPoolExhausted(args: {
   harnessId: string;
+  model?: string | null;
+  requestKind?: QuotaRequestKind;
   /** The triggering subject: a pinned profile id, or null for the default. */
   profileId: string | null;
   reason:
@@ -182,7 +227,13 @@ export function credentialPoolExhausted(args: {
       !c.unusable &&
       (c.headroom !== null || c.cooldown !== null),
   );
-  const limits = members.map((c) => c.headroom?.resets_at ?? c.cooldown?.resets_at ?? null);
+  // A member refused with no known reopening (#558) promises no instant, whatever
+  // else it reports: one such member leaves the pool's reset unknown.
+  const limits = members.map((c) =>
+    c.cooldown?.reopening === "unknown"
+      ? null
+      : (c.headroom?.resets_at ?? c.cooldown?.resets_at ?? null),
+  );
   // Same rule for the triggering subject: its own observed limit joins the
   // fold only while its credential is not observed dead — the terminal must
   // not promise the DEAD subject's reset as the instant the pool reopens.
@@ -217,7 +268,9 @@ export function credentialPoolExhausted(args: {
             ? "auth"
             : !candidate.unusable &&
                 POOL_MEMBER_REJECTIONS.has(candidate.rejected) &&
-                (candidate.headroom || candidate.cooldown)
+                (candidate.headroom || candidate.cooldown) &&
+                // A refusal of unknown nature (#558) is not known to be quota.
+                candidate.cooldown?.reopening !== "unknown"
               ? "quota"
               : "unavailable",
         ),
@@ -248,7 +301,13 @@ export function credentialPoolExhausted(args: {
       code: "credential_pool_exhausted",
       message: error.message,
       retryable: false,
-      context: { poolCauses, resetsAt },
+      context: {
+        poolCauses,
+        resetsAt,
+        model: args.model ?? null,
+        requestKind: args.requestKind ?? "text",
+        subject: { harness: args.harnessId, profile_id: args.profileId },
+      },
     }),
   });
 }

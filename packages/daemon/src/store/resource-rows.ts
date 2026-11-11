@@ -5,7 +5,6 @@ import {
   ControlUploadStatus,
   ModelPayloadRef,
 } from "@claudexor/schema";
-import { sensitiveResourcePolicy } from "@claudexor/util";
 import { sha256Hex } from "./blob-files.js";
 import { requireTransaction, type SqlWriteContext } from "./mutation.js";
 
@@ -28,6 +27,14 @@ export interface UploadRow {
   finalizeSha: string | null;
   resourceId?: string;
   finalization?: UploadFinalization;
+  /** A keyed import's binding and declared digest; that import alone completes the upload. */
+  import?: UploadImportBinding;
+}
+export interface UploadImportBinding {
+  keyDigest: string;
+  sha256: string;
+  /** The import's opt-in lifetime, stamped on the resource it publishes. */
+  lifetime?: "managed";
 }
 
 type SqlReader = Pick<SqlWriteContext, "prepare">;
@@ -143,23 +150,6 @@ export function payloadRef(resource: ControlResource): ModelPayloadRef {
     sha256: resource.sha256,
     sizeBytes: resource.sizeBytes,
   });
-}
-export function sensitiveResourceError(): Error {
-  return resourceError(
-    "resource rejected by sensitive-resource policy",
-    422,
-    "sensitive_resource_rejected",
-  );
-}
-export function assertContentAllowed(
-  resource: Pick<ControlResource, "purpose">,
-  bytes: Uint8Array,
-): void {
-  if (
-    resource.purpose !== "model" &&
-    sensitiveResourcePolicy.containsSensitiveContent(Buffer.from(bytes).toString("utf8"))
-  )
-    throw sensitiveResourceError();
 }
 export function assertModelRef(resource: ControlResource, ref: ModelPayloadRef): void {
   if (resource.purpose !== "model") throw purposeMismatch();

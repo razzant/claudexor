@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { runCliHarness, type CliRunLoopOptions } from "@claudexor/core";
 import { createCodexAdapter } from "./index.js";
+import { codexAppServerEvents } from "./app-server-protocol.js";
 import { parseCodexEvent, parseCodexStderrFailure, type CodexParseState } from "./parse.js";
 
 const SAMPLE = [
@@ -222,6 +223,47 @@ describe("parseCodexEvent", () => {
     expect(finals[0]?.payload?.["final_source"]).toBe("last_agent_message");
   });
 
+  it("types exec file edits per changes[] path with the native lifecycle and outcome (#410)", () => {
+    const edits = [
+      {
+        type: "item.started",
+        item: {
+          id: "p1",
+          type: "file_change",
+          changes: [{ path: "a.ts" }, { path: "b.ts" }],
+          status: "in_progress",
+        },
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "p1",
+          type: "file_change",
+          changes: [{ path: "a.ts" }, { path: "b.ts" }],
+          status: "failed",
+        },
+      },
+    ].flatMap((frame) => parseCodexEvent(frame, "s1", {}) ?? []);
+    for (const e of edits) expect(() => HarnessEvent.parse(e)).not.toThrow();
+    expect(
+      edits.map((e) => [e.payload?.["path"], e.tool?.target, e.tool?.phase, e.tool?.status]),
+    ).toEqual([
+      ["a.ts", "a.ts", "started", undefined],
+      ["b.ts", "b.ts", "started", undefined],
+      ["a.ts", "a.ts", "completed", "error"],
+      ["b.ts", "b.ts", "completed", "error"],
+    ]);
+    expect(edits.every((e) => e.tool?.use_id === "p1")).toBe(true);
+    // A single named path (the synthetic fixture's shape) is one event, never re-enumerated.
+    expect(
+      parseCodexEvent(
+        { type: "item.completed", item: { id: "i2", type: "file_change", path: "src/a.ts" } },
+        "s1",
+        {},
+      ),
+    ).toMatchObject([{ type: "file_change", tool: { target: "src/a.ts", phase: "completed" } }]);
+  });
+
   it("does not fabricate a final message when a turn produced no agent message", () => {
     const state = {};
     const events = [
@@ -318,6 +360,120 @@ describe("parseCodexEvent", () => {
       status: "error",
     });
     expect(out?.[0]?.tool?.error_summary).toContain("child-failed");
+  });
+
+  describe("MCP tool results keep the server's evidence (claudexor#215)", () => {
+    const completed = (item: Record<string, unknown>) =>
+      parseCodexEvent(
+        {
+          type: "item.completed",
+          item: { id: "mcp-1", type: "mcp_tool_call", server: "browser", ...item },
+        },
+        "s1",
+      )?.[0];
+    const page =
+      "### Ran Playwright code\n```js\nawait page.goto('http://127.0.0.1:4/p.html');\n```\n" +
+      "### Page\n- Page URL: http://127.0.0.1:4/p.html\n- Page Title: probe 0a1b2c";
+
+    it("keeps a completed result's text, never its image bytes, under the unchanged identity", () => {
+      const out = completed({
+        tool: "browser_navigate",
+        status: "completed",
+        result: {
+          content: [
+            { type: "text", text: page },
+            { type: "image", data: "iVBORw0KGgoAAAANSUhEUg", mimeType: "image/png" },
+          ],
+          structuredContent: null,
+        },
+      });
+      expect(out?.text).toBe("tool_result");
+      expect(out?.tool).toMatchObject({
+        name: "browser_navigate",
+        kind: "mcp",
+        use_id: "mcp-1",
+        target: "browser:browser_navigate",
+        status: "ok",
+      });
+      expect(out?.tool?.error_summary).toBeUndefined();
+      expect(out?.tool?.content_summary).toBe(page);
+      expect(out?.tool?.content_summary).not.toContain("iVBORw0KGgo");
+    });
+
+    it("keeps the result's line breaks, collapsing whitespace within each line", () => {
+      const out = completed({
+        tool: "browser_snapshot",
+        status: "completed",
+        result: {
+          content: [
+            { type: "text", text: "### Page\r\n-   Page URL:  http://x/  \n\n  - nested\t item" },
+            { type: "text", text: "### Snapshot" },
+          ],
+        },
+      });
+      expect(out?.tool?.content_summary).toBe(
+        "### Page\n- Page URL: http://x/\n - nested item\n### Snapshot",
+      );
+    });
+
+    it("uses structured content only when the server returned no text", () => {
+      const out = completed({
+        tool: "lookup",
+        status: "completed",
+        result: { content: [], structured_content: { title: "probe" } },
+      });
+      expect(out?.tool?.content_summary).toBe('{"title":"probe"}');
+    });
+
+    it("keeps the native error message of a call that returned no result", () => {
+      const out = completed({
+        tool: "browser_snapshot",
+        status: "failed",
+        result: null,
+        error: { message: "MCP tool call timed out" },
+      });
+      expect(out?.text).toBe("tool_result: error");
+      expect(out?.tool).toMatchObject({
+        status: "error",
+        error_summary: "MCP tool call timed out",
+      });
+      expect(out?.tool?.content_summary).toBeUndefined();
+    });
+
+    it("reports an isError result as an error carrying the server's own text", () => {
+      const out = completed({
+        tool: "browser_navigate",
+        status: "failed",
+        result: {
+          content: [{ type: "text", text: "### Error\nError: net::ERR_CONNECTION_REFUSED" }],
+        },
+        error: null,
+      });
+      expect(out?.tool?.status).toBe("error");
+      expect(out?.tool?.error_summary).toBe("### Error Error: net::ERR_CONNECTION_REFUSED");
+      expect(out?.tool?.content_summary).toBe("### Error\nError: net::ERR_CONNECTION_REFUSED");
+    });
+
+    it("leaves an unknown completion status statusless instead of calling it a success", () => {
+      for (const status of ["inProgress", undefined]) {
+        const out = completed({ tool: "browser_navigate", status, result: { content: [] } });
+        expect(out?.type).toBe("tool_result");
+        expect(out?.text).toBe("tool_result");
+        expect(out?.tool?.status).toBeUndefined();
+        expect(out?.tool?.target).toBe("browser:browser_navigate");
+      }
+    });
+
+    it("keeps result text exact and bounds it like other tool summaries (INV-146)", () => {
+      const secret = "sk-" + "a".repeat(30);
+      const out = completed({
+        tool: "browser_snapshot",
+        status: "completed",
+        result: { content: [{ type: "text", text: `token ${secret} ${"x".repeat(2000)}` }] },
+      });
+      expect(out?.tool?.content_summary).toBe(`token ${secret} ${"x".repeat(2000)}`.slice(0, 1000));
+      expect(out?.tool?.content_summary?.length).toBe(1000);
+    });
   });
 
   it("maps failed web searches to error tool_results", () => {
@@ -810,4 +966,144 @@ describe("codex normalized input measurement", () => {
       });
     },
   );
+});
+
+describe("tool targets are the agent's own actions, kept exact (INV-146)", () => {
+  it("keeps a credential-shaped command and file path in the tool target", () => {
+    const token = ["ghp", "q7Lm2Xv9Rk4Tz8Nw3Bp6Hs1Jd5Gf0Yc2Ae9U"].join("_");
+    const command = parseCodexEvent(
+      {
+        type: "item.started",
+        item: {
+          id: "i1",
+          type: "command_execution",
+          command: `export KEY=${token}`,
+          status: "in_progress",
+        },
+      },
+      "s1",
+    );
+    expect(command?.[0]?.tool?.target).toBe(`export KEY=${token}`);
+    const change = parseCodexEvent(
+      {
+        type: "item.started",
+        item: {
+          id: "i2",
+          type: "file_change",
+          changes: [{ path: `keys/${token}.txt`, kind: "add" }],
+          status: "in_progress",
+        },
+      },
+      "s1",
+    );
+    expect(change?.[0]?.tool?.target).toBe(`keys/${token}.txt`);
+  });
+});
+
+describe("async-delivered agent messages (#628)", () => {
+  const QUESTION = "Who should receive the launch update?";
+  // The item the rust-v0.162.1 request_user_input_async handler emits (id =
+  // call_id, phase final_answer, text = the title plus "- option" lines).
+  const carrier = (overrides: Record<string, unknown> = {}) => ({
+    id: "audience-question",
+    text: `${QUESTION}\n- Internal team\n- Customers`,
+    phase: "final_answer",
+    memoryCitation: null,
+    delivery: "async",
+    questions: [{ title: QUESTION, options: ["Internal team", "Customers"] }],
+    ...overrides,
+  });
+
+  it("stays visible but never becomes the turn's final answer", () => {
+    const state: CodexParseState = {};
+    parseCodexEvent(
+      { type: "item.completed", item: { id: "m1", type: "agent_message", text: "Drafted." } },
+      "s1",
+      state,
+    );
+    const asked = parseCodexEvent(
+      { type: "item.completed", item: { type: "agent_message", ...carrier() } },
+      "s1",
+      state,
+    );
+    expect(asked).toEqual([
+      {
+        type: "message",
+        session_id: "s1",
+        ts: expect.any(String),
+        text: `${QUESTION}\n- Internal team\n- Customers`,
+        payload: { delivery: "async", item_id: "audience-question" },
+      },
+    ]);
+    expect(HarnessEvent.safeParse(asked![0]).success).toBe(true);
+    expect(state.lastAgentMessage).toBe("Drafted.");
+    const finals = parseCodexEvent({ type: "turn.completed", usage: {} }, "s1", state)!.filter(
+      (event) => event.final,
+    );
+    expect(finals.map((event) => event.text)).toEqual(["Drafted."]);
+  });
+
+  it("leaves a turn whose only agent text was a question without a typed final", () => {
+    const state: CodexParseState = {};
+    parseCodexEvent(
+      { type: "item.completed", item: { type: "agent_message", ...carrier() } },
+      "s1",
+      state,
+    );
+    expect(state.lastAgentMessage).toBeUndefined();
+    expect(
+      parseCodexEvent({ type: "turn.completed", usage: {} }, "s1", state)!.some((e) => e.final),
+    ).toBe(false);
+  });
+
+  it("is never unwrapped or suppressed as an output-schema envelope", () => {
+    const state: CodexParseState = { envelopeActive: true };
+    // A valid WorkReport envelope: an ordinary message with this text is unwrapped.
+    const envelopeLike = JSON.stringify({
+      work_report: { state: "completed", required_inputs: [] },
+      output: "inner",
+    });
+    expect(
+      parseCodexEvent(
+        { type: "item.completed", item: { type: "agent_message", text: envelopeLike } },
+        "s1",
+        { envelopeActive: true },
+      )?.map((event) => event.text),
+    ).toEqual(["inner"]);
+    const asked = parseCodexEvent(
+      {
+        type: "item.completed",
+        item: { type: "agent_message", ...carrier({ text: envelopeLike }) },
+      },
+      "s1",
+      state,
+    );
+    expect(asked?.map((event) => event.text)).toEqual([envelopeLike]);
+    expect(state.lastAgentMessage).toBeUndefined();
+  });
+
+  it("keeps the delivery through the app-server item rename, and leaves ordinary text alone", () => {
+    const state: CodexParseState = {};
+    const notification = (item: Record<string, unknown>) => ({
+      method: "item/completed",
+      params: { threadId: "root", turnId: "turn-1", item },
+    });
+    expect(
+      codexAppServerEvents(notification({ type: "agentMessage", ...carrier() }), "s1", state),
+    ).toMatchObject([{ type: "message", payload: { delivery: "async" } }]);
+    expect(state.lastAgentMessage).toBeUndefined();
+    // The recorded 0.162.1 layout of an ordinary message carries delivery: null.
+    const ordinary = codexAppServerEvents(
+      notification({
+        ...carrier({ id: "m2", text: "Answer", delivery: null, questions: null }),
+        type: "agentMessage",
+      }),
+      "s1",
+      state,
+    );
+    expect(ordinary).toEqual([
+      { type: "message", session_id: "s1", ts: expect.any(String), text: "Answer" },
+    ]);
+    expect(state.lastAgentMessage).toBe("Answer");
+  });
 });

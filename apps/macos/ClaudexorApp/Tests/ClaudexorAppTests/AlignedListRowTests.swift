@@ -25,6 +25,14 @@ import Testing
         #expect(detail.emphasis == .warning)
     }
 
+    @Test func aDetailStaysOnOneLineUnlessItsCallSiteBoundsAWrap() {
+        #expect(AlignedRowDetail(0, "quota").lineLimit == 1)
+        let bounded = AlignedRowDetail(100, "one\ntwo", lineLimit: 3)
+        #expect(bounded.lineLimit == 3)
+        // A bounded wrap still collapses forced line breaks: only the width wraps it.
+        #expect(bounded.singleLine == "one two")
+    }
+
     @Test func badgesCarryOptionalHelpAsTypedPresentationData() {
         let badge = AlignedRowBadge("claude", help: "Harness family badge")
         #expect(badge.help == "Harness family badge")

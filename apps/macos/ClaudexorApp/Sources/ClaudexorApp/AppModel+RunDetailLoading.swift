@@ -52,8 +52,12 @@ extension AppModel {
     }
 
     func selectedThreadAuthorizesColdRun(_ runId: String) -> Bool {
-        guard selectedThreadDetail?.thread.id == selectedThreadId else { return false }
-        return selectedThreadDetail?.turns.contains {
+        if workspaceHistoryVisible, selectedThreadDetail?.thread.id == selectedThreadId,
+           selectedThreadDetail?.turns.contains(where: {
+               $0.runId == runId || ($0.run?.delegatedChildRunIds ?? []).contains(runId)
+           }) == true { return true }
+        guard selectedHistory?.threadID == selectedThreadId else { return false }
+        return selectedHistory?.rows.contains {
             $0.runId == runId || ($0.run?.delegatedChildRunIds ?? []).contains(runId)
         } == true
     }

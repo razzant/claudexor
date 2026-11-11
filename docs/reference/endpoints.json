@@ -66,10 +66,35 @@
       "path": "/v2/accounts/routing-evidence",
       "mutating": false,
       "applicability": "global",
-      "summary": "Read live model-scoped refusal marks and the durable last-served order; no probe or quota refresh.",
+      "summary": "Read live model-scoped refusal marks, temporary capability marks, model-scoped credential refusals, and the durable last-served order; no probe or quota refresh.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "includeCapabilities",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Add the temporary account x model capability marks (capabilities[]). Omitted or false preserves the legacy response shape for strict clients."
+        },
+        {
+          "name": "includeCredentialUnusable",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Add the registered rows' live model-scoped credential refusals (credentialUnusable[]): dated evidence for one model that never changes the account's status. Omitted or false preserves the earlier response shape for strict clients."
+        }
+      ],
       "response_schema": "ControlAccountRoutingEvidenceResponse",
       "error_schema": "ControlProblem"
     },
@@ -116,6 +141,18 @@
           ],
           "schema_ref": null,
           "description": "Return one fresh server-authored Accounts snapshot epoch."
+        },
+        {
+          "name": "includeApiKeys",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
         }
       ],
       "response_schema": "ControlCredentialProfilesQueryResponse",
@@ -155,6 +192,18 @@
       "request_schema": "ControlCredentialProfileUpdateRequest",
       "parameters": [],
       "response_schema": "ControlCredentialProfileUpdateResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/daemon/route-health",
+      "mutating": false,
+      "applicability": "global",
+      "summary": "Count the last seven days of terminal runs per harness and effective access profile, with each route's most frequent failures; computed on demand from retained run records, facts without thresholds.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "ControlRouteHealth",
       "error_schema": "ControlProblem"
     },
     {
@@ -221,7 +270,19 @@
       "summary": "Negotiate the control protocol major before product calls.",
       "auth": "loopback_bearer",
       "request_schema": "ControlHandshakeRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlHandshakeResponse",
       "error_schema": "ControlProblem"
     },
@@ -329,6 +390,31 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "GET",
+      "path": "/v2/maintenance/gc",
+      "mutating": false,
+      "applicability": "global",
+      "summary": "Read the durable last retention pass; never starts cleanup.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "retention_report",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Include completion history fields; requested only by lockstep clients."
+        }
+      ],
+      "response_schema": "ControlGcLastResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "POST",
       "path": "/v2/maintenance/gc",
       "mutating": true,
@@ -345,7 +431,7 @@
       "path": "/v2/maintenance/harnesses",
       "mutating": false,
       "applicability": "global",
-      "summary": "Inspect installed vendor CLIs: selected program and version, managed copy, tested pin and maintainability; never logs in or installs.",
+      "summary": "Read the selected vendor program, newest observation, available actions and last operation; never logs in or installs.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [
@@ -356,7 +442,7 @@
           "repeatable": true,
           "enum": null,
           "schema_ref": null,
-          "description": "Restrict to these installable harness ids (repeat to select several)."
+          "description": "Restrict to these adapter program ids (repeat to select several)."
         },
         {
           "name": "fresh",
@@ -368,7 +454,7 @@
             "false"
           ],
           "schema_ref": null,
-          "description": "Re-inspect instead of returning the cached installation facts."
+          "description": "Selected programs are inspected on every read, including when this is false."
         },
         {
           "name": "checkLatest",
@@ -380,7 +466,7 @@
             "false"
           ],
           "schema_ref": null,
-          "description": "Also read the newest published version where the mechanism supports it; omitted keeps the last observation (null = not checked)."
+          "description": "Also perform the adapter's HTTPS newest-version read; omitted keeps the last typed observation (not_read, available or unavailable)."
         }
       ],
       "response_schema": "ControlHarnessMaintenanceInventory",
@@ -391,7 +477,7 @@
       "path": "/v2/maintenance/operations",
       "mutating": true,
       "applicability": "global",
-      "summary": "Accept one durable update/return of an installed vendor CLI; the 202 handle is not success.",
+      "summary": "Accept one durable vendor Update, Install when missing, or exact-version operation; the 202 handle is not completion.",
       "auth": "loopback_bearer",
       "request_schema": "ControlHarnessMaintenanceCreateRequest",
       "parameters": [],
@@ -465,6 +551,18 @@
           ],
           "schema_ref": null,
           "description": "Retain exact failed-response bytes and exception details in the private result. Omitted or false preserves the legacy result shape."
+        },
+        {
+          "name": "captureRoutingEvidence",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "Attach account-routing evidence (selection reason, differential outcome, pool events) to the result, receipt and detail. Omitted or false preserves the legacy shapes for strict clients; the choice is bound to idempotency. Capability refusal facts in problem.context are not gated."
         }
       ],
       "response_schema": "ControlModelOperationDetail",
@@ -637,10 +735,22 @@
       "path": "/v2/projects/:id",
       "mutating": true,
       "applicability": "project",
-      "summary": "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; run artifacts are left to normal GC.",
+      "summary": "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; with trashedThreads=purge, threads already in the trash are purged in the same removal instead. Run artifacts are left to normal GC.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "trashedThreads",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "purge"
+          ],
+          "schema_ref": null,
+          "description": "Opt in to purging the threads already in the project's trash in the same removal; any other thread or a queued/running command still refuses it. Omission keeps the default refusal while any non-purged thread remains."
+        }
+      ],
       "response_schema": "ControlProjectRemoveReceipt",
       "error_schema": "ControlProblem"
     },
@@ -770,10 +880,23 @@
           "repeatable": false,
           "enum": [
             "resources",
-            "constraint_freshness"
+            "constraint_freshness",
+            "resources_freshness"
           ],
           "schema_ref": null,
-          "description": "Opt in to typed account resources alongside quota, or to per-constraint freshness from raw snapshot evidence, observation TTL, and each window's own reset; omitted preserves the legacy shape. Does not refresh quota."
+          "description": "Opt in to typed resources, per-constraint freshness, or resources_freshness combining both with an explicit availability_scope echo. Omitted preserves the legacy shape. Does not refresh quota."
+        },
+        {
+          "name": "includeApiKeys",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
         }
       ],
       "response_schema": "ControlQuotaQueryResponse",
@@ -798,6 +921,18 @@
           ],
           "schema_ref": null,
           "description": "Opt in to typed account resources alongside quota."
+        },
+        {
+          "name": "includeApiKeys",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "true",
+            "false"
+          ],
+          "schema_ref": null,
+          "description": "With a resources view, add API-key rows: each harness's default API-key route (target.profile_id null) and its enabled registered API-key accounts, bound to the key a request would send now. A row read with another key is never shown. Omitted or false preserves account-only resources for strict clients."
         }
       ],
       "response_schema": "ControlQuotaQueryResponse",
@@ -849,6 +984,18 @@
       "request_schema": null,
       "parameters": [],
       "response_schema": "ControlJournalValidation",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/resources/:id/release",
+      "mutating": true,
+      "applicability": "global",
+      "summary": "Release a managed ordinary resource: no new reference is admitted afterwards, while already accepted work keeps its bytes.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlResourceReleaseRequest",
+      "parameters": [],
+      "response_schema": "ControlResourceRelease",
       "error_schema": "ControlProblem"
     },
     {
@@ -928,7 +1075,19 @@
       "summary": "Start a run and return its durable handle.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunStartRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlRunStartResponse",
       "error_schema": "ControlProblem"
     },
@@ -997,7 +1156,7 @@
       "path": "/v2/runs/:id/control",
       "mutating": true,
       "applicability": "run",
-      "summary": "Cancel a queued or running run.",
+      "summary": "Cancel a queued or running run and hold its pending next message, also after the run ended.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunControlRequest",
       "parameters": [],
@@ -1009,10 +1168,22 @@
       "path": "/v2/runs/:id/decision",
       "mutating": true,
       "applicability": "run",
-      "summary": "Record an operator unblock/rerun decision on a run.",
+      "summary": "Record an operator decision on a run: unblock/rerun, revert, discard, or acknowledge a captured terminal patch with action=taken and reason=captured_result; taken refuses non-terminal, continuable, needs-decision, or non-patch results with typed reasons and is idempotent.",
       "auth": "loopback_bearer",
       "request_schema": "ControlRunDecisionRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlRunDecisionResponse",
       "error_schema": "ControlProblem"
     },
@@ -1045,6 +1216,37 @@
         }
       ],
       "response_schema": null,
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/runs/:id/events/:id",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read one bounded part of one validated run event by seq, in the exact stored serialization the run event stream delivers.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "offset",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "UTF-8 byte offset of the part: 0 or the previous part's nextOffset (canonical nonnegative integer at a character boundary)."
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Maximum part bytes, 4 to 65536 (default 32768); a part may end earlier at a character boundary."
+        }
+      ],
+      "response_schema": "ControlRunEventPart",
       "error_schema": "ControlProblem"
     },
     {
@@ -1103,7 +1305,19 @@
       "summary": "Retry a run, returning a new durable handle.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlRunRetryResponse",
       "error_schema": "ControlProblem"
     },
@@ -1117,6 +1331,78 @@
       "request_schema": null,
       "parameters": [],
       "response_schema": "ControlRunAgainDraft",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/runs/:id/time-limit",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read a run's live time-limit snapshot and revision.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "RunTimeLimitSnapshot",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/runs/:id/time-limit",
+      "mutating": true,
+      "applicability": "run",
+      "summary": "Set, extend, or disable a live run time limit with an expected revision.",
+      "auth": "loopback_bearer",
+      "request_schema": "RunTimeLimitRequest",
+      "parameters": [],
+      "response_schema": "RunTimeLimitSnapshot",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/runs/lookup",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read, without starting or waiting, the job a POST /v2/runs with this exact body and Idempotency-Key created: found or not_found in the answering store.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlRunStartRequest",
+      "parameters": [],
+      "response_schema": "ControlStartLookupResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/runs/next-message",
+      "mutating": true,
+      "applicability": "run",
+      "summary": "Create, replace or clear one operator-owned deferred next message",
+      "auth": "loopback_bearer",
+      "request_schema": "DeferredMessageMutation",
+      "parameters": [],
+      "response_schema": "DeferredMessageReceipt",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/runs/next-message/:id",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read one exact deferred draft and its existing predecessor result and successor handles",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "DeferredMessageDetail",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/runs/wait-many",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Wait once for unacknowledged lifecycle or pending-question attention across addressed runs.",
+      "auth": "loopback_bearer",
+      "request_schema": "RunWaitManyInput",
+      "parameters": [],
+      "response_schema": "RunWaitManyResult",
       "error_schema": "ControlProblem"
     },
     {
@@ -1197,7 +1483,8 @@
             "codex",
             "claude",
             "cursor",
-            "agy"
+            "agy",
+            "grok"
           ],
           "schema_ref": "ControlSetupJobListFilter#/properties/harness",
           "description": "Filter setup jobs to one harness."
@@ -1346,6 +1633,62 @@
     },
     {
       "method": "GET",
+      "path": "/v2/task-groups/:id/runs",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read one compact page of retained group members in current served generations; absence is not a permanent roster or replay authority.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "TaskGroupRunsInput#/properties/limit",
+          "description": "Page size 1..200, default 50; byte limits may return fewer members."
+        },
+        {
+          "name": "state",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "schema_ref": "TaskGroupRunsInput#/properties/state",
+          "description": "Optional lifecycle filter bound to the cursor."
+        },
+        {
+          "name": "cursor",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "TaskGroupRunsInput#/properties/cursor",
+          "description": "Opaque cursor (at most 2048 characters) from this group, filter, store and served view."
+        },
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "TaskGroupRunsInput#/properties/expectedStoreId",
+          "description": "Refuse a different durable store identity instead of recovering another store's handles."
+        }
+      ],
+      "response_schema": "TaskGroupRunsResult",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
       "path": "/v2/threads",
       "mutating": false,
       "applicability": "thread",
@@ -1405,6 +1748,107 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "GET",
+      "path": "/v2/threads/:id/export",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read the exact closure inventory of a thread: engine records, run trees, native session material and its lane, with every named gap. Never writes.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Refuse the read when the engine serves another store."
+        }
+      ],
+      "response_schema": "ThreadExportManifest",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads/:id/export/:id/items/:id",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Stream one manifest item's exact bytes; ETag carries their sha256. A restart or eviction rebuilds the inventory; a changed item, or an export the current inventory no longer answers, is refused.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": null,
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads/:id/history",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read an addressed bounded page of thread turns with answers and receipt facts.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadHistoryInput#/properties/limit",
+          "description": "Optional limit; validated by ThreadHistoryInput."
+        },
+        {
+          "name": "cursor",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadHistoryInput#/properties/cursor",
+          "description": "Optional cursor; validated by ThreadHistoryInput."
+        },
+        {
+          "name": "beforeTurnId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadHistoryInput#/properties/beforeTurnId",
+          "description": "Optional beforeTurnId; validated by ThreadHistoryInput."
+        },
+        {
+          "name": "afterTurnId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadHistoryInput#/properties/afterTurnId",
+          "description": "Optional afterTurnId; validated by ThreadHistoryInput."
+        },
+        {
+          "name": "aroundTurnId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadHistoryInput#/properties/aroundTurnId",
+          "description": "Optional aroundTurnId; validated by ThreadHistoryInput."
+        },
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadHistoryInput#/properties/expectedStoreId",
+          "description": "Optional expectedStoreId; validated by ThreadHistoryInput."
+        }
+      ],
+      "response_schema": "ThreadHistoryPage",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "POST",
       "path": "/v2/threads/:id/purge",
       "mutating": true,
@@ -1430,6 +1874,61 @@
     },
     {
       "method": "POST",
+      "path": "/v2/threads/:id/retire",
+      "mutating": true,
+      "applicability": "thread",
+      "summary": "Conditionally accept this exact export's retirement: purge the thread at once if its closure is finished and its bytes still match, binding one outcome to the operation.",
+      "auth": "loopback_bearer",
+      "request_schema": "ThreadRetireRequest",
+      "parameters": [],
+      "response_schema": "ThreadRetirement",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/retire/abandon",
+      "mutating": true,
+      "applicability": "thread",
+      "summary": "Settle an unanswered retirement operation: it can never accept after this answers; an already accepted one reports so.",
+      "auth": "loopback_bearer",
+      "request_schema": "ThreadRetireAbandonRequest",
+      "parameters": [],
+      "response_schema": "ThreadRetirement",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads/:id/retirement",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read a thread's retirement state and, when addressed, one operation's bound outcome. Also answers for a purged thread.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "operationId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "The operation whose outcome to read."
+        },
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Refuse the read when the engine serves another store."
+        }
+      ],
+      "response_schema": "ThreadRetirement",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
       "path": "/v2/threads/:id/trash",
       "mutating": true,
       "applicability": "thread",
@@ -1448,8 +1947,60 @@
       "summary": "Enqueue a new turn on a thread.",
       "auth": "loopback_bearer",
       "request_schema": "ControlThreadTurnRequest",
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlThreadTurnResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/threads/:id/turns/:id/prompt",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read a UTF-8 part of a turn's complete stored prompt, including refused turns.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [
+        {
+          "name": "offset",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadPromptPartInput#/properties/offset",
+          "description": "Optional offset; validated by ThreadPromptPartInput."
+        },
+        {
+          "name": "maxBytes",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadPromptPartInput#/properties/maxBytes",
+          "description": "Optional maxBytes; validated by ThreadPromptPartInput."
+        },
+        {
+          "name": "expectedStoreId",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": "ThreadPromptPartInput#/properties/expectedStoreId",
+          "description": "Optional expectedStoreId; validated by ThreadPromptPartInput."
+        }
+      ],
+      "response_schema": "ThreadPromptPart",
       "error_schema": "ControlProblem"
     },
     {
@@ -1460,8 +2011,32 @@
       "summary": "Retry a thread turn.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "x-claudexor-store-identity",
+          "in": "header",
+          "required": false,
+          "repeatable": false,
+          "enum": [
+            "1"
+          ],
+          "schema_ref": null,
+          "description": "Send `1` to receive the durable engine store identity as `storeId`; without it the response keeps its earlier shape."
+        }
+      ],
       "response_schema": "ControlThreadTurnResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/turns/lookup",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlThreadTurnRequest",
+      "parameters": [],
+      "response_schema": "ControlStartLookupResponse",
       "error_schema": "ControlProblem"
     },
     {
@@ -1539,7 +2114,7 @@
       "path": "/v2/uploads/:id/bytes",
       "mutating": true,
       "applicability": "global",
-      "summary": "Stream the complete declared byte body in ONE request. The store is single-shot: a short, oversized, or interrupted PUT cancels the upload and discards partial bytes — retry by creating a new upload and resending from byte zero. Not resumable.",
+      "summary": "Stream the complete declared byte body in ONE request. The store is single-shot: a short, oversized, or interrupted PUT cancels the upload and discards partial bytes — retry by creating a new upload and resending from byte zero. Not resumable. A keyed import's upload instead returns to open, also when its bytes miss the declared sha256, so the same key resends from byte zero.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [],
@@ -1556,6 +2131,18 @@
       "request_schema": "ControlUploadFinalizeRequest",
       "parameters": [],
       "response_schema": "ControlResource",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/uploads/imports",
+      "mutating": true,
+      "applicability": "global",
+      "summary": "Begin, read or replay one keyed attachment import; verified bytes are published under the same key without the source.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlUploadImportRequest",
+      "parameters": [],
+      "response_schema": "ControlUploadImport",
       "error_schema": "ControlProblem"
     }
   ]

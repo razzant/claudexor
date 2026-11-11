@@ -1,9 +1,15 @@
+import type { ObservedUsageAmounts } from "@claudexor/budget";
+import type { HarnessAdapter, PreparedHarnessProcessing } from "@claudexor/core";
 import {
   FallbackReason,
+  type AuthPreference,
+  type CredentialProfile,
   type CredentialRoute,
   type CostKnowledge,
   type EffortHint,
   type HarnessEvent,
+  type HarnessRunSpec,
+  type ProcessingPreference,
   type ProviderFamily,
   type ReviewFinding,
   type RouteProof,
@@ -34,6 +40,21 @@ export function reviewerAuthSwitchFromEvent(ev: HarnessEvent): {
   };
 }
 
+export interface ReviewerSpec {
+  adapter: HarnessAdapter;
+  providerFamily: ProviderFamily;
+  requestedModel?: string | null;
+  requestedEffort?: EffortHint | null;
+  processingPreference?: ProcessingPreference;
+  processing?: PreparedHarnessProcessing;
+  processingAllowPaid?: boolean;
+  promptCacheTtl?: HarnessRunSpec["prompt_cache_ttl"];
+  authPreference?: AuthPreference | null;
+  /** Exact resolved profile (null = pool/default); `profilePinned: false` = the pool chose it. */
+  credentialProfile?: CredentialProfile | null;
+  profilePinned?: boolean;
+}
+
 export interface ReviewerOutput {
   text: string;
   sealedProjectionError?: string;
@@ -47,6 +68,10 @@ export interface ReviewerOutput {
   unknownUsd: number;
   cashKnowledge: CostKnowledge;
   valuationKnowledge: CostKnowledge;
+  /** Included reviewer route reported no actual debit (reported cash unknown). */
+  allowanceDebitUnobserved?: boolean;
+  /** Meanings this reviewer's usage events reported an amount for, zero included. */
+  observedAmounts?: ObservedUsageAmounts;
 }
 
 export interface ReviewerArtifactContext {
@@ -61,9 +86,29 @@ export interface ReviewerArtifactContext {
   metadata: Record<string, unknown>;
 }
 
+/** A candidate file the reviewer copy could not inspect (#535): it is never
+ * copied (its content was not checked) and never silently dropped either —
+ * the reviewer's prompt names it and the review returns it. */
+export interface UninspectableReviewerFile {
+  /** Relative to the candidate root, slash-separated. */
+  path: string;
+  /** The read failure's code (`EACCES`, `EIO`, ...), or `excluded_from_review_copy`. */
+  reason: string;
+}
+
+/**
+ * What a reviewer copy holds and what shows the change. `explicit_manifest` is a
+ * directory result (its FILES.json); `explicit_paths` is a Git result with no
+ * rendered patch (its CHANGED_PATHS.json). In both, the listed files are all a
+ * review sees; no patch shows the change.
+ */
+export type ReviewerInventoryMode =
+  "git_visible" | "diff_only" | "explicit_manifest" | "explicit_paths";
+
 export interface ReviewerWorkspace {
   root: string;
   evidenceDir: string;
+  uninspectable: UninspectableReviewerFile[];
 }
 
 export interface ReviewerProgressEvent {
@@ -114,6 +159,10 @@ export interface ReviewCandidateResult {
   reviewValuationUsd: number;
   reviewValuationKnowledge: CostKnowledge;
   reviewUnknownUsd: number;
+  reviewAllowanceDebitUnobserved?: boolean;
+  reviewObservedAmounts?: ObservedUsageAmounts;
+  /** Candidate files some reviewer workspace could not inspect (absent when none). */
+  uninspectableFiles?: UninspectableReviewerFile[];
 }
 
 export function summarizeReviewerSpend(
@@ -124,6 +173,8 @@ export function summarizeReviewerSpend(
   estimated: readonly boolean[],
   cashKnowledge: readonly CostKnowledge[],
   valuationKnowledge: readonly CostKnowledge[],
+  allowanceDebitUnobserved: readonly boolean[] = [],
+  observedAmounts: readonly (ObservedUsageAmounts | undefined)[] = [],
 ): {
   reviewSpendUsd: number;
   reviewSpendEstimated: boolean;
@@ -132,9 +183,15 @@ export function summarizeReviewerSpend(
   reviewValuationUsd: number;
   reviewValuationKnowledge: CostKnowledge;
   reviewUnknownUsd: number;
+  reviewAllowanceDebitUnobserved: boolean;
+  reviewObservedAmounts: ObservedUsageAmounts;
 } {
   const relevantValuationKnowledge = valuationKnowledge.filter(
-    (_, index) => (valuation[index] ?? 0) > 0 || (unknown[index] ?? 0) > 0,
+    (_, index) =>
+      (valuation[index] ?? 0) > 0 ||
+      (unknown[index] ?? 0) > 0 ||
+      observedAmounts[index]?.valuation === true ||
+      observedAmounts[index]?.unknown === true,
   );
   return {
     reviewSpendUsd: spend.reduce((sum, value) => sum + value, 0),
@@ -144,6 +201,12 @@ export function summarizeReviewerSpend(
     reviewValuationUsd: valuation.reduce((sum, value) => sum + value, 0),
     reviewValuationKnowledge: mergeKnowledge(relevantValuationKnowledge),
     reviewUnknownUsd: unknown.reduce((sum, value) => sum + value, 0),
+    reviewAllowanceDebitUnobserved: allowanceDebitUnobserved.some(Boolean),
+    reviewObservedAmounts: {
+      cash: observedAmounts.some((observed) => observed?.cash === true),
+      valuation: observedAmounts.some((observed) => observed?.valuation === true),
+      unknown: observedAmounts.some((observed) => observed?.unknown === true),
+    },
   };
 }
 

@@ -211,6 +211,25 @@ extension ThreadsScreen {
                 .foregroundStyle(Theme.status(.caution))
                 .fixedSize(horizontal: false, vertical: true)
         }
+        if let note = composerImageInputNote {
+            ComposerImageInputNoteView(message: note)
+        }
+    }
+
+    /// #146: the per-turn model (else the harness's configured default) of each
+    /// presented lane, looked up in the catalog the "⋯" models row already
+    /// fetched for this route. Nothing is fetched here; unknown says nothing.
+    var composerImageInputNote: String? {
+        let kinds = composerAttachments.map(\.kind)
+        guard kinds.contains("image") else { return nil }
+        let lanes = effectiveIncludedFamilies.compactMap { family -> ComposerImageInputNote.Lane? in
+            let chosen = (composerModels[family.rawValue] ?? "").trimmingCharacters(in: .whitespaces)
+            let selected = chosen.isEmpty ? model.activeDefaultModel(for: family.rawValue) : chosen
+            return ComposerImageInputNote.textOnlyLane(
+                selectedModel: selected,
+                catalog: poolModelCatalogs[ComposerModelsSection.catalogKey(family, route: composerModelsRoute)])
+        }
+        return ComposerImageInputNote.message(attachmentKinds: kinds, lanes: lanes)
     }
 
     /// Grab a screen region via the system `screencapture` (interactive crosshair)

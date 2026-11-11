@@ -1,5 +1,190 @@
 # @claudexor/policy
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+  - @claudexor/context@6.0.0
+
+## 5.1.0
+
+### Patch Changes
+
+- Updated dependencies [b63ceac]
+- Updated dependencies [b1320a9]
+- Updated dependencies [b1320a9]
+- Updated dependencies [0d2d858]
+- Updated dependencies [d9e8247]
+- Updated dependencies [b63ceac]
+- Updated dependencies [8de1106]
+- Updated dependencies [2be1a9c]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [6bce7ce]
+- Updated dependencies [8fb1023]
+- Updated dependencies [40b3ce8]
+- Updated dependencies [8905c72]
+- Updated dependencies [2e8b440]
+- Updated dependencies [0d2d858]
+  - @claudexor/schema@5.1.0
+  - @claudexor/util@5.1.0
+  - @claudexor/context@5.1.0
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [d9f50f5]
+- Updated dependencies [6ba9b91]
+  - @claudexor/schema@5.0.2
+  - @claudexor/util@5.0.2
+  - @claudexor/context@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- @claudexor/context@5.0.1
+- @claudexor/schema@5.0.1
+- @claudexor/util@5.0.1
+
+## 5.0.0
+
+### Patch Changes
+
+- Updated dependencies [f428c0a]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [d16170f]
+- Updated dependencies [8bae6ae]
+- Updated dependencies [66d5b6a]
+- Updated dependencies [f428c0a]
+- Updated dependencies [d9e7977]
+- Updated dependencies [2d83b87]
+- Updated dependencies [f428c0a]
+- Updated dependencies [28dfe1a]
+  - @claudexor/schema@5.0.0
+  - @claudexor/util@5.0.0
+  - @claudexor/context@5.0.0
+
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [97e2f17]
+- Updated dependencies [67b8833]
+- Updated dependencies [f88a561]
+  - @claudexor/schema@4.8.2
+  - @claudexor/util@4.8.2
+  - @claudexor/context@4.8.2
+
+## 4.8.1
+
+### Patch Changes
+
+- @claudexor/context@4.8.1
+- @claudexor/schema@4.8.1
+- @claudexor/util@4.8.1
+
+## 4.8.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies [6c31c44]
+- Updated dependencies [7dfbc42]
+- Updated dependencies
+  - @claudexor/schema@4.8.0
+  - @claudexor/util@4.8.0
+  - @claudexor/context@4.8.0
+
+## 4.7.1
+
+### Patch Changes
+
+- Updated dependencies [880081d]
+- Updated dependencies [30f8195]
+  - @claudexor/schema@4.7.1
+  - @claudexor/context@4.7.1
+  - @claudexor/util@4.7.1
+
+## 4.7.0
+
+### Patch Changes
+
+- Updated dependencies [74fb275]
+  - @claudexor/schema@4.7.0
+  - @claudexor/context@4.7.0
+  - @claudexor/util@4.7.0
+
+## 4.6.2
+
+### Patch Changes
+
+- @claudexor/context@4.6.2
+- @claudexor/schema@4.6.2
+- @claudexor/util@4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- @claudexor/context@4.6.1
+- @claudexor/schema@4.6.1
+- @claudexor/util@4.6.1
+
+## 4.6.0
+
+### Patch Changes
+
+- Updated dependencies [a81897c]
+- Updated dependencies [2593b90]
+  - @claudexor/schema@4.6.0
+  - @claudexor/util@4.6.0
+  - @claudexor/context@4.6.0
+
+## 4.5.0
+
+### Patch Changes
+
+- Updated dependencies [032b44b]
+  - @claudexor/schema@4.5.0
+  - @claudexor/context@4.5.0
+  - @claudexor/util@4.5.0
+
+## 4.4.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @claudexor/util@4.4.0
+  - @claudexor/schema@4.4.0
+  - @claudexor/context@4.4.0
+
+## 4.3.1
+
+### Patch Changes
+
+- @claudexor/context@4.3.1
+- @claudexor/schema@4.3.1
+- @claudexor/util@4.3.1
+
+## 4.3.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [23a74cb]
+  - @claudexor/schema@4.3.0
+  - @claudexor/context@4.3.0
+  - @claudexor/util@4.3.0
+
 ## 4.2.0
 
 ### Patch Changes

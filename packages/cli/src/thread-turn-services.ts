@@ -31,17 +31,31 @@ export function threadTurnServices(
         attachments?: ResourceAttachmentRef[];
         idempotency?: { key: string; client: string; request: unknown };
       },
-    ) =>
-      threads.createTurn(id, prompt, {
+    ) => {
+      // A large prompt's body is written off the request thread; the turn
+      // commit then finds it and decides everything else as before.
+      await threads.stageTurnPrompt?.(id, prompt);
+      // A same-key repeat of the request that recorded a turn (#249), e.g. after the
+      // daemon stopped before its first enqueue, reads the refs as that turn, which
+      // already holds them, and `createTurn` answers the recorded turn. A changed
+      // request under the key still conflicts here; a new turn stays a new reference.
+      const recorded = options.idempotency
+        ? threads.findTurnByIdempotency(id, options.idempotency)
+        : undefined;
+      return threads.createTurn(id, prompt, {
         kind: options.kind as any,
         parentRunId: options.parentRunId,
         answersPlanRunId: options.answersPlanRunId,
         planRunId: options.planRunId,
         planHash: options.planHash,
         planOverridden: options.planOverridden,
-        attachments: resources.resolve(options.attachments),
+        attachments: resources.resolve(
+          options.attachments,
+          recorded ? { owner: "turn", id: recorded.id } : undefined,
+        ),
         idempotency: options.idempotency,
-      }),
+      });
+    },
     findThreadTurnByIdempotency: async (
       id: string,
       idempotency: { key: string; client: string; request: unknown },
