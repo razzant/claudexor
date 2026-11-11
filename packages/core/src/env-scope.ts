@@ -161,7 +161,8 @@ export const CLEAN_ENV_ALLOWLIST: readonly string[] = [
  * vendor installers. These are OS inputs, not provider secrets or vendor homes.
  * Standard variables: https://learn.microsoft.com/windows/win32/api/shellapi/nf-shellapi-doenvironmentsubsta
  * Architecture/folders: https://learn.microsoft.com/windows/win32/winprog64/wow64-implementation-details
- * PowerShell: https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_environment_variables
+ * PSModulePath is intentionally absent: each PowerShell edition must compute
+ * its own defaults rather than inherit incompatible modules from another edition.
  * Match case-insensitively; Windows does not impose a spelling on inherited keys.
  */
 export const WINDOWS_RUNTIME_ENV_KEYS: readonly string[] = [
@@ -197,7 +198,6 @@ export const WINDOWS_RUNTIME_ENV_KEYS: readonly string[] = [
   "LOGONSERVER",
   "USERDOMAIN",
   "USERNAME",
-  "PSMODULEPATH",
 ];
 
 /**

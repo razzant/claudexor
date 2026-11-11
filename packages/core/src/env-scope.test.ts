@@ -181,10 +181,10 @@ describe("pickAllowlistedEnv", () => {
       ProgramData: "C:\\ProgramData",
       PUBLIC: "C:\\Users\\Public",
       USERDOMAIN: "runner",
-      PSModulePath: "C:\\Modules",
     };
     const source = {
       ...defaults,
+      PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules",
       OPENAI_API_KEY: "secret",
       CURSOR_API_KEY: "secret",
       CODEX_HOME: "vendor-state",
@@ -200,6 +200,8 @@ describe("pickAllowlistedEnv", () => {
       "CODEX_HOME",
       "CLAUDE_CONFIG_DIR",
       "DYLD_LIBRARY_PATH",
+      "PSModulePath",
+      "PSMODULEPATH",
     ])
       expect(clean[key]).toBeUndefined();
     const posix = composeBaseEnv("clean", source, "/usr/bin/node", "darwin");

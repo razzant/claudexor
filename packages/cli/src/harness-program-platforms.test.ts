@@ -175,8 +175,9 @@ describe("adapter vendor declarations", () => {
         PROCESSOR_ARCHITEW6432: "AMD64",
         PROGRAMFILES: sourceEnv.ProgramFiles,
         PROGRAMDATA: sourceEnv.ProgramData,
-        PSMODULEPATH: sourceEnv.PSModulePath,
       });
+      expect(invocations[0]!.env.PSMODULEPATH).toBeUndefined();
+      expect(invocations[0]!.env.PSModulePath).toBeUndefined();
       expect(invocations[0]!.env.OPENAI_API_KEY).toBeUndefined();
       expect(invocations[0]!.env.CLAUDE_CONFIG_DIR).toBe(
         id === "claude" ? sourceEnv.CLAUDE_CONFIG_DIR : undefined,
