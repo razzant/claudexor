@@ -315,15 +315,14 @@ const HELP_PROBE_TIMEOUT_MS = 10_000;
  * is forgotten below anyway, so the next call looks again. A run whose env
  * patch carries a PATH executes the binary on THAT path (the spawn layer applies
  * the patch verbatim over the normalized PATH), so its ladder is read from the
- * same bytes: resolved on the exact patch PATH, spawned by absolute path. Two
- * bounds of that, stated rather than engineered away: the memo is ONE slot, so
- * a patched caller that alternates with host-keyed ones re-reads `--help` (one
- * bounded spawn per alternation, never a wrong answer); and a RELATIVE entry
- * in a patch PATH is resolved as the daemon sees it (its own cwd), so a binary
+ * same bytes: resolved on the exact patch PATH, spawned by absolute path.
+ * Captures for different identities never replace each other; a bounded map
+ * retains recent identities. A RELATIVE entry in a patch PATH is resolved as
+ * the daemon sees it (its own cwd), so a binary
  * reachable only through a project-relative entry is invisible to the probe
  * and that run falls back to the snapshot ladder — use absolute directories.
  */
-let helpProbe: { key: string; promise: Promise<ClaudeHelpProbe> } | null = null;
+const helpProbes = new Map<string, Promise<ClaudeHelpProbe>>();
 
 async function helpProbeIdentity(patchPath?: string): Promise<{ key: string; spawn: string }> {
   const id =
@@ -375,7 +374,8 @@ function abandonedProbe(): ClaudeHelpProbe {
  */
 async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
   const { key, spawn } = await helpProbeIdentity(patchPath);
-  if (helpProbe?.key === key) return helpProbe.promise;
+  const cached = helpProbes.get(key);
+  if (cached) return cached;
   const pending = (async (): Promise<ClaudeHelpProbe> => {
     try {
       const result = await runCapture(spawn, ["--help"], {
@@ -392,12 +392,12 @@ async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
       };
     }
   })();
-  const memo = { key, promise: pending };
-  helpProbe = memo;
+  helpProbes.set(key, pending);
+  if (helpProbes.size > 16) helpProbes.delete(helpProbes.keys().next().value!);
   // Identity-guarded so a late settle can only ever clear its OWN memo, never a
   // re-probe another caller has already started.
   const forget = (): void => {
-    if (helpProbe === memo) helpProbe = null;
+    if (helpProbes.get(key) === pending) helpProbes.delete(key);
   };
   void pending.then((probe) => {
     if (!probe.ok || probe.code === null) forget();

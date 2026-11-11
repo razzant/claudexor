@@ -6,6 +6,8 @@ import { runCliHarness } from "@claudexor/core";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { createCursorAdapter } from "./index.js";
 import { CURSOR_PROGRAM } from "./program.js";
+import { queryCursorModels } from "./models.js";
+import { smokeIsolatedApiKey } from "./smoke.js";
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -53,4 +55,30 @@ it("sends the declared switch and preserves rejection without rerunning with upd
   );
   expect(existsSync(unsafe)).toBe(false);
   expect(CURSOR_PROGRAM.childUpdateArgs).toEqual(["--disable-auto-update"]);
+});
+
+it("keeps model enumeration and isolated smoke functional with child updates disabled", async () => {
+  const root = mkdtempSync(join(tmpdir(), "cursor-probe-control-"));
+  roots.push(root);
+  const bin = join(root, "cursor");
+  writeFileSync(
+    bin,
+    `#!/bin/sh
+if [ "$1" != "--disable-auto-update" ]; then echo "updates must be disabled" >&2; exit 2; fi
+shift
+case "$1" in
+  --list-models) echo "fixture-model - Fixture Model" ;;
+  -p) echo '{"type":"system","apiKeySource":"env"}'; echo '{"type":"result","result":"OK"}' ;;
+  *) exit 3 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  vi.stubEnv("CLAUDEXOR_CURSOR_BIN", bin);
+  expect((await queryCursorModels(bin, { HOME: root }, root)).map((model) => model.id)).toEqual([
+    "fixture-model",
+  ]);
+  expect(
+    await smokeIsolatedApiKey("fixture-key", { makeBaseDir: () => join(root, "smoke") }),
+  ).toMatchObject({ ok: true });
 });

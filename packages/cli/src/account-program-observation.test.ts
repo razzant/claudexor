@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -100,7 +100,16 @@ function fixture() {
         });
       },
     });
-  return { bin, setVersion, models, catalog, doctor, registry: new Map([[program.id, adapter]]) };
+  return {
+    root,
+    bin,
+    versionFile,
+    setVersion,
+    models,
+    catalog,
+    doctor,
+    registry: new Map([[program.id, adapter]]),
+  };
 }
 it("refreshes a per-account catalog and readiness after a change behind an unchanged wrapper", async () => {
   const f = fixture(),
@@ -139,4 +148,37 @@ it("discards a late answer from the old program without replacing the newer acco
   expect((await old)[0]!.catalog).toBeNull();
   expect((await f.catalog())[0]!.catalog?.models[0]!.id).toBe("2.0.0");
   expect(f.models).toHaveBeenCalledTimes(2);
+});
+
+it("does not replace a newer cached catalog when an older --version call finishes late", async () => {
+  const f = fixture();
+  const entered = join(f.root, "entered"),
+    release = join(f.root, "release");
+  writeFileSync(
+    f.bin,
+    `#!/bin/sh
+value=$(/bin/cat '${f.versionFile}')
+if [ "$value" = "1.0.0" ]; then
+  : > '${entered}'
+  while [ ! -f '${release}' ]; do /bin/sleep 0.02; done
+fi
+echo "$value"
+`,
+    { mode: 0o755 },
+  );
+  const old = f.catalog().catch((error: unknown) => error);
+  try {
+    await vi.waitFor(() => expect(existsSync(entered)).toBe(true));
+    f.setVersion("2.0.0");
+    expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("2.0.0");
+    writeFileSync(release, "release");
+    expect(await old).toMatchObject({
+      message: "A newer program observation superseded this account read",
+    });
+    expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("2.0.0");
+    expect(f.models).toHaveBeenCalledTimes(1);
+  } finally {
+    writeFileSync(release, "release");
+    await old;
+  }
 });

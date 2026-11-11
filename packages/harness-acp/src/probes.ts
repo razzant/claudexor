@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveHarnessBinary,
-  resolveSelectedProgramAsync,
+  observeHarnessProgram,
+  assertSameProgram,
   selectProgramLauncher,
   HarnessUnavailableError,
   type DoctorSpec,
@@ -43,7 +44,26 @@ export function acpProbes(
   profile: HarnessCapabilityProfile,
   runner: ReturnType<typeof acpRunner>,
 ) {
-  let version: string | undefined;
+  let programKey: string | undefined;
+  let programGeneration = 0;
+  let programRead = 0;
+  const currentProgram = async (env?: HarnessModelSpec["env"]) => {
+    const read = ++programRead;
+    const program = await observeHarnessProgram(entry.program, env);
+    // An older --version call cannot roll the shared capability back after a
+    // newer observation. Paid conformance belongs to this program generation.
+    if (read !== programRead && program.key !== programKey)
+      throw new AcpFailure(
+        "program_changed_during_observation",
+        "A newer program observation superseded this read.",
+      );
+    if (program.key !== programKey) {
+      programKey = program.key;
+      programGeneration++;
+      profile.access_control.write_mechanism = "none";
+    }
+    return { ...program, generation: programGeneration };
+  };
   const binary = () => {
     const bin = selectProgramLauncher(entry.program);
     if (!resolveHarnessBinary(bin))
@@ -51,8 +71,11 @@ export function acpProbes(
     return bin;
   };
   const probe = async (spec: HarnessModelSpec, paid = false) => {
-    binary();
+    const before = await currentProgram(spec.env);
+    if (!before.selection?.path)
+      throw new HarnessUnavailableError(`${entry.displayName} binary is not installed`);
     acpToken(entry, spec.credentialProfile ?? null);
+    if (paid) profile.access_control.write_mechanism = "none";
     const temporary = paid ? mkdtempSync(join(tmpdir(), "acp-conformance-")) : null;
     const abort = new AbortController();
     const onAbort = () => abort.abort();
@@ -87,8 +110,14 @@ export function acpProbes(
           problem ??= new AcpFailure("probe_cancelled", "ACP probe cancelled");
       }
       if (problem) throw problem;
-      version = observation.version ?? version;
-      return observation;
+      const after = await currentProgram(spec.env);
+      assertSameProgram(before, after);
+      if (before.generation !== after.generation)
+        throw new AcpFailure(
+          "program_changed_during_observation",
+          "The program changed while the ACP probe was running.",
+        );
+      return { observation, program: before };
     } finally {
       clearTimeout(timer);
       spec.abortSignal?.removeEventListener("abort", onAbort);
@@ -97,11 +126,13 @@ export function acpProbes(
   };
   return {
     async discover() {
-      const selected = await resolveSelectedProgramAsync(entry.program);
-      if (!selected.versionOutput)
+      const current = await currentProgram();
+      if (!current.selection?.versionOutput)
         throw new HarnessUnavailableError(`${entry.displayName} --version failed`);
-      version = selected.versionOutput;
-      return acpManifest(entry, version, profile);
+      return {
+        ...acpManifest(entry, current.selection.versionOutput, profile),
+        sourceProgram: current.program,
+      };
     },
     async doctor(spec: DoctorSpec) {
       // Check ids follow the shared readiness table: `installed` is the binary
@@ -119,12 +150,17 @@ export function acpProbes(
         acpToken(entry);
         passed.push({ id: "api_key", status: "pass" });
         step = "acp_session";
-        if (spec.conformance) profile.access_control.write_mechanism = "none";
-        const observation = await probe(spec, spec.conformance === true);
+        const { observation, program } = await probe(spec, spec.conformance === true);
+        if (program.key !== programKey || program.generation !== programGeneration)
+          throw new AcpFailure(
+            "program_changed_during_observation",
+            "A newer program observation superseded this probe.",
+          );
         if (spec.conformance && observation.writePermission)
           profile.access_control.write_mechanism = "tool_policy";
         return ConformanceReport.parse({
           harness_id: entry.id,
+          sourceProgram: program.program,
           status: "degraded",
           enabled_intents: INTENTS,
           reasons: [ACP_DISCLOSURE],
@@ -172,7 +208,7 @@ export function acpProbes(
       const hints = () => entry.modelHints.map((id) => HarnessModel.parse({ id, origin: "hint" }));
       if (!spec) return hints();
       try {
-        const observation = await probe(spec);
+        const { observation } = await probe(spec);
         const models: HarnessModel[] = [];
         for (const config of observation.session?.configOptions ?? []) {
           if (config.category !== "model" || config.type !== "select") continue;

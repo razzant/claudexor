@@ -13,7 +13,15 @@
  * one alone.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -227,6 +235,32 @@ describe("the --help memo and its consumers follow a run's PATH patch", () => {
       levels: ["low", "medium", "high", "xhigh", "max"],
       live: true,
     });
+    expect(spawns(newer)).toBe(1);
+  });
+
+  it("does not evict a newer program's help when an older version read finishes late", async () => {
+    const older = installPatchBinary("late-older", HELP_2_1_89, "2.1.89");
+    const newer = installPatchBinary("fast-newer", HELP_2_1_165, "2.1.165");
+    const entered = join(older, "entered"),
+      release = join(older, "release");
+    const oldBin = join(older, "claude");
+    writeFileSync(
+      oldBin,
+      readFileSync(oldBin, "utf8").replace(
+        "then echo",
+        `then : > '${entered}'; while [ ! -f '${release}' ]; do /bin/sleep 0.02; done; echo`,
+      ),
+    );
+    const { probeClaudeEffortLevels } = await import("./effort-probe.js");
+    const late = probeClaudeEffortLevels(undefined, older);
+    try {
+      await vi.waitFor(() => expect(existsSync(entered)).toBe(true));
+      expect((await probeClaudeEffortLevels(undefined, newer)).levels).toContain("xhigh");
+    } finally {
+      writeFileSync(release, "released");
+      await late;
+    }
+    expect((await probeClaudeEffortLevels(undefined, newer)).levels).toContain("xhigh");
     expect(spawns(newer)).toBe(1);
   });
 
