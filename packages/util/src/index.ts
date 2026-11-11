@@ -64,14 +64,11 @@ export function stableStringify(value: unknown): string {
 function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortKeys);
   if (value && typeof value === "object") {
-    // Own entries, never assignment: JSON.parse makes "__proto__" an ordinary
-    // own key, which assignment would hand to the prototype setter and drop.
-    const record = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .map((key) => [key, sortKeys(record[key])]),
-    );
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = sortKeys((value as Record<string, unknown>)[key]);
+    }
+    return out;
   }
   return value;
 }

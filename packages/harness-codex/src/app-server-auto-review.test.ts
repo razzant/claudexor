@@ -4,6 +4,7 @@ import {
   type InteractionAnswerSet,
   type InteractionRequest,
 } from "@claudexor/schema";
+import { stableStringify } from "@claudexor/util";
 import { CodexAutoReview } from "./app-server-auto-review.js";
 
 const denial = (overrides: Record<string, unknown> = {}) => ({
@@ -412,6 +413,49 @@ describe("native automatic review handback", () => {
       expect.objectContaining({ type: "interaction_requested" }),
     ]);
     expect(t.asks[1]!.questions[0]!.question).toContain('"slug": "b"');
+  });
+
+  it("compares authorized MCP arguments exactly: nested key order is ignored, arrays, nulls and own __proto__ keys are not", async () => {
+    const t = setup();
+    const authorized =
+      '{"data":[1,null],"meta":{"__proto__":{"slug":"a","rev":[2,{"y":1,"x":0}]}}}';
+    t.review.observe(mcpCall("item/started", "first", JSON.parse(authorized)));
+    t.review.observe(denial({ targetItemId: "first", action: mcpAction }));
+    t.review.interactions("turn", "Blocked");
+    const answered = t.review.takeRetries();
+    t.answer(["Authorize one retry"]);
+    expect(await answered).toHaveLength(1);
+    const retried = {
+      same: '{"meta":{"__proto__":{"rev":[2,{"x":0,"y":1}],"slug":"a"}},"data":[1,null]}',
+      arrayOrder: '{"data":[null,1],"meta":{"__proto__":{"slug":"a","rev":[2,{"y":1,"x":0}]}}}',
+      nestedArray: '{"data":[[1],null],"meta":{"__proto__":{"slug":"a","rev":[2,{"y":1,"x":0}]}}}',
+      nullValue: '{"data":[1,{}],"meta":{"__proto__":{"slug":"a","rev":[2,{"y":1,"x":0}]}}}',
+      protoValue: '{"data":[1,null],"meta":{"__proto__":{"slug":"b","rev":[2,{"y":1,"x":0}]}}}',
+      protoAbsent: '{"data":[1,null],"meta":{}}',
+    };
+    // Negative control: the shared stable hash drops own __proto__ keys (its
+    // stored digests depend on that), so it would refuse these two as repeats.
+    for (const key of ["protoValue", "protoAbsent"] as const)
+      expect(stableStringify(JSON.parse(retried[key]))).toBe(
+        stableStringify(JSON.parse(authorized)),
+      );
+    t.turn("retry");
+    for (const [id, args] of Object.entries(retried)) {
+      t.review.observe(mcpCall("item/started", id, JSON.parse(args), "retry"));
+      t.review.observe(
+        denial({ turnId: "retry", reviewId: id, targetItemId: id, action: mcpAction }),
+      );
+    }
+    expect(t.review.interactions("retry", "Still blocked")).toEqual([
+      expect.objectContaining({
+        text: expect.stringMatching(/already authorized retry again/),
+        payload: { code: "codex_auto_review_not_offered", review_id: "same" },
+      }),
+      ...Array.from({ length: 5 }, () =>
+        expect.objectContaining({ type: "interaction_requested" }),
+      ),
+    ]);
+    expect(t.asks).toHaveLength(6);
   });
 
   it("correlates a new turn's MCP denial after earlier completed turns started over 4,096 calls", () => {

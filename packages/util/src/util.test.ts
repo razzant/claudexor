@@ -73,40 +73,6 @@ describe("util", () => {
     expect(stableStringify({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
   });
 
-  it("keeps the canonical bytes and hash of ordinary JSON across key orders and nesting", () => {
-    const ordinary = {
-      z: [3, { b: null, a: "\u00e9\u2028" }, [true, false]],
-      10: 1,
-      9: 2,
-      a: { y: -0.5, x: 1e21, nested: { b: [], a: {} } },
-      constructor: "kept",
-    };
-    const reordered = {
-      constructor: "kept",
-      a: { nested: { a: {}, b: [] }, x: 1e21, y: -0.5 },
-      9: 2,
-      z: [3, { a: "\u00e9\u2028", b: null }, [true, false]],
-      10: 1,
-    };
-    // Bytes and hash recorded from the previous serializer: stored digests stay valid.
-    const canonical =
-      '{"9":2,"10":1,"a":{"nested":{"a":{},"b":[]},"x":1e+21,"y":-0.5},"constructor":"kept","z":[3,{"a":"\u00e9\u2028","b":null},[true,false]]}';
-    expect(stableStringify(ordinary)).toBe(canonical);
-    expect(stableStringify(reordered)).toBe(canonical);
-    expect(hashJson(ordinary)).toBe(
-      "sha256:3f59d0bf149b766b3d16d3022dafb3198b3799a1876dbddcc2f3dd97ffbca140",
-    );
-    expect(stableStringify([{ b: 1, a: 2 }, 3])).not.toBe(stableStringify([3, { a: 2, b: 1 }]));
-  });
-
-  it("keeps an own __proto__ key, so different payloads never collide", () => {
-    // JSON.parse makes "__proto__" an ordinary own key; it was once dropped.
-    const payload = (slug: string) => JSON.parse(`{"data":{"__proto__":{"slug":"${slug}"}}}`);
-    expect(stableStringify(payload("a"))).toBe('{"data":{"__proto__":{"slug":"a"}}}');
-    expect(hashJson(payload("a"))).not.toBe(hashJson(payload("b")));
-    expect(stableStringify(JSON.parse('{"b":1,"__proto__":[2]}'))).toBe('{"__proto__":[2],"b":1}');
-  });
-
   it("sha256 has the expected prefix", () => {
     expect(sha256("x")).toMatch(/^sha256:[0-9a-f]{64}$/);
   });

@@ -7,7 +7,7 @@ import {
   type HarnessRunSpec,
   type InteractionRequest,
 } from "@claudexor/schema";
-import { nowIso, stableStringify } from "@claudexor/util";
+import { nowIso } from "@claudexor/util";
 import { asObject, type CodexThreadLifecycle, type JsonObject } from "./app-server-protocol.js";
 import { answerUnavailable, reviewPath } from "./app-server-approvals.js";
 import { codexTurnParams } from "./app-server-session.js";
@@ -524,7 +524,23 @@ export class CodexAutoReview {
   private retryIdentity(event: JsonObject): string {
     const action = event["action"];
     return asObject(action)?.["type"] === "mcp_tool_call"
-      ? stableStringify([action, asObject(this.mcpReviews.get(String(event["id"])))?.["arguments"]])
+      ? exactJson([action, asObject(this.mcpReviews.get(String(event["id"])))?.["arguments"]])
       : JSON.stringify(action);
   }
+}
+
+/** Exact JSON identity of a value whatever its object key order. Own entries,
+ * never assignment: JSON.parse makes "__proto__" an ordinary own key, which
+ * assignment would hand to the prototype setter and drop. Deliberately local:
+ * the shared stable hash keeps its historical bytes for stored digests. */
+function exactJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map((key) => [key, (item as Record<string, unknown>)[key]]),
+        )
+      : item,
+  );
 }
