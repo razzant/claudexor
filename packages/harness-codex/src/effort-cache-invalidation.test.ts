@@ -274,6 +274,7 @@ it("does not publish a credential observation begun before invalidation while --
     selection: null,
     program: { path: "/fixture/codex", version: "1.0.0" },
     key: "codex:1.0.0",
+    versionSource: "remembered" as const,
   };
   let release!: (value: typeof identity) => void;
   vi.mocked(observeHarnessProgram).mockImplementationOnce(
@@ -293,12 +294,13 @@ it("does not publish a credential observation begun before invalidation while --
   expect(next.calls()).toBe(1);
 });
 it.each([true, false])(
-  "only a known version permits a completed cache hit (known: %s)",
+  "reuses the same program identity with an answered or mute version (known: %s)",
   async (known) => {
     const observation = {
       selection: null,
       program: { path: "/fixture/codex", version: known ? "1.0.0" : null },
       key: "same",
+      versionSource: "remembered" as const,
     };
     vi.mocked(observeHarnessProgram)
       .mockResolvedValueOnce(observation)
@@ -306,6 +308,9 @@ it.each([true, false])(
     const next = answering(account("account"));
     await read(next.probe);
     await read(next.probe);
-    expect(next.calls()).toBe(known ? 1 : 2);
+    expect(next.calls()).toBe(1);
+    vi.mocked(observeHarnessProgram).mockResolvedValueOnce({ ...observation, key: "changed-file" });
+    await read(next.probe);
+    expect(next.calls()).toBe(2);
   },
 );

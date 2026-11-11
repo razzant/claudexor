@@ -425,12 +425,7 @@ export async function codexEffortCapability(
   const program = await observeHarnessProgram(CODEX_PROGRAM, env, bin);
   const key = JSON.stringify([codexEffortCacheKey(bin, env), program.key]);
   const cached = codexEffortCache.get(key);
-  if (
-    generation === codexEffortCacheGeneration &&
-    program.program?.version != null &&
-    cached &&
-    cached.expiresAtMs > now
-  ) {
+  if (generation === codexEffortCacheGeneration && cached && cached.expiresAtMs > now) {
     return { catalog: cached.catalog, live: cached.live };
   }
   const probed = await probe(bin, env);
@@ -438,7 +433,7 @@ export async function codexEffortCapability(
   const catalog = probed ?? CODEX_EFFORT_SNAPSHOT;
   // A clear during the probe means this answer, or this failure, may describe the
   // earlier account: its caller keeps it, and no later reader is handed it.
-  if (generation === codexEffortCacheGeneration && program.program?.version != null) {
+  if (generation === codexEffortCacheGeneration) {
     storeCodexEfforts(
       key,
       {
