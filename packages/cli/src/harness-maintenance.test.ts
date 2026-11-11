@@ -411,6 +411,8 @@ describe("selected vendor operation", () => {
             credential_kind: "config_dir_login",
             isolation_locator: home,
             enabled: true,
+            secret_ref: null,
+            created_at: null,
           },
         ],
         planProfileProgramCleanup: planCursorProfileProgramCleanup,

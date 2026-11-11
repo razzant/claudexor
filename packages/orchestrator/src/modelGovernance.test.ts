@@ -586,7 +586,8 @@ describe("typed catalog reads at the run gates (#393, #145)", () => {
         "provider accepts or refuses it",
     ]);
     // The spawn carries the model as asked and the failed read itself.
-    expect(runSpecs).toEqual([withDispatchModelCatalog(spec, down)]);
+    const observed = { ...down, sourceProgram: null };
+    expect(runSpecs).toEqual([withDispatchModelCatalog(spec, observed)]);
   });
 
   it("refuses an explicit model at BOTH gates, typed, when the endpoint REJECTED the key", async () => {
@@ -788,7 +789,7 @@ describe("one catalog read per spawn serves the model, the raw packet and the ad
     expect(h.rows).toEqual([[]]);
     expect(h.sized).toEqual([expect.objectContaining({ contextWindow: null })]);
     expect(h.runSpecs[0]!.raw_context_packet).toBe(PACKET);
-    expect(dispatchModelCatalog(h.runSpecs[0]!)).toEqual(failed);
+    expect(dispatchModelCatalog(h.runSpecs[0]!)).toEqual({ ...failed, sourceProgram: null });
   });
 
   it("forwards an explicit model its unavailable read cannot verify, sized under an unknown window", async () => {

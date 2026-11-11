@@ -274,6 +274,7 @@ describe("a FAILED catalog read is no list at all (#393)", () => {
     expect(await readModelCatalog({ models: async () => [row] })).toEqual({
       status: "listed",
       models: [row],
+      sourceProgram: null,
       failSoft: true,
     });
     const typed = {
@@ -283,13 +284,18 @@ describe("a FAILED catalog read is no list at all (#393)", () => {
     expect(await readModelCatalog(typed)).toEqual({
       status: "listed",
       models: [],
+      sourceProgram: null,
       failSoft: false,
     });
     const failed = {
       models: async () => [],
       modelCatalog: async () => ({ status: "unavailable" as const, failure }),
     };
-    expect(await readModelCatalog(failed)).toEqual({ status: "unavailable", failure });
+    expect(await readModelCatalog(failed)).toEqual({
+      status: "unavailable",
+      failure,
+      sourceProgram: null,
+    });
   });
 });
 

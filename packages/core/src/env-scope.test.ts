@@ -57,18 +57,17 @@ describe("composeBaseEnv (env_inheritance)", () => {
     SECRET_THING: "leak",
     OPENAI_API_KEY: "sk-xxx",
     FOO_TOKEN: "bar",
+    CODEX_HOME: "/unrelated/codex",
+    XDG_DATA_HOME: "/unrelated/data",
     HTTPS_PROXY: "http://proxy:8080",
     NODE_EXTRA_CA_CERTS: "/etc/ca.pem",
   };
 
   it("mirror_native copies the whole parent env", () => {
     const env = composeBaseEnv("mirror_native", source, NO_RUNNER);
-    expect(env.PATH?.split(":").slice(0, 5)).toEqual([
+    expect(env.PATH?.split(":").slice(0, 2)).toEqual([
       "/home/x/.claudexor/node/bin",
       "/home/x/.local/bin",
-      "/home/x/.cursor/bin",
-      "/home/x/.grok/bin",
-      "/home/x/.npm-global/bin",
     ]);
     expect(env.PATH?.split(":")).toContain("/usr/bin");
     expect(env.SECRET_THING).toBe("leak");
@@ -77,17 +76,17 @@ describe("composeBaseEnv (env_inheritance)", () => {
 
   it("clean keeps only the minimal allowlist (agent isolation): no arbitrary or provider vars leak", () => {
     const env = composeBaseEnv("clean", source, NO_RUNNER);
-    expect(env.PATH?.split(":").slice(0, 5)).toEqual([
+    expect(env.PATH?.split(":").slice(0, 2)).toEqual([
       "/home/x/.claudexor/node/bin",
       "/home/x/.local/bin",
-      "/home/x/.cursor/bin",
-      "/home/x/.grok/bin",
-      "/home/x/.npm-global/bin",
     ]);
     expect(env.PATH?.split(":")).toContain("/usr/bin");
     expect(env.HOME).toBe("/home/x");
     expect("SECRET_THING" in env).toBe(false);
     expect("FOO_TOKEN" in env).toBe(false);
+    expect(env.CODEX_HOME).toBeUndefined();
+    // Generic XDG roots are existing base inputs; lane scoping replaces them.
+    expect(env.XDG_DATA_HOME).toBe(source.XDG_DATA_HOME);
     expect("OPENAI_API_KEY" in env).toBe(false);
     expect(CLEAN_ENV_ALLOWLIST).toContain("PATH");
     expect(CLEAN_ENV_ALLOWLIST).not.toContain("OPENAI_API_KEY");

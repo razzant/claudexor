@@ -121,13 +121,20 @@ describe("harness model truth = list + declaration (the ONE settings/doctor/cata
     // account, so neither may answer an empty `api` catalog.
     expect(
       (await harnessModelTruth("grok", process.cwd(), false, "local_session")).response,
-    ).toEqual({ harnessId: "grok", models: [], source: "none", verifiedAgainst: null });
+    ).toEqual({
+      harnessId: "grok",
+      models: [],
+      source: "none",
+      verifiedAgainst: null,
+      sourceProgram: null,
+    });
     const truth = await harnessModelTruth("grok", process.cwd());
     expect(truth.response).toEqual({
       harnessId: "grok",
       models: [],
       source: "none",
       verifiedAgainst: null,
+      sourceProgram: null,
     });
     expect(truth.absence).toBe("advisory");
     expect(checkHarnessModelTruth(truth, "grok-4.7")).toMatchObject({
@@ -175,6 +182,7 @@ describe("harness model truth = list + declaration (the ONE settings/doctor/cata
       models: [],
       source: "none",
       verifiedAgainst: null,
+      sourceProgram: null,
     });
     expect(check.status).toBe("rejected");
   });
