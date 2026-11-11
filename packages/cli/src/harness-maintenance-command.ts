@@ -7,9 +7,9 @@ import { harnessMutationCommand } from "./harness-installer.js";
 export async function harnessInspectCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const ids = args._[2] ? [args._[2]] : harnessPrograms().map((program) => program.id);
   try {
-    const harnesses = [];
-    for (const id of ids)
-      harnesses.push(await inspectHarness(id, { latest: flagBool(args, "latest") }));
+    const harnesses = await Promise.all(
+      ids.map((id) => inspectHarness(id, { latest: flagBool(args, "latest") })),
+    );
     if (json) printJson({ observedAt: new Date().toISOString(), harnesses });
     else
       for (const row of harnesses)

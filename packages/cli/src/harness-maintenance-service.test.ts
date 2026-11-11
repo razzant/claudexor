@@ -401,6 +401,69 @@ describe("durable vendor operation", () => {
       ],
     });
   });
+  it("starts all seven inventory observations before awaiting any one", async () => {
+    const waiting: Array<() => void> = [];
+    const w = await harnessWorld({}, async function* (_bin, args) {
+      const harness = args![args!.indexOf("inspect") + 1]!;
+      await new Promise<void>((resolve) => waiting.push(resolve));
+      yield {
+        type: "stdout",
+        line: JSON.stringify({
+          harnesses: [{ ...ROW, harness, observedAt: new Date().toISOString() }],
+        }),
+      };
+    });
+    const pending = w.maintenance.routes.maintenanceInventory();
+    await vi.waitFor(() => expect(waiting).toHaveLength(7));
+    waiting.reverse().forEach((release) => release());
+    expect((await pending).harnesses.map((row) => row.harness)).toEqual([
+      "agy",
+      "claude",
+      "codex",
+      "copilot",
+      "cursor",
+      "grok",
+      "opencode",
+    ]);
+  });
+  it("retains the last successful newest reading and its time across failures, but accepts a later success", async () => {
+    const observedAt = "2026-11-10T00:00:00.000Z";
+    const unavailable = {
+      status: "unavailable",
+      source: "https://example.invalid/latest",
+      observedAt,
+      problem: { code: "newest_unavailable", message: "rate limited", retryable: true },
+    };
+    const success = {
+      status: "available",
+      source: "https://example.invalid/latest",
+      observedAt,
+      version: "2.0.0",
+    };
+    let newest: object = unavailable;
+    const w = await harnessWorld({}, async function* () {
+      yield {
+        type: "stdout",
+        line: JSON.stringify({
+          harnesses: [{ ...ROW, newest, observedAt: new Date().toISOString() }],
+        }),
+      };
+    });
+    const read = async () =>
+      (
+        await w.maintenance.routes.maintenanceInventory({
+          harnessIds: ["codex"],
+          checkLatest: true,
+        })
+      ).harnesses[0]!;
+    expect((await read()).newest).toMatchObject(unavailable);
+    newest = success;
+    expect((await read()).newest).toEqual(success);
+    newest = { ...unavailable, observedAt: "2026-11-11T00:00:00.000Z" };
+    expect(await read()).toMatchObject({ newest: success, updateAvailable: "yes" });
+    newest = { ...success, version: "1.0.0", observedAt: "2026-11-11T00:00:00.000Z" };
+    expect(await read()).toMatchObject({ newest, updateAvailable: "no" });
+  });
   it.each(["old-first", "new-first"])(
     "concurrent observations terminate and fence late answers (%s)",
     async (order) => {

@@ -2,7 +2,12 @@ import { loadConfig } from "@claudexor/config";
 import { noProjectRepoRoot } from "@claudexor/util";
 import type { HarnessAdapter } from "@claudexor/core";
 import type { CredentialProfile } from "@claudexor/schema";
-import { programUpdateAvailable, programPlatform, resolveSelectedProgram } from "@claudexor/core";
+import {
+  programUpdateAvailable,
+  programPlatform,
+  resolveSelectedProgramAsync,
+  resolveSelectedProgram,
+} from "@claudexor/core";
 import {
   ControlProblem,
   HarnessVendorVersion,
@@ -54,7 +59,9 @@ export async function inspectHarness(
   const program = options.program ?? harnessProgram(harness);
   const runtime = installerRuntime(program, options);
   const data = programPlatform(program, runtime.platform);
-  const selection = resolveSelectedProgram(program, runtime);
+  const selection = options.spawn
+    ? resolveSelectedProgram(program, runtime)
+    : await resolveSelectedProgramAsync(program, runtime);
   const converting = productNpmCopy(program, selection, runtime) !== null;
   const pinnedCopy = converting && selection.overrideValue !== null;
   const pinnedReason =

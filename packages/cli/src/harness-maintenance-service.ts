@@ -157,7 +157,11 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
       // start another child or invalidate another reader.
       if (inspections.get(id) !== entry)
         return inspections.get(id)?.promise ?? inspectOne(id, latest);
-      if (parsed.data.newest.status !== "not_read") latestSeen.set(id, parsed.data.newest);
+      if (
+        parsed.data.newest.status === "available" ||
+        (parsed.data.newest.status !== "not_read" && !latestSeen.has(id))
+      )
+        latestSeen.set(id, parsed.data.newest);
       else if (latestSeen.has(id)) parsed.data.newest = latestSeen.get(id)!;
       parsed.data.updateAvailable = programUpdateAvailable(
         harnessProgram(id).versionScheme,
@@ -172,9 +176,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
     return entry.promise;
   }
   async function inspect(ids: string[], latest: boolean): Promise<HarnessInspection[]> {
-    const result: HarnessInspection[] = [];
-    for (const id of ids) result.push(await inspectOne(id, latest));
-    return result;
+    return Promise.all(ids.map((id) => inspectOne(id, latest)));
   }
 
   function detail(id: string): ControlHarnessMaintenanceOperation {
