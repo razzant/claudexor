@@ -94,11 +94,15 @@ Control-api tests load the built worker (`dist/bulk-worker.js`); run `pnpm --fil
 
 There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
 Prettier formatting when a formatting pass is relevant. Note on Node versions:
-`.node-version` pins the development toolchain (24.16.0, matching CI); the
-supported engine floor is Node 24.15.0 with bundled SQLite 3.51.3 or newer.
-CI runs positive store coverage on 24.15.0 and 24.16.0 and proves typed refusal
-on Node 20.19.0. Publication repeats a clean installed-package CLI smoke on the
-published floor and pin before the GitHub Release becomes public.
+`.node-version` pins the development toolchain and the Node that releases ship
+(24.22.3, matching CI): the app's bundled `node` and the
+[SSH runtime archives](ARCHITECTURE.md#remote-ssh-execution). An engine-only
+update does not replace the app's Node. The supported engine floor is Node
+24.15.0 with bundled SQLite 3.51.3 or newer; 24.x releases before 24.22.3 lack
+Node's November 2026 security fixes, so npm installations should run the pin or
+newer. CI runs positive store coverage on 24.15.0 and 24.22.3 and proves typed
+refusal on Node 20.19.0. Publication repeats a clean installed-package CLI
+smoke on the published floor and pin before the GitHub Release becomes public.
 
 macOS app checks:
 
