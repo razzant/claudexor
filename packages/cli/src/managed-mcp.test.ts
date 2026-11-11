@@ -62,8 +62,9 @@ describe("ordinary external MCP and CLI attachment", () => {
   let bridge: ReturnType<typeof wire> | undefined;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(realpathSync(tmpdir()), "cx-m-"));
-    root = join(dir, "root");
+    // Leave room for the canonical daemon socket under a long runner-owned TMPDIR.
+    dir = mkdtempSync(join(realpathSync(tmpdir()), "m-"));
+    root = join(dir, "r");
     mode = "normal";
     accepted = [];
     vi.stubEnv("HOME", dir);
