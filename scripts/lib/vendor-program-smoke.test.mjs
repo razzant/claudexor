@@ -1,8 +1,21 @@
-import { constants, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  constants,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { runProofNpm } from "./vendor-program-smoke.mjs";
+import {
+  runProofNpm,
+  assertNativeRunSelection,
+  verifyVendorUpdateRefusal,
+} from "./vendor-program-smoke.mjs";
+import { defineHarnessProgram } from "../../packages/core/dist/index.js";
 
 const roots = [];
 function fixture() {
@@ -13,6 +26,60 @@ function fixture() {
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0);
+
+test("installation proof compares native preparation with the receipt without running a session", async () => {
+  const cwd = fixture(),
+    bin = join(cwd, process.platform === "win32" ? "fixture.exe" : "fixture");
+  const marker = join(cwd, "unexpected-child");
+  const image = Buffer.alloc(512);
+  image.write("MZ");
+  image.writeUInt32LE(128, 60);
+  image.write("PE\0\0", 128);
+  writeFileSync(bin, process.platform === "win32" ? image : `#!/bin/sh\necho ran > '${marker}'\n`, {
+    mode: 0o755,
+  });
+  const program = defineHarnessProgram({
+    id: "proof-fixture",
+    overrideEnv: "PROOF_FIXTURE_BIN",
+    launchers: [{ name: "fixture" }],
+    installationEnv: [],
+    platforms: {},
+  });
+  const env = { HOME: cwd, PATH: cwd, PROOF_FIXTURE_BIN: bin };
+  expect(await assertNativeRunSelection(program, { path: bin }, env, cwd)).toBe(bin);
+  await expect(
+    assertNativeRunSelection(program, { path: join(cwd, "another") }, env, cwd),
+  ).rejects.toThrow("Native run selection differs");
+  expect(existsSync(marker)).toBe(false);
+});
+
+test.each([0, 1, null])(
+  "only a direct nonzero exit confirms a vendor refusal (direct exit %s)",
+  (status) => {
+    const command = { binary: "/vendor/codex", args: ["update"], env: {}, script: null };
+    const receipt = { commands: [command] };
+    const spawn = vi.fn(() => ({
+      status,
+      stdout: "direct vendor output",
+      stderr: "",
+      ...(status === null
+        ? { error: Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }) }
+        : {}),
+    }));
+    const env = {
+      OS: "Windows_NT",
+      PROCESSOR_ARCHITECTURE: "AMD64",
+      PATH: "/runner",
+      DYLD_LIBRARY_PATH: "/runner-libraries",
+    };
+    const run = () => verifyVendorUpdateRefusal(receipt, env, { cwd: fixture(), spawn });
+    if (status === 1) expect(run()).toEqual({ exitCode: 1, progress: "direct vendor output" });
+    else expect(run).toThrow("direct vendor refusal was not confirmed");
+    expect(spawn.mock.calls[0][0]).toBe(command.binary);
+    expect(spawn.mock.calls[0][1]).toEqual(command.args);
+    expect(spawn.mock.calls[0][2].env).toEqual(env);
+  },
+);
 
 test("Windows runs the bundled JS entry, bypasses npm.cmd and preserves argument boundaries", () => {
   const cwd = fixture();

@@ -13,7 +13,11 @@ import { fileURLToPath } from "node:url";
 import { harnessPrograms } from "../packages/cli/dist/harness-programs.js";
 import { programUpdateAvailable } from "../packages/core/dist/index.js";
 import { HarnessMaintenanceEvidence } from "../packages/schema/dist/index.js";
-import { runProofNpm } from "./lib/vendor-program-smoke.mjs";
+import {
+  runProofNpm,
+  assertNativeRunSelection,
+  verifyVendorUpdateRefusal,
+} from "./lib/vendor-program-smoke.mjs";
 
 const platform = process.platform;
 const win = platform === "win32";
@@ -103,9 +107,9 @@ function npm(env, args) {
   return runProofNpm(env, args, { cwd: root });
 }
 
-function attempt(route, harness, run) {
+async function attempt(route, harness, run) {
   try {
-    const evidence = run();
+    const evidence = await run();
     const records = evidence.vendorRefused
       ? refused
       : evidence.preservedOlderVendor
@@ -122,7 +126,7 @@ function attempt(route, harness, run) {
 }
 
 /** Install with the vendor's installer, read it back, install again as a no-op. */
-function installRoute(program, env) {
+async function installRoute(program, env) {
   const initial = cli(env, ["harness", "inspect", program.id]).harnesses[0];
   if (initial.selection.path)
     throw new Error(
@@ -142,11 +146,17 @@ function installRoute(program, env) {
   const row = cli(env, ["harness", "inspect", program.id]).harnesses[0];
   if (row.selection.path !== receipt.after.path || row.selection.version !== receipt.after.version)
     throw new Error(`receipt and next selection disagree: ${JSON.stringify(row.selection)}`);
+  const runPath = await assertNativeRunSelection(program, receipt.after, env, root);
   const again = cli(env, ["harness", "install", program.id, "--yes"]);
   if (!again.ok || again.outcome !== "not_changed" || again.commands.length !== 0)
     throw new Error(`install of an existing program was not a no-op: ${JSON.stringify(again)}`);
   installed.add(program.id);
-  return { path: receipt.after.path, version: receipt.after.version, commands: receipt.commands };
+  return {
+    path: receipt.after.path,
+    runPath,
+    version: receipt.after.version,
+    commands: receipt.commands,
+  };
 }
 
 /** The installed program's own update verb, under the engine's environment. */
@@ -158,10 +168,13 @@ function updateRoute(program, env) {
   if (!row.actions.update.available)
     throw new Error(`Installed route has no update action: ${row.actions.update.reason}`);
   const receipt = cli(env, ["harness", "update", program.id, "--yes"], { refusal: true });
-  // A vendor's own refusal (an unauthenticated rate limit, for one) is a complete,
-  // honest result when the program still answers; it is printed, not counted.
+  // Compare with the same command outside the engine before blaming the vendor.
   if (!receipt.ok && receipt.problem?.code === "vendor_command_failed" && receipt.after?.version)
-    return { vendorRefused: receipt.progress, exitCode: receipt.exitCode };
+    return {
+      vendorRefused: receipt.progress,
+      exitCode: receipt.exitCode,
+      direct: verifyVendorUpdateRefusal(receipt, env, { cwd: root }),
+    };
   if (
     !receipt.ok ||
     !["changed", "not_changed"].includes(receipt.outcome) ||
@@ -292,11 +305,12 @@ console.log(
   }),
 );
 for (const program of programs) {
-  attempt("install", program.id, () => installRoute(program, user));
-  attempt("update", program.id, () => updateRoute(program, user));
+  await attempt("install", program.id, () => installRoute(program, user));
+  await attempt("update", program.id, () => updateRoute(program, user));
 }
 for (const program of programs)
-  if (program.legacyNpmPackage) attempt("conversion", program.id, () => conversionRoute(program));
+  if (program.legacyNpmPackage)
+    await attempt("conversion", program.id, () => conversionRoute(program));
 
 console.log(
   JSON.stringify({
