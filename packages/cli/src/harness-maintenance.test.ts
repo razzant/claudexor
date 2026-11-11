@@ -12,6 +12,7 @@ import {
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { planCursorProfileProgramCleanup } from "../../harness-cursor/src/profile-program-cleanup.js";
+import { GROK_PROGRAM } from "../../harness-grok/src/program.js";
 import { inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
 import {
   SCRIPT,
@@ -51,6 +52,24 @@ function oldCopy(w: ReturnType<typeof world>, remote = false) {
 }
 
 describe("selected vendor operation", () => {
+  it("updates a person's npm copy without converting when the adapter never owned that package", async () => {
+    const w = world();
+    const old = oldCopy(w);
+    w.program.legacyNpmPackage = GROK_PROGRAM.legacyNpmPackage;
+    const calls: string[] = [];
+    const fetcher = vi.fn();
+    w.options.fetch = fetcher;
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      calls.push(bin);
+      return result("Vendor update handled this copy");
+    }) as typeof spawnSync;
+    expect((await runHarnessUpdate("fixture", undefined, w.options)).ok).toBe(true);
+    expect(calls).toEqual([old.launcher]);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(existsSync(old.pkg)).toBe(true);
+    expect(existsSync(old.launcher)).toBe(true);
+  });
   it.each([false, true])("updates an arbitrary selected entry (override: %s)", async (override) => {
     const w = world();
     const selected = join(w.home, "hand-placed", override ? "wrapper" : "fixture-harness");

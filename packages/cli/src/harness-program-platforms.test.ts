@@ -49,6 +49,9 @@ describe("adapter vendor declarations", () => {
       "grok",
       "opencode",
     ]);
+    expect(
+      programs.filter((program) => program.legacyNpmPackage).map((program) => program.id),
+    ).toEqual(["claude", "codex", "copilot", "opencode"]);
     for (const program of programs)
       for (const platform of ["darwin", "linux", "win32"] as const) {
         const data = programPlatform(program, platform)!;

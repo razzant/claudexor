@@ -39,7 +39,6 @@ export const GROK_PROGRAM = defineHarnessProgram({
   versionScheme: "semver",
   overrideEnv: "CLAUDEXOR_GROK_BIN",
   installationEnv: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"],
-  legacyNpmPackage: "@xai-official/grok",
   childUpdateEnv: {
     GROK_DISABLE_AUTOUPDATER: "1",
   },
