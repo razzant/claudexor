@@ -4,6 +4,8 @@ import type { HarnessAdapter } from "@claudexor/core";
 import type { CredentialProfile } from "@claudexor/schema";
 import {
   programUpdateAvailable,
+  programObservationPublisher,
+  invalidateProgramObservations,
   resolveHarnessCommandOnPath,
   programPlatform,
   resolveSelectedProgramAsync,
@@ -137,9 +139,11 @@ export async function inspectHarness(
 ): Promise<HarnessInspection> {
   const program = options.program ?? harnessProgram(harness);
   const runtime = installerRuntime(program, options);
+  const publish = programObservationPublisher(program, runtime);
   const selection = options.spawn
     ? resolveSelectedProgram(program, runtime)
     : await resolveSelectedProgramAsync(program, runtime);
+  publish(selection);
   const now = (options.now ?? (() => new Date()))();
   const newest = options.latest
     ? await observeNewest(program, runtime.platform, runtime.arch, options.fetch, now)
@@ -442,6 +446,7 @@ export async function runHarnessUpdate(
             : "none";
     }
     receipt.phase = "settled";
+    if (program) invalidateProgramObservations(program.id);
     try {
       for (const command of preparedCommands) command.dispose();
     } finally {

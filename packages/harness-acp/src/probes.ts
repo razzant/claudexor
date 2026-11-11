@@ -47,9 +47,9 @@ export function acpProbes(
   let programKey: string | undefined;
   let programGeneration = 0;
   let programRead = 0;
-  const currentProgram = async (env?: HarnessModelSpec["env"]) => {
+  const currentProgram = async (env?: HarnessModelSpec["env"], fresh = false) => {
     const read = ++programRead;
-    const program = await observeHarnessProgram(entry.program, env);
+    const program = await observeHarnessProgram(entry.program, env, undefined, { fresh });
     // An older --version call cannot roll the shared capability back after a
     // newer observation. Paid conformance belongs to this program generation.
     if (read !== programRead && program.key !== programKey)
@@ -71,7 +71,7 @@ export function acpProbes(
     return bin;
   };
   const probe = async (spec: HarnessModelSpec, paid = false) => {
-    const before = await currentProgram(spec.env);
+    const before = await currentProgram(spec.env, spec.fresh);
     if (!before.selection?.path)
       throw new HarnessUnavailableError(`${entry.displayName} binary is not installed`);
     acpToken(entry, spec.credentialProfile ?? null);

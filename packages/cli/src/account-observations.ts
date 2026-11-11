@@ -99,7 +99,7 @@ class AccountObservations {
     const key = [globalConfigPath(), kind, profile.harness_id, profile.profile_id].join("\0");
     const generation = this.generationFor(profile.harness_id);
     const sequence = this.startObservation();
-    const observed = await observeHarnessProgram(program);
+    const observed = await observeHarnessProgram(program, undefined, undefined, { fresh });
     if (generation !== this.generationFor(profile.harness_id))
       throw new Error("Account changed during program observation; read it again");
     const fingerprint = JSON.stringify([profile, observed.key]);

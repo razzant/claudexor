@@ -1,4 +1,8 @@
-import { programUpdateAvailable } from "@claudexor/core";
+import {
+  programUpdateAvailable,
+  programObservationPublisher,
+  invalidateProgramObservations,
+} from "@claudexor/core";
 /** Vendor work stays in a custodied CLI child. The existing command store owns
  * idempotency, cancellation, retention and rejoin; there is no update scheduler. */
 import { existsSync } from "node:fs";
@@ -136,6 +140,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
   function inspectOne(id: string, latest: boolean): Promise<HarnessInspection> {
     const current = inspections.get(id);
     if (current?.pending && (!latest || current.latest)) return current.promise;
+    const publish = programObservationPublisher(harnessProgram(id));
     const entry = { latest, pending: true, promise: null! as Promise<HarnessInspection> };
     entry.promise = (async () => {
       const out = await runChild(["harness", "inspect", id, ...(latest ? ["--latest"] : [])]);
@@ -157,6 +162,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
       // start another child or invalidate another reader.
       if (inspections.get(id) !== entry)
         return inspections.get(id)?.promise ?? inspectOne(id, latest);
+      publish(parsed.data.selection);
       if (
         parsed.data.newest.status === "available" ||
         (parsed.data.newest.status !== "not_read" && !latestSeen.has(id))
@@ -215,6 +221,7 @@ export function createHarnessMaintenance(deps: HarnessMaintenanceDependencies) {
   }
   function invalidate(harness: string) {
     inspections.delete(harness);
+    invalidateProgramObservations(harness);
     accountObservations.invalidateHarness(harness);
     deps.readiness?.().invalidate(harness);
     clearCodexEffortCache();

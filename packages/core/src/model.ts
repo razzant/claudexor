@@ -133,7 +133,9 @@ export async function readModelCatalog(
   adapter: Pick<HarnessAdapter, "models" | "modelCatalog" | "program">,
   spec?: HarnessModelSpec,
 ): Promise<ModelCatalogRead> {
-  const before = await observeHarnessProgram(adapter.program, spec?.env);
+  const before = await observeHarnessProgram(adapter.program, spec?.env, undefined, {
+    fresh: spec?.fresh,
+  });
   const read = adapter.modelCatalog
     ? await adapter.modelCatalog(spec)
     : { status: "listed" as const, models: (await adapter.models?.(spec)) ?? [] };

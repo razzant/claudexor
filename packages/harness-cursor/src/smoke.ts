@@ -185,7 +185,7 @@ export async function smokeCursorApiKey(
   fresh = false,
 ): Promise<CursorApiSmokeResult> {
   const binding = smokeBinding(deps.apiSmokeCache, key);
-  const program = await observeHarnessProgram(CURSOR_PROGRAM);
+  const program = await observeHarnessProgram(CURSOR_PROGRAM, undefined, undefined, { fresh });
   const cacheKey = JSON.stringify([binding, program.key]);
   const now = deps.nowMs();
   const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);

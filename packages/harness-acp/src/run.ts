@@ -132,6 +132,7 @@ export function acpRunner(entry: AcpEntry) {
             selectProgramLauncher(entry.program),
             spec,
             prepared.env,
+            true,
           );
           // The adapter owns the receipt exactly when it owns a knob; a knob-less
           // entry declares no effortParameter and the engine records `omitted`.

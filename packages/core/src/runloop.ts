@@ -112,7 +112,13 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
     yield* runCliHarnessObserved(opts);
     return;
   }
-  const program = await prepareNativeProgram(opts.program, opts.bin, opts.spec, opts.env);
+  const program = await prepareNativeProgram(
+    opts.program,
+    opts.bin,
+    opts.spec,
+    opts.env,
+    !!opts.programVersion,
+  );
   for await (const event of runCliHarnessObserved({ ...opts, bin: program.bin }, program))
     yield program.event(event);
 }

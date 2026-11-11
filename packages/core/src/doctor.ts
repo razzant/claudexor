@@ -123,7 +123,9 @@ export async function runDoctor(
     // auth/settings change while it is in flight, its result may still be
     // returned to the original caller but must never repopulate shared cache.
     const generation = cacheGeneration(adapter.id, cwd);
-    const program = await observeHarnessProgram(adapter.program, spec.env);
+    const program = await observeHarnessProgram(adapter.program, spec.env, undefined, {
+      fresh: spec.fresh,
+    });
     const key = `${doctorCacheKey(adapter.id, spec)}::${program.key}`;
     if (cacheable) {
       const hit = doctorCache.get(key);

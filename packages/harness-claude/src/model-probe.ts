@@ -448,6 +448,7 @@ export async function probeClaudeModels(
       CLAUDE_PROGRAM,
       spec?.env,
       identity.launcher ?? identity.path,
+      { fresh: spec?.fresh },
     );
     if (generation !== startedGeneration) return fallback();
     key = JSON.stringify([cacheKey(scope, identity), program.key]);

@@ -1,18 +1,32 @@
-import { mkdtempSync, writeFileSync, rmSync, statSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  statSync,
+  existsSync,
+  readFileSync,
+  appendFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   defineHarnessProgram,
+  observeHarnessProgram,
+  invalidateProgramObservations,
+  prepareNativeProgram,
   readModelCatalog,
   runDoctor,
   type HarnessAdapter,
 } from "@claudexor/core";
 import {
+  HarnessRunSpec,
   CredentialProfile,
   ConformanceReport,
   ControlHarnessAccountCatalog,
 } from "@claudexor/schema";
+import { inspectHarness } from "./harness-maintenance.js";
 import { accountObservations } from "./account-observations.js";
 import { enumerateAccountCatalogs } from "./account-catalog.js";
 import { GlobalConfig } from "@claudexor/schema";
@@ -20,15 +34,19 @@ import { GlobalConfig } from "@claudexor/schema";
 const roots: string[] = [];
 afterEach(() => {
   accountObservations.invalidate();
+  invalidateProgramObservations();
   vi.unstubAllEnvs();
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
 }, 0);
-function fixture() {
+function fixture(count = 1) {
   const root = mkdtempSync(join(tmpdir(), "catalog-program-"));
   roots.push(root);
   const bin = join(root, "wrapper"),
     versionFile = join(root, "version");
-  writeFileSync(bin, `#!/bin/sh\n/bin/cat '${versionFile}'\n`, { mode: 0o755 });
+  const counter = join(root, "version-count");
+  writeFileSync(bin, `#!/bin/sh\necho x >> '${counter}'\n/bin/cat '${versionFile}'\n`, {
+    mode: 0o755,
+  });
   let version = "1.0.0";
   const setVersion = (next: string) => {
     version = next;
@@ -50,6 +68,12 @@ function fixture() {
     credential_kind: "config_dir_login",
     isolation_locator: root,
   });
+  const profiles = Array.from({ length: count }, (_, i) => ({
+    ...profile,
+    profile_id: i ? `p${i}` : "a",
+    isolation_locator: join(root, `account-${i}`),
+  }));
+  for (const p of profiles) mkdirSync(p.isolation_locator, { recursive: true });
   const models = vi.fn(async () => [
     { id: version, label: null, context_window: null, routes: null },
   ]);
@@ -65,8 +89,8 @@ function fixture() {
       throw new Error("unused");
     },
     run: async function* () {},
-    probeCredentialProfile: async () => ({
-      profile_id: "a",
+    probeCredentialProfile: async (candidate: CredentialProfile) => ({
+      profile_id: candidate.profile_id,
       harness_id: program.id,
       availability: "available" as const,
       verification: "passed" as const,
@@ -77,20 +101,20 @@ function fixture() {
   } satisfies HarnessAdapter;
   const config = GlobalConfig.parse({
     harnesses: { [program.id]: {} },
-    credential_profiles: [profile],
+    credential_profiles: profiles,
   });
   const catalog = () =>
     enumerateAccountCatalogs({
       observationKey: "models",
       adapter,
-      profiles: [profile],
+      profiles,
       context: { config, quota: { snapshots: [], absences: [] } },
-      read: async () => {
+      read: async (candidate) => {
         const read = await readModelCatalog(adapter);
         if (read.status !== "listed") throw new Error("unavailable");
         return ControlHarnessAccountCatalog.parse({
           harnessId: program.id,
-          credentialProfileId: "a",
+          credentialProfileId: candidate.profile_id,
           models: read.models,
           source: "api",
           sourceProgram: read.sourceProgram,
@@ -102,6 +126,12 @@ function fixture() {
     });
   return {
     root,
+    program,
+    profile,
+    calls: () =>
+      existsSync(counter) ? readFileSync(counter, "utf8").trim().split("\n").length : 0,
+    refresh: () => observeHarnessProgram(program, undefined, undefined, { fresh: true }),
+    inspect: () => inspectHarness(program.id, { program, home: root }),
     bin,
     versionFile,
     setVersion,
@@ -111,7 +141,7 @@ function fixture() {
     registry: new Map([[program.id, adapter]]),
   };
 }
-it("refreshes a per-account catalog and readiness after a change behind an unchanged wrapper", async () => {
+it("keeps passive wrapper observations until inventory refreshes catalog and readiness", async () => {
   const f = fixture(),
     stat = statSync(f.bin);
   expect((await f.catalog())[0]!.catalog).toMatchObject({
@@ -123,6 +153,9 @@ it("refreshes a per-account catalog and readiness after a change behind an uncha
   expect((await runDoctor(f.registry, { cwd: f.root }))[0]!.reasons).toEqual(["1.0.0"]);
   f.setVersion("2.0.0");
   expect(statSync(f.bin).mtimeMs).toBe(stat.mtimeMs);
+  expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("1.0.0");
+  expect(f.calls()).toBe(1);
+  await f.inspect();
   expect((await f.catalog())[0]!.catalog).toMatchObject({
     models: [{ id: "2.0.0" }],
     sourceProgram: { path: f.bin, version: "2.0.0" },
@@ -143,6 +176,7 @@ it("discards a late answer from the old program without replacing the newer acco
   const old = f.catalog();
   await vi.waitFor(() => expect(release).toBeTypeOf("function"));
   f.setVersion("2.0.0");
+  await f.refresh();
   expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("2.0.0");
   release([{ id: "old", label: null, context_window: null, routes: null }]);
   expect((await old)[0]!.catalog).toBeNull();
@@ -170,6 +204,7 @@ echo "$value"
   try {
     await vi.waitFor(() => expect(existsSync(entered)).toBe(true));
     f.setVersion("2.0.0");
+    appendFileSync(f.bin, "\n# new file identity\n");
     expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("2.0.0");
     writeFileSync(release, "release");
     expect(await old).toMatchObject({
@@ -188,15 +223,74 @@ it.each([true, false])(
   async (changed) => {
     const f = fixture();
     f.models.mockImplementationOnce(async () => {
-      if (changed) f.setVersion("2.0.0");
-      else throw new Error("vendor unavailable");
+      if (changed) {
+        f.setVersion("2.0.0");
+        await f.refresh();
+      } else throw new Error("vendor unavailable");
       return [{ id: "old", label: null, context_window: null, routes: null }];
     });
     expect((await f.catalog())[0]!.catalog).toBeNull();
-    f.setVersion("1.0.0"); // Next open has the original fingerprint, without refresh.
+    f.setVersion("1.0.0"); // Restore the original fingerprint; the catalog itself is not refreshed.
+    await f.refresh();
     const next = (await f.catalog())[0]!;
     if (changed) expect(next.catalog?.models[0]?.id).toBe("1.0.0");
     else expect(next.catalog).toBeNull();
     expect(f.models).toHaveBeenCalledTimes(changed ? 2 : 1);
   },
 );
+
+it("18 accounts share one first version process, zero on a cached listing, and one after entry replacement", async () => {
+  const f = fixture(18);
+  const first = await f.catalog();
+  expect(first).toHaveLength(18);
+  expect(first.every((r) => r.catalog?.sourceProgram?.version === "1.0.0")).toBe(true);
+  expect(f.calls()).toBe(1);
+  expect(f.models).toHaveBeenCalledTimes(18);
+  await f.catalog();
+  expect(f.calls()).toBe(1);
+  expect(f.models).toHaveBeenCalledTimes(18);
+  f.setVersion("2.0.0");
+  appendFileSync(f.bin, "\n# replacement identity\n");
+  expect((await f.catalog()).every((r) => r.catalog?.sourceProgram?.version === "2.0.0")).toBe(
+    true,
+  );
+  expect(f.calls()).toBe(2);
+  expect(f.models).toHaveBeenCalledTimes(36);
+});
+it("a native startup frame refreshes unchanged wrappers for all 18 accounts without a version process", async () => {
+  const f = fixture(18);
+  await f.catalog();
+  f.setVersion("2.0.0");
+  expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("1.0.0");
+  const run = await prepareNativeProgram(
+    f.program,
+    f.bin,
+    HarnessRunSpec.parse({ session_id: "s", intent: "explain", prompt: "fixture", cwd: f.root }),
+    undefined,
+    true,
+  );
+  run.observeVersion("2.0.0");
+  expect((await f.catalog()).every((r) => r.catalog?.sourceProgram?.version === "2.0.0")).toBe(
+    true,
+  );
+  expect(f.calls()).toBe(1);
+  f.setVersion("3.0.0");
+  await f.inspect();
+  run.observeVersion("2.0.0"); // Old run cannot undo newer inventory evidence.
+  expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("3.0.0");
+  expect(f.calls()).toBe(2);
+});
+it("a fresh account read asks again while a passive read shares its pending process", async () => {
+  const f = fixture();
+  await f.catalog();
+  f.setVersion("2.0.0");
+  const acquire = vi.fn(async () => "fresh");
+  await Promise.all(
+    Array.from({ length: 18 }, () =>
+      accountObservations.read("refresh", f.profile, acquire, true, f.program),
+    ),
+  );
+  expect(f.calls()).toBe(2);
+  expect(acquire).toHaveBeenCalledOnce();
+  expect((await f.catalog())[0]!.catalog?.sourceProgram?.version).toBe("2.0.0");
+});

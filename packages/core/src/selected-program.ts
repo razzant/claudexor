@@ -86,7 +86,10 @@ function installedWindowsPath(env: NodeJS.ProcessEnv, spawn = spawnSync): string
     .join(delimiter);
 }
 
-function selection(program: HarnessProgram, options: ProgramResolutionOptions) {
+export function selectProgramEntry(
+  program: HarnessProgram,
+  options: ProgramResolutionOptions = {},
+) {
   const source = options.sourceEnv ?? process.env;
   const platform = options.platform ?? process.platform;
   const env = options.environment ?? {
@@ -146,7 +149,7 @@ export function resolveSelectedProgram(
   program: HarnessProgram,
   options: ProgramResolutionOptions = {},
 ): SelectedHarnessProgram {
-  const { command, env, observed } = selection(program, options);
+  const { command, env, observed } = selectProgramEntry(program, options);
   if (command) {
     try {
       const invocation = interpretedCommand(
@@ -181,7 +184,7 @@ export async function resolveSelectedProgramAsync(
     windowsConsole?: WindowsConsolePolicy;
   } = {},
 ): Promise<SelectedHarnessProgram> {
-  const { command, env, observed } = selection(program, options);
+  const { command, env, observed } = selectProgramEntry(program, options);
   if (command) {
     try {
       const result = await runCapture(command.entrypoint, ["--version"], {

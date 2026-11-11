@@ -8464,9 +8464,15 @@ adapter-declared scheme answers `updateAvailable` as yes, no or cannot_tell.
 An installed version ahead of the published pointer is not an available update;
 same-day unequal Cursor hashes cannot be ordered. Hosts never compare strings.
 Program-derived model lists carry `sourceProgram: {path, version}` from the same
-observation. Cache reads include the self-reported version, so replacement behind
-an unchanged wrapper is visible at the next read; stale in-flight answers cannot
-overwrite newer observations. Fixture version constants stamp recorded evidence
+observation. The engine remembers each entry's last self-reported version by
+path, real path and stat identity. Passive account/status/catalog reads inspect
+that identity without spawning a version process; a first or changed identity
+asks once, concurrent askers share it, and inventory/fresh reads ask again.
+Native runs reuse remembered versions or learn from the vendor startup frame
+without a separate version process. A replacement behind an unchanged wrapper
+is seen at the next inventory read, fresh read or native startup frame of that
+harness, not at a passive poll. There is no version TTL; stale in-flight answers
+cannot overwrite newer observations. Fixture version constants stamp recorded evidence
 only. Native attempt records retain each invoked path/version, using the vendor
 startup frame where available, and exhausted credential pools retain the last
 bounded, redacted vendor error sentence alongside each try's original refusal.

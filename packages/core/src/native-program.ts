@@ -6,7 +6,7 @@ import type {
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { composeSpawnEnv } from "./env-scope.js";
-import { resolveSelectedProgramAsync } from "./selected-program.js";
+import { observeHarnessProgram, programObservationPublisher } from "./program-observation.js";
 
 /** Resolve once immediately before dispatch, then launch that exact entry path. */
 export async function prepareNativeProgram(
@@ -14,13 +14,21 @@ export async function prepareNativeProgram(
   bin: string,
   spec: HarnessRunSpec,
   patch?: Record<string, string | null | undefined>,
+  versionFromStream = false,
 ) {
   const environment = composeSpawnEnv(spec.env_inheritance, patch);
-  const selected = await resolveSelectedProgramAsync(program, {
+  const resolution = {
     sourceEnv: { ...environment, [program.overrideEnv]: bin },
     environment,
     cwd: spec.cwd,
+  };
+  const observed = await observeHarnessProgram(program, patch, bin, {
+    environment,
+    cwd: spec.cwd,
+    probe: !versionFromStream,
   });
+  const selected = observed.selection!;
+  const publish = programObservationPublisher(program, resolution);
   let evidence: NativeProgramEvidence = {
     path: selected.path,
     version: selected.version,
@@ -35,6 +43,7 @@ export async function prepareNativeProgram(
         version: redactSecrets(version.trim()).slice(0, 256),
         versionSource: "vendor_stream",
       };
+      publish({ ...selected, version: evidence.version, versionOutput: evidence.version });
     },
     event(event: HarnessEvent): HarnessEvent {
       return ["started", "error", "completed"].includes(event.type)

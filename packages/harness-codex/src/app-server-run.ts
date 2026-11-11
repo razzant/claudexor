@@ -51,7 +51,7 @@ export type { CodexAppServerRunInput } from "./app-server-protocol.js";
 export async function* runCodexAppServer(
   input: CodexAppServerRunInput,
 ): AsyncGenerator<HarnessEvent> {
-  const program = await prepareNativeProgram(CODEX_PROGRAM, input.bin, input.spec, input.env);
+  const program = await prepareNativeProgram(CODEX_PROGRAM, input.bin, input.spec, input.env, true);
   input = { ...input, bin: program.bin };
   verifyCodexAttachments(input.spec.attachments);
   const run = input.spawn ?? spawnProcess;
