@@ -16,6 +16,7 @@ import {
   resolveSelectedProgram,
   resolveSelectedProgramAsync,
   selectProgramLauncher,
+  verifyProgramSelection,
 } from "./selected-program.js";
 
 const roots: string[] = [];
@@ -45,6 +46,35 @@ function executable(path: string, text = "1.0.0") {
 }
 
 describe("selected program", () => {
+  it.each(["immediate", "second", "never"])(
+    "verifies with at most two immediate reads (%s answer)",
+    (answer) => {
+      const home = root();
+      const path = join(home, "program");
+      const marker = join(home, "asked");
+      executable(path);
+      writeFileSync(
+        path,
+        `#!/bin/sh
+if [ '${answer}' = never ]; then exit 1; fi
+if [ '${answer}' = second ] && [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+echo 1.0.0
+`,
+      );
+      let asks = 0;
+      const limitations: string[] = [];
+      const observed = verifyProgramSelection(() => {
+        asks++;
+        return resolveSelectedProgram(fixture, {
+          sourceEnv: { HOME: home, PATH: "", FIXTURE_BIN: path },
+        });
+      }, limitations);
+      expect(observed.version).toBe(answer === "never" ? null : "1.0.0");
+      expect(asks).toBe(answer === "immediate" ? 1 : 2);
+      expect(limitations).toHaveLength(answer === "second" ? 1 : 0);
+      if (answer === "second") expect(limitations[0]).toContain("next check answered");
+    },
+  );
   it.each([
     ["2.1.322 (Claude Code)", "2.1.322"],
     ["codex-cli 0.167.1", "0.167.1"],

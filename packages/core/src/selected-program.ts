@@ -44,6 +44,23 @@ export interface ProgramResolutionOptions {
   spawn?: typeof spawnSync;
 }
 
+/** Maintenance decisions get one immediate second read after a missing answer.
+ * The observer keeps its usual timeout; no vendor command is repeated. */
+export function verifyProgramSelection(
+  observe: () => SelectedHarnessProgram,
+  limitations: string[],
+): SelectedHarnessProgram {
+  const first = observe();
+  if (first.path && first.version) return first;
+  const second = observe();
+  if (second.path && second.version) {
+    const limitation =
+      "The first version check did not answer; the next check answered without repeating a vendor command.";
+    if (!limitations.includes(limitation)) limitations.push(limitation);
+  }
+  return second;
+}
+
 export function selectProgramEntry(
   program: HarnessProgram,
   options: ProgramResolutionOptions = {},

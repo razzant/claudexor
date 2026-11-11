@@ -7,6 +7,7 @@ import {
   npmGlobalPackagesDir,
   resolveHarnessCommandOnPath,
   resolveSelectedProgram,
+  verifyProgramSelection,
 } from "@claudexor/core";
 import type { HarnessProgram, SelectedHarnessProgram } from "@claudexor/schema";
 import type { InstallerRuntime } from "./harness-install-runtime.js";
@@ -83,11 +84,16 @@ export function replacementProgram(
   program: HarnessProgram,
   copy: ProductNpmCopy,
   runtime: InstallerRuntime,
+  limitations: string[] = [],
 ): SelectedHarnessProgram {
-  const selected = resolveSelectedProgram(program, {
-    ...runtime,
-    maskedPaths: [...copy.launchers, ...copy.entrypoints],
-  });
+  const selected = verifyProgramSelection(
+    () =>
+      resolveSelectedProgram(program, {
+        ...runtime,
+        maskedPaths: [...copy.launchers, ...copy.entrypoints],
+      }),
+    limitations,
+  );
   if (
     program.majorVersion &&
     selected.version &&
@@ -109,8 +115,11 @@ export function retireProductNpmCopy(
   copy: ProductNpmCopy,
   runtime: InstallerRuntime,
   previous: SelectedHarnessProgram,
+  limitations: string[] = [],
 ): { selection: SelectedHarnessProgram; limitations: string[] } {
-  const expected = replacementProgram(program, copy, runtime);
+  const observe = () =>
+    verifyProgramSelection(() => resolveSelectedProgram(program, runtime), limitations);
+  const expected = replacementProgram(program, copy, runtime, limitations);
   if (!expected.path || !expected.version)
     throw Object.assign(
       new Error(
@@ -125,7 +134,7 @@ export function retireProductNpmCopy(
       ),
       { code: "conversion_older_program" },
     );
-  const ordinary = resolveSelectedProgram(program, runtime);
+  const ordinary = observe();
   const matches = (value: SelectedHarnessProgram) =>
     value.path === expected.path &&
     value.realPath === expected.realPath &&
@@ -142,7 +151,7 @@ export function retireProductNpmCopy(
   // Some vendor installers remove the npm package themselves. Do not accuse
   // them of changing the source when ordinary resolution already proves health.
   if (matches(ordinary) && [copy.packageRoot, ...copy.launchers].some(absent))
-    return { selection: ordinary, limitations: [] };
+    return { selection: ordinary, limitations };
   const current = productNpmCopy(program, ordinary, runtime);
   if (!current || JSON.stringify(current) !== JSON.stringify(copy))
     throw Object.assign(
@@ -166,7 +175,7 @@ export function retireProductNpmCopy(
   ]);
   let selection: SelectedHarnessProgram;
   try {
-    selection = resolveSelectedProgram(program, runtime);
+    selection = observe();
     if (!matches(selection)) throw new Error("Selection changed before conversion committed");
     if (!launchers.every(unchanged))
       throw new Error("An npm launcher changed before conversion committed");
@@ -174,7 +183,9 @@ export function retireProductNpmCopy(
     hidden.restore();
     throw error;
   }
-  const { removed, limitations } = hidden.retire();
+  const retired = hidden.retire();
+  limitations.push(...retired.limitations);
+  const { removed } = retired;
   if (removed.length)
     for (const launcher of launchers) {
       try {
@@ -211,7 +222,7 @@ export async function recoverProductNpmCopies(
       }
       if (
         !stat.isDirectory() ||
-        realpathSync(dirname(root)) !== dirname(root) ||
+        !inside(realpathSync(prefix), realpathSync(dirname(root))) ||
         !inside(realpathSync(prefix), realpathSync(hidden)) ||
         JSON.parse(readFileSync(join(hidden, "package.json"), "utf8")).name !==
           program.legacyNpmPackage
@@ -220,12 +231,15 @@ export async function recoverProductNpmCopies(
       await acknowledge(hidden);
       hideProgramPaths([{ path: root, hidden }]).restore();
       changed = true;
-      const previous = resolveSelectedProgram(program, runtime);
+      const previous = verifyProgramSelection(
+        () => resolveSelectedProgram(program, runtime),
+        limitations,
+      );
       const copy = productNpmCopy(program, previous, runtime);
       if (!copy || copy.packageRoot !== root)
         throw new Error("restored package/launcher relation is not selected");
-      const result = retireProductNpmCopy(program, copy, runtime, previous);
-      limitations.push(`Retired interrupted npm conversion at ${root}.`, ...result.limitations);
+      retireProductNpmCopy(program, copy, runtime, previous, limitations);
+      limitations.push(`Retired interrupted npm conversion at ${root}.`);
     } catch (error) {
       limitations.push(
         `Npm conversion recovery at ${root}: ${error instanceof Error ? error.message : String(error)}`,

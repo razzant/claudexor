@@ -1,6 +1,6 @@
 import { lstatSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
-import { hideProgramPaths, type HarnessAdapter } from "@claudexor/core";
+import { hideProgramPaths, verifyProgramSelection, type HarnessAdapter } from "@claudexor/core";
 import { canonicalCursorProfileHome } from "./profile.js";
 
 const within = (path: string | null, root: string) =>
@@ -93,7 +93,7 @@ export const planCursorProfileProgramCleanup: NonNullable<
           unchanged(plan.recovered ? plan.hidden : plan.root, plan.directory);
           for (const link of plan.links) unchanged(link.path, link.before);
           hidden = hideProgramPaths([{ path: plan.root, hidden: plan.hidden }]);
-          const without = observe();
+          const without = verifyProgramSelection(observe, limitations);
           if (
             !without.path ||
             !without.version ||

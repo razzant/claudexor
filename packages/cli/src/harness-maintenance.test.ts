@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -79,11 +80,23 @@ describe("selected vendor operation", () => {
     });
     expect(spawn).not.toHaveBeenCalled();
   });
-  it.each([true, false])(
-    "recovers a killed conversion's fixed hidden package (replacement still acceptable: %s)",
-    async (acceptable) => {
-      const w = world(),
-        old = oldCopy(w);
+  it.each(
+    [true, false].flatMap((acceptable) => [false, true].map((linked) => ({ acceptable, linked }))),
+  )(
+    "recovers a killed conversion's fixed hidden package through ordinary or linked HOME: %j",
+    async ({ acceptable, linked }) => {
+      const w = world();
+      if (linked) {
+        const actual = join(w.home, "actual-home"),
+          home = join(w.home, "linked-home");
+        mkdirSync(actual);
+        symlinkSync(actual, home);
+        w.home = home;
+        w.installed = join(home, ".vendor/bin/fixture-harness");
+        w.options.home = home;
+        w.options.sourceEnv!.HOME = home;
+      }
+      const old = oldCopy(w);
       w.program.versionScheme = "semver";
       executable(w.installed, "2.0.0");
       const hidden = `${old.pkg}.claudexor-converted`;
@@ -134,6 +147,125 @@ throw new Error('The child must die while the package is hidden');
       expect(existsSync(old.launcher)).toBe(!acceptable);
       expect(receipt.after?.version).toBe(acceptable ? "2.0.0" : "1.0.0");
       expect(receipt.ok).toBe(acceptable);
+      expect(receipt.limitations.join(" ")).not.toContain("hidden package identity is not proven");
+    },
+  );
+  it("preserves a hidden package whose real parent escapes the product prefix", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    const hidden = `${old.pkg}.claudexor-converted`;
+    renameSync(old.pkg, hidden);
+    const elsewhere = join(w.home, "outside-prefix");
+    renameSync(dirname(old.pkg), elsewhere);
+    symlinkSync(elsewhere, dirname(old.pkg));
+    executable(w.installed, "2.0.0");
+    const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(receipt.ok).toBe(true);
+    expect(existsSync(hidden)).toBe(true);
+    expect(existsSync(old.pkg)).toBe(false);
+    expect(receipt.limitations.join(" ")).toContain("hidden package identity is not proven");
+  });
+  it.each(
+    ["install", "update", "exact"].flatMap((route) =>
+      [false, true].map((answers) => ({ route, answers })),
+    ),
+  )(
+    "settles from the final version answer without repeating the vendor command: %j",
+    async ({ route, answers }) => {
+      const w = world();
+      if (route !== "install") executable(w.installed);
+      const marker = join(w.home, "version-asked");
+      let commands = 0;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands++;
+        executable(w.installed);
+        writeFileSync(
+          w.installed,
+          `#!/bin/sh
+if [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+${answers ? "echo 2.0.0" : "exit 1"}
+`,
+        );
+        return result("Vendor command completed");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate("fixture", route === "exact" ? "2.0.0" : undefined, {
+        ...w.options,
+        installOnly: route === "install",
+      });
+      expect(commands).toBe(1);
+      expect(receipt).toMatchObject({
+        ok: answers,
+        exitCode: 0,
+        after: { version: answers ? "2.0.0" : null },
+      });
+      expect(receipt.problem).toEqual(
+        answers ? null : expect.objectContaining({ code: "program_verification_failed" }),
+      );
+      expect(
+        receipt.limitations.filter((line) => line.includes("next check answered")),
+      ).toHaveLength(answers ? 1 : 0);
+    },
+  );
+  it.each(
+    ["replacement", "before-exact", "hidden", "exact"].flatMap((phase) =>
+      [false, true].map((answers) => ({ phase, answers })),
+    ),
+  )(
+    "checks a missing answer once more before committing conversion or exact version: %j",
+    async ({ phase, answers }) => {
+      const w = world(),
+        old = oldCopy(w);
+      const marker = join(w.home, "version-asked");
+      let commands = 0;
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands++;
+        executable(w.installed);
+        const check =
+          phase === "hidden"
+            ? `[ -d '${old.pkg}.claudexor-converted' ]`
+            : phase === "exact" && commands === 1
+              ? "false"
+              : "true";
+        writeFileSync(
+          w.installed,
+          `#!/bin/sh
+if ${check}; then
+  if [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+  ${answers ? ":" : "exit 1"}
+fi
+echo ${commands === 1 ? "2.0.0" : "3.0.0"}
+`,
+        );
+        return result("Vendor command completed");
+      }) as typeof spawnSync;
+      const receipt = await runHarnessUpdate(
+        "fixture",
+        phase === "exact" || phase === "before-exact" ? "3.0.0" : undefined,
+        w.options,
+      );
+      expect(receipt.ok).toBe(answers);
+      const exactRan = phase === "exact" || (phase === "before-exact" && answers);
+      expect(commands).toBe(exactRan ? 2 : 1);
+      expect(receipt.after?.version).toBe(answers ? (exactRan ? "3.0.0" : "2.0.0") : "1.0.0");
+      expect(existsSync(old.pkg)).toBe(!answers);
+      expect(existsSync(old.launcher)).toBe(!answers);
+      expect(existsSync(`${old.pkg}.claudexor-converted`)).toBe(false);
+      if (answers) {
+        expect(receipt.problem).toBeNull();
+        expect(
+          receipt.limitations.filter((line) => line.includes("next check answered")),
+        ).toHaveLength(1);
+      } else expect(receipt.problem).not.toBeNull();
     },
   );
   it("updates a person's npm copy without converting when the adapter never owned that package", async () => {
@@ -479,10 +611,20 @@ throw new Error('The child must die while the package is hidden');
     w.program.versionScheme = "semver";
     executable(old.entry, "1.18.9");
     const shadow = join(w.home, ".local/bin/fixture-harness");
+    const installed = join(w.home, "installer-finished"),
+      asked = join(w.home, "shadow-asked");
     executable(shadow, "1.18.0");
+    writeFileSync(
+      shadow,
+      `#!/bin/sh
+if [ -e '${installed}' ] && [ ! -e '${asked}' ]; then : > '${asked}'; exit 1; fi
+echo 1.18.0
+`,
+    );
     w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       executable(w.installed, "1.19.5");
+      writeFileSync(installed, "done");
       return result("Installed 1.19.5");
     }) as typeof spawnSync;
     const refused = await runHarnessUpdate("fixture", undefined, w.options);
@@ -493,9 +635,13 @@ throw new Error('The child must die while the package is hidden');
     expect(existsSync(w.installed)).toBe(true);
     expect(existsSync(old.pkg)).toBe(true);
     expect(refused.after?.path).toBe(old.launcher);
+    expect(refused.limitations.filter((line) => line.includes("next check answered"))).toHaveLength(
+      1,
+    );
     rmSync(shadow);
     const converted = await runHarnessUpdate("fixture", undefined, w.options);
     expect(converted).toMatchObject({ ok: true, after: { path: w.installed, version: "1.19.5" } });
+    expect(converted.limitations.some((line) => line.includes("next check answered"))).toBe(false);
     expect(existsSync(old.pkg)).toBe(false);
   });
   it.each([false, true])(

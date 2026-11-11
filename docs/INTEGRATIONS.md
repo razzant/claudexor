@@ -213,8 +213,9 @@ answer. Fixture stamps, maintenance inventory and HTTP `clientVersion` are
 separate facts. Passive reads reuse the answer for the same path, real path and
 stat identity, including no answer. A failed ask preserves an earlier answer
 from that identity. A changed file asks again; a replacement behind an unchanged
-wrapper is seen at the next inventory read, fresh read or native startup frame,
-not a passive poll. There is no version TTL, and stale in-flight answers are
+wrapper is detected when an inventory read, fresh read or native startup frame
+obtains a different version; passive polls and continued missing answers do not
+reveal it. There is no version TTL, and stale in-flight answers are
 discarded. Native attempt evidence labels reused versions `remembered`, actual
 version asks `version_probe`, absent answers `unknown`, and startup versions
 `vendor_stream`. Claude, Codex and Copilot supply startup versions; Cursor,

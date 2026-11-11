@@ -160,7 +160,7 @@ async function installRoute(program, env) {
 }
 
 /** The installed program's own update verb, under the engine's environment. */
-function updateRoute(program, env) {
+async function updateRoute(program, env) {
   if (!installed.has(program.id))
     throw new Error("Installation phase did not establish this program on the runner");
   const row = cli(env, ["harness", "inspect", program.id]).harnesses[0];
@@ -169,12 +169,15 @@ function updateRoute(program, env) {
     throw new Error(`Installed route has no update action: ${row.actions.update.reason}`);
   const receipt = cli(env, ["harness", "update", program.id, "--yes"], { refusal: true });
   // Compare with the same command outside the engine before blaming the vendor.
-  if (!receipt.ok && receipt.problem?.code === "vendor_command_failed" && receipt.after?.version)
+  if (!receipt.ok && receipt.problem?.code === "vendor_command_failed" && receipt.after?.version) {
+    const direct = verifyVendorUpdateRefusal(receipt, env, { cwd: root });
     return {
       vendorRefused: receipt.progress,
       exitCode: receipt.exitCode,
-      direct: verifyVendorUpdateRefusal(receipt, env, { cwd: root }),
+      direct,
+      runPath: await assertNativeRunSelection(program, receipt.after, env, root),
     };
+  }
   if (
     !receipt.ok ||
     !["changed", "not_changed"].includes(receipt.outcome) ||
@@ -184,6 +187,7 @@ function updateRoute(program, env) {
     throw new Error(`update did not end in a verified program: ${JSON.stringify(receipt)}`);
   return {
     outcome: receipt.outcome,
+    runPath: await assertNativeRunSelection(program, receipt.after, env, root),
     before: receipt.before?.version ?? null,
     after: receipt.after.version,
     commands: receipt.commands,
@@ -192,7 +196,7 @@ function updateRoute(program, env) {
 
 /** A copy made by real npm in the product's prefix is replaced by the vendor's
  * copy at Update, and the old package and launcher are gone afterwards. */
-function conversionRoute(program) {
+async function conversionRoute(program) {
   const home = machineHome ?? join(root, `npm-${program.id}`);
   const env = environment(home);
   const prefix = join(home, ".claudexor", "node");
@@ -238,6 +242,14 @@ function conversionRoute(program) {
     throw new Error(`Conversion unavailable: ${before.actions.update.reason}`);
   const receipt = cli(env, ["harness", "update", program.id, "--yes"], { refusal: true });
   const after = cli(env, ["harness", "inspect", program.id]).harnesses[0];
+  if (
+    after.selection.path !== receipt.after?.path ||
+    after.selection.version !== receipt.after?.version
+  )
+    throw new Error(
+      `conversion receipt and final selection disagree: ${JSON.stringify({ receipt, after })}`,
+    );
+  const runPath = await assertNativeRunSelection(program, after.selection, env, root);
   // A published installer may lag npm. A proved downgrade refusal is a guarded
   // route, not a claimed conversion; the old program and launchers must survive.
   if (!receipt.ok && receipt.problem?.code === "conversion_older_program") {
@@ -258,6 +270,7 @@ function conversionRoute(program) {
       throw new Error(`Unsafe downgrade refusal: ${JSON.stringify({ receipt, after })}`);
     return {
       preservedOlderVendor: true,
+      runPath,
       before: before.selection.version,
       vendor: replacement.version,
       progress: receipt.progress,
@@ -276,6 +289,7 @@ function conversionRoute(program) {
     );
   return {
     npm: `${program.legacyNpmPackage}@${old}`,
+    runPath,
     before: { path: before.selection.path, version: before.selection.version },
     after: { path: after.selection.path, version: after.selection.version },
     outcome: receipt.outcome,

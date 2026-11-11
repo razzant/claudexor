@@ -289,8 +289,9 @@ The data's release-notes links are literal verified vendor addresses. Fixture
 version constants stamp recordings and snapshots only. Focused cache regressions
 must include 18-account passive reads for answered and permanently mute programs,
 a failed fresh ask preserving an earlier answer, an unchanged wrapper refreshed
-by inventory or a native startup frame, and late-answer and credential-invalidation
-fences. Conversion recovery tests kill a child with its package hidden and
+when inventory, a fresh read or a native startup frame obtains a different
+version (continued missing answers cannot reveal its changed target), and
+late-answer and credential-invalidation fences. Conversion recovery tests kill a child with its package hidden and
 assert both retirement and restoration on the next explicit maintenance.
 
 The `publish` mode also carries `remote_runtime_manifest_b64`:

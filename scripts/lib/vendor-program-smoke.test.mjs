@@ -27,7 +27,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 }, 0);
 
-test("installation proof compares native preparation with the receipt without running a session", async () => {
+test("maintenance proof reselects changed programs and compares the final receipt without running a session", async () => {
   const cwd = fixture(),
     bin = join(cwd, process.platform === "win32" ? "fixture.exe" : "fixture");
   const marker = join(cwd, "unexpected-child");
@@ -43,13 +43,23 @@ test("installation proof compares native preparation with the receipt without ru
     overrideEnv: "PROOF_FIXTURE_BIN",
     launchers: [{ name: "fixture" }],
     installationEnv: [],
-    platforms: {},
+    platforms: { [process.platform]: { launcherDirs: ["{home}/vendor"] } },
   });
-  const env = { HOME: cwd, PATH: cwd, PROOF_FIXTURE_BIN: bin };
+  const env = { HOME: cwd, PATH: cwd };
   expect(await assertNativeRunSelection(program, { path: bin }, env, cwd)).toBe(bin);
   await expect(
     assertNativeRunSelection(program, { path: join(cwd, "another") }, env, cwd),
   ).rejects.toThrow("Native run selection differs");
+  const next = join(cwd, "vendor", process.platform === "win32" ? "fixture.exe" : "fixture");
+  mkdirSync(join(cwd, "vendor"));
+  copyFileSync(bin, next);
+  rmSync(bin);
+  // Update/conversion can change which entry a run will select. Checking the
+  // earlier Install receipt must fail; the final receipt must agree.
+  await expect(assertNativeRunSelection(program, { path: bin }, env, cwd)).rejects.toThrow(
+    "Native run selection differs",
+  );
+  expect(await assertNativeRunSelection(program, { path: next }, env, cwd)).toBe(next);
   expect(existsSync(marker)).toBe(false);
 });
 

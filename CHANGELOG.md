@@ -29,7 +29,10 @@ on GitHub Releases.
   handles, idempotency, cancellation and one active operation per harness.
   Receipts retain the requester, actual command and script hash, installation
   HOME, before/after program evidence, exit status, bounded redacted vendor
-  lines, partial effects and active-run count. Active runs do not gate an update.
+  lines, partial effects and active-run count. Final verification determines the
+  result: a missing version answer gets one immediate second read, with a
+  limitation if it succeeds; no vendor command is repeated. Active runs do not
+  gate an update.
   The SSH app reads the same capabilities and receipts. **Application floor:**
   local and SSH runtime manifests require Claudexor.app 6.0.0. An older app
   reports that an application update is required and keeps its working engine;
@@ -42,8 +45,9 @@ on GitHub Releases.
   Program-derived model catalogs carry `sourceProgram` path/version. Passive
   reads reuse the same file identity and remembered answer, including no answer;
   a failed ask preserves an earlier answer for that identity. A program replaced
-  behind an unchanged wrapper is seen at the next inventory read, fresh read or
-  native start-up frame, not a passive poll. Claude, Codex and Copilot report
+  behind an unchanged wrapper is detected when an inventory read, fresh read or
+  native start-up frame obtains a different version; passive polls and continued
+  missing answers do not reveal the replacement. Claude, Codex and Copilot report
   start-up versions; Cursor, Antigravity, Grok and OpenCode use remembered
   evidence or one first version ask. Native attempt records label that source,
   and credential-pool exhaustion retains the last bounded redacted vendor error.

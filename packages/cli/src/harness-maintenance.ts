@@ -10,6 +10,7 @@ import {
   programPlatform,
   resolveSelectedProgramAsync,
   resolveSelectedProgram,
+  verifyProgramSelection,
 } from "@claudexor/core";
 import {
   ControlProblem,
@@ -310,10 +311,8 @@ export async function runHarnessUpdate(
     if (version && program.majorVersion && Number(version.split(".")[0]) !== program.majorVersion)
       throw new Error(`${harness} supports only ${program.majorVersion}.x (#668).`);
     if (options.installOnly && before.path && !version) {
-      if (!before.version)
-        throw Object.assign(new Error(programActions(program, before, runtime).install.reason!), {
-          code: "program_verification_failed",
-        });
+      // The final observation below determines health, including a first launch
+      // that did not answer. No command ran, so no exit code is invented.
       receipt.ok = true;
       receipt.after = before;
       receipt.outcome = "not_changed";
@@ -385,7 +384,7 @@ export async function runHarnessUpdate(
     const installerExit = receipt.exitCode;
     try {
       if (copy && exactAfterInstall) {
-        const native = replacementProgram(program, copy, runtime);
+        const native = replacementProgram(program, copy, runtime, receipt.limitations);
         if (!native.path || !native.version)
           throw Object.assign(
             new Error(
@@ -406,7 +405,7 @@ export async function runHarnessUpdate(
           receipt.limitations.push(`Vendor installer exit status: ${installerExit}.`);
           await execute(requested);
         }
-        if (replacementProgram(program, copy, runtime).version !== version)
+        if (replacementProgram(program, copy, runtime, receipt.limitations).version !== version)
           throw Object.assign(
             new Error(
               "The new vendor program did not report the requested exact version; the old npm copy is unchanged.",
@@ -415,8 +414,7 @@ export async function runHarnessUpdate(
           );
       }
       if (copy) {
-        const converted = retireProductNpmCopy(program, copy, runtime, before);
-        receipt.limitations.push(...converted.limitations);
+        retireProductNpmCopy(program, copy, runtime, before, receipt.limitations);
         if (installerFailure)
           receipt.limitations.push(
             `The installer exited ${installerExit}, but conversion completed because the selected replacement answers its version and is not known to be older.`,
@@ -425,12 +423,6 @@ export async function runHarnessUpdate(
     } catch (error) {
       throw installerFailure ?? error;
     }
-    receipt.after = resolveSelectedProgram(program, runtime);
-    if (!receipt.after.path || !receipt.after.version)
-      throw Object.assign(
-        new Error("The selected program did not answer --version after the vendor command."),
-        { code: "program_verification_failed" },
-      );
     receipt.ok = true;
     await cleanupProfiles(false);
   } catch (error) {
@@ -442,13 +434,22 @@ export async function runHarnessUpdate(
     });
   } finally {
     if (runtime && program && receipt.before) {
-      receipt.after = resolveSelectedProgram(program, runtime);
+      // Settle against the last observation, after every mutation. An earlier
+      // missed answer cannot leave a verification error beside a healthy after.
+      receipt.after = receipt.dryRun
+        ? resolveSelectedProgram(program, runtime)
+        : verifyProgramSelection(
+            () => resolveSelectedProgram(program!, runtime!),
+            receipt.limitations,
+          );
       if (receipt.ok && !receipt.dryRun && (!receipt.after.path || !receipt.after.version)) {
         receipt.ok = false;
         receipt.problem = ControlProblem.parse({
           code: "program_verification_failed",
           message:
-            "The selected program did not answer --version after maintenance and profile cleanup.",
+            options.installOnly && !started
+              ? "The selected program cannot answer --version; repair it or use Update before installing."
+              : "The selected program did not answer --version after maintenance and profile cleanup.",
           retryable: true,
         });
       }
@@ -469,6 +470,7 @@ export async function runHarnessUpdate(
           : started && !receipt.ok
             ? "unknown"
             : "none";
+      receipt.limitations = [...new Set(receipt.limitations)];
     }
     receipt.phase = "settled";
     if (program) invalidateProgramObservations(program.id);

@@ -87,6 +87,35 @@ it("removes an independent vendor-shaped program copy and its links, preserving 
   expect(readFileSync(join(f.home, ".cursor/credential-fixture"), "utf8")).toBe("unchanged");
   expect(planCursorProfileProgramCleanup([f.profile], f.observe()).paths).toEqual([]);
 });
+it.each([false, true])(
+  "checks again before deciding a hidden profile copy is in use (answers: %s)",
+  (answers) => {
+    const f = fixture();
+    const marker = join(f.root, "version-asked");
+    // Keep the real launcher shape; its sibling process misses the first answer
+    // only while the candidate copy is hidden.
+    writeFileSync(
+      join(dirname(realpathSync(f.selected)), "node"),
+      `#!/bin/sh
+if [ -d '${f.hidden}' ]; then
+  if [ ! -e '${marker}' ]; then : > '${marker}'; exit 1; fi
+  ${answers ? ":" : "exit 1"}
+fi
+echo 2026.11.10-731fb78
+`,
+    );
+    const before = f.observe();
+    const result = planCursorProfileProgramCleanup([f.profile], before).execute(f.observe);
+    expect(existsSync(f.hidden)).toBe(false);
+    expect(existsSync(f.tree)).toBe(!answers);
+    expect(existsSync(f.old)).toBe(!answers);
+    expect(f.observe()).toEqual(before);
+    expect(result.limitations.some((line) => line.includes("next check answered"))).toBe(answers);
+    expect(result.limitations.some((line) => line.includes("in use"))).toBe(!answers);
+    if (answers) expect(result.removed).toContain(f.tree);
+    else expect(result.removed).toEqual([]);
+  },
+);
 it("preserves the selected profile copy, including a selection changed after planning", () => {
   const f = fixture(),
     plan = planCursorProfileProgramCleanup([f.profile], f.observe());

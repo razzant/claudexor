@@ -8,8 +8,9 @@
   commands under the installation HOME. Selected paths and self-reported versions
   are shared by runs, probes and maintenance. Passive reads reuse the remembered
   answer for the same file identity, including no answer; a failed ask preserves
-  an earlier answer. A replacement behind an unchanged wrapper appears at the
-  next inventory read, fresh read or native startup frame, not a passive poll.
+  an earlier answer. A replacement behind an unchanged wrapper is detected when
+  an inventory read, fresh read or native startup frame obtains a different
+  version; passive polls and continued missing answers do not reveal it.
   Claude, Codex and Copilot supply startup versions; the other adapters use
   remembered evidence or one first version ask. Model lists identify their source
   program. Native attempts retain program evidence and exhausted credential

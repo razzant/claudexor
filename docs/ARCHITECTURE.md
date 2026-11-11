@@ -8433,7 +8433,12 @@ selected version and fetch the script. Maintenance uses the real installation
 HOME and the clean runtime environment, preserving declared installation inputs
 such as CODEX_HOME and XDG roots. A credential-profile HOME never chooses the
 installation. Successful execution re-resolves the entry and requires its own
-version answer. A zero child exit alone proves no runnable installation.
+version answer. A missing answer gets one immediate second read before a
+verification decision, including conversion, cleanup and exact-version checks.
+If the second read answers, the receipt records one limitation. The final
+observation after all mutations determines verification; no vendor command is
+repeated, no wait is added and each read retains its ten-second limit. A zero
+child exit alone proves no runnable installation.
 
 `harness-maintenance-service.ts` uses existing command admission, queue,
 idempotency, cancellation and retention. A repeated key/body rejoins the same
@@ -8468,7 +8473,8 @@ containment or stale sibling metadata never authorizes removal of a hand-placed
 wrapper or symlink. Retirement hides the package at the fixed sibling
 `<package>.claudexor-converted`, keeping the launchers in place until removal.
 The next explicit maintenance restores a leftover and applies the same
-version/major/ordering proof to retire it or leave it restored. Colliding or
+version/major/ordering proof to retire it or leave it restored. A linked HOME is
+accepted when the real package parent stays inside the real product prefix. Colliding or
 changed paths are preserved with a limitation; there is no journal or timer.
 
 The inventory exposes action command previews, newest observation time/failure,
@@ -8489,9 +8495,9 @@ Claude, Codex and Copilot report a version at startup (`vendor_stream`). Cursor,
 Antigravity, Grok and OpenCode do not; their native runs use `remembered` evidence
 when available, or ask once for an unknown entry (`version_probe`). No answer is
 labelled `unknown`. Reusing memory or receiving a startup frame adds no version
-process. A replacement behind an unchanged wrapper
-is seen at the next inventory read, fresh read or native startup frame of that
-harness, not at a passive poll. There is no version TTL; stale in-flight answers
+process. A replacement behind an unchanged wrapper is detected when an
+inventory read, fresh read or native startup frame obtains a different version;
+passive polls and continued missing answers do not reveal the replacement. There is no version TTL; stale in-flight answers
 cannot overwrite newer observations. Fixture version constants stamp recorded evidence
 only. Native attempt records retain each invoked path/version, using the vendor
 startup frame where available, and exhausted credential pools retain the last
