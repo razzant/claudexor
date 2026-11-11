@@ -41,14 +41,31 @@ export async function resolveContinuationBody(
   daemon: Pick<DaemonFacadeClient, "list">,
   body: unknown,
 ): Promise<unknown> {
+  return (await readContinuationBody(daemon, body)).body;
+}
+
+/**
+ * The same resolution, also saying whether it recovered what an accepted create inherited.
+ * `unrecovered` is a `continueFrom` no retained record answers to: the body stays raw,
+ * while any continuation accepted from it carried that predecessor's keys. Admission never
+ * accepts a successor of a run-less predecessor, so for one still retained raw is canonical.
+ */
+export async function readContinuationBody(
+  daemon: Pick<DaemonFacadeClient, "list">,
+  body: unknown,
+): Promise<{ body: unknown; unrecovered: string | null }> {
   if (body && typeof body === "object" && "continueModelInherited" in body) {
     throw Object.assign(new Error("continueModelInherited is server-owned"), { status: 400 });
   }
   const from = continuedRunOf(body);
-  if (from === null || !body || typeof body !== "object" || Array.isArray(body)) return body;
+  if (from === null || !body || typeof body !== "object" || Array.isArray(body))
+    return { body, unrecovered: null };
   const predecessor = continuationPredecessor(from, await daemon.list({ id: from }));
-  if (!predecessor?.runId) return body;
-  return inheritContinuationBody(predecessor, body as Record<string, unknown>);
+  if (!predecessor?.runId) return { body, unrecovered: predecessor ? null : from };
+  return {
+    body: inheritContinuationBody(predecessor, body as Record<string, unknown>),
+    unrecovered: null,
+  };
 }
 
 /** Internal capture can inherit a queued handle without granting public

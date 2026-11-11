@@ -394,29 +394,9 @@ describe("native automatic review handback", () => {
     expect(await second).toMatchObject([{ id: "other", turn_id: "retry" }]);
   });
 
-  it("tells authorized MCP arguments apart when they carry an own __proto__ key", async () => {
-    const t = setup();
-    // Native frames are JSON.parse output, where "__proto__" is an ordinary own key.
-    const args = (slug: string) => JSON.parse(`{"data":{"__proto__":{"slug":"${slug}"}}}`);
-    t.review.observe(mcpCall("item/started", "first", args("a")));
-    t.review.observe(denial({ targetItemId: "first", action: mcpAction }));
-    t.review.interactions("turn", "Blocked");
-    const authorized = t.review.takeRetries();
-    t.answer(["Authorize one retry"]);
-    expect(await authorized).toHaveLength(1);
-    t.turn("retry");
-    t.review.observe(mcpCall("item/started", "other", args("b"), "retry"));
-    t.review.observe(
-      denial({ turnId: "retry", reviewId: "other", targetItemId: "other", action: mcpAction }),
-    );
-    expect(t.review.interactions("retry", "Still blocked")).toEqual([
-      expect.objectContaining({ type: "interaction_requested" }),
-    ]);
-    expect(t.asks[1]!.questions[0]!.question).toContain('"slug": "b"');
-  });
-
   it("compares authorized MCP arguments exactly: nested key order is ignored, arrays, nulls and own __proto__ keys are not", async () => {
     const t = setup();
+    // Native frames are JSON.parse output, where "__proto__" is an ordinary own key.
     const authorized =
       '{"data":[1,null],"meta":{"__proto__":{"slug":"a","rev":[2,{"y":1,"x":0}]}}}';
     t.review.observe(mcpCall("item/started", "first", JSON.parse(authorized)));
@@ -456,6 +436,7 @@ describe("native automatic review handback", () => {
       ),
     ]);
     expect(t.asks).toHaveLength(6);
+    expect(t.asks[4]!.questions[0]!.question).toContain('"slug": "b"');
   });
 
   it("correlates a new turn's MCP denial after earlier completed turns started over 4,096 calls", () => {

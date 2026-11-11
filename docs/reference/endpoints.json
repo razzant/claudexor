@@ -1359,6 +1359,18 @@
     },
     {
       "method": "POST",
+      "path": "/v2/runs/lookup",
+      "mutating": false,
+      "applicability": "run",
+      "summary": "Read, without starting or waiting, the job a POST /v2/runs with this exact body and Idempotency-Key created: found or not_found in the answering store.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlRunStartRequest",
+      "parameters": [],
+      "response_schema": "ControlStartLookupResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
       "path": "/v2/runs/next-message",
       "mutating": true,
       "applicability": "run",
@@ -2013,6 +2025,18 @@
         }
       ],
       "response_schema": "ControlThreadTurnResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/turns/lookup",
+      "mutating": false,
+      "applicability": "thread",
+      "summary": "Read, without creating or waiting, the turn and job a turn create with this exact body and Idempotency-Key recorded: found, turn_only or not_found.",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlThreadTurnRequest",
+      "parameters": [],
+      "response_schema": "ControlStartLookupResponse",
       "error_schema": "ControlProblem"
     },
     {

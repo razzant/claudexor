@@ -3657,7 +3657,7 @@ an answer). A route line keeps its counts; its rounded failed share reads
 
 `POST /v2/handshake` returns top-level `storeId`, the durable engine store's UUID (stable across restarts, absent when unavailable), only to a request sending `X-Claudexor-Store-Identity: 1`, so older strict same-major clients keep the legacy shape; a run 404 is meaningful only together with the same `storeId`.
 
-A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup can speak for a store's absence.
+A run lookup and its admission can name that store, so another store's answer cannot pass for absence. `GET /v2/runs/:id` adds `context.storeId`, the store just read, to its `http_404` problem whenever that store has an identity. With the same request header, which leaves the shape older strict clients parse alone (the queued thread-turn handle is a strict object), `POST /v2/runs`, `POST /v2/runs/:id/retry`, the `rerun_with_feedback` decision, `POST /v2/threads/:id/turns` and its retry name the store that served the accepted job back: top level on a handle, in `context` on a pre-run refusal. A task-group receipt always does. An admission whose store has no identity is still accepted and claims nothing, and so is one whose start could not be read back. A caller keeps the receipt's store and compares it with the 404's. A different or missing store leaves the run unknown. The same store proves only that it retains no such record, never that the run did not start, because retention can remove a record. `claudexor inspect` reports the answering store in its message and `context`. The CLI and MCP send the header, so the CLI's `--json` and NDJSON results, MCP launch and continuation results and `claudexor_thread_turn` handles carry the accepting store. Other run-scoped 404 routes do not name a store, so only this lookup and the [start lookups](#7-control-api), whose answers always name their store, can speak for a store's absence.
 
 Retained task-group reads are composed by `sqlControlReadSources` and
 `readTaskGroupRuns`. The `taskGroupPage` method of `SqlCommandQueries` selects group membership
@@ -3762,6 +3762,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `GET /v2/runs/:id/run-again`
 - `GET /v2/runs/:id/time-limit`
 - `PATCH /v2/runs/:id/time-limit`
+- `POST /v2/runs/lookup`
 - `POST /v2/runs/next-message`
 - `GET /v2/runs/next-message/:id`
 - `POST /v2/runs/wait-many`
@@ -3797,6 +3798,7 @@ visibility, not a permanent roster. Reads add no execution or approval authority
 - `POST /v2/threads/:id/turns`
 - `GET /v2/threads/:id/turns/:id/prompt`
 - `POST /v2/threads/:id/turns/:id/retry`
+- `POST /v2/threads/:id/turns/lookup`
 - `GET /v2/trust`
 - `POST /v2/trust`
 - `POST /v2/uploads`
@@ -4163,6 +4165,24 @@ not retry automatically.
   are serialized per thread, bind a turn to at most one run, preserve
   frozen-plan hash/override provenance on Exact Retry, and emit decision/rerun
   audit side effects only for the request that first accepted the command.
+- `POST /v2/runs/lookup` and `POST /v2/threads/:id/turns/lookup` are the
+  read-only twins of those creates for a caller whose create answer was lost.
+  The same body and `Idempotency-Key`, canonicalized exactly as create replay
+  (continuation inheritance included: once retention removed the predecessor,
+  `410 continuation_predecessor_not_retained`), are read against the command and
+  turn bindings without admission, preflight, enqueue, turn creation or a start
+  wait. A read answers HTTP 200 `ControlStartLookupResponse` naming the store it
+  read: `found` is the job handle as it stands (`runId` null before a run) with
+  any recorded refusal as `problem`; `turn_only` is a retained turn binding
+  without a retained command (refused before enqueue, or its command pruned),
+  with the turn's exact `runId` or null and its `enqueueError`, whatever the
+  conversation tail; `not_found` says only that this store's partition retains
+  no binding. It proves neither that the original was never accepted nor that a
+  new create is safe, and no lookup falls back to creating. Conflicts, malformed
+  input, `404 project_not_registered`, `404 thread_not_found` and the retryable
+  `503 idempotency_status_unavailable` keep their typed problems; a store
+  without identity, or one replaced during the read, answers
+  `503 store_identity_unavailable`. An engine without the routes answers a bare 404.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
@@ -5266,7 +5286,7 @@ page keeps every remaining candidate and schedules a fresh pass. An existing tom
 skipped before any proof refresh, and no await separates a candidate's final proof from
 its expiration marker. A project's Git object store that ends a pass strictly empty (no
 root record, pending lease, object or recent entry) is retired under its prune lock; an
-import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
+import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. Upload-binding cleanup, which runs after the pass, checks it between its steps: a scan cut short keeps what it deleted, makes the pass truncated instead of completed (so its stored summary carries the preceding holds like any truncated pass), and the next scan starts again from the first key. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
 retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
@@ -6053,7 +6073,20 @@ cleanup. Caller keys stay strict even with `purpose=model` or internal-looking
 names. The persisted presence flag disables the fallback when absent.
 Bindings expire 30 days after a resource's known release/expiry, never from a
 guessed file timestamp. An expired lookup deletes that target's SQL bindings
-before the historical read, so a damaged copy still refuses afterwards. Repair
+before the historical read, so a damaged copy still refuses afterwards.
+Retention reclaims the other expired bindings with a scan in key order. One
+synchronous step either reads a window of rows (the row window of the other
+filtered retention reads; a row past the lifetime adds two point reads) or
+confirms, by the lookup's own test, and deletes in one transaction a batch of
+at most 100 targets; the scan yields to admission
+after every step, so it never holds the event loop longer than one step whatever
+the store holds. A scan that reached the last key repeats at the hourly age
+revisit; passes that follow sooner (the continuation of a truncated pass, a
+manual `claudexor gc`) skip it. Its progress is in memory only, so a daemon that
+never lives long enough to finish one scan never reclaims the bindings late in
+key order. A binding created inside the lifetime (a historical receipt adopted
+after its resource's release) waits for a later scan. Every lookup applies the
+exact lifetime whatever the scan has reached. Repair
 before expiry replays the receipt; after it, the key is admitted as a new upload
 and an old finalize answers `upload_not_found`, not the expired receipt.
 Manually removing the historical directory can turn a later replay into a

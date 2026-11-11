@@ -24,6 +24,7 @@ export * from "./command-authority.js";
 export type { DeferredStartPreparation } from "./deferred-messages.js";
 export * from "./store-contracts.js";
 export type { DiskRetentionReferences } from "./store/retention-references.js";
+export { RETENTION_AGE_REVISIT_MS } from "./store/retention-pages.js";
 export { loadEngineRuntime } from "./store/runtime.js";
 export { EngineStateRecovery } from "./store/engine-state-recovery.js";
 export { SqlPartitionRecovery } from "./store/sql-recovery.js";
