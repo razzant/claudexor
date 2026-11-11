@@ -83,10 +83,22 @@ export function replacementProgram(
   copy: ProductNpmCopy,
   runtime: InstallerRuntime,
 ): SelectedHarnessProgram {
-  return resolveSelectedProgram(program, {
+  const selected = resolveSelectedProgram(program, {
     ...runtime,
     maskedPaths: [...copy.launchers, ...copy.entrypoints],
   });
+  if (
+    program.majorVersion &&
+    selected.version &&
+    Number(selected.version.split(".")[0]) !== program.majorVersion
+  )
+    throw Object.assign(
+      new Error(
+        `The replacement found first at ${selected.path} reports ${selected.version}; ${program.id} requires ${program.majorVersion}.x (#668). Nothing was removed.`,
+      ),
+      { code: "conversion_unsupported_major" },
+    );
+  return selected;
 }
 
 /** The vendor copy must already answer. Promotion is reversible until normal
@@ -107,7 +119,9 @@ export function retireProductNpmCopy(
     );
   if (programUpdateAvailable(program.versionScheme, expected.version, previous.version) === "yes")
     throw Object.assign(
-      new Error("The vendor's copy is older than the selected one; nothing was removed."),
+      new Error(
+        `After the installer, ${expected.path} version ${expected.version} is found first and is older than the selected ${previous.version}; the installer's copy may be hidden behind it. Nothing was removed.`,
+      ),
       { code: "conversion_older_program" },
     );
   const ordinary = resolveSelectedProgram(program, runtime);

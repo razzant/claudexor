@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { planCursorProfileProgramCleanup } from "../../harness-cursor/src/profile-program-cleanup.js";
 import { GROK_PROGRAM } from "../../harness-grok/src/program.js";
+import { OPENCODE_PROGRAM } from "../../harness-opencode/src/program.js";
 import { inspectHarness, runHarnessUpdate } from "./harness-maintenance.js";
 import {
   SCRIPT,
@@ -341,10 +342,79 @@ describe("selected vendor operation", () => {
       expect(receipt.after?.version).toBe(accepted ? replacement : "0.162.1");
       if (!accepted)
         expect(receipt.problem?.message).toContain(
-          "older than the selected one; nothing was removed",
+          `version 0.153.3 is found first and is older than the selected 0.162.1`,
         );
     },
   );
+  it.each(
+    [0, 1].flatMap((exit) =>
+      [false, true].flatMap((exact) =>
+        ["1.19.5", "2.2.7"].map((replacement) => ({ exit, exact, replacement })),
+      ),
+    ),
+  )(
+    "keeps conversion and its exact step on the adapter's declared major: %j",
+    async ({ exit, exact, replacement }) => {
+      const w = world(),
+        old = oldCopy(w);
+      w.program.majorVersion = OPENCODE_PROGRAM.majorVersion;
+      w.program.versionScheme = OPENCODE_PROGRAM.versionScheme;
+      executable(old.entry, "1.18.9");
+      const commands: string[] = [];
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
+        if (args[0] === "--version") return spawnSync(bin, args, opts);
+        commands.push(bin);
+        if (bin === "/bin/sh") {
+          executable(w.installed, replacement);
+          return result("Installer result", exit);
+        }
+        executable(w.installed, "1.19.6");
+        return result("Exact version selected");
+      }) as typeof spawnSync;
+      const accepted = replacement === "1.19.5";
+      const receipt = await runHarnessUpdate("fixture", exact ? "1.19.6" : undefined, w.options);
+      expect(receipt.ok).toBe(accepted);
+      expect(existsSync(old.pkg)).toBe(!accepted);
+      expect(existsSync(old.launcher)).toBe(!accepted);
+      expect(receipt.after?.version).toBe(accepted ? (exact ? "1.19.6" : "1.19.5") : "1.18.9");
+      expect(commands).toHaveLength(accepted && exact ? 2 : 1);
+      if (!accepted) {
+        expect(receipt.exitCode).toBe(exit);
+        expect(receipt.problem?.code).toBe(
+          exit ? "vendor_command_failed" : "conversion_unsupported_major",
+        );
+      }
+    },
+  );
+  it("names the stale first-found replacement and keeps npm until the installer copy becomes selected", async () => {
+    const w = world(),
+      old = oldCopy(w);
+    w.program.versionScheme = "semver";
+    executable(old.entry, "1.18.9");
+    const shadow = join(w.home, ".local/bin/fixture-harness");
+    executable(shadow, "1.18.0");
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
+      if (args[0] === "--version") return spawnSync(bin, args, opts);
+      executable(w.installed, "1.19.5");
+      return result("Installed 1.19.5");
+    }) as typeof spawnSync;
+    const refused = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(refused.problem).toMatchObject({
+      code: "conversion_older_program",
+      message: `After the installer, ${shadow} version 1.18.0 is found first and is older than the selected 1.18.9; the installer's copy may be hidden behind it. Nothing was removed.`,
+    });
+    expect(existsSync(w.installed)).toBe(true);
+    expect(existsSync(old.pkg)).toBe(true);
+    expect(refused.after?.path).toBe(old.launcher);
+    rmSync(shadow);
+    const converted = await runHarnessUpdate("fixture", undefined, w.options);
+    expect(converted).toMatchObject({ ok: true, after: { path: w.installed, version: "1.19.5" } });
+    expect(existsSync(old.pkg)).toBe(false);
+  });
   it.each([false, true])(
     "accepts a nonzero installer only when it leaves an acceptable replacement (%s)",
     async (healthy) => {
