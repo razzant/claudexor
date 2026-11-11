@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlGcReceipt, GcHoldClass } from "@claudexor/schema";
+import { RETENTION_AGE_REVISIT_MS } from "@claudexor/daemon";
 import { sqlFixture } from "../../daemon/src/store/test-support/sql-fixture.js";
+import { chunks, uploadRequest } from "../../daemon/src/store/test-support/resource-fixture.js";
 import { afterRetention, serializeRetention } from "./retention-lifetime.js";
 import { readLastRetention, recordLastRetention } from "./retention-last-pass.js";
 import { createSqlDaemonRuntime } from "./sql-daemon-runtime.js";
@@ -173,6 +175,60 @@ it.each(["model", "upload"])(
     });
   },
 );
+it("a pass whose upload-binding scan was cancelled is truncated, not completed; a preview scans nothing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "gc-last-"));
+  removals.push(() => rmSync(root, { recursive: true, force: true }));
+  let clock = Date.parse("2026-10-10T10:00:00Z");
+  const sql = await sqlFixture(root, () => new Date(clock));
+  cleanup.push(() => sql.close());
+  const runtime = createSqlDaemonRuntime(sql.graph, {
+    server: { socketPath: join(root, "unused.sock"), token: "fixture" },
+    authReadiness: () => ({ invalidate() {} }),
+    agent: () => async () => ({ lifecycle: "succeeded" }),
+  });
+  cleanup.push(() => runtime.stop());
+  const upload = sql.graph.resources.create(uploadRequest, "create");
+  await sql.graph.resources.write(upload.uploadId, chunks("test"));
+  sql.graph.resources.finalize(upload.uploadId, undefined, "finalize");
+  // The real scan over the real store; the test only learns when it has started.
+  const real = sql.graph.resources.pruneUploadBindings.bind(sql.graph.resources);
+  let entered = () => {};
+  const scans: Array<AbortSignal | undefined> = [];
+  vi.spyOn(sql.graph.resources, "pruneUploadBindings").mockImplementation((signal) => {
+    scans.push(signal);
+    const scan = real(signal);
+    entered();
+    return scan;
+  });
+  const run = runtime.retention(async () => receipt());
+  expect(await run({ dry_run: false })).toMatchObject({ truncated: false, errors: [] });
+  const completed = readLastRetention(sql.store)!;
+  expect(completed).toMatchObject({ outcome: "completed", failed_or_held_streak: 0 });
+
+  // An hour later the scan is due again. It reads its first window and yields;
+  // the pass is cancelled under it.
+  clock += RETENTION_AGE_REVISIT_MS;
+  const scanning = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pending = run({ dry_run: false });
+  await scanning;
+  expect(scans[1]!.aborted).toBe(false);
+  await run.cancel!();
+  expect(scans[1]!.aborted).toBe(true);
+  expect(await pending).toMatchObject({
+    truncated: true,
+    errors: [expect.stringContaining("upload-binding cleanup cancelled")],
+  });
+  expect(readLastRetention(sql.store)).toMatchObject({
+    outcome: "truncated",
+    last_completed_at: completed.last_completed_at,
+    failed_or_held_streak: 0,
+  });
+  // A preview deletes nothing, bindings included.
+  await run({ dry_run: true });
+  expect(scans).toHaveLength(2);
+});
 it("periodic retention uses the daemon's history policy and releases cancelled ids, but preview does neither", async () => {
   const { root, sql } = await fixture();
   const runtime = createSqlDaemonRuntime(sql.graph, {

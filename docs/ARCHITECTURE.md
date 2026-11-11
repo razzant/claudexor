@@ -5256,7 +5256,7 @@ page keeps every remaining candidate and schedules a fresh pass. An existing tom
 skipped before any proof refresh, and no await separates a candidate's final proof from
 its expiration marker. A project's Git object store that ends a pass strictly empty (no
 root record, pending lease, object or recent entry) is retired under its prune lock; an
-import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
+import that raced it recreates the store. The pass releases its observer even after failure. Stop, restart and storage recovery cancel all admitted retention passes, including queued manual requests. Inventory checks cancellation between rows/projects and deletion between candidates/native files; the receipt is truncated and the next pass resumes unfinished work. Upload-binding cleanup, which runs after the pass, checks it between its steps: a scan cut short keeps what it deleted, makes the pass truncated instead of completed (so its stored summary carries the preceding holds like any truncated pass), and the next scan starts again from the first key. A published expiration marker retains its recovery intent until cleanup completes. Patch-cache
 retirement rechecks directory identity and current link counts before unlink.
 It is also exposed as the schema-first control op
 `POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
@@ -6043,7 +6043,20 @@ cleanup. Caller keys stay strict even with `purpose=model` or internal-looking
 names. The persisted presence flag disables the fallback when absent.
 Bindings expire 30 days after a resource's known release/expiry, never from a
 guessed file timestamp. An expired lookup deletes that target's SQL bindings
-before the historical read, so a damaged copy still refuses afterwards. Repair
+before the historical read, so a damaged copy still refuses afterwards.
+Retention reclaims the other expired bindings with a scan in key order. One
+synchronous step either reads a window of rows (the row window of the other
+filtered retention reads; a row past the lifetime adds two point reads) or
+confirms, by the lookup's own test, and deletes in one transaction a batch of
+at most 100 targets; the scan yields to admission
+after every step, so it never holds the event loop longer than one step whatever
+the store holds. A scan that reached the last key repeats at the hourly age
+revisit; passes that follow sooner (the continuation of a truncated pass, a
+manual `claudexor gc`) skip it. Its progress is in memory only, so a daemon that
+never lives long enough to finish one scan never reclaims the bindings late in
+key order. A binding created inside the lifetime (a historical receipt adopted
+after its resource's release) waits for a later scan. Every lookup applies the
+exact lifetime whatever the scan has reached. Repair
 before expiry replays the receipt; after it, the key is admitted as a new upload
 and an old finalize answers `upload_not_found`, not the expired receipt.
 Manually removing the historical directory can turn a later replay into a

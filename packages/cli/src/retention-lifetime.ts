@@ -41,26 +41,39 @@ export function serializeRetention(
   return run;
 }
 
-/** Keep post-processing inside the same close barrier as the core pass. */
+/** Keep post-processing inside the same close barrier as the core pass. Its
+ * signal aborts when the pass is cancelled, so a step that works in slices ends
+ * at its next boundary; a later pass gets a new signal. */
 export function afterRetention(
   run: RetentionRunner,
-  after: (request: ControlGcRequest, receipt: ControlGcReceipt) => void | Promise<void>,
+  after: (
+    request: ControlGcRequest,
+    receipt: ControlGcReceipt,
+    signal: AbortSignal,
+  ) => void | Promise<void>,
 ): RetentionRunner {
   const pending = new Set<Promise<ControlGcReceipt>>();
+  const controllers = new Set<AbortController>();
   const wrapped: RetentionRunner = (request) => {
+    const controller = new AbortController();
+    controllers.add(controller);
     const flight = run(request).then(async (receipt) => {
       try {
-        await after(request, receipt);
+        await after(request, receipt, controller.signal);
       } catch (error) {
         throw new RetentionStepError(error, receipt);
       }
       return receipt;
     });
     pending.add(flight);
-    return flight.finally(() => pending.delete(flight));
+    return flight.finally(() => {
+      pending.delete(flight);
+      controllers.delete(controller);
+    });
   };
   wrapped.hasMore = run.hasMore;
   wrapped.cancel = async () => {
+    for (const controller of controllers) controller.abort();
     await run.cancel?.();
     await Promise.allSettled([...pending]);
   };
