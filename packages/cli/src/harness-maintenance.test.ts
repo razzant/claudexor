@@ -249,9 +249,13 @@ describe("selected vendor operation", () => {
       });
     },
   );
-  it.each([false, true])(
-    "converts before an exact native verb and retains the old copy if that verb fails (%s)",
-    async (failExact) => {
+  it.each(
+    [false, true].flatMap((failExact) =>
+      [0, 2316632107].map((installerExit) => ({ failExact, installerExit })),
+    ),
+  )(
+    "converts before an exact native verb and retains both command results: %j",
+    async ({ failExact, installerExit }) => {
       const w = world();
       const old = oldCopy(w);
       const prepared: unknown[] = [];
@@ -268,7 +272,7 @@ describe("selected vendor operation", () => {
         if (args[0] === "--version") return spawnSync(bin, args, options);
         if (bin === "/bin/sh") {
           executable(w.installed, "2.0.0");
-          return result("Native installed");
+          return result("Native installed", installerExit);
         }
         expect(bin).toBe(w.installed);
         expect(args).toEqual(["update", "--version", "3.4.5"]);
@@ -279,6 +283,8 @@ describe("selected vendor operation", () => {
       const receipt = await runHarnessUpdate("fixture", "3.4.5", w.options);
       expect(prepared).toHaveLength(2);
       expect(receipt.commands).toHaveLength(2);
+      expect(receipt.exitCode).toBe(failExact ? 7 : 0);
+      expect(receipt.limitations).toContain(`Vendor installer exit status: ${installerExit}.`);
       expect(receipt.ok).toBe(!failExact);
       expect(existsSync(old.pkg)).toBe(failExact);
       expect(receipt.after).toMatchObject({
@@ -388,6 +394,13 @@ describe("selected vendor operation", () => {
     });
     expect(row.actions.exactVersion).toEqual(row.actions.update);
     const fetcher = vi.fn(w.options.fetch);
+    const cleanup = vi.fn(() => ({
+      paths: [],
+      limitations: [],
+      execute: () => ({ removed: [], limitations: [] }),
+    }));
+    w.options.planProfileProgramCleanup = cleanup;
+    w.options.credentialProfiles = [];
     w.options.fetch = fetcher;
     for (const target of [undefined, "3.4.5"]) {
       const receipt = await runHarnessUpdate("fixture", target, w.options);
@@ -399,6 +412,7 @@ describe("selected vendor operation", () => {
       });
     }
     expect(fetcher).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
     expect(existsSync(old.entry)).toBe(true);
     delete w.options.sourceEnv!.FIXTURE_BIN;
     expect((await inspectHarness("fixture", w.options)).actions.update.available).toBe(true);

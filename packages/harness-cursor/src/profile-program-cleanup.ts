@@ -109,11 +109,11 @@ export const planCursorProfileProgramCleanup: NonNullable<
           hidden = undefined;
           limitations.push(...retired.limitations);
           if (retired.removed.length) {
+            removed.push(plan.recovered ? plan.hidden : plan.root);
             for (const link of plan.links) {
               rmSync(link.path);
               removed.push(link.path);
             }
-            removed.push(plan.recovered ? plan.hidden : plan.root);
           }
         } catch (error) {
           try {

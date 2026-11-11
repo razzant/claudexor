@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
@@ -78,7 +79,7 @@ it("removes an independent vendor-shaped program copy and its links, preserving 
     before = f.observe(),
     plan = planCursorProfileProgramCleanup([f.profile], before);
   expect(plan.paths).toEqual([join(f.bin, "agent"), join(f.bin, "cursor-agent"), f.tree]);
-  expect(plan.execute(f.observe).removed).toEqual(plan.paths);
+  expect(plan.execute(f.observe).removed.sort()).toEqual([...plan.paths].sort());
   expect(f.observe()).toEqual(before);
   expect(existsSync(f.tree)).toBe(false);
   expect(existsSync(f.hidden)).toBe(false);
@@ -142,5 +143,26 @@ it.each([false, true])(
       expect(result.removed).toEqual([]);
       expect(result.limitations.join(" ")).toContain("in use");
     } else expect(result.removed).toContain(f.hidden);
+  },
+);
+
+it.each([false, true])(
+  "records a retired tree even if removing its launcher link fails (%s)",
+  (locked) => {
+    const f = fixture(),
+      plan = planCursorProfileProgramCleanup([f.profile], f.observe());
+    if (locked) chmodSync(f.bin, 0o555);
+    try {
+      const result = plan.execute(f.observe);
+      expect(result.removed).toContain(f.tree);
+      expect(existsSync(f.tree)).toBe(false);
+      expect(f.observe().version).toBe("2026.11.10-731fb78");
+      if (locked) {
+        expect(result.limitations.length).toBeGreaterThan(0);
+        expect(result.removed).not.toContain(f.old);
+      } else expect(result.removed).toContain(f.old);
+    } finally {
+      chmodSync(f.bin, 0o755);
+    }
   },
 );

@@ -281,6 +281,15 @@ export async function runHarnessUpdate(
         );
       }
     };
+    // Unavailable actions cannot mutate even profile copies. Healthy repeated
+    // Install is an idempotent read; broken Install still gets recovery first.
+    if (!(options.installOnly && before.path && !version)) {
+      const initial = programActions(program, before, runtime)[
+        version ? "exactVersion" : before.path ? "update" : "install"
+      ];
+      if (!initial.available)
+        throw Object.assign(new Error(initial.reason!), { code: "program_action_unavailable" });
+    }
     await cleanupProfiles(true);
     if (cleanup) before = resolveSelectedProgram(program, runtime);
     const data = programPlatform(program, runtime.platform);
@@ -360,6 +369,7 @@ export async function runHarnessUpdate(
       return null;
     };
     const installerFailure = await execute(prepared, !!copy);
+    const installerExit = receipt.exitCode;
     try {
       if (copy && exactAfterInstall) {
         const native = replacementProgram(program, copy, runtime);
@@ -380,6 +390,7 @@ export async function runHarnessUpdate(
           );
           preparedCommands.push(requested);
           receipt.commands.push(requested.evidence);
+          receipt.limitations.push(`Vendor installer exit status: ${installerExit}.`);
           await execute(requested);
         }
         if (replacementProgram(program, copy, runtime).version !== version)
@@ -395,7 +406,7 @@ export async function runHarnessUpdate(
         receipt.limitations.push(...converted.limitations);
         if (installerFailure)
           receipt.limitations.push(
-            `The installer exited ${receipt.exitCode}, but conversion completed because the selected replacement answers its version and is not known to be older.`,
+            `The installer exited ${installerExit}, but conversion completed because the selected replacement answers its version and is not known to be older.`,
           );
       }
     } catch (error) {
