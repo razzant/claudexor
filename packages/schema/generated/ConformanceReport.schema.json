@@ -4,6 +4,32 @@
     "ConformanceReport": {
       "type": "object",
       "properties": {
+        "sourceProgram": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "version"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "harness_id": {
           "type": "string",
           "minLength": 1,

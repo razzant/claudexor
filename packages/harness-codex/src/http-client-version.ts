@@ -1,4 +1,6 @@
-import { harnessBinaryIdentityOnPath } from "@claudexor/core";
+import { CODEX_PROGRAM } from "./program.js";
+import type { HarnessProgramIdentity } from "@claudexor/schema";
+import { observeHarnessProgram, harnessBinaryIdentityOnPath } from "@claudexor/core";
 /**
  * The client version Claudexor's OWN Codex HTTP transport declares when it reads
  * an account's model catalog (`GET /backend-api/codex/models?client_version=…`).
@@ -24,19 +26,19 @@ import { harnessBinaryIdentityOnPath } from "@claudexor/core";
  *   REQUIRED query parameter (omitting or garbling it is an HTTP 400 that would
  *   take every model operation down).
  *
- * The resolved value is memoised per binary identity (realpath + inode + size
- * + mtime) so an in-place upgrade of the CLI is seen on the next catalog read
- * without a daemon restart, while the hot path pays one `stat`, never a spawn.
+ * Every read observes the selected program again, including --version.
+ * A wrapper can change its target while its own file stays unchanged.
  */
 
 import type { ControlModelCatalogResponse } from "@claudexor/schema";
 import type { VendorCliVersionStamp } from "@claudexor/util";
-import { resolveCodexBin, detectVersion, probeEnv } from "./missing-cli.js";
+import { resolveCodexBin, probeEnv } from "./missing-cli.js";
 
 export const CODEX_HTTP_CLIENT_VERSION: VendorCliVersionStamp = "0.156.1";
 
 export type CodexCatalogClientVersion = {
   version: string;
+  program?: HarnessProgramIdentity | null;
   source: NonNullable<ControlModelCatalogResponse["clientVersionSource"]>;
 };
 
@@ -46,7 +48,6 @@ export interface CodexClientVersionDeps {
   env?: NodeJS.ProcessEnv;
   /** `codex --version` capture for that env; null on any failure. */
   detectVersion?: (env: NodeJS.ProcessEnv) => Promise<string | null>;
-  nowMs?: () => number;
 }
 
 type VersionTriple = readonly [number, number, number];
@@ -70,27 +71,6 @@ const VERIFIED: CodexCatalogClientVersion = {
   version: CODEX_HTTP_CLIENT_VERSION,
   source: "verified_transport",
 };
-const DETECTION_FAILURE_MEMO_MS = 60_000;
-
-interface ClientVersionMemoEntry {
-  value: CodexCatalogClientVersion;
-  /** Present only for a failed detection, which is retried after this time. */
-  expiresAtMs?: number;
-}
-const memo = new Map<string, ClientVersionMemoEntry>();
-
-/** Drop the memo (tests). */
-export function clearCodexClientVersionMemo(): void {
-  memo.clear();
-}
-
-/** The bytes the transport would spawn: realpath + inode + size + mtime. A
- * reinstall or a re-pointed symlink changes at least one part. */
-function binaryIdentityKey(bin: string, env: NodeJS.ProcessEnv): string | null {
-  const identity = harnessBinaryIdentityOnPath(bin, env.PATH ?? "");
-  return identity ? JSON.stringify(identity) : null;
-}
-
 /** The version the catalog read declares: the verified transport level, raised
  * to the installed CLI's version when that is newer. Never below the constant,
  * never an unparseable string. */
@@ -98,29 +78,25 @@ export async function codexCatalogClientVersion(
   deps: CodexClientVersionDeps = {},
 ): Promise<CodexCatalogClientVersion> {
   const env = deps.env ?? probeEnv();
-  const nowMs = deps.nowMs ?? Date.now;
-  const key = binaryIdentityKey(deps.bin ?? resolveCodexBin(), env);
-  // No runnable CLI on this PATH: the transport still works (the token refresh
-  // fails on its own terms later); declare the verified level.
-  if (key === null) return VERIFIED;
-  const cached = memo.get(key);
-  if (cached && (cached.expiresAtMs === undefined || cached.expiresAtMs > nowMs())) {
-    return cached.value;
-  }
-  const detect =
-    deps.detectVersion ?? ((probe: NodeJS.ProcessEnv) => detectVersion(undefined, probe));
-  const installed = codexVersionTriple(await detect(env));
-  if (installed === null) {
-    memo.set(key, { value: VERIFIED, expiresAtMs: nowMs() + DETECTION_FAILURE_MEMO_MS });
-    return VERIFIED;
-  }
+  const bin = deps.bin ?? resolveCodexBin();
+  // Injection is used only by tests; production always uses the shared resolver.
+  const identity = deps.detectVersion ? harnessBinaryIdentityOnPath(bin, env.PATH ?? "") : null;
+  const observation = deps.detectVersion
+    ? {
+        program: identity
+          ? { path: identity.launcher ?? identity.path, version: await deps.detectVersion(env) }
+          : null,
+      }
+    : await observeHarnessProgram(CODEX_PROGRAM, env, bin);
+  const program = observation.program;
+  const installed = codexVersionTriple(program?.version);
+  if (installed === null) return { ...VERIFIED, program };
   const verified = codexVersionTriple(CODEX_HTTP_CLIENT_VERSION)!;
   const value: CodexCatalogClientVersion =
     compareTriples(installed, verified) > 0
       ? { version: installed.join("."), source: "installed_cli" }
       : VERIFIED;
-  memo.set(key, { value });
-  return value;
+  return { ...value, program };
 }
 
 /** One phrasing of the declared client version for refusals and diagnostics,

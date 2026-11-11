@@ -3,13 +3,12 @@
  * (issue #339): the transport's own verified level, raised to a newer installed
  * CLI, never lowered, never an unparseable string, memoised per binary identity.
  */
-import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CODEX_HTTP_CLIENT_VERSION,
-  clearCodexClientVersionMemo,
   codexCatalogClientVersion,
   codexVersionTriple,
   describeCodexClientVersion,
@@ -41,7 +40,6 @@ describe("codexCatalogClientVersion", () => {
     chmodSync(bin, 0o755);
   };
   beforeEach(() => {
-    clearCodexClientVersionMemo();
     dir = mkdtempSync(join(tmpdir(), "codex-http-client-version-"));
     bin = join(dir, "codex");
     stub("stub");
@@ -62,7 +60,7 @@ describe("codexCatalogClientVersion", () => {
       env: env(),
       detectVersion: async () => "codex-cli 9.0.1-alpha.2",
     });
-    expect(declared).toEqual({ version: "9.0.1", source: "installed_cli" });
+    expect(declared).toMatchObject({ version: "9.0.1", source: "installed_cli" });
   });
 
   it.each(["codex-cli 0.1.0", "codex (version unknown)", null])(
@@ -73,7 +71,7 @@ describe("codexCatalogClientVersion", () => {
         env: env(),
         detectVersion: async () => reported,
       });
-      expect(declared).toEqual({
+      expect(declared).toMatchObject({
         version: CODEX_HTTP_CLIENT_VERSION,
         source: "verified_transport",
       });
@@ -94,32 +92,13 @@ describe("codexCatalogClientVersion", () => {
     expect(spawned).toBe(0);
   });
 
-  it("memoises per binary identity: a hit does not spawn, a rewritten binary re-detects, a failure is retried after 60 s", async () => {
-    let now = 1_900_000_000_000;
+  it("reads the program on every catalog read, including an unchanged wrapper and detection failure", async () => {
     const answers = ["codex-cli 9.0.0", "codex-cli 9.1.0", null, "codex-cli 9.2.0"];
-    let spawns = 0;
-    const detect = async () => {
-      spawns += 1;
-      return answers[spawns - 1] ?? null;
-    };
-    const deps = { bin, env: env(), detectVersion: detect, nowMs: () => now };
+    const deps = { bin, env: env(), detectVersion: async () => answers.shift() ?? null };
     expect((await codexCatalogClientVersion(deps)).version).toBe("9.0.0");
-    expect((await codexCatalogClientVersion(deps)).version).toBe("9.0.0");
-    expect(spawns).toBe(1);
-    // An in-place upgrade changes size/mtime (and usually the inode): seen at once.
-    stub("upgraded");
-    utimesSync(bin, new Date(now + 5_000), new Date(now + 5_000));
     expect((await codexCatalogClientVersion(deps)).version).toBe("9.1.0");
-    expect(spawns).toBe(2);
-    // A failed detection is memoised briefly, then retried.
-    stub("broken");
-    utimesSync(bin, new Date(now + 10_000), new Date(now + 10_000));
     expect((await codexCatalogClientVersion(deps)).source).toBe("verified_transport");
-    expect((await codexCatalogClientVersion(deps)).source).toBe("verified_transport");
-    expect(spawns).toBe(3);
-    now += 61_000;
     expect((await codexCatalogClientVersion(deps)).version).toBe("9.2.0");
-    expect(spawns).toBe(4);
   });
 });
 

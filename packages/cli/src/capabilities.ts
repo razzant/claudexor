@@ -81,6 +81,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
             models: [],
             source: "none",
             verifiedAgainst: null,
+            sourceProgram: null,
           } satisfies ControlHarnessModelsResponse,
           // An unreachable vendor CLI verifies nothing: the stored model is
           // reported invalid exactly as before, never admitted on a guess.

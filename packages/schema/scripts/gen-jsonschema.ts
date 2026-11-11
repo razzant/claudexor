@@ -9,6 +9,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   HarnessProgram,
   SelectedHarnessProgram,
+  HarnessProgramIdentity,
   ExternalHostBinding,
   EffortResolution,
   ProcessingPreference,
@@ -268,6 +269,7 @@ const schemas = {
   ControlHarnessMaintenanceOperation,
   HarnessProgram,
   SelectedHarnessProgram,
+  HarnessProgramIdentity,
   ExternalHostBinding,
   EffortResolution,
   ProcessingPreference,

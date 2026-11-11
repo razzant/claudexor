@@ -67,6 +67,29 @@ function installStub(help: string, delaySeconds = 0): void {
   chmodSync(bin, 0o755);
 }
 
+it("notices a changed version and effort ladder behind an unchanged wrapper", async () => {
+  const version = join(dir, "version"),
+    help = join(dir, "help");
+  writeFileSync(
+    bin,
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then /bin/cat '${version}'; else /bin/cat '${help}'; fi\n`,
+    { mode: 0o755 },
+  );
+  writeFileSync(version, "1.0.0");
+  writeFileSync(help, HELP_2_1_89);
+  const { probeClaudeEffortLevels } = await import("./effort-probe.js");
+  expect((await probeClaudeEffortLevels()).levels).toEqual(LADDER_2_1_89);
+  writeFileSync(version, "2.0.0");
+  writeFileSync(help, HELP_2_1_89.replace("high, max", "high, xhigh, max"));
+  expect((await probeClaudeEffortLevels()).levels).toEqual([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
+});
+
 describe("the shared --help capture belongs to the process, not to its first caller", () => {
   it("survives the cancellation of the run that happened to ask first", async () => {
     installStub(HELP_2_1_89, 0.5);
@@ -165,8 +188,8 @@ describe("the --help memo and its consumers follow a run's PATH patch", () => {
     mkdirSync(pathDir, { recursive: true });
     writeFileSync(
       join(pathDir, "claude"),
-      `#!/bin/sh\necho spawn >> "${join(pathDir, "spawns")}"\n` +
-        `if [ "$1" = "--version" ]; then echo "${version}"; exit 0; fi\n` +
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "${version}"; exit 0; fi\n` +
+        `echo spawn >> "${join(pathDir, "spawns")}"\n` +
         `/bin/cat <<'CLAUDE_HELP_EOF'\n${help}\nCLAUDE_HELP_EOF\n`,
       { mode: 0o755 },
     );

@@ -1,3 +1,4 @@
+import { HarnessProgramIdentity } from "./harness-program.js";
 import { EffortHint, EffortResolution, ModelEffortCapability } from "./effort.js";
 import { z } from "zod/v3";
 import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
@@ -368,6 +369,7 @@ export type HarnessCapabilityProfile = z.infer<typeof HarnessCapabilityProfile>;
 
 export const HarnessManifest = z
   .object({
+    sourceProgram: HarnessProgramIdentity.nullable().optional(),
     id: Id.describe("Harness id (codex, claude, cursor, opencode, raw-api, ...)."),
     display_name: z.string().describe("Human display name of the harness."),
     kind: HarnessKind,
@@ -416,6 +418,7 @@ export type AdapterStatus = z.infer<typeof AdapterStatus>;
 
 export const ConformanceReport = z
   .object({
+    sourceProgram: HarnessProgramIdentity.nullable().optional(),
     harness_id: Id.describe("Harness the report is about."),
     status: AdapterStatus,
     checks: z.array(ConformanceCheck).default([]).describe("Individual probe results."),

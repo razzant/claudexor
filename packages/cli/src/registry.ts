@@ -157,6 +157,7 @@ export async function harnessModelTruth(
 ): Promise<HarnessModelTruth> {
   const none: ControlHarnessModelsResponse = {
     harnessId,
+    sourceProgram: null,
     models: [],
     source: "none",
     verifiedAgainst: null,
@@ -183,7 +184,13 @@ export async function harnessModelTruth(
     });
     if (read.status === "unavailable") {
       const problem = catalogFailureProblem(read.failure);
-      const response = { harnessId, models: [], source: "api" as const, verifiedAgainst: null };
+      const response = {
+        harnessId,
+        sourceProgram: read.sourceProgram,
+        models: [],
+        source: "api" as const,
+        verifiedAgainst: null,
+      };
       return {
         response: { ...response, problem },
         absence,
@@ -204,6 +211,7 @@ export async function harnessModelTruth(
       response: {
         harnessId,
         models: rows,
+        sourceProgram: hintsOnly ? null : read.sourceProgram,
         source: hintsOnly ? "manifest" : "api",
         verifiedAgainst: hintsOnly ? manifest.capabilities.known_models_verified_against : null,
         ...declared,
@@ -223,6 +231,7 @@ export async function harnessModelTruth(
   return {
     response: {
       harnessId,
+      sourceProgram: null,
       models: known.map((entry) =>
         typeof entry === "string"
           ? { id: entry, label: null, context_window: null, routes: null }
@@ -358,6 +367,7 @@ export async function harnessAccountModels(
         return {
           harnessId: input.harnessId,
           credentialProfileId: profile.profile_id,
+          sourceProgram: hintsOnly ? null : read.sourceProgram,
           models: models.map((model) => ({ ...model, routes: model.routes ?? null })),
           source: hintsOnly ? ("manifest" as const) : ("api" as const),
           verifiedAgainst: hintsOnly ? manifest.capabilities.known_models_verified_against : null,
@@ -373,6 +383,7 @@ export async function harnessAccountModels(
       return {
         harnessId: input.harnessId,
         credentialProfileId: profile.profile_id,
+        sourceProgram: null,
         models: known.map((entry) =>
           typeof entry === "string"
             ? { id: entry, label: null, context_window: null, routes: null }

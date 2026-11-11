@@ -102,3 +102,9 @@ export const SelectedHarnessProgram = z
   })
   .strict();
 export type SelectedHarnessProgram = z.infer<typeof SelectedHarnessProgram>;
+
+/** Public provenance of a program-derived answer. Null version means the program did not answer. */
+export const HarnessProgramIdentity = z
+  .object({ path: z.string(), version: z.string().nullable() })
+  .strict();
+export type HarnessProgramIdentity = z.infer<typeof HarnessProgramIdentity>;

@@ -1,3 +1,4 @@
+import { observeHarnessProgram } from "@claudexor/core";
 import { CURSOR_PROGRAM } from "./program.js";
 export { CURSOR_PROGRAM } from "./program.js";
 import { cursorAccessArgs, cursorModeArgs, cursorNativeAccess } from "./profile.js";
@@ -162,7 +163,8 @@ async function smokeCursorApiKey(
   key: string,
   fresh = false,
 ): Promise<CursorApiSmokeResult> {
-  const cacheKey = cursorApiSmokeCacheKey(key);
+  const program = await observeHarnessProgram(CURSOR_PROGRAM);
+  const cacheKey = JSON.stringify([cursorApiSmokeCacheKey(key), program.key]);
   const now = deps.nowMs();
   const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
   if (cached && cached.expiresAtMs > now) return cached.result;

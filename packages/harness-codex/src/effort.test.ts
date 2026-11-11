@@ -440,7 +440,7 @@ describe("the effort cache is keyed by the codex IDENTITY, not just the binary",
     // A FROZEN clock: nothing can expire, so only the entry cap can bound this.
     // Without it the map would hold all 500 keys.
     for (let run = 0; run < 500; run += 1) {
-      await codexEffortCapability(probe, () => 0, "codex", {
+      await codexEffortCapability(probe, () => 0, "/fixture/codex", {
         CODEX_HOME: `/tmp/claudexor-ephemeral-${run}`,
       });
     }
@@ -460,15 +460,15 @@ describe("the effort cache is keyed by the codex IDENTITY, not just the binary",
       };
     };
     const stable = { CODEX_HOME: "/tmp/claudexor-native-home" };
-    await codexEffortCapability(probe, () => 0, "codex", stable);
+    await codexEffortCapability(probe, () => 0, "/fixture/codex", stable);
     expect(calls).toBe(1);
     // Well inside the cap: the stable entry must survive ordinary churn.
     for (let run = 0; run < 10; run += 1) {
-      await codexEffortCapability(probe, () => 0, "codex", {
+      await codexEffortCapability(probe, () => 0, "/fixture/codex", {
         CODEX_HOME: `/tmp/claudexor-ephemeral-churn-${run}`,
       });
     }
-    await codexEffortCapability(probe, () => 0, "codex", stable);
+    await codexEffortCapability(probe, () => 0, "/fixture/codex", stable);
     expect(calls).toBe(11); // 1 stable + 10 ephemeral; the stable read was cached.
     clearCodexEffortCache();
   });

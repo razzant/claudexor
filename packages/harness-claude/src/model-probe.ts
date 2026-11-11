@@ -1,3 +1,5 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CLAUDE_PROGRAM } from "./program.js";
 /**
  * Live Claude model inventory from the prompt-free `initialize` handshake.
  *
@@ -334,6 +336,7 @@ interface CacheEntry {
   rows: HarnessModel[];
   expiresAtMs: number;
 }
+let generation = 0;
 const cache = new Map<string, CacheEntry>();
 const pending = new Map<string, Promise<HarnessModel[]>>();
 
@@ -351,6 +354,7 @@ const pending = new Map<string, Promise<HarnessModel[]>>();
  * accepts it, and the daemon's account view retains its own copy of these rows
  * past the TTL (docs/ARCHITECTURE.md). */
 export function clearClaudeModelProbeCache(): void {
+  generation += 1;
   cache.clear();
   pending.clear();
 }
@@ -425,6 +429,7 @@ export async function probeClaudeModels(
 ): Promise<HarnessModel[]> {
   const fallback = (): HarnessModel[] => claudeModelRows(null);
   if (spec?.abortSignal?.aborted) return fallback();
+  const startedGeneration = generation;
   const nowMs = deps.nowMs ?? Date.now;
   let key: string;
   let flight: Promise<HarnessModel[]>;
@@ -439,7 +444,13 @@ export async function probeClaudeModels(
     if (scope.kind === "credential" && !secret) return fallback();
     const identity = probeBinaryIdentity(spec?.env, deps);
     if (identity === null) return fallback();
-    key = cacheKey(scope, identity);
+    const program = await observeHarnessProgram(
+      CLAUDE_PROGRAM,
+      spec?.env,
+      identity.launcher ?? identity.path,
+    );
+    if (generation !== startedGeneration) return fallback();
+    key = JSON.stringify([cacheKey(scope, identity), program.key]);
     if (!spec?.fresh) {
       const hit = cache.get(key);
       if (hit && hit.expiresAtMs > nowMs()) return [...hit.rows];

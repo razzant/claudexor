@@ -1,3 +1,5 @@
+import { observeHarnessProgram, assertSameProgram, type ProgramObservation } from "@claudexor/core";
+import type { HarnessProgram } from "@claudexor/schema";
 import { globalConfigPath } from "@claudexor/config";
 import type { CredentialAccountProbeReceipt, HarnessAdapter } from "@claudexor/core";
 import { probeCredentialProfileStatus } from "@claudexor/orchestrator";
@@ -58,6 +60,7 @@ class AccountObservations {
     profile: CredentialProfile,
     receipt: CredentialAccountProbeReceipt,
     generation: string,
+    program?: ProgramObservation,
   ): void {
     if (generation !== this.generationFor(profile.harness_id)) return;
     const key = [globalConfigPath(), "profile", profile.harness_id, profile.profile_id].join("\0");
@@ -71,27 +74,37 @@ class AccountObservations {
     )
       return;
     this.entries.set(key, {
-      fingerprint: JSON.stringify(profile),
+      fingerprint: JSON.stringify([profile, program?.key ?? "no-program"]),
       pending: false,
       promise: Promise.resolve({ value: { ...receipt, status: status.data }, at: Date.now() }),
     });
   }
 
-  read<T>(
+  async read<T>(
     kind: string,
     profile: CredentialProfile,
     acquire: () => Promise<T>,
     fresh = false,
+    program?: HarnessProgram,
   ): Promise<Observation<T>> {
     const key = [globalConfigPath(), kind, profile.harness_id, profile.profile_id].join("\0");
-    const fingerprint = JSON.stringify(profile);
+    const generation = this.generationFor(profile.harness_id);
+    const observed = await observeHarnessProgram(program);
+    if (generation !== this.generationFor(profile.harness_id))
+      throw new Error("Account changed during program observation; read it again");
+    const fingerprint = JSON.stringify([profile, observed.key]);
     const current = this.entries.get(key);
-    if (current?.fingerprint === fingerprint && (!fresh || current.pending))
+    if (
+      current?.fingerprint === fingerprint &&
+      (!program || observed.program?.version != null) &&
+      (!fresh || current.pending)
+    )
       return current.promise as Promise<Observation<T>>;
     const entry: Entry = { fingerprint, pending: true, promise: Promise.resolve(null as never) };
     entry.promise = Promise.resolve()
       .then(acquire)
-      .then((value) => {
+      .then(async (value) => {
+        assertSameProgram(observed, await observeHarnessProgram(program));
         if (this.entries.get(key) !== entry)
           throw new Error("Account observation changed during acquisition; refresh again");
         return { value, at: Date.now() };
@@ -144,6 +157,7 @@ export async function displayAccountObservation(
       return { status, identity };
     },
     fresh,
+    adapter?.program,
   );
   const age = Math.max(0, Date.now() - observed.at);
   if (age <= STATUS_PROJECTION_TTL_MS) return observed.value;
@@ -167,17 +181,32 @@ export function retainAccountProbeObservations(adapter: HarnessAdapter): Harness
   const accountProbe = adapter.probeCredentialAccount?.bind(adapter);
   return {
     ...adapter,
+    ...(adapter.program
+      ? {
+          discover: async () => {
+            const program = await observeHarnessProgram(adapter.program);
+            const manifest = await adapter.discover();
+            assertSameProgram(program, await observeHarnessProgram(adapter.program));
+            return { ...manifest, sourceProgram: program.program };
+          },
+        }
+      : {}),
     ...(profileProbe
       ? {
           probeCredentialProfile: async (
             ...args: Parameters<NonNullable<HarnessAdapter["probeCredentialProfile"]>>
           ) => {
             const generation = accountObservations.generationFor(args[0].harness_id);
+            const program = adapter.program
+              ? await observeHarnessProgram(adapter.program)
+              : undefined;
             const status = await profileProbe(...args);
+            if (program) assertSameProgram(program, await observeHarnessProgram(adapter.program));
             accountObservations.observeProfile(
               args[0],
               { status, identity: profileAccountIdentity(args[0]) },
               generation,
+              program,
             );
             return status;
           },
@@ -189,8 +218,12 @@ export function retainAccountProbeObservations(adapter: HarnessAdapter): Harness
             ...args: Parameters<NonNullable<HarnessAdapter["probeCredentialAccount"]>>
           ) => {
             const generation = accountObservations.generationFor(args[0].harness_id);
+            const program = adapter.program
+              ? await observeHarnessProgram(adapter.program)
+              : undefined;
             const receipt = await accountProbe(...args);
-            accountObservations.observeProfile(args[0], receipt, generation);
+            if (program) assertSameProgram(program, await observeHarnessProgram(adapter.program));
+            accountObservations.observeProfile(args[0], receipt, generation, program);
             return receipt;
           },
         }

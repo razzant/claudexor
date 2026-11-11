@@ -1,3 +1,5 @@
+import { observeHarnessProgram } from "@claudexor/core";
+import { CODEX_PROGRAM } from "./program.js";
 import {
   prepareHarnessCommand,
   killOwnedProcessTree,
@@ -419,7 +421,8 @@ export async function codexEffortCapability(
   env?: NodeJS.ProcessEnv,
 ): Promise<{ catalog: CodexEffortCatalog; live: boolean }> {
   const now = nowMs();
-  const key = codexEffortCacheKey(bin, env);
+  const program = await observeHarnessProgram(CODEX_PROGRAM, env, bin);
+  const key = JSON.stringify([codexEffortCacheKey(bin, env), program.key]);
   const cached = codexEffortCache.get(key);
   if (cached && cached.expiresAtMs > now) {
     return { catalog: cached.catalog, live: cached.live };

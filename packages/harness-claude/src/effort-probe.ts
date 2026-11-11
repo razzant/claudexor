@@ -1,3 +1,4 @@
+import { observeHarnessProgram } from "@claudexor/core";
 import { CLAUDE_PROGRAM } from "./program.js";
 import {
   selectProgramLauncher,
@@ -306,8 +307,8 @@ type ClaudeHelpProbe =
 const HELP_PROBE_TIMEOUT_MS = 10_000;
 
 /**
- * The memo is keyed by the BINARY IDENTITY (`harnessBinaryIdentity`: realpath,
- * inode, size, mtime — one stat, no spawn), so a CLI updated at the same path
+ * The memo is keyed by the selected program, including its own --version answer
+ * and the launcher stat identity, so a CLI updated at the same path
  * is re-read on the next call instead of served the old ladder for the life
  * of the daemon (live defect 2026-09-18: a stale `xhigh`-less ladder after an
  * in-place update). An unresolvable binary keys as such; its capture fails and
@@ -324,17 +325,22 @@ const HELP_PROBE_TIMEOUT_MS = 10_000;
  */
 let helpProbe: { key: string; promise: Promise<ClaudeHelpProbe> } | null = null;
 
-function helpProbeIdentity(patchPath?: string): { key: string; spawn: string } {
+async function helpProbeIdentity(patchPath?: string): Promise<{ key: string; spawn: string }> {
   const id =
     patchPath === undefined
       ? harnessBinaryIdentity(resolveClaudeBin())
       : harnessBinaryIdentityOnPath(resolveClaudeBin(), patchPath);
+  const program = await observeHarnessProgram(
+    CLAUDE_PROGRAM,
+    patchPath === undefined ? undefined : { PATH: patchPath },
+  );
   return {
-    key: JSON.stringify(
+    key: JSON.stringify([
+      program.key,
       id
         ? [id.path, id.ino, id.size, id.mtimeMs, id.interpreter]
         : ["unresolved", resolveClaudeBin(), patchPath ?? null],
-    ),
+    ]),
     spawn: id?.launcher ?? id?.path ?? resolveClaudeBin(),
   };
 }
@@ -367,8 +373,8 @@ function abandonedProbe(): ClaudeHelpProbe {
  * machine running an older CLI does not merely lose freshness: it advertises and
  * forwards `xhigh` to a binary that rejects it, for the life of the daemon.
  */
-function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
-  const { key, spawn } = helpProbeIdentity(patchPath);
+async function sharedHelpCapture(patchPath?: string): Promise<ClaudeHelpProbe> {
+  const { key, spawn } = await helpProbeIdentity(patchPath);
   if (helpProbe?.key === key) return helpProbe.promise;
   const pending = (async (): Promise<ClaudeHelpProbe> => {
     try {
