@@ -55,13 +55,26 @@ function cli(args) {
       maxBuffer: 8 * 1024 * 1024,
     },
   );
+  // The receipt on stdout carries the vendor's own lines; print it with stderr.
   if (result.status !== 0)
-    throw new Error(`${args.join(" ")} failed: ${result.stderr || result.stdout || result.error}`);
+    throw new Error(
+      `${args.join(" ")} failed (exit ${result.status}${result.error ? `, ${result.error}` : ""})\n--- stdout\n${result.stdout}\n--- stderr\n${result.stderr}`,
+    );
   return JSON.parse(result.stdout);
 }
 
 const verified = [];
+const failed = [];
+// Every route is attempted, so one run reports all of them.
 for (const program of programs) {
+  try {
+    verifyRoute(program);
+  } catch (error) {
+    failed.push(program.id);
+    console.log(`FAILED ${program.id}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+function verifyRoute(program) {
   const { ok, harness, dryRun, ...body } = cli(["harness", "install", program.id, "--yes"]);
   const receipt = HarnessMaintenanceEvidence.parse(body);
   if (
@@ -72,7 +85,9 @@ for (const program of programs) {
     !receipt.after.version ||
     receipt.commands.length === 0
   )
-    throw new Error(`${program.id}: installation did not prove a runnable program`);
+    throw new Error(
+      `${program.id}: installation did not prove a runnable program: ${JSON.stringify(body)}`,
+    );
   const row = cli(["harness", "inspect", program.id]).harnesses[0];
   if (row.selection.path !== receipt.after.path || row.selection.version !== receipt.after.version)
     throw new Error(`${program.id}: receipt and next selection disagree`);
@@ -87,6 +102,7 @@ for (const program of programs) {
   });
   console.log(JSON.stringify(verified.at(-1)));
 }
+if (failed.length) throw new Error(`Windows installation routes failed: ${failed.join(", ")}`);
 console.log(
   JSON.stringify({
     passed: verified.length,
