@@ -153,6 +153,16 @@ async function respondToTurnJob(
   );
 }
 
+/** The durable key of a turn create. Its read-only lookup derives the same turn and command
+ * bindings from it, so the two can never disagree about one request. */
+export function threadTurnCreateIdempotency(
+  threadId: string,
+  body: import("@claudexor/schema").ControlThreadTurnRequest,
+  key: string,
+) {
+  return { key, client: "control-api", request: { threadId, body } };
+}
+
 /**
  * POST /threads/:id/turns — create the turn record FIRST (single-writer), then
  * enqueue its run. Per-thread serialization: concurrent turns on one thread
@@ -171,11 +181,7 @@ export function handleThreadTurnCreate(
     // response that a reloading client never sees.
     let createdTurnId: string | null = null;
     try {
-      const idempotency = {
-        key: idempotencyKey,
-        client: "control-api",
-        request: { threadId, body },
-      };
+      const idempotency = threadTurnCreateIdempotency(threadId, body, idempotencyKey);
       const replay = await inspectThreadTurnCreateReplay(ctx.daemon, ctx, threadId, idempotency);
       const detail = replay.detail;
       if (replay.accepted && replay.existingId) {

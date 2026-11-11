@@ -99,6 +99,7 @@ export * from "./mcp-run-wait.js";
 export * from "./run-observation.js";
 export * from "./task-group.js";
 export * from "./task-group-runs.js";
+export * from "./start-lookup.js";
 export * from "./model-operation.js";
 export * from "./model-image.js";
 export * from "./run-continuity.js";
