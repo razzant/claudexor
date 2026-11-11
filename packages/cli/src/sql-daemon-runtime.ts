@@ -180,10 +180,17 @@ export function createSqlDaemonExecutors(
     retention: (runner: RetentionRunner): RetentionRunner => {
       const wrapped = models.withRetention(runner);
       return recordLastRetention(
-        afterRetention(wrapped, async (request, _receipt, signal) => {
+        afterRetention(wrapped, async (request, receipt, signal) => {
           if (request.dry_run) return;
           options.daemon().pruneHistory();
-          await graph.resources.pruneUploadBindings(signal);
+          const scan = await graph.resources.pruneUploadBindings(signal);
+          if (scan.interrupted) {
+            // The pass did not finish its cleanup: it must not read as completed.
+            receipt.truncated = true;
+            receipt.errors.push(
+              "upload-binding cleanup cancelled; expired bindings wait for the next scan",
+            );
+          }
         }),
         graph.store,
       );

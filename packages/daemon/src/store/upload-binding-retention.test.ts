@@ -5,10 +5,13 @@ import * as timers from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { hashJson } from "@claudexor/util";
 import { payloadRef, putResourceInTx, readResourceRow } from "./resource-rows.js";
+import { queryPlan } from "./retention.js";
 import { RETENTION_AGE_REVISIT_MS } from "./retention-pages.js";
 import {
   parseLegacyUploadBinding,
   UPLOAD_BINDING_RETENTION_MS,
+  UPLOAD_BINDING_WINDOW_END_SQL,
+  UPLOAD_BINDING_WINDOW_SQL,
   UploadBindings,
   uploadKeyDigest,
 } from "./upload-binding-retention.js";
@@ -53,13 +56,16 @@ afterEachClosed(async () => {
   const ownedRoots = roots.splice(0);
   vi.mocked(fs.readdirSync).mockReset();
   vi.mocked(fs.readFileSync).mockReset();
-  vi.mocked(timers.setImmediate).mockClear();
+  // Reset, not clear: a one-off yield a test queued and did not use must not reach the next test.
+  vi.mocked(timers.setImmediate).mockReset();
   for (const f of fixtures.splice(0)) await f.close();
   return () => {
     for (const path of ownedRoots) fs.rmSync(path, { recursive: true, force: true });
     clock = Date.parse("2026-10-10T10:00:00Z");
   };
 });
+/** A scan that reached the last key and deleted `removed` bindings. */
+const finished = (removed: number) => ({ removed, interrupted: false });
 const bindings = (f: ResourceFixture) =>
   Number(
     (
@@ -131,18 +137,18 @@ describe("upload binding retention and legacy point replay", () => {
     const second = await uploaded(f, "second");
     const b = f.resources.finalize(second.uploadId, undefined, "second-finalize");
     clock += 90 * 24 * 60 * 60 * 1_000;
-    expect(await f.resources.pruneUploadBindings()).toBe(0);
+    expect(await f.resources.pruneUploadBindings()).toEqual(finished(0));
     f.resources.releaseModel(payloadRef(a));
     const released = clock;
     clock = released + UPLOAD_BINDING_RETENTION_MS - 1;
     expect(f.resources.create(uploadRequest, "create")).toEqual(first);
     expect(f.resources.finalize(first.uploadId, undefined, "finalize")).toEqual(a);
-    expect(await f.resources.pruneUploadBindings()).toBe(0);
+    expect(await f.resources.pruneUploadBindings()).toEqual(finished(0));
     clock += 1;
     // The finished scan is not due again a millisecond later; a new scanner (a
     // restarted daemon's) is, and finds the lifetime over at exactly 30 days.
-    expect(await f.resources.pruneUploadBindings()).toBe(0);
-    expect(await new UploadBindings(f.store).prune()).toBe(2);
+    expect(await f.resources.pruneUploadBindings()).toEqual(finished(0));
+    expect(await new UploadBindings(f.store).prune()).toEqual(finished(2));
     expect(bindings(f)).toBe(2);
     expect(f.resources.readModel(payloadRef(b)).toString()).toBe("test");
     expect(f.resources.create(uploadRequest, "create").uploadId).not.toBe(first.uploadId);
@@ -160,7 +166,7 @@ describe("upload binding retention and legacy point replay", () => {
     const resource = f.resources.finalize(initial.uploadId, undefined, "f");
     f.resources.expireModel(payloadRef(resource), new Date(clock).toISOString());
     clock += UPLOAD_BINDING_RETENTION_MS;
-    expect(await f.resources.pruneUploadBindings()).toBe(2);
+    expect(await f.resources.pruneUploadBindings()).toEqual(finished(2));
     const cancelled = f.resources.create(uploadRequest, "cancelled");
     f.resources.cancel(cancelled.uploadId);
     const second = await uploaded(f, "unknown");
@@ -174,7 +180,7 @@ describe("upload binding retention and legacy point replay", () => {
       }),
     );
     clock += UPLOAD_BINDING_RETENTION_MS * 10;
-    expect(await f.resources.pruneUploadBindings()).toBe(0);
+    expect(await f.resources.pruneUploadBindings()).toEqual(finished(0));
     expect(f.resources.create(uploadRequest, "cancelled")).toEqual(cancelled);
     expect(f.resources.finalize(second.uploadId, undefined, "unknown-finalize")).toEqual(other);
   });
@@ -211,7 +217,7 @@ describe("upload binding retention and legacy point replay", () => {
     ]);
     f.resources.releaseModel(payloadRef(resource));
     clock += UPLOAD_BINDING_RETENTION_MS;
-    expect(await f.resources.pruneUploadBindings()).toBe(2);
+    expect(await f.resources.pruneUploadBindings()).toEqual(finished(2));
     expect(() => f.resources.finalize(initial.uploadId, undefined, "old-finalize")).toThrow(
       /no such upload/,
     );
@@ -339,39 +345,6 @@ describe("upload binding scan", () => {
     }
   }
   const yields = () => vi.mocked(timers.setImmediate).mock.calls.length;
-
-  it.each([3, 9])(
-    "reads one window per turn whatever the store holds (%i uploads)",
-    async (count) => {
-      const f = await open();
-      await uploads(f, count);
-      vi.mocked(timers.setImmediate).mockClear();
-      const order: string[] = [];
-      setImmediate(() => order.push("another caller"));
-      expect(
-        await new UploadBindings(f.store).prune({ window: 4 }).then((removed) => {
-          order.push("scan finished");
-          return removed;
-        }),
-      ).toBe(0);
-      // Two bindings per upload, four examined per synchronous read.
-      expect(yields()).toBe(Math.ceil((count * 2) / 4));
-      expect(order).toEqual(["another caller", "scan finished"]);
-    },
-  );
-
-  it("deletes every expired target across windows and batches, and nothing else", async () => {
-    const f = await open();
-    await uploads(f, 5, true);
-    const kept = await uploaded(f, "kept");
-    const live = f.resources.finalize(kept.uploadId, undefined, "kept-finalize");
-    clock += UPLOAD_BINDING_RETENTION_MS;
-    expect(await new UploadBindings(f.store).prune({ window: 3, batch: 2 })).toBe(10);
-    expect(bindings(f)).toBe(2);
-    expect(f.resources.create(uploadRequest, "kept")).toEqual(kept);
-    expect(f.resources.finalize(kept.uploadId, undefined, "kept-finalize")).toEqual(live);
-  });
-
   /** The scan's next `after` yields pass; the one after them cancels it. */
   async function cancelAfter(turns: number): Promise<AbortSignal> {
     const stop = new AbortController();
@@ -386,41 +359,149 @@ describe("upload binding scan", () => {
     return stop.signal;
   }
 
-  it("a cancelled scan resumes after its last window instead of starting over", async () => {
+  it.each([3, 9])(
+    "reads one window per turn whatever the store holds (%i uploads)",
+    async (count) => {
+      const f = await open();
+      await uploads(f, count);
+      vi.mocked(timers.setImmediate).mockClear();
+      const order: string[] = [];
+      setImmediate(() => order.push("another caller"));
+      expect(
+        await new UploadBindings(f.store).prune({ window: 4 }).then((scan) => {
+          order.push("scan finished");
+          return scan;
+        }),
+      ).toEqual(finished(0));
+      // Two bindings per upload, four examined per synchronous read.
+      expect(yields()).toBe(Math.ceil((count * 2) / 4));
+      expect(order).toEqual(["another caller", "scan finished"]);
+    },
+  );
+
+  it("both scan statements seek by key: no read grows with the store", async () => {
     const f = await open();
-    await uploads(f, 6);
-    const scanner = new UploadBindings(f.store);
-    // Twelve bindings in windows of four: cancelled once the second was read.
-    expect(await scanner.prune({ signal: await cancelAfter(1), window: 4 })).toBe(0);
-    expect(yields()).toBe(2);
-    vi.mocked(timers.setImmediate).mockClear();
-    expect(await scanner.prune({ window: 4 })).toBe(0);
-    expect(yields()).toBe(1);
+    // The window end reads the next rows of the primary key and nothing else.
+    expect(queryPlan(f.store, UPLOAD_BINDING_WINDOW_END_SQL).join("\n")).toContain(
+      "SEARCH idempotency USING PRIMARY KEY (owner=? AND pid=? AND key_digest>?)",
+    );
+    // The candidates stay inside (after, end] and reach upload and resource by id.
+    const plan = queryPlan(f.store, UPLOAD_BINDING_WINDOW_SQL);
+    expect(plan).toEqual(
+      expect.arrayContaining([
+        "SEARCH i USING PRIMARY KEY (owner=? AND pid=? AND key_digest>? AND key_digest<?)",
+        expect.stringMatching(/^SEARCH u USING INDEX \S+ \(id=\?\)$/),
+        expect.stringMatching(/^SEARCH r USING INDEX \S+ \(id=\?\)$/),
+      ]),
+    );
+    expect(plan.filter((line) => line.startsWith("SCAN"))).toEqual([]);
   });
 
-  it("a cancelled scan deletes nothing it had not settled and reads those windows again", async () => {
+  it("a read returns one window's targets and a transaction settles one batch at most", async () => {
+    const f = await open();
+    await uploads(f, 6, true);
+    clock += UPLOAD_BINDING_RETENTION_MS;
+    // Every binding is eligible: the worst case for both bounds.
+    const read: number[] = [];
+    const prepare = f.store.prepare.bind(f.store);
+    vi.spyOn(f.store, "prepare").mockImplementation((sql: string) => {
+      const statement = prepare(sql);
+      if (sql !== UPLOAD_BINDING_WINDOW_SQL) return statement;
+      return new Proxy(statement, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target) as unknown;
+          if (typeof value !== "function") return value;
+          return (...args: unknown[]) => {
+            const result = (value as (...args: unknown[]) => unknown).apply(target, args);
+            if (key === "all") read.push((result as unknown[]).length);
+            return result;
+          };
+        },
+      });
+    });
+    const left: number[] = [];
+    const actual =
+      await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+    vi.mocked(timers.setImmediate)
+      .mockClear()
+      .mockImplementation(((...args: Parameters<typeof actual.setImmediate>) => {
+        left.push(bindings(f));
+        return actual.setImmediate(...args);
+      }) as typeof timers.setImmediate);
+    expect(await new UploadBindings(f.store).prune({ window: 4, batch: 2 })).toEqual(finished(12));
+    vi.mocked(timers.setImmediate).mockImplementation(actual.setImmediate);
+    // Four bindings per window hold at most four targets.
+    expect(read.length).toBeGreaterThan(1);
+    expect(Math.max(...read)).toBeLessThanOrEqual(4);
+    // Between two yields at most one batch of two targets (four bindings) went.
+    const steps = [12, ...left, 0].map((n, i, all) => (i ? all[i - 1]! - n : 0));
+    expect(Math.max(...steps)).toBeLessThanOrEqual(4);
+    expect(bindings(f)).toBe(0);
+  });
+
+  it("deletes every expired target across windows and batches, and nothing else", async () => {
+    const f = await open();
+    await uploads(f, 5, true);
+    const kept = await uploaded(f, "kept");
+    const live = f.resources.finalize(kept.uploadId, undefined, "kept-finalize");
+    clock += UPLOAD_BINDING_RETENTION_MS;
+    expect(await new UploadBindings(f.store).prune({ window: 3, batch: 2 })).toEqual(finished(10));
+    expect(bindings(f)).toBe(2);
+    expect(f.resources.create(uploadRequest, "kept")).toEqual(kept);
+    expect(f.resources.finalize(kept.uploadId, undefined, "kept-finalize")).toEqual(live);
+  });
+
+  it.each([
+    // The yield after the first window: the next step would be a read.
+    ["before its next read", 100],
+    // The yield before the first batch: the next step would be a settle.
+    ["before its next settle", 1],
+  ])(
+    "a scan cancelled %s stops there, says so and is not stamped as finished",
+    async (_where, batch) => {
+      const f = await open();
+      await uploads(f, 6, true);
+      clock += UPLOAD_BINDING_RETENTION_MS;
+      const scanner = new UploadBindings(f.store);
+      expect(await scanner.prune({ signal: await cancelAfter(0), window: 4, batch })).toEqual({
+        removed: 0,
+        interrupted: true,
+      });
+      // One window was read and nothing after it: no further read, no deletion.
+      expect(yields()).toBe(1);
+      expect(bindings(f)).toBe(12);
+      // An interrupted scan is not a finished one: the next call scans at once, from the first key.
+      expect(await scanner.prune({ window: 4, batch })).toEqual(finished(12));
+      expect(bindings(f)).toBe(0);
+    },
+  );
+
+  it("a cancelled scan keeps the batches it settled and leaves the rest to the next scan", async () => {
     const f = await open();
     await uploads(f, 6, true);
     clock += UPLOAD_BINDING_RETENTION_MS;
     const scanner = new UploadBindings(f.store);
-    // Two windows were read; the batch that would have deleted their targets never filled.
-    expect(await scanner.prune({ signal: await cancelAfter(1), window: 4, batch: 100 })).toBe(0);
-    expect(bindings(f)).toBe(12);
-    expect(await scanner.prune({ window: 4, batch: 100 })).toBe(12);
+    // One target (two bindings) per batch: two batches settle before the third yield cancels.
+    expect(await scanner.prune({ signal: await cancelAfter(2), window: 4, batch: 1 })).toEqual({
+      removed: 4,
+      interrupted: true,
+    });
+    expect(bindings(f)).toBe(8);
+    expect(await scanner.prune({ window: 4, batch: 1 })).toEqual(finished(8));
     expect(bindings(f)).toBe(0);
   });
 
-  it("keeps what a cancelled scan already settled and continues after it", async () => {
+  it("a scan whose signal is already aborted reads nothing and reports the interruption", async () => {
     const f = await open();
-    await uploads(f, 6, true);
+    await uploads(f, 2, true);
     clock += UPLOAD_BINDING_RETENTION_MS;
-    const scanner = new UploadBindings(f.store);
-    // The first window's targets are settled in their own transaction before the yield.
-    const first = await scanner.prune({ signal: await cancelAfter(0), window: 4, batch: 1 });
-    expect(first).toBeGreaterThan(0);
-    expect(bindings(f)).toBe(12 - first);
-    expect(await scanner.prune({ window: 4, batch: 1 })).toBe(12 - first);
-    expect(bindings(f)).toBe(0);
+    const prepare = vi.spyOn(f.store, "prepare");
+    expect(await new UploadBindings(f.store).prune({ signal: AbortSignal.abort() })).toEqual({
+      removed: 0,
+      interrupted: true,
+    });
+    expect(prepare.mock.calls.every(([sql]) => !sql.includes("idempotency"))).toBe(true);
+    expect(bindings(f)).toBe(4);
   });
 
   it("confirms each target when its batch is deleted, not when its window was read", async () => {
@@ -446,29 +527,50 @@ describe("upload binding scan", () => {
         );
         return actual.setImmediate(...args);
       }) as typeof timers.setImmediate);
-    expect(await new UploadBindings(f.store).prune({ batch: 100 })).toBe(4);
+    expect(await new UploadBindings(f.store).prune({ batch: 100 })).toEqual(finished(4));
     expect(bindings(f)).toBe(2);
     expect(f.resources.create(uploadRequest, "revived")).toEqual(upload);
     expect(f.resources.finalize(upload.uploadId, undefined, "revived-finalize")).toEqual(resource);
   });
 
-  it("does not repeat a finished scan before the age revisit, and joins a scan in flight", async () => {
+  it("does not repeat a finished scan before the age revisit, but scans when the clock moved back", async () => {
     const f = await open();
     await uploads(f, 3, true);
     await uploaded(f, "kept");
     const scanner = new UploadBindings(f.store);
-    vi.mocked(timers.setImmediate).mockClear();
-    expect(await Promise.all([scanner.prune(), scanner.prune()])).toEqual([0, 0]);
-    expect(yields()).toBe(1);
     clock += UPLOAD_BINDING_RETENTION_MS;
-    expect(await scanner.prune()).toBe(6);
+    expect(await scanner.prune()).toEqual(finished(6));
     clock += RETENTION_AGE_REVISIT_MS - 1;
     vi.mocked(timers.setImmediate).mockClear();
-    expect(await scanner.prune()).toBe(0);
+    expect(await scanner.prune()).toEqual(finished(0));
     expect(yields()).toBe(0);
     clock += 1;
-    expect(await scanner.prune()).toBe(0);
+    expect(await scanner.prune()).toEqual(finished(0));
     expect(yields()).toBe(1);
+    // A clock set back proves no elapsed time: the scan runs instead of waiting for it to catch up.
+    clock -= 24 * 60 * 60 * 1_000;
+    vi.mocked(timers.setImmediate).mockClear();
+    expect(await scanner.prune()).toEqual(finished(0));
+    expect(yields()).toBe(1);
+  });
+
+  it("finds an expired resource that has no release time by its expiry", async () => {
+    const f = await open();
+    const upload = await uploaded(f);
+    const resource = f.resources.finalize(upload.uploadId, undefined, "finalize");
+    f.store.transaction(() =>
+      putResourceInTx(f.store, {
+        resource,
+        state: "expired",
+        releasedAt: null,
+        expiresAt: new Date(clock).toISOString(),
+      }),
+    );
+    clock += UPLOAD_BINDING_RETENTION_MS - 1;
+    expect(await new UploadBindings(f.store).prune()).toEqual(finished(0));
+    clock += 1;
+    expect(await new UploadBindings(f.store).prune()).toEqual(finished(2));
+    expect(bindings(f)).toBe(0);
   });
 
   it("leaves a binding younger than the lifetime to a later scan while lookup applies the lifetime", async () => {
@@ -494,7 +596,7 @@ describe("upload binding scan", () => {
     expect(f.resources.finalize(initial.uploadId, undefined, "old-finalize")).toEqual(resource);
     expect(bindings(f)).toBe(1);
     clock = released + UPLOAD_BINDING_RETENTION_MS;
-    expect(await new UploadBindings(f.store).prune()).toBe(0);
+    expect(await new UploadBindings(f.store).prune()).toEqual(finished(0));
     expect(bindings(f)).toBe(1);
     // The read applies the exact lifetime and frees the row itself.
     expect(() => f.resources.finalize(initial.uploadId, undefined, "old-finalize")).toThrow(

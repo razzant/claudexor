@@ -24,6 +24,7 @@ import {
 } from "./resource-rows.js";
 import type { EngineStore } from "./store.js";
 import { SqlUploadImports } from "./upload-imports.js";
+import type { UploadBindingScan } from "./upload-binding-retention.js";
 import { SqlUploads } from "./uploads.js";
 import { releaseManagedResource } from "./resource-release.js";
 import {
@@ -144,8 +145,8 @@ export class SqlResourceStore implements ResourceStorePort {
       return { ...payloadRef(resource), createdAt: resource.createdAt };
     });
   }
-  /** One scan of expired upload bindings in bounded windows; `signal` ends it between windows. */
-  pruneUploadBindings(signal?: AbortSignal): Promise<number> {
+  /** One scan of expired upload bindings in bounded steps; `signal` ends it between steps. */
+  pruneUploadBindings(signal?: AbortSignal): Promise<UploadBindingScan> {
     return this.uploads.bindings.prune({ signal });
   }
   onObligationsCleared(rows: readonly ObligationRow[]): void {

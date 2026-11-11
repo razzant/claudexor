@@ -163,7 +163,10 @@ describe("model response expiry through the SQL composition", () => {
       releasedAt: LATE,
       expiresAt: null,
     });
-    expect(await f.graph.resources.pruneUploadBindings()).toBe(2);
+    expect(await f.graph.resources.pruneUploadBindings()).toEqual({
+      removed: 2,
+      interrupted: false,
+    });
     expect(f.bindings(op.response)).toBe(0);
     expect(f.bindings(op.request)).toBe(2);
     expect((await f.operations.create(op.request, op.key)).id).toBe(op.id);
@@ -194,7 +197,10 @@ describe("model response expiry through the SQL composition", () => {
       releasedAt: EXPIRES,
       expiresAt: EXPIRES,
     });
-    expect(await f.graph.resources.pruneUploadBindings()).toBe(2);
+    expect(await f.graph.resources.pruneUploadBindings()).toEqual({
+      removed: 2,
+      interrupted: false,
+    });
     expect(f.operations.reconcileResources().released).toEqual([]);
     expect(f.resolveModel).not.toHaveBeenCalled();
   });
@@ -215,7 +221,10 @@ describe("model response expiry through the SQL composition", () => {
         releasedAt: expired ? EXPIRES : now,
         expiresAt: expired ? EXPIRES : null,
       });
-      expect(await f.graph.resources.pruneUploadBindings()).toBe(expired ? 2 : 0);
+      expect(await f.graph.resources.pruneUploadBindings()).toEqual({
+        removed: expired ? 2 : 0,
+        interrupted: false,
+      });
       expect(f.operations.acknowledge(op.id, op.response.sha256).response.state).toBe(
         expired ? "expired" : "acknowledged",
       );
@@ -244,7 +253,10 @@ describe("model response expiry through the SQL composition", () => {
       releasedAt: laterExpiry,
       expiresAt: laterExpiry,
     });
-    expect(await f.graph.resources.pruneUploadBindings()).toBe(6); // two requests plus the response
+    expect(await f.graph.resources.pruneUploadBindings()).toEqual({
+      removed: 6,
+      interrupted: false,
+    }); // two requests plus the response
     await f.graph.resources.drainCleanup();
     expect(f.graph.resources.readModel(sibling).toString()).toBe('{"answer":"done"}');
   });
