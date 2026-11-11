@@ -1,5 +1,144 @@
 # @claudexor/schema
 
+## 6.0.0
+
+### Major Changes
+
+- 163b570: Vendor programs are installed and maintained through adapter-declared vendor
+  commands under the installation HOME. Selected paths and self-reported versions
+  are shared by runs, probes and maintenance. Passive reads reuse the remembered
+  answer for the same file identity, including no answer; a failed ask preserves
+  an earlier answer. A replacement behind an unchanged wrapper appears at the
+  next inventory read, fresh read or native startup frame, not a passive poll.
+  Claude, Codex and Copilot supply startup versions; the other adapters use
+  remembered evidence or one first version ask. Model lists identify their source
+  program. Native attempts retain program evidence and exhausted credential
+  pools retain the last bounded, redacted vendor diagnostic.
+
+  Breaking: maintenance inventory and receipts use selection/newest/actions,
+  tri-state update availability, command previews and before/after evidence.
+  Hosts must update their consumers and use explicit exact versions instead of
+  baseline/previous targets. Install --target and --release-tested hard-error;
+  use harness install/update with optional --vendor-version <exact>. The host npm
+  contract is removed. Product-made npm copies convert during Update only after
+  a version-answering replacement that is not known older and belongs to the
+  adapter's declared major, where present. Interrupted package hides recover on
+  the next explicit maintenance; arbitrary wrappers remain untouched.
+
+  The SSH app consumes the same inventory and receipt contract. Windows executes
+  five vendor installation routes. Copilot's MSI folder is declared for inventory,
+  probes and native runs without restarting the engine. Cursor Windows (#667), OpenCode's second line
+  and unattended Windows installation (#668) remain unsupported. OpenCode stays
+  on 1.x; vendor pruning and package-manager advice remain vendor responsibilities.
+  Copilot Update can return GitHub's unauthenticated rate-limit refusal; the
+  vendor's sentence is the result. No engine timer, update/retry chain, model-to-version table or active-run gate
+  is added. Release checks fetch declared sources and report absent verb checks
+  as skipped.
+
+### Patch Changes
+
+- 80ca9ee: Antigravity read-only runs no longer end at their first shell command, and
+  large Antigravity inputs reach the model whole (#653).
+
+  A read-only run now passes session-only settings that deny every command and
+  file write, including commands the profile allows. agy returns a denied call to
+  the model as a tool error, so the run keeps reading files and delivers its
+  answer; before, plan mode's unanswerable permission prompt ended the whole turn.
+  The profile's own allow, deny and ask rules stay in force: agy replaces each
+  list a session object names, so all three are copied from the profile. If the
+  profile settings cannot be read, the read-only run is refused before it starts;
+  if only saving the read grant fails, the session settings carry the grant.
+  Read-only runs therefore need agy 1.4.10 or newer, the first release that
+  accepts session-only settings: on an older CLI a read-only run stops before any
+  model call with a message asking to update agy, and `doctor` states the
+  minimum. Full-access and workspace-write runs are unaffected, and nothing
+  updates agy automatically. Every tool step agy
+  reports as ERROR, refused or otherwise failed, now records that call's error
+  result.
+
+  In the recorded runs agy kept only the first 192,000 bytes of each larger piped
+  prompt. Input over Claudexor's conservative 128 KiB limit is now saved unchanged
+  in the run's context directory and named by a short bootstrap whose size does
+  not grow with the input. This also covers inputs between 128 KiB and 192,000
+  bytes, which agy would have received whole, and a thread's summary pass, which
+  uses its enclosing run's directory. A lane without a run directory, an
+  unavailable profile read grant or a failed write refuses such input before
+  anything is sent.
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- b9e88de: Interaction text reaches callers exactly (#651). The Codex access question
+  now quotes the worker's complete final output instead of silently cutting it
+  at 32,000 characters. A Codex approval refused for details over the
+  32,000-character review limit now says so, with the measured size, instead of
+  the generic "cannot grant" reason; readonly and workspace_write command refusals
+  keep their priority. The bounded display labels (a harness event's timeline
+  `title` and a Claude question's preview text) end in a visible "…" and never
+  split a character; the complete text still rides beside them.
+  `claudexor_run_wait` reports `wakeReason: "interactions"` when the next event is
+  a question too large for any page. Each ACP multi-select include/skip round
+  shows every option of the question with its description.
+- 7be23bd: A failed model operation names the model it asked for (#649). A failed or
+  interrupted operation, and one cancelled before it started, carries the
+  requested model in `problem.context.requestedModel`; `route.model` still names
+  only a model the provider reported, so a failure no longer reads as if no model
+  was requested. Execution reports the model named by the request bytes it read,
+  and none when those bytes do not parse. An operation that ends before that read
+  (cancelled while queued, or unable to read its input), and one the engine marks
+  interrupted at restart without an execution receipt, names the model stored in
+  the command parameters outside idempotency identity, so a same-key retry is
+  unchanged. Create stores the model its request bytes parsed; a raw
+  `claudexor.enqueue` caller that bypasses create can set that parameter itself,
+  and the engine does not verify it. A queued cancel now reports the honest
+  `model_operation_cancelled` problem with dispatch still `not_started` and no
+  response, usage or cost. Successful results and operations recorded before this
+  release read back unchanged. An older release refuses a store this release has
+  served (`root_authority_floor_regression`); only an older build of the same
+  version could open it, and it would reject the new parameter and report those
+  operations as not found.
+- Updated dependencies [b9e88de]
+  - @claudexor/util@6.0.0
+
 ## 5.1.0
 
 ### Minor Changes

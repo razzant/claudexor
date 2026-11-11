@@ -1,5 +1,108 @@
 # @claudexor/core
 
+## 6.0.0
+
+### Patch Changes
+
+- 80ca9ee: Antigravity read-only runs no longer end at their first shell command, and
+  large Antigravity inputs reach the model whole (#653).
+
+  A read-only run now passes session-only settings that deny every command and
+  file write, including commands the profile allows. agy returns a denied call to
+  the model as a tool error, so the run keeps reading files and delivers its
+  answer; before, plan mode's unanswerable permission prompt ended the whole turn.
+  The profile's own allow, deny and ask rules stay in force: agy replaces each
+  list a session object names, so all three are copied from the profile. If the
+  profile settings cannot be read, the read-only run is refused before it starts;
+  if only saving the read grant fails, the session settings carry the grant.
+  Read-only runs therefore need agy 1.4.10 or newer, the first release that
+  accepts session-only settings: on an older CLI a read-only run stops before any
+  model call with a message asking to update agy, and `doctor` states the
+  minimum. Full-access and workspace-write runs are unaffected, and nothing
+  updates agy automatically. Every tool step agy
+  reports as ERROR, refused or otherwise failed, now records that call's error
+  result.
+
+  In the recorded runs agy kept only the first 192,000 bytes of each larger piped
+  prompt. Input over Claudexor's conservative 128 KiB limit is now saved unchanged
+  in the run's context directory and named by a short bootstrap whose size does
+  not grow with the input. This also covers inputs between 128 KiB and 192,000
+  bytes, which agy would have received whole, and a thread's summary pass, which
+  uses its enclosing run's directory. A lane without a run directory, an
+  unavailable profile read grant or a failed write refuses such input before
+  anything is sent.
+
+- f4f8caf: Questions now say whether the agent waits for the answer (#628). Each pending
+  question carries `delivery`: `blocking` (every question so far, and the
+  meaning of a stored question without the field) or `async`, a question the
+  agent asks while it keeps working. An async question is still attention: it
+  sets `waitingOnUser`, wakes `claudexor_run_wait`, and can be answered through
+  the same routes. It does not pause the inactivity watchdog or refuse live
+  messages, and the new run-summary flag `asyncQuestionsOnly` is true only while
+  every pending question is async, so a blocking question is never hidden behind
+  one. `claudexor follow`, ACP and the macOS app no longer call such a run paused
+  or waiting: they keep it working, say that silence or expiry sends nothing,
+  and a blocking question is asked before an open async prompt. ACP and MCP
+  answer prompts for an async question no longer hold the run's terminal; they
+  close when the question is answered elsewhere or the run ends. In the macOS app a
+  run that has ended no longer shows a question card, a Send button or a question
+  state while its last snapshot still lists the question; a late answer the engine
+  refuses reads as a sentence saying it was not sent, instead of a raw HTTP error;
+  the deadline label keeps counting down; and an async question between the last
+  message and the final answer no longer leaves a copy of that answer in Activity.
+
+  A failed answer surface is no longer reported as the user's decline. When the
+  engine cannot register or keep a question, the run's interaction channel now
+  rejects with the cause instead of returning "no answer"; a question that was
+  never registered is not announced. A Codex approval or access request whose
+  answer channel failed stays declined and records `interaction_answer_unavailable`
+  instead of failing the run. A failed read of a run's pending questions is no
+  longer reported as having none: `GET /v2/runs/:id` for a live run answers with
+  the typed problem, so an open prompt stays open and a kept answer is retried,
+  while a finished run's detail, a run list and a child card still render.
+
+  A Codex app-server run now raises Codex's `request_user_input_async` as such a
+  question: one async interaction per native item, with Codex's own question ids
+  and options. Its text stays visible as an agent message but is never taken as
+  the run's answer, even when the turn produced no other text. A committed answer
+  goes to the turn that asked, once, as Codex's reply envelope (`turn/steer` with
+  client message id `interaction-answer:<id>`), and each send leaves an
+  `interaction_answer_steer` receipt. The end of that turn,
+  Stop and the run's end withdraw an open question and send nothing. A sub-agent's
+  question cannot be answered, and a question Claudexor cannot read, a run without
+  an answer channel and a failing channel are recorded as
+  `interaction_answer_unavailable`. This follows the Codex 0.162.1 source; it was
+  not checked against a live Codex run.
+
+- f4f8caf: A Claude question whose answer the adapter could not obtain or deliver is no
+  longer recorded as the user's decline (#622). An `AskUserQuestion` error result
+  is now a neutral record with the CLI's own detail ("returned an error instead
+  of answers") and the session input Claudexor held when it read the question.
+  Frames can arrive in batches, so that state does not say when the model asked.
+  When the adapter itself cannot obtain or send an answer, an
+  `interaction_answer_unavailable` status names the reason with the request and
+  tool-use ids: the run has no answer channel, the channel failed, the process
+  ended before an answer was sent, the response could not be written, or the
+  CLI's permission request was read after Claudexor had closed the session's
+  stdin. That late request carries its exact native input instead of counting as
+  a dropped frame. Only the no-channel and failed-channel denies tell the model
+  why it got no answer; in the other cases it sees at most the CLI's own error,
+  and a deny that cannot be written adds a second status. The stdin handle of a
+  bidirectional session gains `send`, which reports whether a frame reached the
+  child's pipe: nothing is written once the child has exited, even while a
+  descendant still holds its output pipes, and a refused write reports its error.
+  A declined or expired question keeps its benign decline and typed interaction
+  events, and none of these is a blocking tool error. A failure inside the
+  orchestrator's answer surface that it resolves as no answer is still sent as
+  the benign decline.
+- Updated dependencies [80ca9ee]
+- Updated dependencies [f4f8caf]
+- Updated dependencies [b9e88de]
+- Updated dependencies [7be23bd]
+- Updated dependencies [163b570]
+  - @claudexor/schema@6.0.0
+  - @claudexor/util@6.0.0
+
 ## 5.1.0
 
 ### Patch Changes

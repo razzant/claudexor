@@ -8644,9 +8644,12 @@ resources the release gates smoke-tested while the archive itself needs no
 POSIX symlink semantics.
 `release/runtime-min-app-version.json` is the tracked `minAppVersion` floor
 (validated `<=` the release version by `scripts/verify-version-parity.mjs`), the
-app-vs-engine skew guard. Engine 4.0 requires application 4.0. An older app
-reports `appUpdateRequired` and keeps its current working engine; updating the
-app supplies the compatible decoder and Node before engine activation.
+app-vs-engine skew guard. The application must understand the vendor-program
+inventory and maintenance receipts used by remote harness setup. An older app
+reports `appUpdateRequired` and keeps its current working engine until the
+application is updated. The SSH runtime manifest uses the release version as
+its application floor; both manifests require application 6.0.0 for engine
+6.0.0. This floor does not establish compatibility for embedding hosts.
 
 **Host-owned embedding.** A non-app host reuses this SAME release archive; the
 existing signed manifest remains its upstream publication authority. There is
