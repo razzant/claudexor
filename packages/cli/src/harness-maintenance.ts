@@ -112,6 +112,9 @@ function programActions(
       exactCommands,
     ),
   };
+  // Windows can launch app execution aliases that are not readable executable
+  // images. Only the OS launch can establish that an installer command is absent.
+  if (runtime.platform === "win32") return actions;
   for (const offered of Object.values(actions)) {
     if (!offered.available) continue;
     for (const command of offered.commands) {
@@ -354,8 +357,8 @@ export async function runHarnessUpdate(
       receipt.phase = "installing";
       receipt.mutation = "unknown";
       await options.beforeMutation?.(receipt);
-      started = true;
       const result = invocation.run();
+      started = true;
       receipt.exitCode = result.exitCode;
       receipt.progress = [...receipt.progress, ...result.progress].slice(-40);
       if (result.exitCode !== 0) {

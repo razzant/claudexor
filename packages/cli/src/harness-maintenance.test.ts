@@ -203,7 +203,7 @@ describe("selected vendor operation", () => {
       ]);
       const receipt = await runHarnessUpdate("fixture", undefined, w.options);
       expect(receipt.ok).toBe(verified);
-      expect(commands).toEqual([join(w.home, "tools/fixture-installer.exe")]);
+      expect(commands).toEqual(["fixture-installer.exe"]);
       expect(receipt.before).toMatchObject({ path: entry, realPath: entry, version: "1.0.0" });
       expect(receipt.after).toMatchObject({
         path: verified ? installed : entry,

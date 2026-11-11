@@ -8418,8 +8418,9 @@ reads published versions on demand. A failed newest read does not block Update.
 Package-manager copies can answer with advice instead of
 changing anything; that vendor sentence is the result. The engine never chooses
 brew, winget or apt to update a copy whose own verb only advises. Copilot
-declares winget as its Windows installer; an absent winget is an unavailable
-action with the same sentence in inventory and execution. The same shared
+declares winget as its Windows installer. Windows decides whether external
+installer commands, including app execution aliases, can launch; an actual
+command-not-found launch reports that the command is unavailable. The shared
 availability predicate refuses pinned product npm overrides before downloading
 or invoking the installer. Repeating Install on a healthy program is a no-op.
 

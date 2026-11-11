@@ -165,7 +165,7 @@ describe("adapter vendor declarations", () => {
         after: { path: installed, version: "1.2.3" },
       });
       expect(invocations).toHaveLength(1);
-      expect(invocations[0]!.bin).toMatch(id === "copilot" ? /winget\.exe$/ : /powershell\.exe$/);
+      expect(invocations[0]!.bin).toMatch(id === "copilot" ? /^winget$/ : /powershell\.exe$/);
       expect(invocations[0]!.env).toMatchObject({
         HOME: w.home,
         USERPROFILE: w.home,
@@ -192,40 +192,70 @@ describe("adapter vendor declarations", () => {
         );
     },
   );
-  it("refuses unavailable winget with the inventory sentence before invoking anything", async () => {
-    const w = vendorFixture();
-    roots.push(w.home);
-    const program = {
-      ...programs.find((p) => p.id === "copilot")!,
-      overrideEnv: "ABSENT_COPILOT",
-      launchers: [{ name: "missing-copilot-fixture" }],
-    };
-    const spawn = vi.fn(() => result("", 1)); // registry PATH unavailable, no winget present
-    const fetcher = vi.fn();
-    const options = {
-      ...w.options,
-      program,
-      platform: "win32" as const,
-      spawn: spawn as unknown as typeof spawnSync,
-      fetch: fetcher,
-    };
-    const row = await inspectHarness("copilot", options);
-    expect(row.actions.install).toMatchObject({
-      available: false,
-      reason: expect.stringContaining("winget is not available"),
-    });
-    const receipt = await runHarnessUpdate("copilot", undefined, options);
-    expect(receipt).toMatchObject({
-      ok: false,
-      commands: [],
-      exitCode: null,
-      problem: { message: row.actions.install.reason },
-    });
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(
-      spawn.mock.calls.every((call) => (call as unknown as [string, string[]])[1][0] === "query"),
-    ).toBe(true);
-  });
+  it.each([null, "ENOENT", "EACCES"])(
+    "lets Windows launch an unclassified installer and reports its actual result (%s)",
+    async (errorCode) => {
+      const w = vendorFixture();
+      roots.push(w.home);
+      const program = {
+        ...programs.find((p) => p.id === "copilot")!,
+        overrideEnv: "ABSENT_COPILOT",
+        launchers: [{ name: "missing-copilot-fixture" }],
+      };
+      const launches: string[] = [];
+      const installed = `${w.installed}.exe`;
+      const spawn = vi.fn((bin: string, args: readonly string[] = []) => {
+        if (args[0] === "query") return result("", 1);
+        if (args[0] === "--version") return result("copilot 1.0.109.");
+        launches.push(bin);
+        if (errorCode)
+          return {
+            ...result("", 1),
+            status: null,
+            error: Object.assign(new Error(`spawn ${bin} ${errorCode}`), { code: errorCode }),
+          };
+        image(installed);
+        return result("Successfully installed");
+      });
+      const fetcher = vi.fn();
+      const options = {
+        ...w.options,
+        program,
+        platform: "win32" as const,
+        sourceEnv: { ...w.options.sourceEnv, ABSENT_COPILOT: installed },
+        spawn: spawn as unknown as typeof spawnSync,
+        fetch: fetcher,
+      };
+      const row = await inspectHarness("copilot", options);
+      expect(row.actions.install).toMatchObject({
+        available: true,
+        reason: null,
+      });
+      const receipt = await runHarnessUpdate("copilot", undefined, options);
+      expect(receipt.commands).toHaveLength(1);
+      expect(receipt.commands[0]!.binary).toBe("winget");
+      if (errorCode === "ENOENT")
+        expect(receipt).toMatchObject({
+          ok: false,
+          exitCode: null,
+          mutation: "none",
+          problem: {
+            code: "program_action_unavailable",
+            message:
+              "winget is not available on this machine; install it before running this vendor command.",
+          },
+        });
+      else if (errorCode)
+        expect(receipt).toMatchObject({
+          ok: false,
+          problem: { code: "vendor_command_failed", message: "spawn winget EACCES" },
+        });
+      else
+        expect(receipt).toMatchObject({ ok: true, after: { version: "1.0.109" }, problem: null });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(launches).toEqual(["winget"]);
+    },
+  );
   it("honors the vendor's custom Codex installation directory in execution and subsequent resolution", async () => {
     const w = vendorFixture();
     roots.push(w.home);

@@ -70,13 +70,14 @@ export async function prepareProgramCommand(
       binary = replace(command.command);
       args = command.args.map(replace);
     }
-    const invocation = prepareHarnessCommand(
-      binary,
-      args,
-      { ...runtime.environment, ...env },
-      runtime.platform,
-      folder,
-    );
+    const environment = { ...runtime.environment, ...env };
+    // An external Windows command may be an OS app execution alias rather than
+    // a readable image. Let CreateProcess resolve it; selected vendor programs
+    // still use the shared resolver/interpreter contract.
+    const invocation =
+      runtime.platform === "win32" && command.kind === "exec" && command.command !== "{program}"
+        ? { binary, args, env: environment }
+        : prepareHarnessCommand(binary, args, environment, runtime.platform, folder);
     const evidence: HarnessMaintenanceCommand = {
       binary: invocation.binary,
       args: invocation.args,
@@ -96,6 +97,13 @@ export async function prepareProgramCommand(
           timeout: 10 * 60_000,
           maxBuffer: 4 * 1024 * 1024,
         });
+        if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT")
+          throw Object.assign(
+            new Error(
+              `${binary} is not available on this machine; install it before running this vendor command.`,
+            ),
+            { code: "program_action_unavailable" },
+          );
         const progress = redactSecrets(
           `${result.stdout ?? ""}\n${result.stderr ?? ""}${result.error ? `\n${result.error.message}` : ""}`,
         )
