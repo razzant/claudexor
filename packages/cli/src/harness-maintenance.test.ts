@@ -297,7 +297,11 @@ describe("selected vendor operation", () => {
       w.program.versionScheme = "semver";
       executable(old.entry, "0.162.1");
       executable(w.installed, replacement);
-      w.options.spawn = ((bin, args = [], opts = {}) =>
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) =>
         args[0] === "--version"
           ? spawnSync(bin, args, opts)
           : result("Installer did nothing")) as typeof spawnSync;
@@ -323,7 +327,11 @@ describe("selected vendor operation", () => {
         old = oldCopy(w);
       w.program.versionScheme = "semver";
       executable(w.installed, healthy ? "1.0.109" : "0.9.0");
-      w.options.spawn = ((bin, args = [], opts = {}) =>
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) =>
         args[0] === "--version"
           ? spawnSync(bin, args, opts)
           : result("No available upgrade found", 2316632107)) as typeof spawnSync;
@@ -343,7 +351,11 @@ describe("selected vendor operation", () => {
     async (healthy) => {
       const w = world(),
         old = oldCopy(w);
-      w.options.spawn = ((bin, args = [], opts = {}) => {
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
         if (args[0] === "--version") return spawnSync(bin, args, opts);
         rmSync(old.pkg, { recursive: true });
         rmSync(old.launcher);
@@ -390,7 +402,7 @@ describe("selected vendor operation", () => {
     expect(existsSync(old.entry)).toBe(true);
     delete w.options.sourceEnv!.FIXTURE_BIN;
     expect((await inspectHarness("fixture", w.options)).actions.update.available).toBe(true);
-    w.options.spawn = ((bin, args = [], opts = {}) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       executable(w.installed, "2.0.0");
       return result();

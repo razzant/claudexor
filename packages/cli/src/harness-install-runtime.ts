@@ -20,7 +20,6 @@ export function installerRuntime(program: HarnessProgram, options: InstallerRunt
   const resolutionSource: NodeJS.ProcessEnv = { ...source, HOME: home };
   const environment: NodeJS.ProcessEnv = {
     ...composeBaseEnv("clean", resolutionSource, runnerNodePath, platform),
-    ...(platform === "win32" ? pickAllowlistedEnv(resolutionSource, platform) : {}),
     ...pickAllowlistedEnv(resolutionSource, program.installationEnv, platform),
     HOME: home,
     ...(platform === "win32" ? { USERPROFILE: home } : {}),
