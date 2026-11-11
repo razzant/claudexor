@@ -6,11 +6,12 @@
  * run reports all of them.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { harnessPrograms } from "../packages/cli/dist/harness-programs.js";
+import { prepareHarnessCommand, programUpdateAvailable } from "../packages/core/dist/index.js";
 import { HarnessMaintenanceEvidence } from "../packages/schema/dist/index.js";
 
 const platform = process.platform;
@@ -20,38 +21,54 @@ const root = mkdtempSync(
   join(realpathSync.native(process.env.RUNNER_TEMP ?? tmpdir()), "vendor-program-smoke-"),
 );
 const failed = [];
-const verified = [];
+const verified = [],
+  refused = [],
+  preserved = [];
+// Windows installers (notably winget/MSI) operate on the actual Windows user.
+// A throwaway HOME is not isolation. This destructive qualification belongs on
+// an ephemeral CI machine; all Windows phases deliberately share its real user.
+if (process.env.GITHUB_ACTIONS !== "true")
+  throw new Error("Real vendor proof requires an ephemeral GitHub Actions runner.");
+const machineHome = win ? process.env.USERPROFILE : null;
+if (win && !machineHome) throw new Error("Windows runner has no USERPROFILE");
+const installed = new Set();
 
-/** One disposable user: HOME and, on Windows, the profile folders derived from it. */
+/** POSIX uses a disposable HOME; Windows keeps the real runner's OS folders. */
 function environment(home) {
   const env = {
     ...process.env,
     HOME: home,
-    CLAUDEXOR_CONFIG_DIR: join(home, "claudexor-config"),
+    CLAUDEXOR_CONFIG_DIR: join(root, "config"),
     CI: "true",
   };
-  const folders = [home, env.CLAUDEXOR_CONFIG_DIR];
-  if (win) {
-    Object.assign(env, {
-      USERPROFILE: home,
-      APPDATA: join(home, "AppData", "Roaming"),
-      LOCALAPPDATA: join(home, "AppData", "Local"),
-      CODEX_HOME: join(home, ".codex"),
-      XDG_CONFIG_HOME: join(home, ".config"),
-      XDG_DATA_HOME: join(home, ".local", "share"),
-      XDG_CACHE_HOME: join(home, ".cache"),
-      XDG_STATE_HOME: join(home, ".local", "state"),
-      TEMP: join(home, "tmp"),
-      TMP: join(home, "tmp"),
-    });
-    folders.push(env.APPDATA, env.LOCALAPPDATA, env.TEMP);
-  }
-  for (const path of folders) mkdirSync(path, { recursive: true });
   for (const program of harnessPrograms()) delete env[program.overrideEnv];
   for (const key of Object.keys(env))
-    if (/API_KEY|TOKEN|SECRET|PASSWORD/.test(key)) delete env[key];
+    if (
+      /API_KEY|TOKEN|SECRET|PASSWORD/.test(key) ||
+      /^(CODEX_HOME|CODEX_INSTALL_DIR|CLAUDE_CONFIG_DIR|CURSOR_CONFIG_DIR|COPILOT_HOME|COPILOT_CACHE_HOME|XDG_.*_HOME)$/.test(
+        key,
+      )
+    )
+      delete env[key];
+  if (!win)
+    Object.assign(env, {
+      XDG_CONFIG_HOME: join(home, ".config"),
+      XDG_DATA_HOME: join(home, ".local/share"),
+      XDG_CACHE_HOME: join(home, ".cache"),
+      XDG_STATE_HOME: join(home, ".local/state"),
+    });
+  for (const path of [home, env.CLAUDEXOR_CONFIG_DIR]) mkdirSync(path, { recursive: true });
   return env;
 }
+const present = (path) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+};
 
 function cli(env, args, { refusal = false } = {}) {
   const result = spawnSync(
@@ -82,10 +99,10 @@ function cli(env, args, { refusal = false } = {}) {
 }
 
 function npm(env, args) {
-  const result = spawnSync(win ? `npm ${args.join(" ")}` : "npm", win ? [] : args, {
-    env,
+  const invocation = prepareHarnessCommand("npm", args, env, platform, root);
+  const result = spawnSync(invocation.binary, invocation.args, {
+    env: invocation.env,
     cwd: root,
-    shell: win,
     encoding: "utf8",
     timeout: 15 * 60_000,
     maxBuffer: 8 * 1024 * 1024,
@@ -100,43 +117,28 @@ function npm(env, args) {
 function attempt(route, harness, run) {
   try {
     const evidence = run();
-    verified.push({ route, harness, ...evidence });
-    console.log(JSON.stringify(verified.at(-1)));
+    const records = evidence.vendorRefused
+      ? refused
+      : evidence.preservedOlderVendor
+        ? preserved
+        : verified;
+    records.push({ route, harness, ...evidence });
+    console.log(JSON.stringify(records.at(-1)));
   } catch (error) {
     failed.push(`${route}:${harness}`);
     console.log(
       `FAILED ${route} ${harness}: ${error instanceof Error ? error.message : String(error)}`,
     );
-    if (win && route === "install") console.log(`WHERE ${harness}: ${whereOnWindows(harness)}`);
   }
-}
-
-/** Where a Windows installer really put its launchers: the registry PATH a new
- * terminal would get, and the usual program roots. Diagnostic output only. */
-function whereOnWindows(harness) {
-  const names = harnessPrograms()
-    .find((program) => program.id === harness)
-    .launchers.map((launcher) => launcher.name);
-  const script = `
-$names = @(${names.map((name) => `'${name}'`).join(",")})
-$dirs = (@([Environment]::GetEnvironmentVariable('Path','Machine'), [Environment]::GetEnvironmentVariable('Path','User')) -join ';') -split ';' | Where-Object { $_ }
-$roots = @($env:ProgramFiles, \${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA 'Programs'), (Join-Path $env:LOCALAPPDATA 'Microsoft\\WinGet'), (Join-Path $env:LOCALAPPDATA 'Microsoft\\WindowsApps'))
-$found = @()
-foreach ($name in $names) {
-  foreach ($dir in $dirs) { Get-ChildItem -LiteralPath $dir -Filter "$name*" -ErrorAction SilentlyContinue | ForEach-Object { $found += "PATH: " + $_.FullName } }
-  foreach ($root in $roots) { if ($root) { Get-ChildItem -LiteralPath $root -Recurse -Depth 4 -Filter "$name*.exe" -ErrorAction SilentlyContinue | ForEach-Object { $found += "ROOT: " + $_.FullName } } }
-}
-$found | Sort-Object -Unique
-`;
-  const result = spawnSync("powershell", ["-NoProfile", "-Command", script], {
-    encoding: "utf8",
-    timeout: 120_000,
-  });
-  return `\n${result.stdout}${result.stderr}`;
 }
 
 /** Install with the vendor's installer, read it back, install again as a no-op. */
 function installRoute(program, env) {
+  const initial = cli(env, ["harness", "inspect", program.id]).harnesses[0];
+  if (initial.selection.path)
+    throw new Error(
+      `Runner already selects ${initial.selection.path}; this would not prove installation.`,
+    );
   const { ok, harness, dryRun, ...body } = cli(env, ["harness", "install", program.id, "--yes"]);
   const receipt = HarnessMaintenanceEvidence.parse(body);
   if (
@@ -154,14 +156,18 @@ function installRoute(program, env) {
   const again = cli(env, ["harness", "install", program.id, "--yes"]);
   if (!again.ok || again.outcome !== "not_changed" || again.commands.length !== 0)
     throw new Error(`install of an existing program was not a no-op: ${JSON.stringify(again)}`);
+  installed.add(program.id);
   return { path: receipt.after.path, version: receipt.after.version, commands: receipt.commands };
 }
 
 /** The installed program's own update verb, under the engine's environment. */
 function updateRoute(program, env) {
+  if (!installed.has(program.id))
+    throw new Error("Installation phase did not establish this program on the runner");
   const row = cli(env, ["harness", "inspect", program.id]).harnesses[0];
   if (!row.selection.path) throw new Error("no program is selected to update");
-  if (!row.actions.update.available) return { unavailable: row.actions.update.reason };
+  if (!row.actions.update.available)
+    throw new Error(`Installed route has no update action: ${row.actions.update.reason}`);
   const receipt = cli(env, ["harness", "update", program.id, "--yes"], { refusal: true });
   // A vendor's own refusal (an unauthenticated rate limit, for one) is a complete,
   // honest result when the program still answers; it is printed, not counted.
@@ -185,9 +191,11 @@ function updateRoute(program, env) {
 /** A copy made by real npm in the product's prefix is replaced by the vendor's
  * copy at Update, and the old package and launcher are gone afterwards. */
 function conversionRoute(program) {
-  const home = join(root, `npm-${program.id}`);
+  const home = machineHome ?? join(root, `npm-${program.id}`);
   const env = environment(home);
   const prefix = join(home, ".claudexor", "node");
+  if (win && !installed.has(program.id))
+    throw new Error("Windows installation phase did not establish the existing vendor copy");
   const versions = JSON.parse(npm(env, ["view", program.legacyNpmPackage, "versions", "--json"]));
   const released = [versions].flat().filter((version) => /^\d+\.\d+\.\d+$/.test(version));
   const old = released.at(-2) ?? released.at(-1);
@@ -204,24 +212,58 @@ function conversionRoute(program) {
   const packageRoot = realpathSync(
     join(prefix, win ? "node_modules" : join("lib", "node_modules"), program.legacyNpmPackage),
   );
+  const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  const names =
+    typeof pkg.bin === "string" ? [pkg.name.split("/").at(-1)] : Object.keys(pkg.bin ?? {});
+  const launchers = names.map((name) =>
+    win ? join(prefix, `${name}.cmd`) : join(prefix, "bin", name),
+  );
+  if (!launchers.length || launchers.some((path) => !present(path)))
+    throw new Error("Real npm did not create its declared launchers");
   const before = cli(env, ["harness", "inspect", program.id]).harnesses[0];
   if (!before.selection.realPath?.startsWith(packageRoot + sep))
     throw new Error(
       `the npm copy is not the selected program: ${JSON.stringify(before.selection)}`,
     );
-  if (!before.actions.update.available) return { unavailable: before.actions.update.reason };
-  const receipt = cli(env, ["harness", "update", program.id, "--yes"]);
+  if (!before.actions.update.available)
+    throw new Error(`Conversion unavailable: ${before.actions.update.reason}`);
+  const receipt = cli(env, ["harness", "update", program.id, "--yes"], { refusal: true });
   const after = cli(env, ["harness", "inspect", program.id]).harnesses[0];
+  // A published installer may lag npm. A proved downgrade refusal is a guarded
+  // route, not a claimed conversion; the old program and launchers must survive.
+  if (!receipt.ok && receipt.problem?.code === "conversion_older_program") {
+    const replacement = receipt.elsewhere?.after;
+    if (
+      receipt.exitCode !== 0 ||
+      !replacement?.version ||
+      programUpdateAvailable(
+        program.versionScheme,
+        replacement.version,
+        before.selection.version,
+      ) !== "yes" ||
+      after.selection.path !== before.selection.path ||
+      after.selection.version !== before.selection.version ||
+      !present(packageRoot) ||
+      launchers.some((path) => !present(path))
+    )
+      throw new Error(`Unsafe downgrade refusal: ${JSON.stringify({ receipt, after })}`);
+    return {
+      preservedOlderVendor: true,
+      before: before.selection.version,
+      vendor: replacement.version,
+      progress: receipt.progress,
+    };
+  }
   if (
     !receipt.ok ||
     !after.selection.path ||
     !after.selection.version ||
     after.selection.realPath?.startsWith(packageRoot + sep) ||
     existsSync(packageRoot) ||
-    existsSync(before.selection.path)
+    launchers.some(present)
   )
     throw new Error(
-      `the npm copy was not replaced by a verified vendor copy: ${JSON.stringify({ receipt, after: after.selection, oldPackageExists: existsSync(packageRoot), oldLauncherExists: existsSync(before.selection.path) })}`,
+      `the npm copy was not replaced by a verified vendor copy: ${JSON.stringify({ receipt, after: after.selection, oldPackageExists: existsSync(packageRoot), oldLaunchersPresent: launchers.filter(present) })}`,
     );
   return {
     npm: `${program.legacyNpmPackage}@${old}`,
@@ -243,7 +285,14 @@ if (JSON.stringify(declared) !== JSON.stringify(expected)) {
   console.log(`FAILED acceptance set on ${platform}: declared ${declared.join(", ")}`);
 }
 
-const user = environment(join(root, "home"));
+const user = environment(machineHome ?? join(root, "home"));
+console.log(
+  JSON.stringify({
+    platform,
+    installationHome: user.HOME,
+    windowsFolders: win ? "actual ephemeral runner profile; all phases share it" : null,
+  }),
+);
 for (const program of programs) {
   attempt("install", program.id, () => installRoute(program, user));
   attempt("update", program.id, () => updateRoute(program, user));
@@ -255,6 +304,8 @@ console.log(
   JSON.stringify({
     platform,
     passed: verified.length,
+    vendorRefused: refused,
+    guardedRefusals: preserved,
     failed,
     root,
     limitations: ["No vendor login, model execution, or app-server compatibility claim."],

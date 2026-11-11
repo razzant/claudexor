@@ -260,11 +260,18 @@ answer with the stop command's exit code;
 `scripts/lib/release-windows-stop.test.mjs` runs that exact loop from the
 workflow under pwsh with a fake `node` and daemon, checks the 30-second window
 against the loop's virtual pauses plus measured elapsed time, and fails on
-GitHub Actions when pwsh is missing. The Windows CI lane executes the five adapter-declared installation routes in
-`scripts/windows-local-install-smoke.mjs`: Claude, Codex, Antigravity, Grok and
-Copilot. It requires actual commands, agreement between each receipt and the
-next selected path/version, and an existing-program install no-op. These facts
-do not establish vendor login, model execution or app-server compatibility.
+GitHub Actions when pwsh is missing. The required `vendor-programs` Linux/macOS
+job and one Windows test runner execute `scripts/vendor-program-smoke.mjs`.
+The proof installs every declared vendor route, compares its receipt to the next
+selection, repeats Install as a no-op, runs the program's own updater, and converts
+a previous release installed by real npm in the product prefix. A vendor Update
+refusal is printed separately when the program still answers. A known older
+replacement must preserve npm and is reported as a guarded refusal. Every route
+is attempted before the script fails. Versions come only from the programs.
+Windows phases run in order against the ephemeral runner's actual profile and
+standard folders, because winget/MSI ignore a fictitious LOCALAPPDATA; POSIX uses
+disposable homes. The script requires GitHub Actions and must never run on an
+operator machine. These facts establish no login, model or app-server compatibility.
 Cursor Windows (#667) and OpenCode unattended Windows installation/second line
 (#668) remain absent capabilities. Existing standard npm launcher resolution is
 still tested; custom batch programs are not interpreted as npm launchers.

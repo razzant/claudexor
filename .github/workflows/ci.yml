@@ -209,7 +209,7 @@ jobs:
   # matrix fails or is cancelled, and a skipped required check never reports.
   build-test-gate:
     name: build-test
-    needs: [build-test, windows-test, swift]
+    needs: [build-test, windows-test, swift, vendor-programs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -221,6 +221,7 @@ jobs:
           MATRIX_RESULT: ${{ needs.build-test.result }}
           WINDOWS_RESULT: ${{ needs.windows-test.result }}
           MACOS_RESULT: ${{ needs.swift.result }}
+          VENDOR_RESULT: ${{ needs.vendor-programs.result }}
         shell: bash
         run: |
           set -euo pipefail
@@ -234,6 +235,10 @@ jobs:
           fi
           if [ "$MACOS_RESULT" != "success" ]; then
             echo "::error::macOS lane result is '$MACOS_RESULT' (expected 'success')."
+            exit 1
+          fi
+          if [ "$VENDOR_RESULT" != "success" ]; then
+            echo "::error::Vendor program result is '$VENDOR_RESULT' (expected 'success')."
             exit 1
           fi
 
@@ -439,12 +444,13 @@ jobs:
 
       # The same real-vendor proof as the `vendor-programs` job, here because
       # the Windows build needs this job's MSVC environment. One runner is enough.
+      # All phases share its actual Windows profile: winget/MSI do not honor a fake HOME.
       - name: Vendor installation, update and npm-copy replacement routes
         if: matrix.runner == 'windows-latest'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          node scripts/windows-local-install-smoke.mjs
+          node scripts/vendor-program-smoke.mjs
           if ($LASTEXITCODE -ne 0) { throw "vendor program smoke exited $LASTEXITCODE" }
 
   # Real vendor installers and updaters in a disposable HOME on each platform:
@@ -474,7 +480,7 @@ jobs:
       - run: pnpm build
 
       - name: Vendor installation, update and npm-copy replacement routes
-        run: node scripts/windows-local-install-smoke.mjs
+        run: node scripts/vendor-program-smoke.mjs
 
   swift:
     runs-on: macos-26

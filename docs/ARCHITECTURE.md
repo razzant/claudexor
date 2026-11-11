@@ -8512,7 +8512,8 @@ adapter (#668). The five Windows installation routes are Claude, Codex,
 Antigravity, Copilot and Grok. Their version proof does not establish login,
 model execution or app-server compatibility. Vendor pruning or OS file locks
 can affect running programs; Claudexor records the vendor's result rather than
-blocking maintenance on the run count.
+blocking maintenance on the run count. Copilot Update can be refused by GitHub's
+unauthenticated rate limit; that vendor sentence is the result.
 
 For a connected SSH host, the macOS install menu reads that host's inventory.
 Its confirmation dialog shows the prepared commands, script evidence and
@@ -8547,9 +8548,13 @@ relative override resolves from the child's cwd. The shape is not loader validit
 an image for another architecture or with damaged headers still reaches the OS, an
 unreadable file or failed read is not proof. An incomplete header during an in-place
 update can be refused for that inspection; the next resolution rechecks it.
-POSIX executability rules are unchanged. The Windows
-smoke is `scripts/windows-local-install-smoke.mjs`; native Windows login and Agent
-execution are separate acceptance claims, not consequences of package resolution.
+POSIX executability rules are unchanged. The required cross-platform proof
+`scripts/vendor-program-smoke.mjs` installs, reads back, repeats Install as a
+no-op, invokes each updater, and converts previous releases made by real npm.
+It attempts all routes and reports healthy vendor refusals separately. Windows
+phases share the actual ephemeral runner profile because winget/MSI ignore a
+fictitious LOCALAPPDATA; POSIX uses disposable homes. Native Windows login and
+Agent execution are separate acceptance claims.
 
 `claudexor remote bootstrap --json` starts or discovers the remote daemon and
 returns its loopback endpoint. The daemon remains bound to `127.0.0.1`; the app
