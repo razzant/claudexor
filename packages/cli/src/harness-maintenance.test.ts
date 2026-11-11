@@ -517,32 +517,6 @@ describe("selected vendor operation", () => {
       problem: { message: "store unavailable" },
     });
   });
-  it("runs an installer used as update only for a different target read from its own bytes", async () => {
-    const w = world();
-    executable(w.installed, "2.0.0");
-    w.program.platforms.darwin!.update = w.program.platforms.darwin!.install;
-    w.program.platforms.darwin!.newest = {
-      url: "https://example.invalid/install",
-      pick: { kind: "pattern", pattern: "versions/([0-9.]+)" },
-    };
-    let executions = 0;
-    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
-      if (args[0] === "--version") return spawnSync(bin, args, opts);
-      executions++;
-      executable(w.installed, "2.0.0");
-      return result();
-    }) as typeof spawnSync;
-    const same = await runHarnessUpdate("fixture", undefined, w.options);
-    expect(same).toMatchObject({ ok: true, outcome: "not_changed" });
-    expect(executions).toBe(0);
-    expect(same.commands[0]!.script).not.toBeNull();
-    executable(w.installed, "1.0.0");
-    expect((await runHarnessUpdate("fixture", undefined, w.options)).outcome).toBe("changed");
-    expect(executions).toBe(1);
-    w.program.platforms.darwin!.newest!.url = "https://example.invalid/different-source";
-    expect((await runHarnessUpdate("fixture", undefined, w.options)).ok).toBe(false);
-    expect(executions).toBe(1);
-  });
   it("only a declared exact-version command can select an explicit target", async () => {
     const w = world();
     executable(w.installed);

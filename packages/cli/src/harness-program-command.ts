@@ -52,10 +52,8 @@ export async function prepareProgramCommand(
     let binary: string;
     let args: string[];
     let script: HarnessMaintenanceCommand["script"] = null;
-    let scriptText: string | null = null;
     if (command.kind === "script") {
       const bytes = await readVendorBytes(command.url, fetcher);
-      scriptText = bytes.toString("utf8");
       script = {
         url: command.url,
         size: bytes.length,
@@ -88,7 +86,6 @@ export async function prepareProgramCommand(
     return {
       evidence,
       folder,
-      scriptText,
       run() {
         const result = runtime.spawn(invocation.binary, invocation.args, {
           cwd: folder,

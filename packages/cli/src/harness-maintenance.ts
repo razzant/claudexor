@@ -24,7 +24,7 @@ import {
 } from "./harness-install-lease.js";
 import { installerRuntime, type InstallerRuntimeOptions } from "./harness-install-runtime.js";
 import { harnessProgram, harnessProgramAdapter } from "./harness-programs.js";
-import { newestSource, observeNewest, pickNewest } from "./harness-newest.js";
+import { newestSource, observeNewest } from "./harness-newest.js";
 import {
   productNpmCopy,
   replacementProgram,
@@ -284,19 +284,6 @@ export async function runHarnessUpdate(
     );
     preparedCommands.push(prepared);
     receipt.commands = [prepared.evidence];
-    // An installer used as an updater must identify its own target from the
-    // same downloaded bytes. No stale observation can authorize rerunning it.
-    if (!copy && before.path && !version && selectedCommand.kind === "script") {
-      const source = newestSource(program, runtime.platform, runtime.arch);
-      if (!source || source.url !== selectedCommand.url || !prepared.scriptText)
-        throw new Error("The update installer does not declare its own target version.");
-      if (pickNewest(source, prepared.scriptText) === before.version) {
-        receipt.ok = true;
-        receipt.after = before;
-        receipt.outcome = "not_changed";
-        return receipt;
-      }
-    }
     if (options.dryRun) {
       if (exactAfterInstall)
         receipt.limitations.push(
