@@ -37,8 +37,12 @@ on GitHub Releases.
   local and SSH runtime manifests require Claudexor.app 6.0.0. An older app
   reports that an application update is required and keeps its working engine;
   the floor is not an embedding-host compatibility promise. The control
-  protocol major is 3 and the engine store schema is 7. An older engine refuses
+  protocol major is 3 and the engine store schema is 8. **Upgrade:** opening an
+  existing engine store migrates it from schema 7 to 8, which adds each
+  question's `delivery` (`blocking` for earlier rows) and an index of pending
+  questions (#628); the migration is forward-only. An older engine refuses
   a data root served by this release; replacing its executable is not rollback.
+  (Corrected after publication: the notes published with v6.0.0 said schema 7.)
 
   **Program identity and conversion.** Runs, probes and inventory share one
   selection, including Copilot's Windows MSI folder without an engine restart.

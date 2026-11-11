@@ -228,6 +228,156 @@ const decisionsFor = (writes: Frame[], requestId: string) =>
   writes.filter((frame) => frame["id"] === requestId && frame["method"] === undefined);
 
 describe("native Codex approvals through the existing interaction surfaces", () => {
+  it("withdraws an MCP request when the native server resolves it", async () => {
+    const f = await fixture();
+    const mcp = mcpWire(cleanups);
+    await mcp.start();
+    const turn = f.peer.nextTurn();
+    const run = await f.started();
+    const turnId = await turn;
+    f.peer.push({
+      id: "mcp-stale",
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "root",
+        turnId,
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow lookup?",
+        requestedSchema: { type: "object", properties: {} },
+      },
+    });
+    const [interaction] = await f.pending(run.runId, 1);
+    f.peer.push({
+      method: "serverRequest/resolved",
+      params: { threadId: "root", requestId: "mcp-stale" },
+    });
+    await f.pending(run.runId, 0);
+    const late = await mcp.tool("claudexor_answer_interaction", {
+      runId: run.runId,
+      interactionId: interaction!.interactionId,
+      answers: [{ questionId: interaction!.questions[0].id, selectedLabels: ["Accept request"] }],
+    });
+    expect(late.result.isError).toBe(true);
+    f.peer.finishTurn(turnId, "The server withdrew its request");
+    expect((await f.terminal(run.id)).state).toBe("succeeded");
+    expect(decisionsFor(f.peer.writes, "mcp-stale")).toEqual([]);
+  }, 20_000);
+  it("delivers an MCP server request through the daemon MCP and answers its original RPC", async () => {
+    const f = await fixture();
+    const mcp = mcpWire(cleanups);
+    await mcp.start();
+    const turn = f.peer.nextTurn();
+    const run = await f.started();
+    const turnId = await turn;
+    f.peer.push({
+      id: "mcp-request",
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "root",
+        turnId,
+        serverName: "wiki",
+        mode: "form",
+        message: "Allow lookup?",
+        requestedSchema: { type: "object", properties: {} },
+        _meta: { tool_params: { slug: "support" } },
+      },
+    });
+    await f.pending(run.runId, 1);
+    const listed = await mcp.tool("claudexor_run_interactions", { runId: run.runId });
+    const interaction = listed.result.structuredContent.interactions[0];
+    const question = interaction.questions[0];
+    expect(question.question).toContain('"slug": "support"');
+    expect(question.question).toContain("not verified as a native tool-call approval");
+    const result = await mcp.tool("claudexor_answer_interaction", {
+      runId: run.runId,
+      interactionId: interaction.interactionId,
+      answers: [{ questionId: question.id, selectedLabels: ["Accept request"] }],
+    });
+    expect(result.result.isError).not.toBe(true);
+    await f.peer.written((frame) => frame["id"] === "mcp-request" && frame["method"] === undefined);
+    expect(decisionsFor(f.peer.writes, "mcp-request")).toEqual([
+      { id: "mcp-request", result: { action: "accept", content: {}, _meta: null } },
+    ]);
+    f.peer.finishTurn(turnId, "Lookup complete");
+    expect((await f.terminal(run.id)).state).toBe("succeeded");
+  }, 20_000);
+
+  it("hands a correlated MCP denial to the controller and retries under the original policy", async () => {
+    const f = await fixture();
+    const mcp = mcpWire(cleanups);
+    await mcp.start();
+    const first = f.peer.nextTurn();
+    const run = await f.started();
+    const turnId = await first;
+    f.peer.push({
+      method: "item/started",
+      params: {
+        threadId: "root",
+        turnId,
+        item: {
+          id: "mcp-item",
+          type: "mcpToolCall",
+          server: "wiki",
+          tool: "read",
+          arguments: { slug: "support" },
+        },
+      },
+    });
+    f.peer.push({
+      method: "item/autoApprovalReview/completed",
+      params: {
+        threadId: "root",
+        turnId,
+        reviewId: "mcp-review",
+        targetItemId: "mcp-item",
+        action: {
+          type: "mcpToolCall",
+          server: "wiki",
+          toolName: "read",
+          connectorId: null,
+          connectorName: null,
+          toolTitle: null,
+        },
+        review: { status: "denied", rationale: "Needs explicit authorization" },
+        startedAtMs: 100,
+        completedAtMs: 200,
+        decisionSource: "agent",
+      },
+    });
+    f.peer.finishTurn(turnId, "Lookup denied");
+    await f.pending(run.runId, 1);
+    const listed = await mcp.tool("claudexor_run_interactions", { runId: run.runId });
+    const interaction = listed.result.structuredContent.interactions[0];
+    const question = interaction.questions[0];
+    expect(question.question).toContain('"slug": "support"');
+    expect(question.question).toContain("not bound to these arguments");
+    const second = f.peer.nextTurn();
+    const answered = await mcp.tool("claudexor_answer_interaction", {
+      runId: run.runId,
+      interactionId: interaction.interactionId,
+      answers: [{ questionId: question.id, selectedLabels: ["Authorize one retry"] }],
+    });
+    expect(answered.result.isError).not.toBe(true);
+    const secondTurn = await second;
+    const authorization = await f.peer.written(
+      (frame) => frame["method"] === "thread/approveGuardianDeniedAction",
+    );
+    expect(authorization["params"]).toMatchObject({
+      event: {
+        id: "mcp-review",
+        action: { type: "mcp_tool_call", server: "wiki", tool_name: "read" },
+      },
+    });
+    const retry = f.peer.writes.filter((frame) => frame["method"] === "turn/start")[1];
+    expect(retry?.["params"]).toMatchObject({
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    });
+    expect(JSON.stringify(retry)).toContain("support");
+    f.peer.finishTurn(secondTurn, "Lookup completed");
+    expect((await f.terminal(run.id)).state).toBe("succeeded");
+  }, 20_000);
   it("answers one exact pending action over HTTP once, and refuses a duplicate answer", async () => {
     const f = await fixture();
     const turn = f.peer.nextTurn();
