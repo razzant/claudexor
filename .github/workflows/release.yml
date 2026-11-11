@@ -370,6 +370,7 @@ jobs:
         timeout-minutes: 100
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           pnpm build
