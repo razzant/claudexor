@@ -244,12 +244,9 @@ emits a regular-file/directory-only tarball for extractors without POSIX
 symlink semantics. It rejects escaping links, special files, and `.node`
 addons. The closure includes both top-level `claudexord.bundle.cjs` and
 `claudexor.bundle.cjs`, while Node remains host-owned. Embedders keep one exact
-tested full Node toolchain plus protocol/separate daemon-and-CLI
-entrypoints/size in their reviewed pin; local harness installation
-requires the toolchain's own adjacent npm entrypoint
-(`lib/node_modules/npm/bin/npm-cli.js` beside `bin/node`, or
-`node_modules\npm\bin\npm-cli.js` beside `node.exe`) and must never fall back
-to ambient PATH npm. The npm `engines` range
+tested Node runtime plus protocol/separate daemon-and-CLI
+entrypoints/size in their reviewed pin. Vendor installation uses adapter-declared
+commands and requires no adjacent npm. The npm `engines` range
 is not closure-smoke evidence. The existing signed manifest is the publication
 authority used to form that pin; runtime consumers may verify it directly or
 rely on a review-bound exact URL/`buildSha`/SHA-256/size pin, without a second
@@ -257,18 +254,30 @@ manifest or verifier. The focused builder test must cover an internal link's
 expected materialized bytes and an escaping-link refusal. A Windows claim also
 requires a native extract/exact-Node probe/isolated handshake/graceful-stop
 smoke; feature support must not be inferred from portable extraction alone,
-and local Windows harness installation uses the declared native or Node npm
-entrypoint for Codex and Claude. The release smoke retries only retryable stop
+and individual Windows harness routes need their own execution evidence. The release smoke retries only retryable stop
 refusals, for at most 30 seconds, and reports an empty, non-JSON or refused stop
 answer with the stop command's exit code;
 `scripts/lib/release-windows-stop.test.mjs` runs that exact loop from the
 workflow under pwsh with a fake `node` and daemon, checks the 30-second window
 against the loop's virtual pauses plus measured elapsed time, and fails on
-GitHub Actions when pwsh is missing. The Windows CI lane must prove managed and
-ordinary npm-prefix launch and the selected exact vendor version before a release claims
-that platform path; a newer default Codex install is not release-tested native
-app-server compatibility merely because its package/version proof passed. Other installer recipes retain their typed platform bounds;
-custom batch programs are not implicitly interpreted as npm launchers.
+GitHub Actions when pwsh is missing. The Windows CI lane executes the five adapter-declared installation routes in
+`scripts/windows-local-install-smoke.mjs`: Claude, Codex, Antigravity, Grok and
+Copilot. It requires actual commands, agreement between each receipt and the
+next selected path/version, and an existing-program install no-op. These facts
+do not establish vendor login, model execution or app-server compatibility.
+Cursor Windows (#667) and OpenCode unattended Windows installation/second line
+(#668) remain absent capabilities. Existing standard npm launcher resolution is
+still tested; custom batch programs are not interpreted as npm launchers.
+
+`scripts/harness-program-freshness.mjs` joins the model-hints release gate. It
+fetches each distinct adapter-declared newest source, applies the shared pick
+rule and supported-major guard, and runs each distinct declared executable verb
+with `--help` where the program is present. Missing programs and script-only
+commands are explicitly skipped, never passed. It never runs an installer.
+Use `--sources-only` on a shared machine to avoid even probing installed programs.
+The data's release-notes links are literal verified vendor addresses. Fixture
+version constants stamp recordings and snapshots only. Focused cache regressions
+must include a changed program behind an unchanged wrapper and a late old answer.
 
 The `publish` mode also carries `remote_runtime_manifest_b64`:
 the OWNER-SIGNED four-target SSH runtime manifest, transported the same way.

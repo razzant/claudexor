@@ -4,6 +4,32 @@ Release and candidate history for Claudexor. The current version is declared
 in the root `package.json` (the version SSOT); published versions are available
 on GitHub Releases.
 
+- **Unreleased — major:** Vendor program maintenance uses the selected program's
+  own updater or the adapter's vendor installer under the installation HOME.
+  All seven local adapters declare commands, version sources and launcher paths;
+  the inventory includes command previews, tri-state update availability and
+  verified release-note links. Installed-ahead builds are not updates. Durable
+  operations retain requester, actual commands/script hashes, before/after
+  versions, active-run count and partial effects, with dead-owner lease recovery.
+  Product-made npm copies convert only after a verified vendor replacement;
+  hand-placed wrappers remain intact. Program-derived catalogs identify their
+  source path/version and refresh after external changes, including changes
+  behind unchanged wrappers; late old answers cannot replace newer observations.
+  Native attempts record the program that ran, and pool exhaustion retains the
+  last bounded/redacted vendor diagnostic. Cursor children disable self-update;
+  explicit maintenance cleans only enumerated unused profile copies.
+  **Breaking:** hosts must consume the new selection/newest/actions inventory
+  and shared maintenance receipt. Install `--target`, `--release-tested`, and
+  baseline/previous targets hard-error; use install/update and optional
+  `--vendor-version <exact>`. Host-supplied npm is no longer required. The SSH
+  app consumes the same adapter capabilities and receipt. Windows smoke covers
+  Claude, Codex, Antigravity, Grok and Copilot vendor routes. Cursor Windows
+  (#667), OpenCode's second line and unattended Windows install (#668) remain
+  unsupported; OpenCode stays on 1.x. Package-manager updaters may only advise,
+  and vendor pruning remains vendor-owned. There is no update timer, automatic
+  update/retry, model-to-version table or active-run gate. Release checks fetch
+  each declared source and report missing program help checks as skipped.
+
 - **v5.1.0** (2026-11-07): Adds managed lifetimes for new uploaded run data,
   explicit scanner preparation for npm installs, exact thread export and
   conditional retirement, and a typed `turn_limit_reached` outcome for runs

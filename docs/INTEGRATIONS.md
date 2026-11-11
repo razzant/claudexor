@@ -125,19 +125,15 @@ and deliberately excludes Node while including top-level
 build SHA, SHA-256, size, protocol major, separate daemon/CLI entrypoints, and
 tested full Node toolchain; after extraction it requires
 `node claudexord.bundle.cjs --probe` to report the same version/build identity.
-A host invoking
-`node claudexor.bundle.cjs harness install <harness> --target local --yes --json`
-must provide the toolchain's own npm entrypoint next to the Node it runs the
-CLI on: `<node-root>/bin/node` plus `<node-root>/lib/node_modules/npm/bin/npm-cli.js`
-on POSIX, `<node-dir>\node.exe` plus `<node-dir>\node_modules\npm\bin\npm-cli.js`
-(the official zip layout) on Windows; no system/PATH npm is used. On Windows
-the local target resolves the npm package's declared native or Node entrypoint
-for Codex and Claude. The receipt identifies the vendor entrypoint rather than
-merely `node.exe`; launch, doctor and login share the resolved invocation.
-User npm prefixes on the effective PATH use the same lookup. Custom batch
-programs are not treated as standard npm wrappers, and an explicit binary
-path remains exact. The host's HOME (or user profile when unset) anchors the
-managed toolchain; profile and scratch homes do not choose another installation.
+A host invokes
+`node claudexor.bundle.cjs harness install <harness> --yes --json` with explicit
+user authorization. The engine uses adapter-declared vendor installers under
+the real installation HOME, preserving declared installation inputs. The host
+supplies the tested Node runtime; vendor maintenance requires no host npm.
+Runs, doctor, login and inventory share selected-program resolution, including
+exact overrides, declared vendor folders and existing standard Windows npm
+entrypoints. The receipt identifies the vendor program, with its interpreter
+and arguments retained by the engine when necessary.
 The existing signed runtime manifest remains the
 publication authority, so an embedder does not create a second artifact or
 trust root.
@@ -152,72 +148,71 @@ pin the exact archive URL/build SHA/SHA-256/size remain usable. The normal
 signed-manifest contract above remains fail-closed for every non-exempt
 release.
 
-For a valid `harness install ... --yes --json` invocation, stdout is exactly one
-JSON object. Every executed result after version selection carries `ok: boolean`,
-`dryRun: false`, `exitCode: number`, `target: "local" | "remote"`,
-`harness: string`, `command: string`, `installLocation: string`,
-`pinnedVersion: string | null`, and `verification: string`. A refusal before a
-default Codex selection exists (`latest_unavailable`, `latest_older_than_tested`,
-`embedded_npm_missing`, `unsupported_platform`, `harness_install_failed`) carries
-`ok: false`, `dryRun`, `exitCode`, `harness`, `target`, `installLocation`, `code`
-and `refusal` (or `message`), but no `command`, `pinnedVersion` or
-`verification`: no version was selected. The same refusal codes after a decided
-selection retain its disclosure fields. Every successful `--target local` result additionally carries
-`installedBinary` (an absolute launcher path; on Windows the package-native
-image) and `installedVersion` (the exact selected npm version, a kept runnable
-managed version, or the script vendor's bounded non-empty version line).
-`pinnedVersion` names the exact npm version this invocation selected: a default
-Codex install keeps a runnable managed copy at or above its release-tested
-baseline, otherwise resolves one exact npm latest; other npm recipes select their
-release baseline unless a runnable newer copy is kept. `--release-tested` selects
-the baseline instead of that lookup and also keeps a runnable managed copy at or
-above it; installing the baseline still needs the npm registry. `verification` is
-`release_verified` only when that selection equals the measured baseline. Unless
-an exact `--vendor-version` was given, the local install lease also keeps a runnable
-managed copy at or above the baseline that appeared after selection (for example
-from a concurrent Maintenance update); `installedVersion` then names that kept copy.
-Whenever npm itself ran, `command`, `pinnedVersion` and `verification` name the
-version it installed. A `--release-tested` execution refused before installation
-(for example by the install lease) names the baseline target, even if its earlier
-dry-run proposed keeping a newer copy; that failure proves no installation. A
-default Codex install never falls back to the baseline: an unavailable or
-malformed registry answer refuses with `code: "latest_unavailable"` and a
-`refusal` naming the explicit `--release-tested` and `--vendor-version` choices
-(a host that only checks the exit code does not see that remedy). A missing
-bundled npm is the local `embedded_npm_missing` refusal, without a registry or
-retry remedy. On the local target,
-child exit zero is not sufficient: if that launcher/version proof fails, the
-result is `ok: false`, `code: "install_verification_failed"`. A remote success
-keeps the historical contract — `exitCode: 0` with no proof fields. A Cursor result after a
-successful non-empty download additionally carries `installerSha256` (64
-lowercase hex characters) and `installerByteLength` (a positive integer),
-including when the downloaded script itself exits non-zero or its post-install
-proof fails. A refusal may add `code`, `refusal`, or `message`; child/progress
-output goes only to stderr. If setup throws before producing a typed result,
-the canonical `harness_install_failed` JSON failure still carries every
-disclosure field already decided (and the native `causeCode` when available);
-before a default Codex selection that omits `command`, `pinnedVersion` and
-`verification` rather than naming the baseline. Dry-run
-returns the disclosure fields with `ok: true` and `dryRun: true`. It never
-installs or acquires the install lease, but selecting the version is not inert:
-on the local target it executes an existing managed npm copy's bounded
-`--version` probe, and a default Codex selection without a runnable copy makes
-one bounded npm registry read, so a dry-run can also return one of the refusals
-above. An npm dry-run also carries `versionBinding: "vendor-version"`:
-confirming with `--vendor-version <pinnedVersion>` installs exactly the disclosed
-version even if npm latest moved. Executed receipts never carry it, and a CLI
-without the field rejects `install --vendor-version`.
+`harness install <id> --yes --json` ensures a runnable program, installing the
+vendor's current copy when missing. `harness update <id> --yes --json` runs its
+own declared updater or installs when missing. Either accepts
+`--vendor-version <exact>` only where the adapter declares that capability.
+The valid CLI response is one JSON object: `ok`, `harness`, `dryRun` plus the
+shared `HarnessMaintenanceEvidence`. Vendor output is bounded/redacted in
+`progress`; streamed progress goes to stderr. Failed preparation keeps the
+evidence already obtained and a typed `problem`.
 
-For updates, negotiate the maintenance routes from the operation catalog rather
-than calling Ensure again. `GET /v2/maintenance/harnesses` returns selected-version
-facts and each installation's `maintainable`, `targets` and `canCheckLatest`.
-`POST /v2/maintenance/operations` accepts a harness and target with a stable
-Idempotency-Key; recover a lost reply with that same key/body, then read or cancel
-the returned operation. Acceptance is not completion. Latest-only native updaters
-can return an unchanged version without proving newest; npm return/exact targets
-require the package to remain downloadable. The CLI uses `harness inspect` and
-`harness update <id> --vendor-version <exact|latest> --yes --json`; its new receipt
-keeps before/after and effect facts separate from the legacy install envelope.
+For a durable host action, negotiate the maintenance routes in the operation
+catalog. `GET /v2/maintenance/harnesses` returns `{observedAt, harnesses}`.
+Every row supplies `selection` (path, realPath, self-reported version,
+versionOutput and override provenance), `newest` (not_read, available with
+version/time, or unavailable with time/problem), and `actions` (install, update,
+exactVersion). Each action has `available`, a one-sentence `reason` when absent,
+and display-only `commands`. Exec previews contain command/args; script
+previews contain URL/interpreter/args. Exact previews use `{version}` for the
+caller's input, and conversion may use `{installedProgram}` for the replacement
+resolved after installation. They are not an execution API.
+
+The row's `updateAvailable` is yes, no or cannot_tell, computed by the adapter's
+version scheme. Hosts must never order version strings or infer updates when a
+selected build is ahead of a published pointer. `releaseNotesUrl` is a literal
+vendor link or null; `operation` is the last full operation or null. Ask with
+`checkLatest=true` when opening a view that shows versions or the model chooser,
+on explicit check, or for an authorized caller. This reads the public source;
+there is no timer. Without it, newest is the last observation or not_read.
+Selection is re-observed on every read, even when newest is cached. A source
+failure does not remove an available Update action.
+
+`POST /v2/maintenance/operations` takes `{harness,target:{kind:"latest"}}` or
+`{harness,target:{kind:"version",version:"1.2.3"}}` and a stable Idempotency-Key.
+A repeated key/body rejoins; a changed body conflicts. Acceptance returns a
+handle, not completion. Read `/v2/maintenance/operations/:id` or POST its
+`/cancel` route. The operation has id/harness/state/timestamps and the same
+evidence as the direct CLI: phase, target, requester, installationHome,
+commands, before/after/elsewhere selections, activeRunsAtStart, exitCode,
+outcome, mutation, termination, limitations, progress and problem. Target
+latest carries a null version; an exact target carries the requested version.
+Actual commands contain binary/args/env and optional script URL/size/SHA-256;
+they are acknowledged durably before execution. The run count is informational.
+Cancellation can leave applied or unknown effects and never promises rollback.
+Optional `profileCleanup` records planned and removed Cursor profile-copy paths.
+
+A dry-run prepares commands and script evidence without the installation lease
+or mutation. It may execute a version probe and download a script. A later
+invocation can download different bytes, so display the execution receipt as
+the actual command. A successful install requires the selected program to
+answer its own version probe. Re-read doctor/readiness after maintenance.
+Package-manager copies whose own verb only advises retain that sentence in the
+result; the host must not invent a package-manager action. Windows routes cover
+Claude, Codex, Antigravity, Grok and Copilot. Cursor Windows (#667), OpenCode's
+second line and unattended Windows installation (#668) remain unsupported.
+OpenCode commands stay on 1.x. Vendor programs live in vendor directories and
+are pruned by the vendor; see [program maintenance](ARCHITECTURE.md).
+
+Program-derived model lists, including per-account catalogs, carry
+`sourceProgram: {path, version} | null`. Use that field alone to attribute the
+list; null means no program supplied it, and a null version means it could not
+answer. Fixture stamps, maintenance inventory and HTTP `clientVersion` are
+separate facts. Every program observation includes its self-reported version;
+changed programs invalidate the observation on the next read, and stale
+in-flight answers are discarded. Native attempt evidence records path/version
+for every invocation, preferring the vendor's own startup version. Exhausted
+credential pools retain a bounded/redacted last vendor error sentence.
 
 The public [Ouroboros runtime pin](https://github.com/razzant/ouroboros/blob/ouroboros/ouroboros/claudexor_runtime_pin.json)
 is a working example of that exact-version, exact-build, and checksum contract.
@@ -2961,6 +2956,8 @@ subscription sessions are always preferred.
 | `CLAUDEXOR_FAKE_NATIVE_STORE` | fake harness | Test fixture store where `fake-session` writes its own session files; absent means none are written. |
 | `CLAUDEXOR_PROFILE_LOCATOR` | engine → adapter `continuity` (internal, never a child env) | The registry `isolation_locator` of the credential profile whose store holds (or will hold) a native session, named by the engine on the EnvMap it hands to the adapter's `continuity.locate` / `continuity.move`; the adapter maps it onto its own vendor store variable. Users never set it. |
 | `CLAUDEXOR_RUN_SCOPE_<id>` | orchestrator / daemon (internal child env) | The run's process-scope marker (`CLAUDEXOR_RUN_SCOPE_<32 hex>=1`), minted before the first launch and carried into every harness child of the run (it survives `clean` inheritance, which also forwards an enclosing host's markers of the same grammar). A daemon outlives any run, so the CLI launcher sheds an inherited run marker, and a host that starts `claudexord` itself must too: otherwise the daemon's recorded groups and descendants attach to the inherited marker and only the environment census reaches its runs' processes. At the run's terminal and at the next daemon start after a crash, every live process still carrying it — plus the groups and descendants the daemon recorded — is ended by measured identity before the run's terminal is published, and the outcome is disclosed in `final/process_scope.yaml` (best-effort evidence: when that write fails the verdict is still published and the run has no record) (on macOS the census reads the environments only of processes no older than the scope, selected by `ps` elapsed time so that both sides come from the same clock at the same moment; a process older than the run cannot carry its marker; a backward wall-clock step of more than a minute during the run can hide a marker-only member) (INV-144; `completeness` is `complete` only on Linux when the census read every same-uid environment, `not_provable` on macOS and Windows or after an unreadable or deadline-bound census). `GET /v2/runs/:id` always carries `summary.processScope`: the compact record once the run is terminal and the record is readable and valid, otherwise an explicit `null` that means unknown, never clean (the run is still live, the record is absent — a run that predates it or whose write failed — or it is unreadable or invalid); engines that predate the field omit the key, which is equally unknown, and the generated JSON Schema lists the property as optional (it declares a default of `null`) although this engine always sends it. The list projection (`GET /v2/runs`) always leaves `processScope` null — read the detail. `summary.processScopeLater` is the latest later, separately bounded settlement attempt the live owning daemon made after the terminal (`final/process_scope_later.yaml`, beside the unchanged terminal record; null when none ran or it is unreadable: unknown, never clean). The index is written compactly; a row the engine cannot parse stays in `entries` verbatim and unknown. A host that must act while the daemon is dead may read `daemon/run-scopes.json` (`{ "schema_version": 1, "entries": [ ... ] }`; per entry `run_id`, `marker`, `state` (`open` \| `unresolved`), `opened_at` (ISO time: the floor the daemon uses while no lstart birth exists), `scope_start` (lstart text or null), `root_groups[{pgid, leader_pid, leader_birth \| null, leader_identity?}]` — `leader_identity` is the daemon's opaque kernel birth token, comparable only by the daemon's own identity helper — and `captured[{pid, pgid, birth}]`; births in the C-locale `ps -o lstart=` spelling. A host without the identity helper, when `leader_birth` is null: a live process with `pid == pgid` cannot be verified as the recorded leader, so skip that group; when no process with `pid == pgid` is alive, the group's remaining members born at or after the floor belong to the scope, because the kernel never hands out a pid that is still a live process-group id) and end recorded members by measured identity. Users never set it. |
+| `CLAUDEXOR_MAINTENANCE_PROTOCOL` | CLI (internal child env) | Enables durable before-mutation acknowledgments between the maintenance service and its custodied CLI child. Users never set it. |
+| `CLAUDEXOR_MAINTENANCE_EVIDENCE` | CLI (internal protocol marker, not an environment variable) | Prefix on stderr evidence frames acknowledged by the parent before the child may mutate the installation. |
 | `CLAUDEXOR_HOME_SCOPED` | orchestrator / review (internal child env) | `1` when the harness runs under a scoped native-state HOME (delegated, read-only and reviewer sessions). A fact for the model, not containment. |
 | `CLAUDEXOR_OPERATOR_HOME` | orchestrator / review (internal child env) | The operator's own home directory, captured from the daemon's unscoped env before HOME is rebased, so a scoped session knows where host caches live instead of searching for them. Set only together with `CLAUDEXOR_HOME_SCOPED`; `PLAYWRIGHT_BROWSERS_PATH` is exported alongside when the operator's Playwright cache exists and no explicit value (including `0`) was set. |
 | `CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE` | Claude adapter (internal child env) | Marker for the capability-declared macOS Keychain bridge in a disposable Claude-only HOME (`ready` / `unavailable`). Users never set it; generic scoped homes and other harnesses do not receive it (INV-067). |
