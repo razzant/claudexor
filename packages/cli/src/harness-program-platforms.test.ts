@@ -61,6 +61,8 @@ describe("adapter vendor declarations", () => {
       .map((program) => program.id);
     expect(linked).toEqual(["agy", "claude", "codex", "copilot", "opencode"]);
     for (const declared of programs) {
+      if (declared.releaseNotesUrl)
+        expect(new URL(declared.releaseNotesUrl).hostname).not.toBe("api.github.com");
       const program = {
         ...declared,
         overrideEnv: "ABSENT_FIXTURE_BIN",

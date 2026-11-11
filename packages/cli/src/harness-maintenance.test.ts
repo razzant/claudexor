@@ -131,6 +131,78 @@ describe("selected vendor operation", () => {
       expect(existsSync(receipt.commands[0]!.args[0]!)).toBe(false);
     },
   );
+  it.each([true, false])(
+    "converts a Windows product npm .cmd shim only after a versioned replacement (verified: %s)",
+    async (verified) => {
+      const w = world(),
+        prefix = join(w.home, ".claudexor/node");
+      const pkg = join(prefix, "node_modules/@fixture/harness"),
+        entry = join(pkg, "bin/fixture-harness.exe");
+      const launcher = join(prefix, "fixture-harness.cmd"),
+        installed = `${w.installed}.exe`;
+      const image = (path: string) => {
+        const bytes = Buffer.alloc(512);
+        bytes.write("MZ");
+        bytes.writeUInt32LE(128, 60);
+        bytes.write("PE\0\0", 128);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, bytes);
+      };
+      image(entry);
+      writeFileSync(
+        join(pkg, "package.json"),
+        JSON.stringify({
+          name: "@fixture/harness",
+          bin: { "fixture-harness": "bin/fixture-harness.exe" },
+        }),
+      );
+      writeFileSync(
+        launcher,
+        [
+          "@ECHO off",
+          "GOTO start",
+          ":find_dp0",
+          "SET dp0=%~dp0",
+          "EXIT /b",
+          ":start",
+          "SETLOCAL",
+          "CALL :find_dp0",
+          '"%dp0%\\node_modules\\@fixture\\harness\\bin\\fixture-harness.exe"   %*',
+        ].join("\r\n"),
+      );
+      w.program.platforms.win32 = {
+        ...w.program.platforms.darwin!,
+        install: { kind: "exec", command: "fixture-installer.exe", args: [] },
+      };
+      image(join(w.home, "tools/fixture-installer.exe"));
+      w.options.platform = "win32";
+      w.options.sourceEnv!.PATH = join(w.home, "tools");
+      const commands: string[] = [];
+      w.options.spawn = ((bin: string, args: readonly string[] = []) => {
+        if (args[0] === "--version")
+          return result(
+            bin === entry ? "1.0.0" : verified ? "2.0.0" : "",
+            bin === entry || verified ? 0 : 1,
+          );
+        commands.push(bin);
+        image(installed);
+        return result("Installed vendor copy");
+      }) as typeof spawnSync;
+      expect((await inspectHarness("fixture", w.options)).actions.update.commands).toEqual([
+        { kind: "exec", command: "fixture-installer.exe", args: [] },
+      ]);
+      const receipt = await runHarnessUpdate("fixture", undefined, w.options);
+      expect(receipt.ok).toBe(verified);
+      expect(commands).toEqual([join(w.home, "tools/fixture-installer.exe")]);
+      expect(receipt.before).toMatchObject({ path: entry, realPath: entry, version: "1.0.0" });
+      expect(receipt.after).toMatchObject({
+        path: verified ? installed : entry,
+        version: verified ? "2.0.0" : "1.0.0",
+      });
+      expect(existsSync(pkg)).toBe(!verified);
+      expect(existsSync(launcher)).toBe(!verified);
+    },
+  );
   it.each(["installer", "missing-version", "explicit-old-override"])(
     "failed conversion preserves the old copy (%s)",
     async (failure) => {

@@ -8416,8 +8416,9 @@ only an adapter-declared exact-version command. `harness inspect --latest --json
 reads published versions on demand. A failed newest read does not block Update.
 An installer used as an updater runs only when its observed target differs from
 the selected version. Package-manager copies can answer with advice instead of
-changing anything; that vendor sentence is the result, with no engine-selected
-package-manager command.
+changing anything; that vendor sentence is the result. The engine never chooses
+brew, winget or apt to update a copy whose own verb only advises. Copilot
+declares winget as its Windows installer.
 
 The CLI discloses commands and asks for confirmation unless `--yes` supplies
 explicit authorization. Script installers are downloaded completely, hashed and

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { defineHarnessProgram, programPath } from "./program-registry.js";
@@ -46,7 +54,12 @@ describe("selected program", () => {
     const path = join(home, ".vendor/bin/fixture-program");
     executable(path);
     const selected = resolveSelectedProgram(fixture, { sourceEnv, nodePath: "/absent/node" });
-    expect(selected).toMatchObject({ path, realPath: path, version: "1.0.0", overrideEnv: null });
+    expect(selected).toMatchObject({
+      path,
+      realPath: realpathSync(path),
+      version: "1.0.0",
+      overrideEnv: null,
+    });
   });
   it("reports an explicit override outside every canonical folder and never substitutes for a broken override", () => {
     const home = root();
