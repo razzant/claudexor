@@ -42,6 +42,7 @@ describe("adapter vendor declarations", () => {
       for (const platform of ["darwin", "linux", "win32"] as const) {
         const data = programPlatform(program, platform)!;
         expect(data.newest?.url).toMatch(/^https:\/\//);
+        expect(data.newest?.url).not.toContain("npmjs");
         expect(data.update || data.reasons?.update).toBeTruthy();
         expect(data.install || data.reasons?.install).toBeTruthy();
         expect(
@@ -51,6 +52,23 @@ describe("adapter vendor declarations", () => {
           /npm|release-tested|vendor-cli-version/,
         );
       }
+  });
+  it("passes verified release-notes addresses through without inventing missing ones", async () => {
+    const w = vendorFixture();
+    roots.push(w.home);
+    const linked = programs
+      .filter((program) => program.releaseNotesUrl)
+      .map((program) => program.id);
+    expect(linked).toEqual(["agy", "claude", "codex", "copilot", "opencode"]);
+    for (const declared of programs) {
+      const program = {
+        ...declared,
+        overrideEnv: "ABSENT_FIXTURE_BIN",
+        launchers: [{ name: "absent-fixture" }],
+      };
+      const row = await inspectHarness(program.id, { ...w.options, program });
+      expect(row.releaseNotesUrl).toBe(program.releaseNotesUrl ?? null);
+    }
   });
   it("previews available commands without fetching installers and compares the declared version scheme", async () => {
     const w = vendorFixture();
@@ -223,7 +241,7 @@ describe("adapter vendor declarations", () => {
         opencode,
         "darwin",
         "arm64",
-        async () => new Response('{"version":"2.0.0"}'),
+        async () => new Response('{"tag_name":"v2.0.0"}'),
       ),
     ).toMatchObject({ status: "unavailable" });
   });

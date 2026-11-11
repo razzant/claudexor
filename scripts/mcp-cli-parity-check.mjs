@@ -198,7 +198,7 @@ const BOOLEAN_FLAG_MAP = {
   },
   "release-tested": {
     mcp: null,
-    reason: "harness install version selection (subcommand plumbing, not a run control)",
+    reason: "retired harness install spelling, parsed only to return its explicit refusal",
   },
   yes: {
     mcp: null,

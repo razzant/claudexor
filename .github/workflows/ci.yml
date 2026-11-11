@@ -437,42 +437,14 @@ jobs:
           node --input-type=module -e 'import {readFileSync} from "node:fs"; const r=JSON.parse(readFileSync(process.env.OUT,"utf8").trim().split("\n").at(-1)); if(r.integrity?.ok!==true || !(r.flusher.counters.barriers>0) || !(r.flushed?.n>0)) throw new Error("store load smoke did not prove integrity and flush completion");'
           if ($LASTEXITCODE -ne 0) { throw "store load smoke did not pass" }
 
-      # The Windows smoke installs the REAL selected Codex npm latest as one
-      # exact version, beside Claude's release baseline. The embedded Node
-      # toolchain is exact (official zip `node.exe` + its npm-cli.js, SHA-256
-      # pinned below for `.node-version`); no ambient node/npm is used. The
-      # isolated profile and npm-declared vendor entrypoints are proved through
-      # shared harness PATH, receipt, version and doctor. Auth and native Agent
-      # behavior are separate lanes: a newer CLI's --version is no app-server
-      # compatibility verdict. `scripts/windows-local-install-smoke.mjs` owns it.
-      - name: Stage the exact embedded Node toolchain (node.exe + its own npm-cli.js)
+      # Execute all five adapter-declared Windows vendor installers in a
+      # disposable HOME. Receipts and the next resolver read must agree on the
+      # program path and its own version; auth/model compatibility is separate.
+      - name: Windows vendor installation routes (Claude, Codex, Antigravity, Grok, Copilot)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = (Get-Content .node-version -Raw).Trim()
-          $expected = "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"
-          $archive = "node-v$version-win-x64.zip"
-          $stage = Join-Path $env:RUNNER_TEMP "claudexor-embedded-node"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          $zip = Join-Path $stage $archive
-          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$version/$archive" -OutFile $zip
-          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) {
-            throw "$archive SHA-256 $actual does not match the pinned $expected (nodejs.org SHASUMS256.txt for v$version)"
-          }
-          Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
-          $node = Join-Path $stage "node-v$version-win-x64\node.exe"
-          $npm = Join-Path (Split-Path -Parent $node) "node_modules\npm\bin\npm-cli.js"
-          if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw "embedded node.exe missing at $node" }
-          if (-not (Test-Path -LiteralPath $npm -PathType Leaf)) { throw "embedded npm-cli.js missing at $npm" }
-          & $node --version
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "CLAUDEXOR_EMBEDDED_NODE=$node" -Encoding utf8
-
-      - name: Local Codex/Claude install proof (exact selected npm version, embedded npm, isolated profile)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & $env:CLAUDEXOR_EMBEDDED_NODE scripts/windows-local-install-smoke.mjs
+          node scripts/windows-local-install-smoke.mjs
           if ($LASTEXITCODE -ne 0) { throw "windows-local-install-smoke exited $LASTEXITCODE" }
 
   swift:

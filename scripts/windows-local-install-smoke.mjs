@@ -1,351 +1,96 @@
 #!/usr/bin/env node
-/**
- * Windows managed and ambient npm entrypoint proof, using the exact CI Node.
- * A real default/latest Codex install and the Claude release baseline must
- * agree with doctor, core launch and idempotent recheck. Package proof is not
- * native app-server compatibility; auth stays outside this credential-free smoke.
+/** Disposable Windows runner proof of every adapter-declared installation route.
+ * No login or model call. Versions come from the installed program's own answer.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { harnessPrograms } from "../packages/cli/dist/harness-programs.js";
+import { HarnessMaintenanceEvidence } from "../packages/schema/dist/index.js";
 
-const RECEIPT_FIELDS = [
-  "ok",
-  "dryRun",
-  "exitCode",
-  "target",
-  "harness",
-  "command",
-  "installLocation",
-  "installedBinary",
-  "installedVersion",
-  "pinnedVersion",
-  "verification",
-].sort();
-const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
-const PROBE_TIMEOUT_MS = 5 * 60 * 1000;
-
-function fail(message, evidence) {
-  console.error(`windows-local-install-smoke FAILED: ${message}`);
-  if (evidence !== undefined) console.error(evidence);
-  throw new Error(message);
-}
-
-function step(message) {
-  console.log(`\n== ${message}`);
-}
-
-function envValue(name) {
-  const upper = name.toUpperCase();
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.toUpperCase() === upper) return value;
-  }
-  return undefined;
-}
-
-if (process.platform !== "win32") fail(`this proof runs on win32 only (got ${process.platform})`);
-
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const cli = join(repoRoot, "packages", "cli", "dist", "cli.js");
-if (!existsSync(cli)) fail(`built CLI missing at ${cli} (run pnpm build first)`);
-const embeddedNpm = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
-if (!existsSync(embeddedNpm)) {
-  fail(
-    `the runner Node has no embedded npm-cli.js at ${embeddedNpm}; stage the official zip layout`,
-  );
-}
-
-// realpath.native: a `%TEMP%` 8.3 short spelling must not leak into any path
-// the engine later canonicalizes (the 3.4.1 Windows lane lesson).
-const base = realpathSync.native(process.env.RUNNER_TEMP ?? tmpdir());
-const root = mkdtempSync(join(base, "claudexor-win-local-install-"));
+if (process.platform !== "win32")
+  throw new Error("Windows vendor installation proof requires win32");
+const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
+const root = mkdtempSync(
+  join(realpathSync.native(process.env.RUNNER_TEMP ?? tmpdir()), "vendor-program-smoke-"),
+);
 const home = join(root, "home");
-const configDir = join(root, "config");
-const temp = join(root, "tmp");
-for (const dir of [
-  home,
-  configDir,
-  temp,
-  join(home, "AppData", "Roaming"),
-  join(home, "AppData", "Local"),
-]) {
-  mkdirSync(dir, { recursive: true });
-}
-const systemRoot = envValue("SystemRoot") ?? "C:\\Windows";
 const env = {
-  // Windows process environment the OS itself resolves against — and NO
-  // node/npm on PATH: the installer must use the runner Node's own npm-cli.js.
-  SystemRoot: systemRoot,
-  SystemDrive: envValue("SystemDrive") ?? "C:",
-  windir: envValue("windir") ?? systemRoot,
-  ComSpec: envValue("ComSpec") ?? join(systemRoot, "System32", "cmd.exe"),
-  PATHEXT: envValue("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD",
-  PATH: [
-    join(systemRoot, "System32"),
-    systemRoot,
-    join(systemRoot, "System32", "Wbem"),
-    join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
-  ].join(";"),
+  ...process.env,
   HOME: home,
   USERPROFILE: home,
   APPDATA: join(home, "AppData", "Roaming"),
   LOCALAPPDATA: join(home, "AppData", "Local"),
-  TEMP: temp,
-  TMP: temp,
-  CLAUDEXOR_CONFIG_DIR: configDir,
+  CLAUDEXOR_CONFIG_DIR: join(root, "config"),
+  CODEX_HOME: join(home, ".codex"),
+  XDG_CONFIG_HOME: join(home, ".config"),
+  XDG_DATA_HOME: join(home, ".local", "share"),
+  XDG_CACHE_HOME: join(home, ".cache"),
+  XDG_STATE_HOME: join(home, ".local", "state"),
+  TEMP: join(root, "tmp"),
+  TMP: join(root, "tmp"),
+  CI: "true",
 };
-for (const proxy of ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"]) {
-  const value = envValue(proxy);
-  if (value !== undefined) env[proxy] = value;
-}
+for (const path of [home, env.APPDATA, env.LOCALAPPDATA, env.CLAUDEXOR_CONFIG_DIR, env.TEMP])
+  mkdirSync(path, { recursive: true });
+const programs = harnessPrograms().filter((program) => program.platforms.win32?.install);
+// Acceptance expectation, not a runtime capability list: adding or losing a route needs review.
+const expected = ["agy", "claude", "codex", "copilot", "grok"];
+if (JSON.stringify(programs.map((p) => p.id).sort()) !== JSON.stringify(expected))
+  throw new Error("Windows route acceptance set changed");
+for (const program of harnessPrograms()) delete env[program.overrideEnv];
+for (const key of Object.keys(env)) if (/API_KEY|TOKEN|SECRET|PASSWORD/.test(key)) delete env[key];
 
-step("no ambient node/npm is reachable from the proof environment");
-for (const tool of ["node", "npm"]) {
-  // Node's spawn cannot execute npm.cmd without a shell; ENOENT alone could
-  // misreport that shim as absent. Windows where.exe observes PATHEXT too.
-  const where = spawnSync(join(systemRoot, "System32", "where.exe"), [tool], {
-    env,
-    encoding: "utf8",
-  });
-  if (where.error || where.status !== 1) {
-    fail(`${tool} is reachable or where.exe could not prove absence`, {
-      status: where.status,
-      error: where.error?.message,
-      stdout: where.stdout,
-    });
-  }
-  const probe = spawnSync(tool, ["--version"], { env, encoding: "utf8" });
-  if (probe.error?.code !== "ENOENT") {
-    fail(`${tool} is reachable on the proof PATH (status ${probe.status})`, probe.stdout);
-  }
-  console.log(`${tool}: not on PATH (including .cmd/.ps1), as required`);
-}
-
-function runCli(args, timeoutMs) {
-  const result = spawnSync(process.execPath, [cli, ...args], {
-    env,
-    cwd: root,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-    timeout: timeoutMs,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (result.error) fail(`claudexor ${args.join(" ")} could not run: ${result.error.message}`);
-  return result;
-}
-
-function parseSingleJson(label, stdout) {
-  let payload;
-  try {
-    payload = JSON.parse(stdout);
-  } catch (error) {
-    fail(`${label} stdout is not exactly one JSON object: ${error.message}`, stdout);
-  }
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-    fail(`${label} stdout is not a JSON object`, stdout);
-  }
-  return payload;
-}
-
-const core = await import(
-  pathToFileURL(join(repoRoot, "packages", "core", "dist", "index.js")).href
-);
-const { CODEX_VENDOR_CLI_VERSION } = await import(
-  pathToFileURL(join(repoRoot, "packages", "harness-codex", "dist", "vendor-cli-version.js")).href
-);
-if (typeof CODEX_VENDOR_CLI_VERSION !== "string") fail("Codex release-tested baseline unavailable");
-const runtimeEnv = core.harnessRuntimeEnv(env, process.execPath);
-const verified = [];
-
-// Core launch accepts an environment patch; delete unselected host variables
-// explicitly so these in-process probes share the replacement env of runCli.
-function isolatedPatch(desired) {
-  const selected = new Set(Object.keys(desired).map((key) => key.toUpperCase()));
-  return {
-    ...Object.fromEntries(
-      Object.keys(process.env)
-        .filter((key) => !selected.has(key.toUpperCase()))
-        .map((key) => [key, null]),
-    ),
-    ...desired,
-  };
-}
-
-for (const [harness, npmPackage] of [
-  ["codex", "@openai/codex"],
-  ["claude", "@anthropic-ai/claude-code"],
-]) {
-  step(`install ${harness} through the managed npm toolchain`);
-  if (harness === "codex") {
-    // Keep the explicit release-tested selection (no latest lookup; installing
-    // it still needs the npm registry) observable without making it the
-    // default install's target or certification of a newer CLI.
-    const baselineRun = runCli(
-      [
-        "harness",
-        "install",
-        "codex",
-        "--target",
-        "local",
-        "--release-tested",
-        "--dry-run",
-        "--json",
-      ],
-      PROBE_TIMEOUT_MS,
-    );
-    const baseline = parseSingleJson("codex tested-baseline dry-run", baselineRun.stdout);
-    if (
-      baselineRun.status !== 0 ||
-      baseline.ok !== true ||
-      baseline.pinnedVersion !== CODEX_VENDOR_CLI_VERSION ||
-      baseline.verification !== "release_verified"
-    )
-      fail("Codex release-tested baseline disclosure is invalid", baseline);
-  }
-  const args = ["harness", "install", harness, "--target", "local", "--yes", "--json"];
-  const install = runCli(args, INSTALL_TIMEOUT_MS);
-  const receipt = parseSingleJson(`${harness} install`, install.stdout);
-  console.log(JSON.stringify(receipt, null, 2));
-  if (install.status !== 0 || receipt.ok !== true) fail(`${harness} install failed`, receipt);
-  if (JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(RECEIPT_FIELDS)) {
-    fail("receipt keys differ from the embedding-host contract", receipt);
-  }
-  const expectedVerification =
-    harness === "codex" && receipt.pinnedVersion !== CODEX_VENDOR_CLI_VERSION
-      ? "deterministic_only"
-      : "release_verified";
-  if (
-    receipt.dryRun !== false ||
-    receipt.exitCode !== 0 ||
-    receipt.target !== "local" ||
-    receipt.harness !== harness ||
-    receipt.verification !== expectedVerification ||
-    typeof receipt.pinnedVersion !== "string" ||
-    receipt.installedVersion !== receipt.pinnedVersion
-  ) {
-    fail(`${harness} receipt facts are inconsistent`, receipt);
-  }
-  const installedBinary = receipt.installedBinary;
-  if (
-    typeof installedBinary !== "string" ||
-    !isAbsolute(installedBinary) ||
-    !existsSync(installedBinary)
-  ) {
-    fail(`${harness} installedBinary is not an existing absolute entrypoint`, receipt);
-  }
-  const packageRoot = join(core.managedNodeRoot(home), "node_modules", ...npmPackage.split("/"));
-  const metadata = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-  const declared = typeof metadata.bin === "string" ? metadata.bin : metadata.bin?.[harness];
-  if (
-    typeof declared !== "string" ||
-    realpathSync.native(installedBinary).toLowerCase() !==
-      realpathSync.native(resolve(packageRoot, declared)).toLowerCase()
-  ) {
-    fail(`${harness} receipt does not name the npm-declared vendor entrypoint`, receipt);
-  }
-  step(`${harness}: exact entrypoint and bare-name core launch report the selected version`);
-  for (const input of [installedBinary, harness]) {
-    let probe;
-    try {
-      probe = await core.runCapture(input, ["--version"], {
-        env: isolatedPatch(runtimeEnv),
-        cwd: root,
-        timeoutMs: PROBE_TIMEOUT_MS,
-      });
-    } catch (error) {
-      fail(`${harness} core launch failed for ${input}: ${error.message}`);
-    }
-    if (probe.code !== 0 || !probe.stdout.includes(receipt.pinnedVersion)) {
-      fail(`${harness} --version did not report the selected version`, probe);
-    }
-    console.log(`${input}: ${probe.stdout.trim()}`);
-  }
-  const resolved = core.resolveHarnessBinary(harness, env, process.execPath);
-  if (
-    typeof resolved !== "string" ||
-    realpathSync.native(resolved).toLowerCase() !==
-      realpathSync.native(installedBinary).toLowerCase()
-  ) {
-    fail(`${harness} discovery disagrees with the install receipt`, { resolved, installedBinary });
-  }
-  const again = runCli(args, INSTALL_TIMEOUT_MS);
-  const recheck = parseSingleJson(`${harness} recheck`, again.stdout);
-  if (again.status !== 0 || recheck.ok !== true || recheck.installedBinary !== installedBinary) {
-    fail(`${harness} repeated install did not recheck the same entrypoint`, recheck);
-  }
-  // A second real npm prefix proves discovery is not a managed-root special case.
-  const ambientPrefix = join(root, `ambient ${harness}`);
-  const ambient = spawnSync(
+function cli(args) {
+  const result = spawnSync(
     process.execPath,
-    [
-      embeddedNpm,
-      "install",
-      "--global",
-      "--prefix",
-      ambientPrefix,
-      `${npmPackage}@${receipt.pinnedVersion}`,
-    ],
+    [join(repo, "packages/cli/dist/cli.js"), ...args, "--json"],
     {
-      env: runtimeEnv,
+      env,
       cwd: root,
       encoding: "utf8",
-      timeout: INSTALL_TIMEOUT_MS,
-      maxBuffer: 64 * 1024 * 1024,
+      timeout: 20 * 60_000,
+      maxBuffer: 8 * 1024 * 1024,
     },
   );
-  if (ambient.error || ambient.status !== 0)
-    fail(`${harness} ambient npm install failed`, ambient.stderr);
-  const ambientEnv = { ...runtimeEnv, PATH: `${ambientPrefix};${runtimeEnv.PATH}` };
-  const selection = core.resolveHarnessCommandOnPath(harness, ambientEnv.PATH, "win32");
-  const expectedAmbient = resolve(
-    ambientPrefix,
-    "node_modules",
-    ...npmPackage.split("/"),
-    declared,
-  );
-  if (
-    !selection.command ||
-    realpathSync.native(selection.command.entrypoint).toLowerCase() !==
-      realpathSync.native(expectedAmbient).toLowerCase()
-  ) {
-    fail(`${harness} did not select the user's npm prefix`, selection);
-  }
-  const ambientProbe = await core.runCapture(harness, ["--version"], {
-    env: isolatedPatch(ambientEnv),
-    cwd: root,
-    timeoutMs: PROBE_TIMEOUT_MS,
-  });
-  if (ambientProbe.code !== 0 || !ambientProbe.stdout.includes(receipt.pinnedVersion)) {
-    fail(`${harness} ambient npm entrypoint failed`, ambientProbe);
-  }
-  verified.push({ harness, installedBinary, version: receipt.pinnedVersion });
+  if (result.status !== 0)
+    throw new Error(`${args.join(" ")} failed: ${result.stderr || result.stdout || result.error}`);
+  return JSON.parse(result.stdout);
 }
 
-try {
-  step("doctor reports the same vendor entrypoints and exits cleanly");
-  const doctor = runCli(["doctor", "--json"], PROBE_TIMEOUT_MS);
-  if (doctor.status !== 0 || doctor.signal !== null) {
-    fail(`doctor exited ${doctor.status}, signal ${String(doctor.signal)}`, doctor.stdout);
-  }
-  const report = parseSingleJson("doctor", doctor.stdout);
-  for (const entry of verified) {
-    const row = report.harnesses?.find((h) => h?.id === entry.harness);
-    const installed = row?.checks?.find((check) => check?.id === "installed");
-    if (
-      installed?.status !== "pass" ||
-      typeof installed.detail !== "string" ||
-      !installed.detail.toLowerCase().includes(entry.installedBinary.toLowerCase())
-    ) {
-      fail(`doctor does not identify the installed ${entry.harness} entrypoint`, row);
-    }
-  }
-} finally {
-  step("stop only the isolated smoke daemon");
-  const stop = runCli(["daemon", "stop", "--json"], PROBE_TIMEOUT_MS);
-  const stopped = parseSingleJson("daemon stop", stop.stdout);
-  if (stop.status !== 0 || stopped.ok !== true)
-    fail("daemon stop did not confirm termination", stopped);
+const verified = [];
+for (const program of programs) {
+  const { ok, harness, dryRun, ...body } = cli(["harness", "install", program.id, "--yes"]);
+  const receipt = HarnessMaintenanceEvidence.parse(body);
+  if (
+    !ok ||
+    dryRun ||
+    harness !== program.id ||
+    !receipt.after?.path ||
+    !receipt.after.version ||
+    receipt.commands.length === 0
+  )
+    throw new Error(`${program.id}: installation did not prove a runnable program`);
+  const row = cli(["harness", "inspect", program.id]).harnesses[0];
+  if (row.selection.path !== receipt.after.path || row.selection.version !== receipt.after.version)
+    throw new Error(`${program.id}: receipt and next selection disagree`);
+  const again = cli(["harness", "install", program.id, "--yes"]);
+  if (!again.ok || again.outcome !== "not_changed" || again.commands.length !== 0)
+    throw new Error(`${program.id}: install of an existing program was not a no-op`);
+  verified.push({
+    harness: program.id,
+    path: receipt.after.path,
+    version: receipt.after.version,
+    commands: receipt.commands,
+  });
+  console.log(JSON.stringify(verified.at(-1)));
 }
-console.log(`windows-local-install-smoke: OK ${JSON.stringify(verified)}`);
+console.log(
+  JSON.stringify({
+    passed: verified.length,
+    root,
+    limitations: ["No vendor login, model execution, or app-server compatibility claim."],
+  }),
+);

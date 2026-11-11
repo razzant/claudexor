@@ -40,6 +40,7 @@ export const AGY_PROGRAM = defineHarnessProgram({
     },
   ],
   versionScheme: "semver",
+  releaseNotesUrl: "https://antigravity.google/docs/cli/commands/changelog/",
   overrideEnv: "CLAUDEXOR_AGY_BIN",
   installationEnv: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"],
   childUpdateEnv: {

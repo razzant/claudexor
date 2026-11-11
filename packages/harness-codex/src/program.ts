@@ -48,6 +48,7 @@ export const CODEX_PROGRAM = defineHarnessProgram({
     },
   ],
   versionScheme: "semver",
+  releaseNotesUrl: "https://api.github.com/repos/openai/codex/releases/latest",
   overrideEnv: "CLAUDEXOR_CODEX_BIN",
   installationEnv: [
     "XDG_CONFIG_HOME",

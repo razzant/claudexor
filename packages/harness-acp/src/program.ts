@@ -4,10 +4,11 @@ import type { HarnessProgramPlatform } from "@claudexor/schema";
 const posix: HarnessProgramPlatform = {
   launcherDirs: ["{home}/.local/bin"],
   newest: {
-    url: "https://registry.npmjs.org/@github/copilot/latest",
+    url: "https://api.github.com/repos/github/copilot-cli/releases/latest",
     pick: {
       kind: "json",
-      field: "version",
+      field: "tag_name",
+      stripPrefix: "v",
     },
   },
   update: {
@@ -43,6 +44,7 @@ export const COPILOT_PROGRAM = defineHarnessProgram({
     },
   ],
   versionScheme: "semver",
+  releaseNotesUrl: "https://github.com/github/copilot-cli/releases/latest",
   overrideEnv: "CLAUDEXOR_COPILOT_BIN",
   installationEnv: [
     "XDG_CONFIG_HOME",
@@ -64,10 +66,11 @@ export const COPILOT_PROGRAM = defineHarnessProgram({
         "{localAppData}/Microsoft/WindowsApps",
       ],
       newest: {
-        url: "https://registry.npmjs.org/@github/copilot/latest",
+        url: "https://api.github.com/repos/github/copilot-cli/releases/latest",
         pick: {
           kind: "json",
-          field: "version",
+          field: "tag_name",
+          stripPrefix: "v",
         },
       },
       update: {

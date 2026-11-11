@@ -37,6 +37,7 @@ export const CLAUDE_PROGRAM = defineHarnessProgram({
     },
   ],
   versionScheme: "semver",
+  releaseNotesUrl: "https://api.github.com/repos/anthropics/claude-code/releases",
   overrideEnv: "CLAUDEXOR_CLAUDE_BIN",
   installationEnv: [
     "XDG_CONFIG_HOME",

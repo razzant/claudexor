@@ -4,10 +4,11 @@ import type { HarnessProgramPlatform } from "@claudexor/schema";
 const posix: HarnessProgramPlatform = {
   launcherDirs: ["{home}/.local/bin", "{home}/.opencode/bin"],
   newest: {
-    url: "https://registry.npmjs.org/opencode-ai/latest",
+    url: "https://api.github.com/repos/anomalyco/opencode/releases/latest",
     pick: {
       kind: "json",
-      field: "version",
+      field: "tag_name",
+      stripPrefix: "v",
     },
   },
   update: {
@@ -38,6 +39,7 @@ export const OPENCODE_PROGRAM = defineHarnessProgram({
     },
   ],
   versionScheme: "semver",
+  releaseNotesUrl: "https://github.com/anomalyco/opencode/releases/latest",
   overrideEnv: "CLAUDEXOR_OPENCODE_BIN",
   installationEnv: ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"],
   legacyNpmPackage: "opencode-ai",
@@ -52,10 +54,11 @@ export const OPENCODE_PROGRAM = defineHarnessProgram({
         "{localAppData}/Microsoft/WinGet/Links",
       ],
       newest: {
-        url: "https://registry.npmjs.org/opencode-ai/latest",
+        url: "https://api.github.com/repos/anomalyco/opencode/releases/latest",
         pick: {
           kind: "json",
-          field: "version",
+          field: "tag_name",
+          stripPrefix: "v",
         },
       },
       update: {

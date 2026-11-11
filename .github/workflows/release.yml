@@ -391,6 +391,7 @@ jobs:
           pnpm knip
           node scripts/complexity-ratchet.mjs
           node scripts/model-hints-freshness.mjs --strict
+          node scripts/harness-program-freshness.mjs
           node scripts/mcp-cli-parity-check.mjs
           node scripts/artifact-text-parity-check.mjs
           node scripts/fixture-freshness-check.mjs
@@ -469,10 +470,10 @@ jobs:
           cli_install="$(env -i HOME="$cli_home" PATH="/usr/bin:/bin" \
             "$zipstage/Claudexor.app/Contents/Resources/node" \
             "$zipstage/Claudexor.app/Contents/Resources/claudexor.bundle.cjs" \
-            harness install codex --target local --release-tested --dry-run --json)"
+            harness inspect codex --json)"
           node -e '
             const help = JSON.parse(process.argv[1]);
-            const install = JSON.parse(process.argv[2]);
+            const inventory = JSON.parse(process.argv[2]);
             const expectedVersion = process.argv[3];
             const harness = Array.isArray(help.commands)
               ? help.commands.find((command) => command?.id === "harness")
@@ -480,12 +481,8 @@ jobs:
             if (
               help.ok !== true ||
               help.version !== expectedVersion ||
-              !harness?.flags?.includes("target") ||
-              install.ok !== true ||
-              install.dryRun !== true ||
-              install.harness !== "codex" ||
-              install.target !== "local" ||
-              install.installLocation !== "~/.claudexor/node/bin"
+              !harness?.flags?.includes("vendor-version") ||
+              !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
             ) {
               throw new Error(`candidate CLI help mismatch: ${JSON.stringify(help)}`);
             }
@@ -606,10 +603,10 @@ jobs:
           cli_install="$(env -i HOME="$cli_home" PATH="/usr/bin:/bin" \
             "$promoted_app/Claudexor.app/Contents/Resources/node" \
             "$promoted_app/Claudexor.app/Contents/Resources/claudexor.bundle.cjs" \
-            harness install codex --target local --release-tested --dry-run --json)"
+            harness inspect codex --json)"
           node -e '
             const help = JSON.parse(process.argv[1]);
-            const install = JSON.parse(process.argv[2]);
+            const inventory = JSON.parse(process.argv[2]);
             const expectedVersion = process.argv[3];
             const harness = Array.isArray(help.commands)
               ? help.commands.find((command) => command?.id === "harness")
@@ -617,12 +614,8 @@ jobs:
             if (
               help.ok !== true ||
               help.version !== expectedVersion ||
-              !harness?.flags?.includes("target") ||
-              install.ok !== true ||
-              install.dryRun !== true ||
-              install.harness !== "codex" ||
-              install.target !== "local" ||
-              install.installLocation !== "~/.claudexor/node/bin"
+              !harness?.flags?.includes("vendor-version") ||
+              !inventory.harnesses?.some(row => row.harness === "codex" && row.actions?.install && row.actions?.update)
             ) {
               throw new Error(`promoted CLI help mismatch: ${JSON.stringify(help)}`);
             }
