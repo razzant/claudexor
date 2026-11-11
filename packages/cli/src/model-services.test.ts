@@ -125,6 +125,7 @@ async function fixture(
     credentialProfileId: profile.profile_id,
     accountFingerprint: profile.profile_id,
     observedAt: new Date().toISOString(),
+    sourceProgram: null,
     provenance: "fixture exact catalog",
     clientVersion: "0.156.1",
     clientVersionSource: "verified_transport",
@@ -188,7 +189,10 @@ async function fixture(
     capabilities,
     refusals,
     migrationGate: () => null,
-    registry: new Map([["codex", { ...createCodexAdapter(), probeCredentialProfile: probe }]]),
+    // These provider/readiness stubs read no native program; program-observation tests own that boundary.
+    registry: new Map([
+      ["codex", { ...createCodexAdapter(), program: undefined, probeCredentialProfile: probe }],
+    ]),
     sources: [
       {
         adapter: options.adapter ?? {
@@ -629,6 +633,7 @@ describe("production model service composition", () => {
         credentialProfileId: "a",
         accountFingerprint: "a",
         observedAt,
+        sourceProgram: null,
         provenance: "existing_cache",
         clientVersion: null,
         clientVersionSource: null,
@@ -639,6 +644,7 @@ describe("production model service composition", () => {
     expect(partial.partial).toBe(true);
     expect(partial.accounts[0]?.catalog).toMatchObject({
       observedAt,
+      sourceProgram: null,
       provenance: "existing_cache",
     });
     expect(partial.accounts[1]).toMatchObject({
@@ -1013,6 +1019,7 @@ describe("production model service composition", () => {
           credentialProfileId: profile.profile_id,
           accountFingerprint: profile.profile_id,
           observedAt: new Date().toISOString(),
+          sourceProgram: null,
           provenance: "fixture exact catalog",
           clientVersion: "0.156.1",
           clientVersionSource: "verified_transport",

@@ -1,5 +1,4 @@
 import { OPENCODE_PROGRAM } from "./program.js";
-export { OPENCODE_PROGRAM } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,
@@ -27,7 +26,6 @@ import {
 import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
-export { OPENCODE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 
 const resolveOpenCodeBin = () => selectProgramLauncher(OPENCODE_PROGRAM);
 

@@ -3182,7 +3182,7 @@ view carries each catalog's declared `clientVersion` and source, plus
 `sourceProgram` for the program path/version that supplied the observation. Selected-account discovery can negotiate `includeAdmission=true` with
 `requestedModel` for those facts and `admission: {requestedModel,
 inventoryAbsence}`, which permits an attempt without a synthetic model row or
-generation claim; the legacy query keeps its exact shape. The
+generation claim; the basic query omits admission metadata. The
 constant moves with a recorded catalog fixture pair (`fixtures/models-http-*.json`)
 whose shared rows must stay identical. Refresh work is serialized per canonical
 managed home; a cancelled caller cannot release another past a still-live

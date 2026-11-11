@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -48,7 +48,7 @@ describe("selected vendor operation", () => {
     w.options.sourceEnv!.PATH = dirname(selected);
     if (override) w.options.sourceEnv!.FIXTURE_BIN = selected;
     const calls: string[] = [];
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       calls.push(bin);
       executable(selected, "2.0.0");
@@ -79,7 +79,7 @@ describe("selected vendor operation", () => {
     symlinkSync(wrapper, old.launcher);
     const bytes = readFileSync(wrapper);
     const calls: string[] = [];
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       calls.push(bin);
       return result("Use your own installer to update this copy.");
@@ -101,7 +101,11 @@ describe("selected vendor operation", () => {
       const w = world();
       const old = oldCopy(w, remote);
       const calls: string[] = [];
-      w.options.spawn = ((bin, args, opts) => {
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
         if (args[0] === "--version") return spawnSync(bin, args, opts);
         calls.push(bin);
         executable(w.installed, "2.0.0");
@@ -131,7 +135,11 @@ describe("selected vendor operation", () => {
       const w = world();
       const old = oldCopy(w);
       if (failure === "explicit-old-override") w.options.sourceEnv!.FIXTURE_BIN = old.launcher;
-      w.options.spawn = ((bin, args, opts) => {
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        opts: SpawnSyncOptions = {},
+      ) => {
         if (args[0] === "--version") return spawnSync(bin, args, opts);
         if (failure !== "installer")
           executable(w.installed, failure === "missing-version" ? "" : "2.0.0");
@@ -162,7 +170,11 @@ describe("selected vendor operation", () => {
         prepared.push(structuredClone(receipt.commands));
         expect(existsSync(old.pkg)).toBe(true);
       };
-      w.options.spawn = ((bin, args, options) => {
+      w.options.spawn = ((
+        bin: string,
+        args: readonly string[] = [],
+        options: SpawnSyncOptions = {},
+      ) => {
         if (args[0] === "--version") return spawnSync(bin, args, options);
         if (bin === "/bin/sh") {
           executable(w.installed, "2.0.0");
@@ -246,7 +258,7 @@ describe("selected vendor operation", () => {
       status: "unavailable",
       problem: { message: "offline" },
     });
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       executable(w.installed, "2.0.0");
       return result();
@@ -260,7 +272,7 @@ describe("selected vendor operation", () => {
     executable(selected);
     executable(w.installed);
     w.options.sourceEnv!.FIXTURE_BIN = selected;
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       executable(w.installed, "2.0.0");
       return result("Installed another copy");
@@ -284,7 +296,7 @@ describe("selected vendor operation", () => {
       RANDOM_SECRET: "also-secret",
     });
     let env: NodeJS.ProcessEnv | undefined;
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       env = opts.env;
       return result(
@@ -307,7 +319,7 @@ describe("selected vendor operation", () => {
     const w = world();
     executable(w.installed);
     let mutated = false;
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       mutated = true;
       return result();
@@ -339,7 +351,7 @@ describe("selected vendor operation", () => {
       pick: { kind: "pattern", pattern: "versions/([0-9.]+)" },
     };
     let executions = 0;
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       executions++;
       executable(w.installed, "2.0.0");
@@ -359,7 +371,7 @@ describe("selected vendor operation", () => {
   it("only a declared exact-version command can select an explicit target", async () => {
     const w = world();
     executable(w.installed);
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       expect(args).toEqual(["update", "--version", "3.4.5"]);
       executable(w.installed, "3.4.5");

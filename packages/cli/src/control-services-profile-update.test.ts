@@ -54,7 +54,7 @@ vi.mock("./registry.js", async (importOriginal) => {
   return {
     ...original,
     // Catalog projection does not test native model discovery. PATH alone is
-    // insufficient: the harness resolver also checks managed install roots.
+    // insufficient: the harness resolver also checks declared vendor folders.
     harnessModelTruth: async (
       harnessId: string,
     ): ReturnType<typeof original.harnessModelTruth> => ({
@@ -63,6 +63,7 @@ vi.mock("./registry.js", async (importOriginal) => {
         models: [],
         source: "none",
         verifiedAgainst: null,
+        sourceProgram: null,
       },
       absence: "authoritative",
     }),
@@ -87,6 +88,8 @@ vi.mock("./registry.js", async (importOriginal) => {
         };
         registry.set(id, {
           ...adapter,
+          // Readiness is supplied by these stubs, not an installed program.
+          program: undefined,
           ...(adapter.probeCredentialProfile
             ? {
                 probeCredentialProfile: async (profile) => {

@@ -1,6 +1,9 @@
 import { z } from "zod/v3";
 
-const HttpsUrl = z.string().url().startsWith("https://");
+const HttpsUrl = z
+  .string()
+  .url()
+  .regex(/^https:\/\//);
 /** Templates substitute {program}, {version}, {home}, {localAppData}, {arch}.
  * They are argv/environment values, never shell source. */
 export const HarnessProgramCommand = z.discriminatedUnion("kind", [

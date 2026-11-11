@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -148,7 +148,7 @@ describe("Claudexor-owned default Claude store (INV-067)", () => {
     try {
       process.env.CLAUDEXOR_CONFIG_DIR = root;
       expect(defaultNativeClaudeConfigDir()).toBe(join(root, "native", "claude", "default"));
-      expect(defaultNativeClaudeConfigDir()).not.toContain("/.claude");
+      expect(defaultNativeClaudeConfigDir()).not.toBe(join(homedir(), ".claude"));
     } finally {
       if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previous;

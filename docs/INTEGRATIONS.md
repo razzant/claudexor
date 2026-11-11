@@ -15,7 +15,7 @@ changing Claudexor.
 | MCP server | Exposes Claudexor tools to MCP clients. `claudexor_runs_wait` projects the same read-only observation with `targets: [{runId, seen?}]` and optional `waitMs`. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
 | Host plugins | User-global Claude Code, Codex, Cursor, and OpenCode integrations managed by `claudexor plugin`. | Experimental file layout (regenerate with `claudexor plugin repair all`). Installs owned local files/config only; host enablement can still require reload/manual action. |
-| Engine runtime closure | Node-free release artifact containing reviewed daemon and CLI entrypoints for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested full Node toolchain and verifies archive plus `--probe` identity. |
+| Engine runtime closure | Node-free release artifact containing reviewed daemon and CLI entrypoints for a host that owns its daemon lifecycle, such as [Ouroboros](https://github.com/razzant/ouroboros). | Exact-pin contract: one link-free archive and the existing signed runtime manifest; the host supplies the tested Node runtime and verifies archive plus `--probe` identity. |
 
 Browser requests on ordinary single-candidate Auto Agent runs use the engine's
 [Browser eligibility projection](ARCHITECTURE.md#4-routing). Explicit route
@@ -109,8 +109,7 @@ An existing `ultra` preference resolves within the vendor's ordered choices to
 the strongest supported ordinary generation effort (currently Astra `max`).
 The effort receipt preserves `requested: ultra`, the prepared value and independent
 provider observation; it discloses that raw calls do not execute native automatic
-delegation. Native Codex sessions retain their full Ultra mode. Catalog object
-shapes and the opt-in result contract are unchanged.
+delegation. Native Codex sessions retain their full Ultra mode.
 For an unlisted raw model, ordinary explicit effort is forwarded exactly with
 adapter-sourced submission evidence and unconfirmed model support. Ultra cannot
 be mapped without a known generation ladder and returns an unsupported-option
@@ -123,7 +122,7 @@ the macOS updater consumes. The archive contains regular files/directories only
 and deliberately excludes Node while including top-level
 `claudexord.bundle.cjs` and `claudexor.bundle.cjs`. A host pins its exact URL,
 build SHA, SHA-256, size, protocol major, separate daemon/CLI entrypoints, and
-tested full Node toolchain; after extraction it requires
+tested Node runtime; after extraction it requires
 `node claudexord.bundle.cjs --probe` to report the same version/build identity.
 A host invokes
 `node claudexor.bundle.cjs harness install <harness> --yes --json` with explicit

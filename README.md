@@ -222,7 +222,7 @@ client verifiers themselves stay fail-closed for the waived versions too).
   may be exact-pinned by a host that owns its Claudexor daemon lifecycle. The
   archive contains only ordinary directories/files (internal package links are
   materialized), so its format needs no POSIX symlink support. The host supplies
-  the exact full Node toolchain proven by its reviewed pin, launches
+  the exact Node runtime proven by its reviewed pin, launches
   `claudexord.bundle.cjs`, invokes operational commands through the adjacent
   `claudexor.bundle.cjs`, verifies `--probe` against the pinned
   `{version,buildSha}`, and uses

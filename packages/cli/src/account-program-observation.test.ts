@@ -84,7 +84,7 @@ function fixture() {
       observationKey: "models",
       adapter,
       profiles: [profile],
-      context: { config, quota: { snapshots: [], absences: [], observations: [] } },
+      context: { config, quota: { snapshots: [], absences: [] } },
       read: async () => {
         const read = await readModelCatalog(adapter);
         if (read.status !== "listed") throw new Error("unavailable");
@@ -120,14 +120,14 @@ it("refreshes a per-account catalog and readiness after a change behind an uncha
   });
   await f.catalog();
   expect(f.models).toHaveBeenCalledTimes(1);
-  expect((await runDoctor(f.registry, {}))[0]!.reasons).toEqual(["1.0.0"]);
+  expect((await runDoctor(f.registry, { cwd: f.root }))[0]!.reasons).toEqual(["1.0.0"]);
   f.setVersion("2.0.0");
   expect(statSync(f.bin).mtimeMs).toBe(stat.mtimeMs);
   expect((await f.catalog())[0]!.catalog).toMatchObject({
     models: [{ id: "2.0.0" }],
     sourceProgram: { path: f.bin, version: "2.0.0" },
   });
-  expect((await runDoctor(f.registry, {}))[0]!.reasons).toEqual(["2.0.0"]);
+  expect((await runDoctor(f.registry, { cwd: f.root }))[0]!.reasons).toEqual(["2.0.0"]);
   expect(f.models).toHaveBeenCalledTimes(2);
   expect(f.doctor).toHaveBeenCalledTimes(2);
 });

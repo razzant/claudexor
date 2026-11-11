@@ -1,4 +1,3 @@
-export { COPILOT_PROGRAM } from "./program.js";
 import type { HarnessAdapter } from "@claudexor/core";
 import type { AcpEntry } from "./entry.js";
 import { acpCapabilityProfile } from "./manifest.js";

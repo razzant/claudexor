@@ -272,7 +272,7 @@
                                 "url": {
                                   "type": "string",
                                   "format": "uri",
-                                  "pattern": "^https\\:\\/\\/"
+                                  "pattern": "^https:\\/\\/"
                                 },
                                 "interpreter": {
                                   "type": "string"

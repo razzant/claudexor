@@ -1,5 +1,4 @@
 import { CLAUDE_PROGRAM } from "./program.js";
-export { CLAUDE_PROGRAM } from "./program.js";
 import { randomUUID } from "node:crypto";
 import { claudeMcpArgs } from "./mcp-args.js";
 import {
@@ -88,7 +87,6 @@ export {
   claudeOauthAccessTokenIsFresh,
   refreshClaudeNativeAuth,
 } from "./auth-refresh.js";
-export { CLAUDE_VENDOR_CLI_VERSION } from "./vendor-cli-version.js";
 import {
   claudeAttachmentBlocks,
   handleControlRequestFrame,

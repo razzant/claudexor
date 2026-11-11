@@ -1,6 +1,5 @@
 import { planCursorProfileProgramCleanup } from "./profile-program-cleanup.js";
 import { CURSOR_PROGRAM } from "./program.js";
-export { CURSOR_PROGRAM } from "./program.js";
 import { cursorAccessArgs, cursorModeArgs, cursorNativeAccess } from "./profile.js";
 import { cursorSpawnPinFacts } from "./profile.js";
 import {

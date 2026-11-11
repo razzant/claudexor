@@ -1,5 +1,4 @@
 import { CODEX_PROGRAM } from "./program.js";
-export { CODEX_PROGRAM } from "./program.js";
 import {
   CODEX_MODEL_INVENTORY,
   codexProcessingMethods,

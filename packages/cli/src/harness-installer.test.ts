@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnProcess, type ChildStdin } from "@claudexor/core";
@@ -61,7 +61,7 @@ describe("harness install/update CLI", () => {
     const w = vendorFixture();
     roots.push(w.home);
     const output = capture();
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       executable(w.installed, "2.0.0");
       return result("Done");
@@ -88,7 +88,7 @@ describe("harness install/update CLI", () => {
     capture();
     executable(w.installed);
     let mutations = 0;
-    w.options.spawn = ((bin, args, opts) => {
+    w.options.spawn = ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
       if (args[0] === "--version") return spawnSync(bin, args, opts);
       mutations++;
       return result("Already current");

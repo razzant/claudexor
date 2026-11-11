@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   print: vi.fn(),
   printJson: vi.fn(),
-  printUsageError: vi.fn(() => 2),
+  printUsageError: vi.fn((_json: boolean, _message: string) => 2),
 }));
 
 vi.mock("./cli-io.js", () => ({

@@ -5,11 +5,7 @@
   "scope": "Disposable HOME; file credential store; version/help only; no login, model call, installer or updater executed.",
   "runs": [
     {
-      "command": [
-        "<archive>/dist-package/cursor-agent",
-        "--disable-auto-update",
-        "--version"
-      ],
+      "command": ["<archive>/dist-package/cursor-agent", "--disable-auto-update", "--version"],
       "exitCode": 0,
       "stdout": "2026.08.11-e8db854\n",
       "stderr": ""

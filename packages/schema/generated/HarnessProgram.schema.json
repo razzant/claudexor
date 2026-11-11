@@ -40,7 +40,7 @@
         "releaseNotesUrl": {
           "type": "string",
           "format": "uri",
-          "pattern": "^https\\:\\/\\/"
+          "pattern": "^https:\\/\\/"
         },
         "platforms": {
           "type": "object",

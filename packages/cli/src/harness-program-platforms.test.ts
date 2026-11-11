@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -133,7 +133,7 @@ describe("adapter vendor declarations", () => {
         platform: "win32" as const,
         sourceEnv,
         fetch: fetcher,
-        spawn: ((bin, args, opts) => {
+        spawn: ((bin: string, args: readonly string[] = [], opts: SpawnSyncOptions = {}) => {
           if (args[0] === "--version") return result("fixture 1.2.3\n");
           invocations.push({ bin, args: [...args], env: opts.env! });
           if (id !== "copilot")
@@ -186,7 +186,7 @@ describe("adapter vendor declarations", () => {
       ...w.options,
       program,
       sourceEnv,
-      spawn: ((bin, args, options) => {
+      spawn: ((bin: string, args: readonly string[] = [], options: SpawnSyncOptions = {}) => {
         if (args[0] === "--version") return spawnSync(bin, args, options);
         expect(options.env).toMatchObject({
           HOME: w.home,

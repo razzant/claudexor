@@ -1,5 +1,4 @@
 import { GROK_PROGRAM } from "./program.js";
-export { GROK_PROGRAM } from "./program.js";
 import type { HarnessAdapter, DoctorSpec, HarnessModelSpec } from "@claudexor/core";
 import {
   HarnessUnavailableError,

@@ -1,6 +1,5 @@
 import { composeBaseEnv, resolveSelectedProgramAsync } from "@claudexor/core";
 import { AGY_PROGRAM } from "./program.js";
-export { AGY_PROGRAM } from "./program.js";
 import type {
   AccessProfile,
   ConformanceReport,

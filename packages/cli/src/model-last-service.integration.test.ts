@@ -86,6 +86,7 @@ async function daemon() {
     accountFingerprint: profile.profile_id,
     observedAt: new Date().toISOString(),
     provenance: "fixture exact catalog",
+    sourceProgram: null,
     clientVersion: "0.156.1",
     clientVersionSource: "verified_transport",
     models: [entry(MODEL), entry("other-model")],
