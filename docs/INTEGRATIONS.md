@@ -1695,7 +1695,7 @@ policy. A non-`workspaceWrite` echo refuses
 `codex_auxiliary_roots_unavailable` before the turn, and the legacy exec
 transport refuses the list because a `-c` root could not be revoked later.
 
-When native automatic review denies a command or execve action, Claudexor waits
+When native automatic review denies a command, execve or correlatable MCP tool call, Claudexor waits
 for that root turn to settle, then returns its exact action, rationale and final
 output through the same interaction channel. There are no timed checkpoints.
 The controller can decline if the action is unnecessary or outside its authority,
@@ -1712,12 +1712,33 @@ other and is not a promise of success or of a separate charge. It is not native
 `accept`, a full access fallback, or a policy amendment. The native RPC
 acknowledges submission, not execution; inspect the follow-up result.
 
+For MCP tool denials, the original server, tool and arguments are shown only when
+the same root turn's started tool item matches the review's target item, server,
+tool and connector identity. The authorization submitted to Codex is a contextual
+note in the thread naming only that server, tool and connector, not a one-call
+permission bound to the displayed arguments: the one extra model turn is asked to
+retry the original call, but the model can change the arguments, native review may
+deny it again, and later native reviews in that thread may consider the note. Do
+not claim argument-bound enforcement, execution or a lasting bypass from it.
+
+Separately, simple empty-form MCP elicitations in a workspace-write
+session are delivered as blocking interactions. Their origin and complete
+request details are untrusted: an elicitation is not proven to be a native tool-call
+approval, and its server may already be executing the tool. The controller
+may accept or decline that particular request; no persistent approval is
+sent. Other access profiles, missing channels, stale requests, nonempty forms,
+URL and verification modes are declined. They emit
+`codex_mcp_elicitation_not_offered` rather than assuming a decision.
+
 Claudexor never offers a denial it cannot present exactly: missing/unknown
 action fields, oversized details, unsupported actions (automatic-review
 patch notifications carry only file names, not a diff, so patch, network and
-permission grants are never offered), review timeouts, aborted reviews, a run
+permission grants are never offered), MCP call evidence that is missing,
+ambiguous, oversized, unmatched or beyond its turn's retained bound (4,096 started
+calls, details of the latest 256), review timeouts, aborted reviews, a run
 without a workspace-write interaction channel, and a repeated denial of an
-already authorized action. For those the native denial simply stands, as a
+already authorized action (for MCP, the same server, tool and arguments under
+any item ID). For those the native denial simply stands, as a
 sandbox refusal did before: the worker already saw it and finished its turn, the
 declined item remains tool-error evidence, and a typed status
 `codex_auto_review_not_offered` discloses why. There is no automatic permission
@@ -1748,9 +1769,11 @@ Neither state proves the action executed, and a failed RPC never triggers a new
 turn. Denied-action handback, explicit retry, decline, cancel, disconnect and
 partial submission have deterministic protocol tests against Codex 0.162.1
 frames, and scripted-peer tests drive them through the orchestrator outcome and
-through the durable interaction store, HTTP and MCP answer surfaces. Real-vendor
-authorization/re-review and rendered UI qualification are separate from these
-tests.
+through the durable interaction store, HTTP and MCP answer surfaces. A controlled
+native Codex 0.162.1 macOS run on the original MCP-handback candidate also observed
+a genuine Guardian denial, controller authorization, re-review and exactly one
+harmless local MCP effect. Other native versions, genuine re-denial, the complete
+controller surfaces and rendered UI remain separate qualification gaps.
 
 For a headless controller, launch a deferred run, inspect
 `claudexor_run_interactions({runId})`, and review the complete pending question
