@@ -8612,12 +8612,8 @@ Node runtime. A host on another platform has no bundled scanner for `pr`: it
 sets `CLAUDEXOR_BETTERLEAKS_PATH` to the pinned build or provisions it under
 its config root, otherwise `pr` refuses `publication_scan_unavailable`.
 A host owns the install directory, config root, process, rollback, and exact
-reviewed pin. Its full Node toolchain is the exact version proven by that pin's
-closure smoke; POSIX consumers using local harness install must provide both
-`<node-root>/bin/node` and
-`<node-root>/lib/node_modules/npm/bin/npm-cli.js` (Windows: `node.exe` and its
-adjacent `node_modules\npm\bin\npm-cli.js`), with no ambient-PATH npm
-fallback. The root package's
+reviewed pin. Its Node runtime is the exact version proven by that pin's
+closure smoke; vendor maintenance requires no adjacent npm. The root package's
 supported runtime floor is Node 24.15.0, and the store checks bundled SQLite
 3.51.3 or newer before opening data. A supported version declaration alone is
 not proof of a release-built closure; embedders retain exact-toolchain smoke evidence. The pin also

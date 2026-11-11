@@ -3,7 +3,7 @@ import { CODEX_PROGRAM } from "./program.js";
 import { spawnProcess, type ChildStdin, type SpawnOptions } from "@claudexor/core";
 import { verifyCodexAttachments } from "./attachments.js";
 import type { HarnessEvent } from "@claudexor/schema";
-import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
+import { nowIso, redactSecrets } from "@claudexor/util";
 import {
   asObject,
   CodexServerRequestRefusal,
@@ -29,8 +29,8 @@ import { CodexCancellation } from "./app-server-cancel.js";
 import { CodexApprovals } from "./app-server-approvals.js";
 import { CodexAsyncQuestions } from "./app-server-async-questions.js";
 import { CodexAutoReview } from "./app-server-auto-review.js";
-import { startCodexTurn } from "./app-server-start.js";
-import { codexAppServerThreadRequest, codexTurnSandboxPolicy } from "./app-server-session.js";
+import { startCodexThread, startCodexTurn } from "./app-server-start.js";
+import { codexTurnSandboxPolicy } from "./app-server-session.js";
 import {
   CodexSubagentThreads,
   codexCompletedEvent,
@@ -342,6 +342,8 @@ export async function* runCodexAppServer(
       ...(outputDrainTruncated ? { output_drain: "truncated" } : {}),
     };
   };
+  const completed = (payload: JsonObject, interrupted = false) =>
+    program.event(codexCompletedEvent(input.spec.session_id, payload, interrupted));
   const readLifecycle = (): Promise<CodexThreadLifecycle> =>
     readCodexLifecycle(request, nativeThreadId, ownedCommandItemIds);
   const cancel = () => {
@@ -356,21 +358,13 @@ export async function* runCodexAppServer(
     if (externalAbort.aborted) onAbort();
     else externalAbort.addEventListener("abort", onAbort, { once: true });
   }
-
   try {
-    const initialized = await request("initialize", {
-      clientInfo: { name: "claudexor", version: CLAUDEXOR_VERSION },
-      capabilities: { experimentalApi: true },
-    });
-    // initialize.userAgent is the server-built client-name/version token; the later parenthesized client version is ours.
-    const userAgent = initialized["userAgent"];
-    if (typeof userAgent === "string")
-      program.observeVersion(/^[^/\s]+\/([^\s]+)/.exec(userAgent)?.[1]);
-    await notify("initialized", null);
-    const threadResult = await request(...codexAppServerThreadRequest(input.spec, input.effort));
-    const thread = asObject(threadResult["thread"]);
-    const threadId = thread?.["id"];
-    if (typeof threadId !== "string") throw new Error("Codex app-server omitted thread id");
+    const { threadResult, threadId } = await startCodexThread(
+      input,
+      request,
+      notify,
+      program.observeVersion,
+    );
     const identityMismatch = codexResumeIdentityMismatch(input.spec, threadId);
     if (identityMismatch) {
       await stopProcess();
@@ -541,16 +535,13 @@ export async function* runCodexAppServer(
         yield* subagents.takeWarnings(notifications, nativeThreadId, input.spec.session_id);
         yield* asyncQuestions.takeEvents(notifications);
         if (!handback) yield* codexSettledTerminal(terminal.events, parseState);
-        yield program.event(
-          codexCompletedEvent(
-            input.spec.session_id,
-            terminalPayload({
-              native_session_id: threadId,
-              native_turn_id: pendingTerminal?.["id"] ?? activeTurnId,
-              ...(subagents.count ? { subagent_threads: subagents.count } : {}),
-            }),
-            status === "interrupted",
-          ),
+        yield completed(
+          terminalPayload({
+            native_session_id: threadId,
+            native_turn_id: pendingTerminal?.["id"] ?? activeTurnId,
+            ...(subagents.count ? { subagent_threads: subagents.count } : {}),
+          }),
+          status === "interrupted",
         );
         return;
       }
@@ -567,12 +558,9 @@ export async function* runCodexAppServer(
       !cancellation.failure &&
       !processFailure
     ) {
-      yield program.event(
-        codexCompletedEvent(
-          input.spec.session_id,
-          terminalPayload({ code: "user_cancelled", native_session_id: nativeThreadId }),
-          true,
-        ),
+      yield completed(
+        terminalPayload({ code: "user_cancelled", native_session_id: nativeThreadId }),
+        true,
       );
       return;
     }
@@ -601,13 +589,7 @@ export async function* runCodexAppServer(
         payload: { code: requestRefusal?.kind ?? code },
       },
     );
-    yield program.event(
-      codexCompletedEvent(
-        input.spec.session_id,
-        terminalPayload({ code, native_session_id: nativeThreadId }),
-        aborted,
-      ),
-    );
+    yield completed(terminalPayload({ code, native_session_id: nativeThreadId }), aborted);
   } finally {
     if (externalAbort instanceof AbortSignal) externalAbort.removeEventListener("abort", onAbort);
     input.controller?.clear(cancel);

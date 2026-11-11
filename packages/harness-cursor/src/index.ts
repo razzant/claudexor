@@ -1,5 +1,4 @@
 import { planCursorProfileProgramCleanup } from "./profile-program-cleanup.js";
-import { observeHarnessProgram } from "@claudexor/core";
 import { CURSOR_PROGRAM } from "./program.js";
 export { CURSOR_PROGRAM } from "./program.js";
 import { cursorAccessArgs, cursorModeArgs, cursorNativeAccess } from "./profile.js";
@@ -9,7 +8,6 @@ import {
   applyCursorRunProcessing,
   cursorProcessingParser,
 } from "./processing.js";
-import { createHash } from "node:crypto";
 import type {
   AuthPreference,
   ConformanceReport,
@@ -60,7 +58,12 @@ export { readCursorDashboard, CursorDashboardError } from "./quota.js";
 import { prepareCursorMcpInjection } from "./mcp-config.js";
 import { detectCursorVersion, resolveCursorBin } from "./bin.js";
 export { resolveCursorBin } from "./bin.js";
-import { smokeIsolatedApiKey, unsmokedApiSmoke, type CursorApiSmokeResult } from "./smoke.js";
+import {
+  smokeIsolatedApiKey,
+  unsmokedApiSmoke,
+  smokeCursorApiKey,
+  type CursorApiSmokeDeps,
+} from "./smoke.js";
 import {
   listCursorModelsFromReadyRoute,
   queryCursorModels,
@@ -139,42 +142,15 @@ function cursorApiKey(env?: Record<string, string | null | undefined>): string |
   );
 }
 
-type CursorApiSmokeCacheEntry = { result: CursorApiSmokeResult; expiresAtMs: number };
-type CursorRuntimeDeps = {
+type CursorRuntimeDeps = CursorApiSmokeDeps & {
   detectVersion: typeof detectCursorVersion;
   nativeAuthOk: CursorStatusRead;
   cursorApiKey: typeof cursorApiKey;
   listCursorModels: CursorModelLister;
-  smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
-  apiSmokeCache: Map<string, CursorApiSmokeCacheEntry>;
-  apiSmokeCacheTtlMs: number;
-  apiSmokeFailureCacheTtlMs: number;
-  nowMs: () => number;
   runCliHarness: typeof runCliHarnessDefault;
   /** INV-146: profile secrets are resolved transiently, never logged. */
   resolveProfileSecret: (ref: string) => string | null;
 };
-
-function cursorApiSmokeCacheKey(key: string): string {
-  return createHash("sha256").update(key).digest("hex");
-}
-
-async function smokeCursorApiKey(
-  deps: CursorRuntimeDeps,
-  key: string,
-  fresh = false,
-): Promise<CursorApiSmokeResult> {
-  const program = await observeHarnessProgram(CURSOR_PROGRAM);
-  const cacheKey = JSON.stringify([cursorApiSmokeCacheKey(key), program.key]);
-  const now = deps.nowMs();
-  const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
-  if (cached && cached.expiresAtMs > now) return cached.result;
-  if (cached) deps.apiSmokeCache.delete(cacheKey);
-  const result = await deps.smokeIsolatedApiKey(key);
-  const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
-  if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
-  return result;
-}
 
 function cursorBaseEnv(env?: EnvMap): EnvMap {
   return { ...(env ?? {}), ...providerScrubEnv() };

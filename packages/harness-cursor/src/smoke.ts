@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CURSOR_PROGRAM } from "./program.js";
 /**
  * Isolated Cursor API-key smoke: prove a key actually serves a turn inside a
@@ -8,7 +9,7 @@ import { CURSOR_PROGRAM } from "./program.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { providerScrubEnv, runCapture } from "@claudexor/core";
+import { observeHarnessProgram, providerScrubEnv, runCapture } from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
 import { resolveCursorBin } from "./bin.js";
 
@@ -157,4 +158,33 @@ export async function smokeIsolatedApiKey(
   } finally {
     await (options.cleanupBase ?? cleanupCursorSmokeBase)(base);
   }
+}
+
+export type CursorApiSmokeDeps = {
+  smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
+  apiSmokeCache: Map<string, { result: CursorApiSmokeResult; expiresAtMs: number }>;
+  apiSmokeCacheTtlMs: number;
+  apiSmokeFailureCacheTtlMs: number;
+  nowMs: () => number;
+};
+
+function cursorApiSmokeCacheKey(key: string): string {
+  return createHash("sha256").update(key).digest("hex");
+}
+
+export async function smokeCursorApiKey(
+  deps: CursorApiSmokeDeps,
+  key: string,
+  fresh = false,
+): Promise<CursorApiSmokeResult> {
+  const program = await observeHarnessProgram(CURSOR_PROGRAM);
+  const cacheKey = JSON.stringify([cursorApiSmokeCacheKey(key), program.key]);
+  const now = deps.nowMs();
+  const cached = fresh ? undefined : deps.apiSmokeCache.get(cacheKey);
+  if (cached && cached.expiresAtMs > now) return cached.result;
+  if (cached) deps.apiSmokeCache.delete(cacheKey);
+  const result = await deps.smokeIsolatedApiKey(key);
+  const ttlMs = result.ok ? deps.apiSmokeCacheTtlMs : deps.apiSmokeFailureCacheTtlMs;
+  if (!fresh && ttlMs > 0) deps.apiSmokeCache.set(cacheKey, { result, expiresAtMs: now + ttlMs });
+  return result;
 }
